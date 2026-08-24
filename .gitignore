@@ -20,3 +20,7 @@ node_modules/
 !package.json
 !package-lock.json
 !vacancies.json
+
+# Browser artifacts
+artifacts/
+
