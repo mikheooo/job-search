@@ -1,0 +1,12 @@
+# Development / integration dependencies for job-search
+# Full install:  pip install -r requirements.txt -r requirements-dev.txt
+# CORE runtime deps live in requirements.txt; this file adds what the full
+# test suite (and live browser/Gmail integrations) actually imports:
+#   - tests/stage18, tests/stage20a   -> playwright
+#   - tests/stage28/29, gmail_readonly_connector -> google-auth + google-api-python-client
+#   - adapters/weworkremotely         -> feedparser
+pytest
+playwright
+feedparser
+google-auth
+google-api-python-client
