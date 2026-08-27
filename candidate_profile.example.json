@@ -1,0 +1,18 @@
+﻿{
+  "desired_roles": [],
+  "alternative_roles": [],
+  "skills": [],
+  "preferred_seniority": [],
+  "years_experience": 0,
+  "remote_required": true,
+  "allowed_locations": [],
+  "allowed_timezones": [],
+  "languages": [],
+  "employment_types": [],
+  "minimum_salary": 0,
+  "salary_currency": "USD",
+  "excluded_roles": [],
+  "excluded_companies": [],
+  "excluded_countries": [],
+  "excluded_industries": []
+}

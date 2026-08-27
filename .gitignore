@@ -24,3 +24,21 @@ node_modules/
 # Browser artifacts
 artifacts/
 
+
+# HH authenticated session storage (NEVER commit)
+hh_storage_state*.json
+*storage_state*.json
+
+# Temporary / scratch (never commit)
+_tmp_*
+*.bak
+*.bak2
+*.backup
+*.new
+
+# Disaster-recovery snapshots (local only, contain env/db copies)
+baseline_stage14_snapshot/
+snapshot_stage15_current/
+
+# Candidate profile TEMPLATE exception (real candidate_profile.json stays local via *.json)
+!candidate_profile.example.json
