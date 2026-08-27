@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from . import config
 from .db import get_connection, init_db, get_deep_analysis, get_application_package, get_submission, get_all_submissions, get_verification, list_verifications
 from .application_tracking import get_application_status, list_applications, get_application_history, ApplicationStatus
-from .application_review import get_application_review, ReviewStatus
+from .application_review import get_application_review, list_application_reviews, ReviewStatus
 from .application_queue import get_queue_item, list_queue
 from .browser_executor import get_browser_session, BrowserStatus
 from .vacancy_identity import get_canonical_by_id, get_aliases_for_canonical, get_all_canonical_vacancies, MatchType
@@ -55,12 +55,19 @@ class IntegrityReport:
     generated_at: str
     total_checked: int
     canonical_checked: int
+    scope: str = "full"
     info_count: int = 0
     warning_count: int = 0
     error_count: int = 0
     issues: List[IntegrityIssue] = field(default_factory=list)
     audited_vacancies: int = 0
     audited_canonicals: int = 0
+    queue_items: int = 0
+    reviews: int = 0
+    browser_preparations: int = 0
+    submissions: int = 0
+    verifications: int = 0
+    aliases: int = 0
 
     @property
     def healthy(self) -> bool:
@@ -71,17 +78,25 @@ class IntegrityReport:
             "generated_at": self.generated_at,
             "total_checked": self.total_checked,
             "canonical_checked": self.canonical_checked,
+            "scope": self.scope,
             "info_count": self.info_count,
             "warning_count": self.warning_count,
             "error_count": self.error_count,
             "issues": [{"severity": i.severity.value, "code": i.code, "vacancy_stable_id": i.vacancy_stable_id, "canonical_id": i.canonical_id, "message": i.message, "evidence": i.evidence} for i in self.issues],
             "audited_vacancies": self.audited_vacancies,
             "audited_canonicals": self.audited_canonicals,
+            "queue_items": self.queue_items,
+            "reviews": self.reviews,
+            "browser_preparations": self.browser_preparations,
+            "submissions": self.submissions,
+            "verifications": self.verifications,
+            "aliases": self.aliases,
         }
 
 
 class IntegrityAuditor:
-    def __init__(self):
+    def __init__(self, scope: str = "full"):
+        self.scope = scope if scope in ("full", "tracked") else "full"
         self.issues: List[IntegrityIssue] = []
         self._audited_vacancies: Set[str] = set()
         self._audited_canonicals: Set[str] = set()
@@ -99,6 +114,8 @@ class IntegrityAuditor:
         self._add(IntegritySeverity.INFO, code, vid, cid, msg, ev)
 
     def _check_canonical_identity_consistency(self, cid: str, aliases: List[Tuple[Any, str]]):
+        if cid.startswith("unknown_"):
+            return
         aliases_db = get_aliases_for_canonical(cid)
         if len(aliases_db) <= 1:
             return
@@ -109,10 +126,14 @@ class IntegrityAuditor:
                 self._err("CANONICAL_EXACT_MISMATCH", exact[0]["vacancy_stable_id"], cid, f"EXACT aliases have different canonical_ids: {cids}", {"canonical_ids": list(cids)})
 
     def _check_canonical_has_aliases(self, cid: str, aliases: List[Tuple[Any, str]]):
+        if cid.startswith("unknown_"):
+            return
         if not aliases:
             self._err("CANONICAL_NO_ALIASES", "", cid, f"Canonical {cid} has no aliases", {"canonical_id": cid})
 
     def _check_alias_belongs_to_canonical(self, cid: str, aliases: List[Tuple[Any, str]]):
+        if cid.startswith("unknown_"):
+            return
         valid = {a["vacancy_stable_id"] for a in get_aliases_for_canonical(cid)}
         for _, sid in aliases:
             if sid not in valid:
@@ -264,13 +285,84 @@ class IntegrityAuditor:
                 ver = get_verification(sid, sub_id)
                 if ver and not get_submission(sid, sub_id):
                     self._err("VERIFICATION_ORPHAN", sid, cid, f"Verification {sub_id} without submission", {"submission_id": sub_id})
-            if not get_canonical_by_id(cid) and aliases:
+            if not cid.startswith("unknown_") and not get_canonical_by_id(cid) and aliases:
                 self._err("CANONICAL_ORPHAN", cid, cid, "Canonical has aliases but no record", {"alias_count": len(aliases)})
+
+    def _check_global_orphans(self):
+        for qi in list_queue(limit=10000, queue_version="v2"):
+            if not get_application_status(qi.vacancy_stable_id):
+                if not any(i.code=="QUEUE_ITEM_ORPHAN" and i.vacancy_stable_id==qi.vacancy_stable_id for i in self.issues):
+                    conn=get_connection()
+                    cur=conn.cursor()
+                    cur.execute("SELECT canonical_id FROM vacancy_aliases WHERE vacancy_stable_id=?", (qi.vacancy_stable_id,))
+                    row=cur.fetchone()
+                    conn.close()
+                    cid=row[0] if row else None
+                    self._err("QUEUE_ITEM_ORPHAN", qi.vacancy_stable_id, cid, "Queue item without tracking (global)", {})
+        conn=get_connection()
+        cur=conn.cursor()
+        cur.execute("SELECT vacancy_stable_id FROM application_reviews")
+        for (sid,) in cur.fetchall():
+            if not get_application_status(sid):
+                if not any(i.code=="REVIEW_ORPHAN" and i.vacancy_stable_id==sid for i in self.issues):
+                    conn2=get_connection()
+                    cur2=conn2.cursor()
+                    cur2.execute("SELECT canonical_id FROM vacancy_aliases WHERE vacancy_stable_id=?", (sid,))
+                    r2=cur2.fetchone()
+                    conn2.close()
+                    cid=r2[0] if r2 else None
+                    self._err("REVIEW_ORPHAN", sid, cid, "Review without tracking (global)", {})
+        cur.execute("SELECT vacancy_stable_id FROM browser_preparations")
+        for (sid,) in cur.fetchall():
+            if not get_application_status(sid):
+                if not any(i.code=="BROWSER_PREP_ORPHAN" and i.vacancy_stable_id==sid for i in self.issues):
+                    conn2=get_connection()
+                    cur2=conn2.cursor()
+                    cur2.execute("SELECT canonical_id FROM vacancy_aliases WHERE vacancy_stable_id=?", (sid,))
+                    r2=cur2.fetchone()
+                    conn2.close()
+                    cid=r2[0] if r2 else None
+                    self._err("BROWSER_PREP_ORPHAN", sid, cid, "Browser prep without tracking (global)", {})
+        conn.close()
+
+    def _count_artifacts(self, tracked_sids: Set[str], tracked_cids: Set[str]) -> Dict[str, int]:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        def count_in(table: str, col: str, ids: Set[str]) -> int:
+            if not ids:
+                return 0
+            ph = ",".join("?" for _ in ids)
+            cur.execute(f"SELECT COUNT(*) FROM {table} WHERE {col} IN ({ph})", sorted(ids))
+            return int(cur.fetchone()[0])
+
+        if self.scope == "tracked":
+            result = {
+                "queue_items": count_in("application_queue", "vacancy_stable_id", tracked_sids),
+                "reviews": count_in("application_reviews", "vacancy_stable_id", tracked_sids),
+                "browser_preparations": count_in("browser_preparations", "vacancy_stable_id", tracked_sids),
+                "submissions": count_in("application_submissions", "vacancy_stable_id", tracked_sids),
+                "verifications": count_in("submission_verifications", "vacancy_stable_id", tracked_sids),
+                "aliases": count_in("vacancy_aliases", "canonical_id", tracked_cids),
+            }
+        else:
+            def count_all(table: str) -> int:
+                cur.execute(f"SELECT COUNT(*) FROM {table}")
+                return int(cur.fetchone()[0])
+            result = {
+                "queue_items": count_all("application_queue"),
+                "reviews": count_all("application_reviews"),
+                "browser_preparations": count_all("browser_preparations"),
+                "submissions": count_all("application_submissions"),
+                "verifications": count_all("submission_verifications"),
+                "aliases": count_all("vacancy_aliases"),
+            }
+        conn.close()
+        return result
 
     def run_audit(self) -> IntegrityReport:
         init_db()
         all_canonicals = get_all_canonical_vacancies()
-        self._audited_canonicals = {c.canonical_id for c in all_canonicals}
         all_tracking = list_applications(limit=10000)
         self._audited_vacancies = {t.vacancy_stable_id for t in all_tracking}
         groups: Dict[str, List[Tuple[Any, str]]] = {}
@@ -284,18 +376,14 @@ class IntegrityAuditor:
             if row:
                 cid = row[0]
             else:
-                from .db import get_vacancy_by_id
-                from .db import _row_to_vacancy
-                vr = get_vacancy_by_id(sid)
-                if vr:
-                    vac = _row_to_vacancy(vr)
-                    from .vacancy_identity import resolve_vacancy_identity
-                    # read-only: do not create, just mark unknown
-                    # we avoid calling resolve which would create; use unknown
-                    cid = f"unknown_{sid}"
-                else:
-                    cid = f"unknown_{sid}"
+                cid = f"unknown_{sid}"
             groups.setdefault(cid, []).append((tr, sid))
+        tracked_sids = {sid for als in groups.values() for _, sid in als}
+        tracked_cids = {cid for cid in groups if not cid.startswith("unknown_")}
+        if self.scope == "tracked":
+            self._audited_canonicals = tracked_cids
+        else:
+            self._audited_canonicals = {c.canonical_id for c in all_canonicals}
         for cid, als in groups.items():
             self._check_canonical_identity_consistency(cid, als)
             self._check_canonical_has_aliases(cid, als)
@@ -309,12 +397,15 @@ class IntegrityAuditor:
             self._check_lifecycle_transitions(cid, als)
             self._check_submission_records(cid, als)
             self._check_orphan_artifacts(cid, als)
+        if self.scope == "full":
+            self._check_global_orphans()
         self.issues.sort()
         err = sum(1 for i in self.issues if i.severity == IntegritySeverity.ERROR)
         warn = sum(1 for i in self.issues if i.severity == IntegritySeverity.WARNING)
         info = sum(1 for i in self.issues if i.severity == IntegritySeverity.INFO)
-        return IntegrityReport(generated_at=datetime.utcnow().isoformat(), total_checked=len(self._audited_vacancies), canonical_checked=len(self._audited_canonicals), info_count=info, warning_count=warn, error_count=err, issues=self.issues, audited_vacancies=len(self._audited_vacancies), audited_canonicals=len(self._audited_canonicals))
+        counts = self._count_artifacts(tracked_sids, tracked_cids)
+        return IntegrityReport(generated_at=datetime.utcnow().isoformat(), total_checked=len(self._audited_vacancies), canonical_checked=len(self._audited_canonicals), scope=self.scope, info_count=info, warning_count=warn, error_count=err, issues=self.issues, audited_vacancies=len(self._audited_vacancies), audited_canonicals=len(self._audited_canonicals), queue_items=counts["queue_items"], reviews=counts["reviews"], browser_preparations=counts["browser_preparations"], submissions=counts["submissions"], verifications=counts["verifications"], aliases=counts["aliases"])
 
 
-def run_integrity_audit() -> IntegrityReport:
-    return IntegrityAuditor().run_audit()
+def run_integrity_audit(scope: str = "full") -> IntegrityReport:
+    return IntegrityAuditor(scope=scope).run_audit()

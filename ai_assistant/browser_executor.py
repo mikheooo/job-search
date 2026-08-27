@@ -111,6 +111,21 @@ class BrowserAdapter:
     def submit_application(self) -> Dict[str, Any]:
         raise NotImplementedError
 
+    def extract_application_form(self) -> Dict[str, Any]:
+        """Platform-aware: read the current page and return a normalized DOM
+        snapshot for form extraction.
+
+        Returns a dict with keys:
+          html, body_text, questions: [{label, slug}], controls: [{tag, type,
+          name, id, dataQa, required, label, options}] (real form controls,
+          present only when the page renders them, e.g. authenticated HH),
+          auth_form: bool, apply_link: {href, text}|None, final_url, title, site
+
+        EXTRACTION ONLY: never submits, never clicks Apply, never fills,
+        never uploads, never calls LLM, never mutates DB.
+        """
+        raise NotImplementedError
+
 class MockBrowserAdapter(BrowserAdapter):
     def __init__(self, simulate: Dict[str, Any] | None = None):
         self.simulate = simulate or {}
@@ -151,6 +166,23 @@ class MockBrowserAdapter(BrowserAdapter):
             "cloudflare": cloudflare,
         }
 
+    def extract_application_form(self) -> Dict[str, Any]:
+        self.calls.append("extract_application_form")
+        sim = self.simulate
+        questions = sim.get("questions") or []
+        return {
+            "html": sim.get("html", ""),
+            "body_text": sim.get("body_text", ""),
+            "questions": [dict(q) for q in questions],
+            "controls": [dict(c) for c in (sim.get("controls") or [])],
+            "question_groups": list(sim.get("question_groups") or []),
+            "auth_form": sim.get("auth_form", False),
+            "apply_link": sim.get("apply_link"),
+            "final_url": sim.get("final_url") or self.opened_url or "",
+            "title": sim.get("page_title") or "",
+            "site": sim.get("site") or "hh.ru",
+        }
+
     def fill_field(self, selector: str, value: str) -> bool:
         self.calls.append(f"fill:{selector}")
         return True
@@ -186,10 +218,15 @@ class MockBrowserAdapter(BrowserAdapter):
 
 # Playwright adapter if available (optional, not required for tests)
 class PlaywrightBrowserAdapter(BrowserAdapter):
-    def __init__(self, headless: bool = True):
+    def __init__(self, headless: bool = True, storage_state: str | None = None):
         self.headless = headless
+        # Stage 18: optional authenticated session (Playwright storage_state file).
+        # The file path comes from env (HH_STORAGE_STATE) at call sites - it is
+        # NEVER hardcoded, committed, or stored in DB/packages.
+        self.storage_state = storage_state
         self.play = None
         self.browser = None
+        self.context = None
         self.page = None
         self._final_url = None
         self._title = None
@@ -199,7 +236,11 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
             from playwright.sync_api import sync_playwright
             self.play = sync_playwright().start()
             self.browser = self.play.chromium.launch(headless=self.headless)
-            self.page = self.browser.new_page()
+            if self.storage_state:
+                self.context = self.browser.new_context(storage_state=self.storage_state)
+            else:
+                self.context = self.browser.new_context()
+            self.page = self.context.new_page()
             self.page.goto(url, wait_until="domcontentloaded", timeout=15000)
             self._final_url = self.page.url
             self._title = self.page.title()
@@ -245,6 +286,158 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
         except Exception:
             return {"form_detected": False, "fields": [], "apply_button": False}
 
+    def extract_application_form(self) -> Dict[str, Any]:
+        """Read-only HH-aware extraction. Never clicks/fills/uploads.
+
+        Uses REAL observed HH DOM patterns:
+          - question label: div[data-qa^='vacancy-response-question'] with text;
+            second whitespace token of data-qa is the stable slug.
+          - apply link: a[data-qa='vacancy-response-link-top'] (never clicked).
+          - auth gate: div[data-qa='auth-form'] => answer controls hidden.
+        """
+        if not self.page:
+            return {
+                "html": "", "body_text": "", "questions": [], "controls": [],
+                "question_groups": [],
+                "auth_form": False,
+                "apply_link": None, "final_url": "", "title": "", "site": "",
+            }
+        try:
+            html = self.page.content()
+            body_text = self.page.inner_text("body")
+            # Real HH question containers
+            raw = self.page.eval_on_selector_all(
+                "[data-qa^='vacancy-response-question']",
+                "els => els.map(e => {"
+                "  const qa = e.getAttribute('data-qa') || '';"
+                "  const parts = qa.split(/\\s+/).filter(Boolean);"
+                "  const slug = parts.find(p => p.startsWith('vacancy-response-question_'))"
+                "             ? parts.find(p => p.startsWith('vacancy-response-question_')).replace('vacancy-response-question_','')"
+                "             : '';"
+                "  return {label: (e.innerText || '').trim(), slug: slug};"
+                "})",
+            )
+            auth_form = bool(self.page.query_selector("[data-qa='auth-form']"))
+            link = self.page.query_selector("a[data-qa='vacancy-response-link-top']")
+            apply_link = None
+            if link:
+                apply_link = {
+                    "href": link.get_attribute("href") or "",
+                    "text": (link.inner_text() or "").strip(),
+                }
+            # Stage 18/20C: REAL form controls (only present with an
+            # authenticated session). We read exactly what the DOM exposes.
+            controls = self.page.eval_on_selector_all(
+                "input:not([type='hidden']):not([type='submit']):not([type='button']):not([type='image']), textarea, select",
+                """els => els.map(e => ({
+                    tag: e.tagName,
+                    type: e.getAttribute('type') || (e.tagName === 'SELECT' ? 'select' : (e.tagName === 'TEXTAREA' ? 'textarea' : 'text')),
+                    name: e.getAttribute('name') || null,
+                    id: e.id || null,
+                    dataQa: e.getAttribute('data-qa') || null,
+                    required: !!(e.required || e.getAttribute('aria-required') === 'true'),
+                    requiredAttr: e.required === true ? true : (e.getAttribute('aria-required') === 'true' ? true : (e.hasAttribute('required') ? false : null)),
+                    multiple: !!(e.multiple),
+                    label: (function(el){
+                        try {
+                            if (el.labels && el.labels.length) return (el.labels[0].innerText || '').trim();
+                            const lb = el.getAttribute('aria-labelledby');
+                            if (lb) { const l = document.getElementById(lb); if (l) return (l.innerText || '').trim(); }
+                            const la = el.getAttribute('aria-label');
+                            if (la) return la.trim();
+                            const wrap = el.closest('label');
+                            if (wrap) return (wrap.innerText || '').trim();
+                        } catch (err) {}
+                        return null;
+                    })(e),
+                    options: e.tagName === 'SELECT' ? Array.from(e.options).map(function(o){ return (o.text || '').trim(); }).filter(Boolean) : null
+                }))""",
+            )
+            # Stage 20C: DOM-proven question stems (sibling of options container)
+            question_groups = []
+            try:
+                question_groups = self.page.evaluate("""() => {
+                    const visible = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+                    const inputs = Array.from(document.querySelectorAll("input[type='radio'], input[type='checkbox']"));
+                    const byName = {};
+                    for (const i of inputs) {
+                        const n = i.getAttribute('name');
+                        if (!n || !n.startsWith('task_')) continue;
+                        (byName[n] = byName[n] || []).push(i);
+                    }
+                    const out = [];
+                    for (const [name, els] of Object.entries(byName)) {
+                        let anc = els[0].parentElement;
+                        while (anc && !els.every(e => anc.contains(e))) anc = anc.parentElement;
+                        if (!anc) continue;
+                        const optionLabels = els.map(e => {
+                            if (e.labels && e.labels[0]) return (e.labels[0].innerText || '').trim();
+                            const w = e.closest('label');
+                            return w ? (w.innerText || '').trim() : '';
+                        }).filter(Boolean);
+                        let cur = anc;
+                        for (let lvl = 0; lvl < 4 && cur.parentElement; lvl++) {
+                            cur = cur.parentElement;
+                            for (const child of cur.children) {
+                                if (child.contains(anc) || child === anc) continue;
+                                const t = (child.innerText || '').trim();
+                                if (!t || t.length > 300) continue;
+                                if (optionLabels.some(ol => t === ol)) continue;
+                                const cls = (child.className || '').toString();
+                                const isHeading = /^H[1-6]$/.test(child.tagName);
+                                const isTextish = /text|label|title|question/i.test(cls) || child.getAttribute('data-qa');
+                                const hasDirectText = Array.from(child.childNodes).some(n => n.nodeType === 3 && n.textContent.trim());
+                                if (isHeading || isTextish || hasDirectText) {
+                                    out.push({name, stem: t.slice(0, 300), stem_tag: child.tagName, stem_cls: cls.slice(0, 80), stem_level: lvl + 1});
+                                    break;
+                                }
+                            }
+                            if (out.length && out[out.length-1].name === name) break;
+                        }
+                    }
+                    for (const ta of document.querySelectorAll("textarea[name^='task_']")) {
+                        const name = ta.getAttribute('name');
+                        let anc = ta.parentElement;
+                        while (anc && anc.parentElement) {
+                            anc = anc.parentElement;
+                            for (const child of anc.children) {
+                                if (child.contains(ta)) continue;
+                                const t = (child.innerText || '').trim();
+                                if (!t || t === 'Писать тут' || t.length > 300) continue;
+                                const cls = (child.className || '').toString();
+                                if (/text|label|title/i.test(cls) || /^H[1-6]$/.test(child.tagName)) {
+                                    out.push({name, stem: t.slice(0, 300), stem_tag: child.tagName, stem_cls: cls.slice(0, 80), stem_level: 0});
+                                    break;
+                                }
+                            }
+                            if (out.some(e => e.name === name)) break;
+                        }
+                    }
+                    return out;
+                }""")
+            except Exception:
+                question_groups = []
+            return {
+                "html": html,
+                "body_text": body_text,
+                "questions": [{"label": q.get("label", ""), "slug": q.get("slug", "")} for q in raw],
+                "controls": [c for c in controls],
+                "question_groups": question_groups or [],
+                "auth_form": auth_form,
+                "apply_link": apply_link,
+                "final_url": self._final_url or "",
+                "title": self._title or "",
+                "site": (self._final_url or "").split("/")[2] if self._final_url else "hh.ru",
+            }
+        except Exception:
+            return {
+                "html": "", "body_text": "", "questions": [], "controls": [],
+                "question_groups": [],
+                "auth_form": False,
+                "apply_link": None, "final_url": self._final_url or "",
+                "title": self._title or "", "site": "hh.ru",
+            }
+
     def fill_field(self, selector: str, value: str) -> bool:
         try:
             if self.page:
@@ -274,6 +467,16 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
         return None
 
     def close(self) -> None:
+        try:
+            if self.page:
+                self.page.close()
+        except Exception:
+            pass
+        try:
+            if self.context:
+                self.context.close()
+        except Exception:
+            pass
         try:
             if self.browser:
                 self.browser.close()
@@ -341,7 +544,38 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+def _get_validated_package_answer(field: str, package: Any) -> Optional[str]:
+    """Stage 17D: validated package answers (truth-only). UNKNOWN /
+    requires_review answers are NEVER used and never turned into text."""
+    if package is None:
+        return None
+    answers = getattr(package, "answers", None)
+    if not answers:
+        return None
+    for a in answers:
+        if isinstance(a, dict):
+            qid = str(a.get("question_id") or "").lower()
+            ans = a.get("answer")
+            review = a.get("requires_review", True)
+        else:
+            qid = str(getattr(a, "question_id", "") or "").lower()
+            ans = getattr(a, "answer", None)
+            review = getattr(a, "requires_review", True)
+        if not ans or review:
+            continue
+        if qid == field or qid.endswith("_" + field) or field in qid.split("_"):
+            return str(ans)
+    return None
+
 def _get_profile_value(field: str, profile: CandidateProfile, resume_text: str, vacancy: Vacancy, package: Any) -> Optional[str]:
+    """Truth-only field value: confirmed profile/resume data first, then a
+    validated (requires_review=False) package answer. Never invents."""
+    val = _get_profile_value_truth(field, profile, resume_text, vacancy, package)
+    if val is not None:
+        return val
+    return _get_validated_package_answer(field, package)
+
+def _get_profile_value_truth(field: str, profile: CandidateProfile, resume_text: str, vacancy: Vacancy, package: Any) -> Optional[str]:
     field = field.lower()
     # Truth-only: return None if not confirmed
     if field in ("name", "first_name", "last_name"):
@@ -367,7 +601,7 @@ def _get_profile_value(field: str, profile: CandidateProfile, resume_text: str, 
             return str(getattr(profile, "email"))
         return None
     if field == "phone":
-        m = re.search(r"\+?\d[\d\s\-\(\)]{7,}", resume_text)
+        m = re.search(r"\+?\d[0-9 \-\(\)]{7,}", resume_text)
         if m:
             return m.group(0).strip()
         return None
@@ -445,6 +679,57 @@ def _detect_site(url: str) -> str:
         return urlparse(url).netloc
     except Exception:
         return url.split("/")[2] if "://" in url else url
+
+def extract_form_for_vacancy(
+    vacancy_stable_id: str,
+    url: str,
+    adapter: BrowserAdapter | None = None,
+    canonical_id: str | None = None,
+):
+    """Open a vacancy page and return a normalized ApplicationForm.
+
+    EXTRACTION ONLY. Opens the page (read), reads the DOM, normalizes.
+    Never submits, never clicks Apply, never fills, never uploads,
+    never calls an LLM, never mutates the DB.
+
+    If no adapter is given, uses a real Playwright adapter when available,
+    otherwise a MockBrowserAdapter (for tests/offline). An authenticated HH
+    session can be provided via env HH_STORAGE_STATE (Playwright storage_state
+    JSON file path); it is never hardcoded or persisted.
+    """
+    from .hh_extractor import extract_application_form
+
+    use_adapter = adapter
+    if use_adapter is None:
+        use_real = os.getenv("BROWSER_USE_PLAYWRIGHT") == "1" or os.getenv("BROWSER_REAL") == "1" or os.getenv("USE_PLAYWRIGHT") == "1"
+        if use_real:
+            try:
+                storage_state = os.getenv("HH_STORAGE_STATE") or None
+                use_adapter = PlaywrightBrowserAdapter(headless=True, storage_state=storage_state)
+            except Exception as e:
+                logging.warning("Playwright not available for extraction, fallback to Mock: %s", e)
+                use_adapter = MockBrowserAdapter()
+        else:
+            use_adapter = MockBrowserAdapter()
+
+    try:
+        open_res = use_adapter.open(url)
+        snapshot = use_adapter.extract_application_form()
+        snapshot["final_url"] = snapshot.get("final_url") or open_res.get("final_url", url)
+        snapshot["site"] = snapshot.get("site") or open_res.get("site", "hh.ru")
+        snapshot["blocked"] = open_res.get("blocked", False)
+        snapshot["blocked_reason"] = open_res.get("reason")
+        return extract_application_form(
+            vacancy_stable_id=vacancy_stable_id,
+            url=url,
+            dom_snapshot=snapshot,
+            canonical_id=canonical_id,
+        )
+    finally:
+        try:
+            use_adapter.close()
+        except Exception:
+            pass
 
 def save_browser_session(session: BrowserApplicationSession) -> None:
     init_db()
@@ -577,6 +862,9 @@ def prepare_application_in_browser(
         class PkgObj:
             def __init__(self, d):
                 self.cover_letter = d.get("cover_letter")
+                self.validation_status = d.get("validation_status", "NEEDS_REVIEW")
+                self.answers = d.get("answers") or []
+                self.application_type = d.get("application_type", "unknown")
         pkg = PkgObj(pkg_data)
     except Exception:
         pkg = None
@@ -724,10 +1012,18 @@ def prepare_application_in_browser(
                 except Exception as e:
                     warnings.append(f"Screenshot failed: {e}")
                     screenshot_path = None
-                # Final status READY_FOR_REVIEW if form detected and not blocked
+                # Final status: READY_FOR_REVIEW only when form detected,
+                # not blocked, package exists AND validation_status == VALID.
+                validation_status = getattr(pkg, "validation_status", "NEEDS_REVIEW") if pkg else "NEEDS_REVIEW"
                 if status == BrowserStatus.FORM_DETECTED:
-                    status = BrowserStatus.READY_FOR_REVIEW
-                    warnings.append("Manual submission required. DO NOT SUBMIT automatically. - READY_FOR_REVIEW")
+                    if validation_status == "VALID":
+                        status = BrowserStatus.READY_FOR_REVIEW
+                        warnings.append("Manual submission required. DO NOT SUBMIT automatically. - READY_FOR_REVIEW")
+                    else:
+                        # Not VALID: keep a safe, non-ready state. FORM_DETECTED
+                        # already communicates that the form was found but the
+                        # package still needs review. We do not auto-submit.
+                        warnings.append("Package NOT VALID (needs review) - NOT READY_FOR_REVIEW")
                 # Safety: ensure we never set COMPLETED as auto-submitted; COMPLETED means ready for manual review on this stage
                 if status == BrowserStatus.READY_FOR_REVIEW:
                     # For this stage, COMPLETED is alias for READY_FOR_REVIEW? Spec says COMPLETED means ready for manual Submit

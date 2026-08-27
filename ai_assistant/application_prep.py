@@ -13,6 +13,7 @@ from . import config
 from .candidate_profile import CandidateProfile
 from .schema import Vacancy
 from .job_analyzer import DeepAnalysisResult, get_resume_text as job_get_resume_text
+from .hh_extractor import ApplicationType, ApplicationForm, ApplicationQuestion, ApplicationAnswer
 
 try:
     from openai import OpenAI
@@ -48,6 +49,13 @@ class ApplicationPackage(BaseModel):
     warnings: List[str]
     generator_version: str
     adaptation: ResumeAdaptation
+
+    # Stage 17C: HH Q&A extension (defaults preserve backward compatibility)
+    application_type: ApplicationType = ApplicationType.unknown
+    form: Optional[ApplicationForm] = None
+    answers: List[ApplicationAnswer] = Field(default_factory=list)
+    validation_status: str = "NEEDS_REVIEW"  # VALID | NEEDS_REVIEW
+    review_reasons: List[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 

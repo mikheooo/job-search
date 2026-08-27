@@ -25,6 +25,7 @@ from .db import (
     list_submissions,
     get_verification,
     list_verifications,
+    _row_to_vacancy,
 )
 from .config import BATCH_LIMIT, CANDIDATE_PROFILE_FILE
 from .application_review import create_application_review, get_application_review, list_application_reviews, approve_review, reject_review, REVIEW_VERSION
@@ -369,6 +370,19 @@ def prepare_applications(top_n: int = 20, profile_path: str | None = None, force
             print(f"{score:>3} {vac.title[:50]} -> SKIP no package (deep {deep.recommendation})")
             continue
 
+        # Stage 17D: extract HH form -> resolve answers -> validate package.
+        # Read-only extraction; failure leaves the package NEEDS_REVIEW.
+        try:
+            from .application_qa import prepare_package_with_form
+            pkg = prepare_package_with_form(
+                pkg, sid, vac.job_url, profile, resume_text,
+                deep=deep, vacancy=vac,
+            )
+        except Exception as e:
+            logging.warning("Form extraction/validation failed for %s: %s", sid, e)
+            pkg.validation_status = "NEEDS_REVIEW"
+            pkg.review_reasons = list(pkg.review_reasons or []) + [f"Form extraction/validation failed: {e}"]
+
         try:
             save_application_package(sid, APPLICATION_PREP_VERSION, pkg.model_dump_json())
         except Exception as e:
@@ -381,8 +395,12 @@ def prepare_applications(top_n: int = 20, profile_path: str | None = None, force
         print(f"     Summary: {pkg.resume_summary[:140]}")
         print(f"     Skills: {', '.join(pkg.tailored_skills[:5])}")
         print(f"     Cover ({len(pkg.cover_letter.split())} words): {pkg.cover_letter[:160]}...")
+        if pkg.form is not None:
+            print(f"     Form: {pkg.application_type.value} | questions={len(pkg.form.questions)} | validation={pkg.validation_status}")
         if pkg.warnings:
             print(f"     Warnings: {'; '.join(pkg.warnings[:2])}")
+        if pkg.review_reasons:
+            print(f"     Review reasons: {'; '.join(pkg.review_reasons[:2])}")
         print(f"     URL: {vac.job_url}")
         print("-" * 120)
 
@@ -1518,6 +1536,7 @@ def main() -> int:
     audit_parser.add_argument("--errors", action="store_true", help="Show only ERROR severity issues")
     audit_parser.add_argument("--warnings", action="store_true", help="Show only WARNING severity issues")
     audit_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    audit_parser.add_argument("--tracked", action="store_true", help="Audit only tracked applications / queue workflow artifacts")
     audit_parser.add_argument("--canonical", type=str, help="Audit specific canonical vacancy")
     audit_sub = audit_parser.add_subparsers(dest="audit_command")
     audit_show_p = audit_sub.add_parser("show", help="Show detailed audit for a vacancy")
@@ -1527,7 +1546,12 @@ def main() -> int:
 
     duplicates_parser = subparsers.add_parser("duplicates", help="List probable and exact duplicate vacancies")
 
-    args = parser.parse_args()
+    args = None
+    try:
+        args = parser.parse_args()
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else 0
+        return 0 if code == 0 else 3
     if args.command == "collect":
         collect(args.sources)
     elif args.command == "analyze":
@@ -1651,18 +1675,19 @@ def main() -> int:
         else:
             queue_list(top=args.top, status_filter=args.status, profile_path=args.profile)
     elif args.command == "audit":
+        scope = "tracked" if getattr(args, "tracked", False) else "full"
         if args.audit_command == "show":
             return audit_show(args.vacancy_stable_id)
         elif args.audit_command == "canonical":
             return audit_canonical(args.canonical_id)
         elif args.json:
-            return audit_json(args.errors, args.warnings)
+            return audit_json(args.errors, args.warnings, scope=scope)
         elif args.errors:
-            return audit_errors()
+            return audit_errors(scope=scope)
         elif args.warnings:
-            return audit_warnings()
+            return audit_warnings(scope=scope)
         else:
-            return audit()
+            return audit(scope=scope)
     else:
         parser.print_help()
         return 1
@@ -1878,17 +1903,19 @@ def queue_duplicates() -> int:
         print("No canonical vacancies with multiple aliases in queue.")
     
     return 0
-def audit() -> int:
+def audit(scope: str = "full") -> int:
     """Run full integrity audit."""
     from .application_integrity import run_integrity_audit
     init_db()
-    report = run_integrity_audit()
+    report = run_integrity_audit(scope=scope)
     
     print("=== APPLICATION INTEGRITY AUDIT ===")
     print()
+    print(f"Scope: {report.scope}")
     print(f"Generated: {report.generated_at}")
     print(f"Total vacancies checked: {report.total_checked}")
     print(f"Canonical vacancies checked: {report.canonical_checked}")
+    print(f"Artifacts: queue={report.queue_items} reviews={report.reviews} browser={report.browser_preparations} submissions={report.submissions} verifications={report.verifications} aliases={report.aliases}")
     print()
     print(f"INFO:    {report.info_count}")
     print(f"WARNING: {report.warning_count}")
@@ -1917,11 +1944,15 @@ def audit() -> int:
     return 0
 
 
-def audit_errors() -> int:
+def audit_errors(scope: str = "full") -> int:
     """Show only ERROR severity issues."""
     from .application_integrity import run_integrity_audit, IntegritySeverity
     init_db()
-    report = run_integrity_audit()
+    try:
+        report = run_integrity_audit(scope=scope)
+    except Exception as e:
+        print(f"AUDIT FAILURE: {e}", file=sys.stderr)
+        return 3
     
     errors = [i for i in report.issues if i.severity == IntegritySeverity.ERROR]
     if not errors:
@@ -1941,11 +1972,15 @@ def audit_errors() -> int:
     return 2
 
 
-def audit_warnings() -> int:
+def audit_warnings(scope: str = "full") -> int:
     """Show only WARNING severity issues."""
     from .application_integrity import run_integrity_audit, IntegritySeverity
     init_db()
-    report = run_integrity_audit()
+    try:
+        report = run_integrity_audit(scope=scope)
+    except Exception as e:
+        print(f"AUDIT FAILURE: {e}", file=sys.stderr)
+        return 3
     
     warnings = [i for i in report.issues if i.severity == IntegritySeverity.WARNING]
     if not warnings:
@@ -1965,12 +2000,16 @@ def audit_warnings() -> int:
     return 1
 
 
-def audit_json(errors_only: bool = False, warnings_only: bool = False) -> int:
+def audit_json(errors_only: bool = False, warnings_only: bool = False, scope: str = "full") -> int:
     """Output audit report as JSON."""
     import json
-    from .application_integrity import run_integrity_audit
+    from .application_integrity import run_integrity_audit, IntegritySeverity
     init_db()
-    report = run_integrity_audit()
+    try:
+        report = run_integrity_audit(scope=scope)
+    except Exception as e:
+        print(json.dumps({"error": f"AUDIT FAILURE: {e}"}, ensure_ascii=False))
+        return 3
     
     issues = report.issues
     if errors_only:
@@ -1980,12 +2019,19 @@ def audit_json(errors_only: bool = False, warnings_only: bool = False) -> int:
     
     output = {
         "generated_at": report.generated_at,
+        "scope": report.scope,
         "total_checked": report.total_checked,
         "canonical_checked": report.canonical_checked,
         "info_count": report.info_count,
         "warning_count": report.warning_count,
         "error_count": report.error_count,
         "healthy": report.healthy,
+        "queue_items": report.queue_items,
+        "reviews": report.reviews,
+        "browser_preparations": report.browser_preparations,
+        "submissions": report.submissions,
+        "verifications": report.verifications,
+        "aliases": report.aliases,
         "issues": [
             {
                 "severity": issue.severity.value,
@@ -2000,6 +2046,10 @@ def audit_json(errors_only: bool = False, warnings_only: bool = False) -> int:
     }
     
     print(json.dumps(output, ensure_ascii=False, indent=2))
+    if report.error_count > 0:
+        return 2
+    elif report.warning_count > 0:
+        return 1
     return 0
 
 
@@ -2086,3 +2136,7 @@ def queue_duplicates() -> int:
         print("No canonical vacancies with multiple aliases in queue.")
     
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
