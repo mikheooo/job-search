@@ -1794,6 +1794,18 @@ def system_info() -> int:
     return 0
 
 
+def ui_cmd(host: str = "127.0.0.1", port: int = 8000) -> int:
+    """Launch the interactive web dashboard."""
+    try:
+        import uvicorn
+        print(f"Starting Job-Search Web Dashboard on http://{host}:{port}")
+        uvicorn.run("ai_assistant.ui.app:app", host=host, port=port, reload=False)
+        return 0
+    except Exception as e:
+        print(f"Failed to launch Web UI: {e}", file=sys.stderr)
+        return 1
+
+
 def main() -> int:
     # Handle direct `review <id>` as `review show <id>`
     if len(sys.argv) >= 3 and sys.argv[1] == "review" and sys.argv[2] not in ["list", "show", "approve", "reject", "-h", "--help"]:
@@ -1980,6 +1992,11 @@ def main() -> int:
     # Stage 30C — standalone diagnostic (no args, read-only)
     subparsers.add_parser("system-info", help="Show environment diagnostics (READ-ONLY, no network/DB/send)")
 
+    # Web Dashboard UI
+    ui_parser = subparsers.add_parser("ui", help="Start local web dashboard")
+    ui_parser.add_argument("--host", default="127.0.0.1", help="Host (default: 127.0.0.1)")
+    ui_parser.add_argument("--port", type=int, default=8000, help="Port (default: 8000)")
+
     args = None
     try:
         args = parser.parse_args()
@@ -2151,6 +2168,8 @@ def main() -> int:
         return 1
     elif args.command == "system-info":
         return system_info()
+    elif args.command == "ui":
+        return ui_cmd(args.host, args.port)
     else:
         parser.print_help()
         return 1

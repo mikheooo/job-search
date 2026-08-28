@@ -1,4 +1,4 @@
-﻿# job-search — Python dependencies
+# job-search — Python dependencies
 # Derived from actual imports (Stage 30A inventory). Versions intentionally
 # unpinned: any recent stable release works. Install: pip install -r requirements.txt
 
@@ -8,12 +8,14 @@ requests               # collectors (himalayas, remoteok, linkedin, wellfound), 
 openai                 # LLM layer (job_analyzer, application_prep, outreach_note)
 websockets             # raw-CDP transport for prefill_execute (make_cdp_evaluate)
 python-dotenv          # config.py env loading
+feedparser             # RSS collectors (weworkremotely, habrcareer)
+fastapi                # web dashboard API
+uvicorn                # web server
 
 # === OPTIONAL / INTEGRATIONS (feature-gated; uncomment when the feature is used) ===
 # playwright           # live browser automation (browser_executor, wellfound_scraper, tools/)
-# feedparser           # weworkremotely collector adapter
 # google-auth          # Gmail read-only connector (Stage 28/29), Application Default Credentials
 # google-api-python-client  # Gmail API client (Stage 28/29)
 
 # === DEV / TEST ===
-pytest                 # test suite (tests/, 606 collected)
+pytest                 # test suite
