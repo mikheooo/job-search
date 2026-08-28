@@ -666,12 +666,29 @@ def generate_queue(top_n: int = 20, profile_path: Optional[str] = None, status_f
     deep_map: Dict[str, Any] = {}
 
     matcher = JobMatcher(profile)
+    from .eligibility import assess_vacancy_eligibility, EligibilityStatus
+    from .db import get_vacancy_eligibility, save_vacancy_eligibility
 
     for sid in allowed_ids:
         row = get_vacancy_by_id(sid)
         if not row:
             continue
         vac = _row_to_vacancy(row)
+
+        # Check eligibility: only ELIGIBLE and ELIGIBLE_WITH_WARNING can enter active queue
+        elig = get_vacancy_eligibility(sid)
+        if not elig:
+            assessment = assess_vacancy_eligibility(vac)
+            save_vacancy_eligibility(sid, assessment)
+            e_status = assessment.eligibility.value
+        else:
+            e_status = elig["status"]
+            if hasattr(e_status, "value"):
+                e_status = e_status.value
+        
+        if str(e_status).lower() in ("ineligible", "unknown"):
+            continue
+
         vacancies.append(vac)
         # compute match
         m = matcher.match(vac)
@@ -704,6 +721,20 @@ def generate_queue(top_n: int = 20, profile_path: Optional[str] = None, status_f
             if not row:
                 continue
             vac = _row_to_vacancy(row)
+
+            elig = get_vacancy_eligibility(r.vacancy_stable_id)
+            if not elig:
+                assessment = assess_vacancy_eligibility(vac)
+                save_vacancy_eligibility(r.vacancy_stable_id, assessment)
+                e_status = assessment.eligibility.value
+            else:
+                e_status = elig["status"]
+                if hasattr(e_status, "value"):
+                    e_status = e_status.value
+            
+            if str(e_status).lower() in ("ineligible", "unknown"):
+                continue
+
             vacancies.append(vac)
             m = matcher.match(vac)
             match_map[r.vacancy_stable_id] = m
@@ -713,6 +744,9 @@ def generate_queue(top_n: int = 20, profile_path: Optional[str] = None, status_f
                     deep_map[r.vacancy_stable_id] = DeepAnalysisResult.model_validate_json(deep_row[4])
                 except Exception:
                     pass
+
+    # Clear previous queue items before saving newly generated items
+    clear_queue()
 
     # Build queue items with canonical identity deduplication
     items = build_queue_items(vacancies, profile, match_map, deep_map)

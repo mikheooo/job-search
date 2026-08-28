@@ -218,33 +218,12 @@ def _coerce_profile(profile: Any) -> Dict[str, Any]:
 
 # ---- Helpers ----
 
-_REMOTE_KEYWORDS = ["remote", "удален", "удалён", "worldwide", "anywhere", "global", "everywhere", "distributed", "работа удаленно", "удаленная", "удалëнно"]
+from .remote_filter import is_strictly_remote
 
 
 def _is_remote_vacancy(vacancy: Vacancy) -> bool:
-    loc = (vacancy.location or "").lower()
-    country_text = ",".join(vacancy.country_restrictions or []).lower()
-    tz_text = ",".join(str(x) for x in (vacancy.timezone_restrictions or [])).lower()
-    combined = f"{loc} {country_text} {tz_text}".lower()
-    title_desc = f"{vacancy.title or ''} {vacancy.description or ''}".lower()
-    # check location
-    if any(k in combined for k in _REMOTE_KEYWORDS):
-        return True
-    if any(k in title_desc for k in ["remote", "удален"]):
-        # if description explicitly says remote, treat as remote even if location empty
-        # but require also location not being on-site city like "Moscow office"
-        if "remote" in combined or "remote" in loc or not loc.strip():
-            # if no location, assume remote-ish, but check title/desc
-            return True
-        if "remote" in title_desc:
-            return True
-    # empty location + no restrictions often means remote in our dataset (adapters set location as Remote)
-    if not loc.strip() and not country_text.strip():
-        # ambiguous, but consider remote if title/desc suggests remote
-        return False
-    if loc.strip().lower() in ["remote", "remote worldwide", "remote (worldwide)", "remote (global)", "remote anywhere", "remote, worldwide", "удаленно", "удалённо", "удаленная"]:
-        return True
-    return False
+    ok, _ = is_strictly_remote(vacancy)
+    return ok
 
 
 def _contains_any(text: str, keywords: List[str]) -> Optional[str]:
@@ -275,15 +254,29 @@ def _hard_constraints(profile_dict: Dict[str, Any], vacancy: Vacancy) -> Tuple[b
             return True, f"Excluded industry: {ind}"
     # remote hard constraint
     if profile_dict["remote_required"]:
-        if not _is_remote_vacancy(vacancy):
-            return True, "Remote required but vacancy is not remote"
+        is_rem, rem_reason = is_strictly_remote(vacancy)
+        if not is_rem:
+            return True, f"Remote required but vacancy is not remote: {rem_reason}"
+        
+        # Level 2 - Multi-dimensional Remote Eligibility Gate
+        from .eligibility import assess_vacancy_eligibility, EligibilityStatus
+        cand_country = profile_dict.get("candidate_country") or "TH"
+        assessment = assess_vacancy_eligibility(vacancy, candidate_country=cand_country)
+        if assessment.eligibility == EligibilityStatus.INELIGIBLE:
+            return True, f"Ineligible remote vacancy: {'; '.join(assessment.eligibility_reasons)}"
     return False, ""
+
 
 
 class JobMatcher:
     def __init__(self, profile: Any) -> None:
         self.profile = profile
         self._p = _coerce_profile(profile)
+
+    def assess_eligibility(self, vacancy: Vacancy):
+        from .eligibility import assess_vacancy_eligibility
+        cand_country = self._p.get("candidate_country") or "TH"
+        return assess_vacancy_eligibility(vacancy, candidate_country=cand_country)
 
     def match(self, vacancy: Vacancy) -> MatchResult:
         reasons: List[str] = []
@@ -294,6 +287,17 @@ class JobMatcher:
         if hard_reject:
             reasons.append(hard_reason)
             return MatchResult(score=0, decision="SKIP", reasons=reasons, strengths=strengths, gaps=[hard_reason])
+
+        # Record warnings for eligible with warning
+        try:
+            from .eligibility import assess_vacancy_eligibility, EligibilityStatus
+            cand_country = self._p.get("candidate_country") or "TH"
+            assessment = assess_vacancy_eligibility(vacancy, candidate_country=cand_country)
+            if assessment.eligibility == EligibilityStatus.ELIGIBLE_WITH_WARNING:
+                for w in assessment.eligibility_reasons:
+                    gaps.append(w)
+        except Exception:
+            pass
 
         # --- scoring components ---
         total = 0

@@ -108,10 +108,96 @@ def collect(sources: List[str]) -> int:
     return stats["new"]
 
 
-def list_cmd(limit: int = 20, state: str | None = None) -> int:
-    """List stored vacancies (read-only).
+def reclassify_eligibility_cmd(candidate_country: str = "TH", profile_path: str | None = None) -> int:
+    """Reclassify all stored vacancies using the multi-dimensional Remote Eligibility Engine.
+    
+    1. Iterates over all stored vacancies in the database.
+    2. Runs assess_vacancy_eligibility(vac, candidate_country=candidate_country).
+    3. Saves structured assessment in vacancy_eligibility table.
+    4. Removes INELIGIBLE and UNKNOWN items from active application queue.
+    5. Preserves all vacancies (0 physical deletions).
+    6. Is completely idempotent.
+    """
+    try:
+        init_db()
+    except Exception as e:
+        print(f"Database initialization error: {e}", file=sys.stderr)
+        return 1
 
-    Fulfils the `python -m ai_assistant.cli list [--limit N] [--state S]`
+    from .eligibility import assess_vacancy_eligibility, EligibilityStatus
+    from .db import (
+        list_vacancies,
+        _row_to_vacancy,
+        save_vacancy_eligibility,
+        delete_queue_item,
+        get_connection,
+    )
+
+    rows = list_vacancies(limit=50000)
+    total = len(rows)
+    if total == 0:
+        print("No vacancies found in database.")
+        return 0
+
+    counts = {
+        EligibilityStatus.ELIGIBLE.value: 0,
+        EligibilityStatus.ELIGIBLE_WITH_WARNING.value: 0,
+        EligibilityStatus.UNKNOWN.value: 0,
+        EligibilityStatus.INELIGIBLE.value: 0,
+    }
+
+    # Count before in queue
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM application_queue")
+    queue_before = cur.fetchone()[0]
+    conn.close()
+
+    for row in rows:
+        vac = _row_to_vacancy(row)
+        sid = vac.stable_id()
+        assessment = assess_vacancy_eligibility(vac, candidate_country=candidate_country)
+        save_vacancy_eligibility(sid, assessment)
+        
+        status_key = assessment.eligibility.value
+        counts[status_key] = counts.get(status_key, 0) + 1
+
+        # If INELIGIBLE or UNKNOWN, purge from active queue
+        if assessment.eligibility in (EligibilityStatus.INELIGIBLE, EligibilityStatus.UNKNOWN):
+            delete_queue_item(sid)
+
+    # Count after in queue
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM application_queue")
+    queue_after = cur.fetchone()[0]
+    conn.close()
+    
+    removed_from_queue = max(0, queue_before - queue_after)
+
+    print("\n=======================================================")
+    print("   REMOTE ELIGIBILITY RECLASSIFICATION REPORT")
+    print("=======================================================")
+    print(f"Total vacancies assessed:           {total}")
+    print(f"Candidate location:                 {candidate_country} (Thailand)")
+    print("-------------------------------------------------------")
+    print(f"  [+] ELIGIBLE:                     {counts.get('eligible', 0):4d} (Active in queue)")
+    print(f"  [!] ELIGIBLE_WITH_WARNING:        {counts.get('eligible_with_warning', 0):4d} (Active with notes)")
+    print(f"  [?] UNKNOWN (Requires Review):    {counts.get('unknown', 0):4d} (Excluded from active queue)")
+    print(f"  [-] INELIGIBLE:                   {counts.get('ineligible', 0):4d} (Excluded from active queue)")
+    print("-------------------------------------------------------")
+    print(f"Active queue size before:           {queue_before}")
+    print(f"Active queue size after:            {queue_after} (-{removed_from_queue} excluded)")
+    print("Physical DB record deletions:       0 (100% historical retention)")
+    print("=======================================================\n")
+
+    return 0
+
+
+def list_cmd(limit: int = 20, state: str | None = None, eligibility: str | None = None) -> int:
+    """List stored vacancies with eligibility indicators (read-only).
+
+    Fulfils the `python -m ai_assistant.cli list [--limit N] [--state S] [--eligibility E]`
     subcommand registered in `main()`. Reads vacancy rows from the DB via the
     existing `list_vacancies` query and renders them with `_row_to_vacancy`.
     Pure read: no fetch, no write, no send/submit.
@@ -121,19 +207,34 @@ def list_cmd(limit: int = 20, state: str | None = None) -> int:
     except Exception as e:  # DB unavailable -> command fails, nothing mutated
         print(f"Failed to open vacancy DB: {e}", file=sys.stderr)
         return 1
-    rows = list_vacancies(limit=limit, state=state)
+
+    try:
+        from .db import get_all_vacancy_eligibilities
+        elig_map = get_all_vacancy_eligibilities()
+    except Exception:
+        elig_map = {}
+
+    rows = list_vacancies(limit=50000 if eligibility else limit, state=state)
     vacancies = [_row_to_vacancy(row) for row in rows if row]
     if not vacancies:
         print("No stored vacancies found.", file=sys.stderr)
         return 0
-    print(f"{'SOURCE':12} | {'COMPANY':25} | TITLE")
-    print("-" * 100)
+
+    if eligibility and eligibility.lower() != "all":
+        target = eligibility.lower().strip()
+        vacancies = [v for v in vacancies if elig_map.get(v.stable_id(), {}).get("status", "unknown").lower() == target]
+        vacancies = vacancies[:limit]
+
+    print(f"{'SOURCE':12} | {'ELIGIBILITY':14} | {'COMPANY':25} | TITLE")
+    print("-" * 110)
     for vac in vacancies:
         company = (vac.company or "")[:25]
-        print(f"{vac.source:12} | {company:25} | {(vac.title or '')[:55]}")
+        e_info = elig_map.get(vac.stable_id(), {})
+        e_status = (e_info.get("status") or "UNKNOWN")[:14].upper()
+        print(f"{vac.source:12} | {e_status:14} | {company:25} | {(vac.title or '')[:50]}")
         loc = vac.location or ""
-        print(f"          | {loc[:25]:25} | {vac.job_url}")
-    print(f"\n{len(vacancies)} vacancy(ies) listed (limit={limit}, state={state or 'all'}).")
+        print(f"             | {'':14} | {loc[:25]:25} | {vac.job_url}")
+    print(f"\n{len(vacancies)} vacancy(ies) listed (limit={limit}, state={state or 'all'}, eligibility={eligibility or 'all'}).")
     return 0
 
 
@@ -1840,6 +1941,11 @@ def main() -> int:
     list_parser = subparsers.add_parser("list", help="List stored vacancies")
     list_parser.add_argument("--limit", type=int, default=20)
     list_parser.add_argument("--state", default=None)
+    list_parser.add_argument("--eligibility", default=None, help="Filter by eligibility (eligible, warning, unknown, ineligible, all)")
+
+    reclassify_parser = subparsers.add_parser("reclassify-eligibility", help="Reclassify stored vacancies with Remote Eligibility Engine")
+    reclassify_parser.add_argument("--candidate-country", default="TH", help="Candidate location country code (default: TH)")
+    reclassify_parser.add_argument("--profile", default=None, help="Path to candidate profile")
 
     apps_parser = subparsers.add_parser("applications", help="Application tracking lifecycle")
     app_sub = apps_parser.add_subparsers(dest="app_command")
@@ -2012,7 +2118,9 @@ def main() -> int:
     elif args.command == "prepare-applications":
         prepare_applications(args.top, profile_path=args.profile, force=args.force)
     elif args.command == "list":
-        return list_cmd(args.limit, args.state)
+        return list_cmd(args.limit, args.state, getattr(args, "eligibility", None))
+    elif args.command == "reclassify-eligibility":
+        return reclassify_eligibility_cmd(candidate_country=args.candidate_country, profile_path=args.profile)
     elif args.command == "applications":
         if args.app_command == "list":
             applications_list(limit=args.limit, status_filter=args.status)

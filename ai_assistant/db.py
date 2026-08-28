@@ -1,4 +1,5 @@
 import sqlite3
+from typing import Any, Dict, List, Optional, Tuple, Set
 from . import config
 from .schema import Vacancy
 
@@ -249,6 +250,17 @@ def init_db() -> None:
     cursor.execute('''CREATE INDEX IF NOT EXISTS idx_queue_rank ON application_queue(rank)''')
     cursor.execute('''CREATE INDEX IF NOT EXISTS idx_queue_priority ON application_queue(priority_score)''')
     cursor.execute('''CREATE INDEX IF NOT EXISTS idx_queue_canonical ON application_queue(canonical_id)''')
+    # Vacancy eligibility table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS vacancy_eligibility (
+            vacancy_stable_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            reasons_json TEXT NOT NULL,
+            assessment_json TEXT NOT NULL,
+            assessed_at TEXT NOT NULL
+        )
+    ''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_eligibility_status ON vacancy_eligibility(status)''')
     conn.commit()
     conn.close()
 
@@ -329,6 +341,117 @@ def save_vacancy(vacancy):
         None,
         None,
     ))
+    conn.commit()
+    conn.close()
+
+    # Automatically assess and store eligibility on ingestion
+    try:
+        from .eligibility import assess_vacancy_eligibility
+        assessment = assess_vacancy_eligibility(vacancy)
+        save_vacancy_eligibility(vacancy.stable_id(), assessment)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to auto-assess eligibility for {vacancy.stable_id()}: {e}")
+
+
+def save_vacancy_eligibility(vacancy_stable_id: str, assessment: Any, assessed_at: str | None = None) -> None:
+    """Save or update structured eligibility assessment for a vacancy."""
+    import json
+    import datetime as _dt
+    if assessed_at is None:
+        assessed_at = _dt.datetime.utcnow().isoformat()
+    init_db()
+    conn = get_connection()
+    cur = conn.cursor()
+
+    status_val = assessment.eligibility.value if hasattr(getattr(assessment, 'eligibility', None), 'value') else str(getattr(assessment, 'eligibility', assessment))
+    reasons_list = getattr(assessment, 'eligibility_reasons', []) or []
+    reasons_str = json.dumps(reasons_list, ensure_ascii=False)
+    
+    if hasattr(assessment, 'to_dict'):
+        assessment_dict = assessment.to_dict()
+    elif isinstance(assessment, dict):
+        assessment_dict = assessment
+    else:
+        assessment_dict = {"status": status_val, "reasons": reasons_list}
+    assessment_str = json.dumps(assessment_dict, ensure_ascii=False)
+
+    cur.execute('''
+        INSERT INTO vacancy_eligibility (vacancy_stable_id, status, reasons_json, assessment_json, assessed_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(vacancy_stable_id) DO UPDATE SET
+            status=excluded.status,
+            reasons_json=excluded.reasons_json,
+            assessment_json=excluded.assessment_json,
+            assessed_at=excluded.assessed_at
+    ''', (vacancy_stable_id, status_val, reasons_str, assessment_str, assessed_at))
+    conn.commit()
+    conn.close()
+
+
+def get_vacancy_eligibility(vacancy_stable_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve saved eligibility assessment for a specific vacancy."""
+    init_db()
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute('SELECT vacancy_stable_id, status, reasons_json, assessment_json, assessed_at FROM vacancy_eligibility WHERE vacancy_stable_id = ?', (vacancy_stable_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    import json
+    try:
+        reasons = json.loads(row[2]) if row[2] else []
+    except Exception:
+        reasons = []
+    try:
+        assessment = json.loads(row[3]) if row[3] else {}
+    except Exception:
+        assessment = {}
+    return {
+        "vacancy_stable_id": row[0],
+        "status": row[1],
+        "reasons": reasons,
+        "assessment": assessment,
+        "assessed_at": row[4],
+    }
+
+
+def get_all_vacancy_eligibilities() -> Dict[str, Dict[str, Any]]:
+    """Retrieve all saved eligibility records as a mapping from stable_id to dict."""
+    init_db()
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute('SELECT vacancy_stable_id, status, reasons_json, assessment_json, assessed_at FROM vacancy_eligibility')
+    rows = cur.fetchall()
+    conn.close()
+    import json
+    result = {}
+    for row in rows:
+        try:
+            reasons = json.loads(row[2]) if row[2] else []
+        except Exception:
+            reasons = []
+        try:
+            assessment = json.loads(row[3]) if row[3] else {}
+        except Exception:
+            assessment = {}
+        result[row[0]] = {
+            "vacancy_stable_id": row[0],
+            "status": row[1],
+            "reasons": reasons,
+            "assessment": assessment,
+            "assessed_at": row[4],
+        }
+    return result
+
+
+def delete_queue_item(vacancy_stable_id: str) -> None:
+    """Safely remove a specific vacancy from application_queue only (zero physical vacancy delete)."""
+    init_db()
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute('DELETE FROM application_queue WHERE vacancy_stable_id = ?', (vacancy_stable_id,))
     conn.commit()
     conn.close()
 

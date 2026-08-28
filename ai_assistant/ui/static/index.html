@@ -106,6 +106,13 @@
           <input type="text" id="filter-search" oninput="loadVacancies()" placeholder="Поиск по должности, стеку или компании..." class="bg-transparent text-sm text-slate-100 placeholder-slate-500 focus:outline-none w-full">
         </div>
         <div class="flex items-center gap-3">
+          <select id="filter-eligibility" onchange="loadVacancies()" class="bg-slate-950 text-slate-200 text-sm px-3 py-2 rounded-lg border border-slate-800 focus:outline-none">
+            <option value="">Все статусы</option>
+            <option value="eligible">✅ Подходят (Eligible)</option>
+            <option value="eligible_with_warning">⚠️ С предупреждением</option>
+            <option value="unknown">❓ Требуют проверки</option>
+            <option value="ineligible">❌ Исключены</option>
+          </select>
           <select id="filter-source" onchange="loadVacancies()" class="bg-slate-950 text-slate-200 text-sm px-3 py-2 rounded-lg border border-slate-800 focus:outline-none">
             <option value="">Все источники</option>
             <option value="habrcareer">Хабр Карьера</option>
@@ -291,10 +298,12 @@
       const search = document.getElementById('filter-search').value;
       const source = document.getElementById('filter-source').value;
       const limit = document.getElementById('filter-limit').value;
+      const eligibility = document.getElementById('filter-eligibility').value;
 
       const params = new URLSearchParams({ limit });
       if (search) params.append('search', search);
       if (source) params.append('source', source);
+      if (eligibility) params.append('eligibility', eligibility);
 
       try {
         const res = await fetch(`/api/vacancies?${params}`);
@@ -303,16 +312,31 @@
         tbody.innerHTML = '';
 
         if (!list.length) {
-          tbody.innerHTML = '<tr><td colspan="5" class="text-center py-8 text-slate-500">Вакансии не найдены. Нажмите "Собрать вакансии".</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="5" class="text-center py-8 text-slate-500">Вакансии не найдены.</td></tr>';
           return;
         }
 
         list.forEach(v => {
           const salary = v.salary_min ? `${v.salary_min.toLocaleString()} ${v.salary_max ? '– ' + v.salary_max.toLocaleString() : ''} ${v.salary_currency || ''}` : '—';
+          
+          let eligBadge = '<span class="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400 border border-slate-700">Unknown</span>';
+          if (v.eligibility_status === 'eligible') {
+            eligBadge = '<span class="px-2 py-0.5 rounded text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">✅ Eligible</span>';
+          } else if (v.eligibility_status === 'eligible_with_warning') {
+            eligBadge = `<span class="px-2 py-0.5 rounded text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/20 font-medium" title="${(v.eligibility_reasons || []).join('; ')}">⚠️ Warning</span>`;
+          } else if (v.eligibility_status === 'ineligible') {
+            eligBadge = `<span class="px-2 py-0.5 rounded text-[10px] bg-rose-500/10 text-rose-400 border border-rose-500/20 font-medium" title="${(v.eligibility_reasons || []).join('; ')}">❌ Ineligible</span>`;
+          } else if (v.eligibility_status === 'unknown') {
+            eligBadge = `<span class="px-2 py-0.5 rounded text-[10px] bg-sky-500/10 text-sky-400 border border-sky-500/20 font-medium" title="${(v.eligibility_reasons || []).join('; ')}">❓ Review Req</span>`;
+          }
+
           tbody.innerHTML += `
             <tr class="hover:bg-slate-800/40 transition">
               <td class="px-4 py-3 font-medium text-xs text-slate-400">
-                <span class="px-2 py-0.5 rounded bg-slate-800 border border-slate-700">${v.source}</span>
+                <div class="flex flex-col gap-1 items-start">
+                  <span class="px-2 py-0.5 rounded bg-slate-800 border border-slate-700">${v.source}</span>
+                  ${eligBadge}
+                </div>
               </td>
               <td class="px-4 py-3 font-semibold text-slate-200">${v.company || '—'}</td>
               <td class="px-4 py-3">

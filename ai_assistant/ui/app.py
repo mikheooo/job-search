@@ -94,12 +94,16 @@ def get_stats() -> Dict[str, Any]:
     cursor.execute("SELECT status, COUNT(*) FROM application_tracking GROUP BY status")
     by_tracking = dict(cursor.fetchall())
 
+    cursor.execute("SELECT status, COUNT(*) FROM vacancy_eligibility GROUP BY status")
+    by_eligibility = dict(cursor.fetchall())
+
     return {
         "total_vacancies": total_vacancies,
         "by_source": by_source,
         "by_state": by_state,
         "total_packages": total_packages,
         "tracking_status": by_tracking,
+        "eligibility": by_eligibility,
     }
 
 
@@ -109,26 +113,33 @@ def get_vacancies(
     source: Optional[str] = None,
     search: Optional[str] = None,
     min_score: Optional[float] = None,
+    eligibility: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     init_db()
+    from ..db import get_all_vacancy_eligibilities
+    elig_map = get_all_vacancy_eligibilities()
+
     conn = get_connection()
     cursor = conn.cursor()
 
-    query = "SELECT * FROM vacancies WHERE 1=1"
+    query = "SELECT v.*, ve.status as elig_status, ve.reasons_json as elig_reasons FROM vacancies v LEFT JOIN vacancy_eligibility ve ON v.stable_id = ve.vacancy_stable_id WHERE 1=1"
     params: List[Any] = []
 
     if source:
-        query += " AND source = ?"
+        query += " AND v.source = ?"
         params.append(source)
     if search:
-        query += " AND (title LIKE ? OR company LIKE ? OR description LIKE ?)"
+        query += " AND (v.title LIKE ? OR v.company LIKE ? OR v.description LIKE ?)"
         term = f"%{search}%"
         params.extend([term, term, term])
     if min_score is not None:
-        query += " AND match_score >= ?"
+        query += " AND v.match_score >= ?"
         params.append(min_score)
+    if eligibility and eligibility.lower() != "all":
+        query += " AND LOWER(COALESCE(ve.status, 'unknown')) = ?"
+        params.append(eligibility.lower().strip())
 
-    query += " ORDER BY published_at DESC, first_seen_at DESC LIMIT ?"
+    query += " ORDER BY v.published_at DESC, v.first_seen_at DESC LIMIT ?"
     params.append(limit)
 
     cursor.execute(query, params)
@@ -136,6 +147,7 @@ def get_vacancies(
     results = []
     for r in rows:
         vac = _row_to_vacancy(r)
+        e_info = elig_map.get(vac.stable_id(), {})
         d = {
             "stable_id": vac.stable_id(),
             "source": vac.source,
@@ -149,6 +161,8 @@ def get_vacancies(
             "published_at": str(vac.published_at) if vac.published_at else None,
             "match_score": getattr(r, "match_score", None) if hasattr(r, "match_score") else (r[20] if len(r) > 20 else None),
             "match_decision": getattr(r, "match_decision", None) if hasattr(r, "match_decision") else (r[21] if len(r) > 21 else None),
+            "eligibility_status": e_info.get("status", "unknown"),
+            "eligibility_reasons": e_info.get("reasons", []),
         }
         results.append(d)
     return results
@@ -157,11 +171,13 @@ def get_vacancies(
 @app.get("/api/queue")
 def get_queue_items(top: int = 50) -> List[Dict[str, Any]]:
     init_db()
+    from ..db import get_vacancy_eligibility
     items = list_queue(limit=top)
     results = []
     for it in items:
         review = get_application_review(it.vacancy_stable_id)
         review_status = review.status.value if (review and hasattr(review.status, "value")) else (str(review.status) if review else "PENDING")
+        e_info = get_vacancy_eligibility(it.vacancy_stable_id) or {}
         results.append({
             "vacancy_stable_id": it.vacancy_stable_id,
             "priority_score": it.priority_score,
@@ -175,6 +191,8 @@ def get_queue_items(top: int = 50) -> List[Dict[str, Any]]:
             "review_status": review_status,
             "reasons": it.reasons,
             "warnings": it.warnings,
+            "eligibility_status": e_info.get("status", "eligible"),
+            "eligibility_reasons": e_info.get("reasons", []),
         })
     return results
 

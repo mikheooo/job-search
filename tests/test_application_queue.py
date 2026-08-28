@@ -36,7 +36,7 @@ def _vac(sid="1", title="Test Engineer", desc="python", company="Acme", source="
         company=company,
         description=desc,
         job_url=job_url,
-        location="Remote",
+        location="Remote Worldwide",
         country_restrictions=[],
         timezone_restrictions=[],
         salary_min=salary_min,

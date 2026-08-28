@@ -46,6 +46,16 @@ class HabrCareerAdapter:
             # Tags from RSS
             tags = [t.get("term") for t in (entry.get("tags") or []) if t.get("term")]
 
+            # Extract location from title or summary
+            location = None
+            m_loc = re.search(r"\(([^)]+)\)$", title.strip())
+            if m_loc:
+                loc_cand = m_loc.group(1).strip()
+                if not re.search(r"\d", loc_cand):
+                    location = loc_cand
+            if not location and ("удаленн" in summary.lower() or "удалённ" in summary.lower()):
+                location = "Удаленно"
+
             results.append(
                 Vacancy(
                     source=self.source,
@@ -55,7 +65,7 @@ class HabrCareerAdapter:
                     description=summary,
                     job_url=job_url,
                     application_url=job_url,
-                    location="Remote / Hybrid / Onsite",
+                    location=location,
                     country_restrictions=[],
                     timezone_restrictions=[],
                     salary_min=salary_info.get("salary_min"),
