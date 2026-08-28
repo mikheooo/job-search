@@ -15,6 +15,7 @@ from .normalizer import normalize_vacancy
 from .matcher import JobMatcher, JobProfile
 from .candidate_profile import load_candidate_profile
 from .prefill_execute import make_cdp_evaluate, make_isolated_world_evaluate
+from . import prefill_execute
 from . import hh_message_reply, email_message_reply, gmail_readonly_connector
 from .db import (
     init_db,
@@ -1857,6 +1858,292 @@ def email_link(target: str, transport=None, max_emails=None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Stage 30D — hh-message diagnose (READ-ONLY probe)
+# ---------------------------------------------------------------------------
+
+def hh_message_diagnose(
+    cdp_url: str | None = None,
+    url_substring: str | None = None,
+    frame_substrings: Any = None,
+    evaluate_fn: Any = None,
+    frame_probe_fn: Any = None,
+    targets: Any = None,
+    as_json: bool = False,
+) -> int:
+    """Stage 30D: Probe HH tab, messages page, chatik frame, isolated world, and conversation DOM.
+    Strictly READ-ONLY: no clicks, no sends, no navigation, no DB writes."""
+    cdp = cdp_url or _DEFAULT_HH_CDP_URL
+    url_sub = url_substring or _DEFAULT_HH_MESSAGES_URL_SUBSTRING
+    if isinstance(frame_substrings, str):
+        f_subs = [s.strip() for s in frame_substrings.split(",") if s.strip()]
+    elif frame_substrings:
+        f_subs = list(frame_substrings)
+    else:
+        f_subs = list(_DEFAULT_CHATIK_FRAME_SUBSTRINGS)
+
+    errors: List[str] = []
+
+    cdp_reachable = False
+    matching_tabs: List[Dict[str, str]] = []
+    hh_page_present = False
+    page_url: str | None = None
+    page_title: str | None = None
+    page_is_messages: bool | None = None
+    frames: List[Dict[str, Any]] = []
+    chatik_frame_found = False
+    chatik_frame_url: str | None = None
+    isolated_world_ok: bool | None = None
+    conversation_dom_ok: bool | None = None
+    conversation_id: str | None = None
+    composer_present: bool | None = None
+    message_count: int = 0
+    dialogs_visible: int | None = None
+
+    # Step 1: CDP Reachability / Targets
+    target_list: List[Dict[str, Any]] = []
+    if targets is not None:
+        target_list = targets
+        cdp_reachable = True
+    else:
+        try:
+            target_list = prefill_execute._cdp_list_targets(cdp)
+            cdp_reachable = True
+        except Exception as e:
+            errors.append(f"CDP unreachable at {cdp}: {e}")
+            cdp_reachable = False
+
+    # Step 2: Tab matching
+    ws_url = None
+    if cdp_reachable:
+        page_targets = [t for t in target_list if t.get("type") == "page"]
+        for t in page_targets:
+            t_url = t.get("url") or ""
+            t_title = t.get("title") or ""
+            if url_sub in t_url:
+                matching_tabs.append({"url": t_url, "title": t_title})
+                if ws_url is None:
+                    ws_url = t.get("webSocketDebuggerUrl")
+                    page_url = t_url
+                    page_title = t_title
+
+        hh_page_present = len(matching_tabs) > 0
+        if not hh_page_present:
+            errors.append(f"No open tab matching {url_sub!r} found among {len(page_targets)} page tab(s)")
+
+    # Step 3: Main frame / Messages page check
+    if hh_page_present:
+        try:
+            main_ev = _resolve_hh_evaluate(cdp_url=cdp, url_substring=url_sub, evaluate_fn=evaluate_fn)
+            dialog_res = hh_message_reply.fetch_hh_dialogs_readonly(main_ev)
+            if dialog_res.get("error"):
+                errors.append(f"Dialog list evaluation error: {dialog_res.get('error')}")
+                page_is_messages = False
+                dialogs_visible = 0
+            else:
+                page_is_messages = bool(dialog_res.get("pageIsMessages", False))
+                dialogs = dialog_res.get("dialogs") or []
+                dialogs_visible = len(dialogs)
+                if not page_is_messages:
+                    errors.append(f"Matching tab is open but not on messages section (url={page_url})")
+        except Exception as e:
+            errors.append(f"Main frame evaluation failed: {e}")
+            page_is_messages = False
+            dialogs_visible = 0
+
+    # Step 4: Frame Tree & Isolated World Probe
+    if page_is_messages:
+        if frame_probe_fn is not None:
+            try:
+                probe_res = frame_probe_fn(ws_url, f_subs)
+                frames = probe_res.get("frames", [])
+                chatik_frame_found = bool(probe_res.get("chatik_frame_found", False))
+                chatik_frame_url = probe_res.get("chatik_frame_url")
+                isolated_world_ok = probe_res.get("isolated_world_ok")
+                if not chatik_frame_found:
+                    errors.append(f"Chatik frame matching {f_subs} not found")
+                elif isolated_world_ok is False:
+                    errors.append("Isolated world creation or 1+1 test evaluation failed")
+            except Exception as e:
+                errors.append(f"Frame probe error: {e}")
+                chatik_frame_found = False
+                isolated_world_ok = False
+        elif evaluate_fn is not None:
+            # evaluate_fn injected in tests without explicit frame_probe_fn
+            try:
+                test_1plus1 = evaluate_fn("1+1")
+                test_val = str(test_1plus1).strip()
+                isolated_world_ok = (test_val == "2")
+                chatik_frame_found = True
+                chatik_frame_url = "https://chatik.hh.ru/chat/mock"
+                frames = [{"frameId": "mock-chatik", "url": chatik_frame_url, "matched": True}]
+                if not isolated_world_ok:
+                    errors.append("Isolated world evaluation '1+1' failed")
+            except prefill_execute.ChatikFrameNotFound:
+                chatik_frame_found = False
+                chatik_frame_url = None
+                isolated_world_ok = False
+                errors.append(f"Chatik frame matching {f_subs} not found")
+            except Exception as e:
+                chatik_frame_found = True
+                chatik_frame_url = "https://chatik.hh.ru/chat/mock"
+                frames = [{"frameId": "mock-chatik", "url": chatik_frame_url, "matched": True}]
+                isolated_world_ok = False
+                errors.append(f"Isolated world evaluation failed: {e}")
+        else:
+            # Live WebSocket probe
+            try:
+                probe_res = prefill_execute.probe_frames_and_world(cdp, ws_url, f_subs)
+                frames = probe_res.get("frames", [])
+                chatik_frame_found = bool(probe_res.get("chatik_frame_found", False))
+                chatik_frame_url = probe_res.get("chatik_frame_url")
+                isolated_world_ok = bool(probe_res.get("isolated_world_ok", False))
+                if not chatik_frame_found:
+                    errors.append(f"Chatik frame matching {f_subs} not found in frame tree")
+                elif not isolated_world_ok:
+                    errors.append("Isolated world creation or 1+1 test evaluation failed")
+            except Exception as e:
+                errors.append(f"Frame tree / isolated world probe failed: {e}")
+                chatik_frame_found = False
+                isolated_world_ok = False
+
+    # Step 5: Conversation DOM
+    if page_is_messages and chatik_frame_found and isolated_world_ok:
+        try:
+            chatik_ev = _resolve_chatik_evaluate(cdp_url=cdp, url_substring=url_sub, evaluate_fn=evaluate_fn, isolate_substrings=f_subs)
+            conv_res = hh_message_reply.fetch_hh_conversation_readonly(chatik_ev)
+            if conv_res.get("error"):
+                conversation_dom_ok = False
+                errors.append(f"Conversation DOM extraction error: {conv_res.get('error')}")
+            else:
+                conversation_dom_ok = True
+                conversation_id = conv_res.get("conversation_id")
+                composer_present = bool(conv_res.get("composer_present", False))
+                messages = conv_res.get("messages") or []
+                message_count = len(messages)
+                if message_count == 0:
+                    errors.append("Conversation DOM is accessible, but 0 messages were found (open conversation might be empty)")
+        except Exception as e:
+            conversation_dom_ok = False
+            errors.append(f"Conversation DOM evaluation failed: {e}")
+
+    # Determine Verdict in strict precedence order
+    if not cdp_reachable:
+        verdict = "CDP_UNAVAILABLE"
+        hint = "start Chrome with --remote-debugging-port=9222"
+    elif not hh_page_present:
+        verdict = "HH_NOT_OPEN"
+        hint = "open hh.ru in the CDP browser"
+    elif not page_is_messages:
+        verdict = "HH_WRONG_PAGE"
+        hint = "open the hh.ru messages page (dialog list) in the tab"
+    elif not chatik_frame_found:
+        verdict = "CHATIK_FRAME_ABSENT"
+        hint = "open a specific conversation in the hh.ru tab"
+    elif not isolated_world_ok:
+        verdict = "ISOLATED_WORLD_UNAVAILABLE"
+        hint = "chatik frame exists but CDP could not create an isolated world"
+    elif not conversation_dom_ok:
+        verdict = "CONVERSATION_DOM_INACCESSIBLE"
+        hint = "chatik iframe reachable but message DOM could not be read"
+    elif message_count == 0:
+        verdict = "NO_MESSAGES"
+        hint = "conversation is open but empty (or DOM selectors changed — compare with Stage 24 evidence)"
+    else:
+        verdict = "HEALTHY"
+        hint = "preview/classify should work on this tab."
+
+    from datetime import datetime, timezone
+    checked_at = datetime.now(timezone.utc).isoformat()
+
+    payload = {
+        "cdp_reachable": cdp_reachable,
+        "matching_tabs": matching_tabs,
+        "hh_page_present": hh_page_present,
+        "page_url": page_url,
+        "page_title": page_title,
+        "page_is_messages": page_is_messages,
+        "frames": frames,
+        "chatik_frame_found": chatik_frame_found,
+        "chatik_frame_url": chatik_frame_url,
+        "isolated_world_ok": isolated_world_ok,
+        "conversation_dom_ok": conversation_dom_ok,
+        "conversation_id": conversation_id,
+        "composer_present": composer_present,
+        "message_count": message_count,
+        "dialogs_visible": dialogs_visible,
+        "errors": errors,
+        "verdict": verdict,
+        "checked_at": checked_at,
+    }
+
+    if as_json:
+        import json
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    # Human format (§4)
+    import json
+    print("[hh-message] diagnose (READ-ONLY probe)")
+    if cdp_reachable:
+        t_count = len(target_list) if targets is None else len(targets)
+        print(f"cdp:            {cdp} — reachable ({t_count} targets)")
+    else:
+        err_msg = errors[0] if errors else "unreachable"
+        print(f"cdp:            {cdp} — unreachable ({err_msg})")
+
+    if hh_page_present:
+        print(f"hh tab:         YES — {page_title!r} ({page_url})")
+    elif not cdp_reachable:
+        print("hh tab:         NO (n/a)")
+    else:
+        print(f"hh tab:         NO — no tab matching {url_sub!r}")
+
+    if page_is_messages is True:
+        print("page is messages: YES")
+    elif page_is_messages is False:
+        print("page is messages: NO")
+    else:
+        print("page is messages: n/a")
+
+    if frames:
+        matched_str = f"chatik matched: {chatik_frame_url}" if chatik_frame_found else "chatik matched: NO"
+        print(f"frames:         {len(frames)} ({matched_str})")
+    elif chatik_frame_found is False and page_is_messages:
+        print("frames:         0 (chatik matched: NO)")
+    else:
+        print("frames:         n/a")
+
+    if isolated_world_ok is True:
+        print("isolated world: OK (executionContextId acquired, evaluate 1+1 = 2)")
+    elif isolated_world_ok is False:
+        print("isolated world: NO (creation failed or 1+1 test failed)")
+    else:
+        print("isolated world: n/a")
+
+    if conversation_dom_ok is True:
+        comp_str = "YES" if composer_present else "NO"
+        print(f"conversation DOM: OK — conversation_id={conversation_id}, messages={message_count}, composer={comp_str}")
+    elif conversation_dom_ok is False:
+        print("conversation DOM: NO (failed to read conversation DOM)")
+    else:
+        print("conversation DOM: n/a")
+
+    if dialogs_visible is not None:
+        print(f"dialogs visible: {dialogs_visible}")
+    else:
+        print("dialogs visible: n/a")
+
+    if errors:
+        print(f"errors:         {'; '.join(errors)}")
+    else:
+        print("errors:         none")
+
+    print(f"verdict: {verdict} — {hint}")
+    print("status: READ-ONLY — nothing sent.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Stage 30C — system-info diagnostic (READ-ONLY, no network, no DB writes,
 # no env mutation, no HH/Gmail/email send). Safe standalone handler.
 # ---------------------------------------------------------------------------
@@ -2076,6 +2363,13 @@ def main() -> int:
     hh_message_classify_p.add_argument("--cdp-url", default=None)
     hh_message_classify_p.add_argument("--url-substring", default=None)
 
+    # Stage 30D: diagnose command (probe health of HH message / chatik flow)
+    hh_message_diag_p = hh_message_sub.add_parser("diagnose", help="Probe HH message flow health (READ-ONLY probe)")
+    hh_message_diag_p.add_argument("--cdp-url", default=None, help="CDP endpoint (default: HH_CDP_URL or http://127.0.0.1:9222)")
+    hh_message_diag_p.add_argument("--url-substring", default=None, help="Page-tab URL substring to attach to (default: hh.ru)")
+    hh_message_diag_p.add_argument("--frame-substrings", default=None, help="Comma-separated chatik frame substrings (default: chatik.hh.ru,/chat/)")
+    hh_message_diag_p.add_argument("--json", action="store_true", help="Output diagnostic result as machine-readable JSON")
+
     email_parser = subparsers.add_parser("email", help="Email messaging (REVIEW-only; read-only list/preview, NO send)")
     email_sub = email_parser.add_subparsers(dest="email_command")
     email_list_p = email_sub.add_parser("list", help="List incoming emails (read-only)")
@@ -2256,6 +2550,9 @@ def main() -> int:
         elif args.hh_message_command == "classify":
             return hh_message_classify(args.conversation_id, cdp_url=args.cdp_url,
                                        url_substring=args.url_substring)
+        elif args.hh_message_command == "diagnose":
+            return hh_message_diagnose(cdp_url=args.cdp_url, url_substring=args.url_substring,
+                                       frame_substrings=args.frame_substrings, as_json=args.json)
         hh_message_parser.print_help()
         return 1
     elif args.command == "email":

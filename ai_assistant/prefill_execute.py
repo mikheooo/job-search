@@ -558,3 +558,100 @@ def make_isolated_world_evaluate(
             return _EMPTY_CONVERSATION_JSON
 
     return evaluate_fn
+
+
+def probe_frames_and_world(
+    cdp_url: str,
+    ws_url: str,
+    frame_substrings: Any,
+) -> Dict[str, Any]:
+    """Probe frame tree and isolated world over WebSocket.
+    Stage 30D helper. Read-only, request/response only."""
+    return _run_coro(_probe_cdp_frames_and_world_async, ws_url, frame_substrings)
+
+
+async def _probe_cdp_frames_and_world_async(ws_url: str, frame_substrings: Any) -> Dict[str, Any]:
+    """CDP: getFrameTree + createIsolatedWorld on matched frame + evaluate 1+1.
+    Read-only, request/response only. Stage 30D."""
+    import websockets
+
+    subs = tuple(frame_substrings) if not isinstance(frame_substrings, str) else (frame_substrings,)
+
+    async with websockets.connect(ws_url, open_timeout=20, close_timeout=20) as ws:
+        _id = 0
+
+        async def _call(method, params=None):
+            nonlocal _id
+            _id += 1
+            req_id = _id
+            await asyncio.wait_for(ws.send(json.dumps({
+                "id": req_id, "method": method, "params": params or {},
+            })), 20)
+            while True:
+                raw = await asyncio.wait_for(ws.recv(), 20)
+                msg = json.loads(raw)
+                if msg.get("id") == req_id:
+                    if "error" in msg:
+                        raise RuntimeError(
+                            f"CDP {method} error: {json.dumps(msg['error'])}")
+                    return msg.get("result", {})
+
+        await _call("Page.enable")
+        tree = await _call("Page.getFrameTree")
+        frame_tree = tree.get("frameTree") or {}
+
+        frames: List[Dict[str, Any]] = []
+
+        def _walk(node):
+            f = node.get("frame") or {}
+            fid = f.get("id")
+            furl = f.get("url") or ""
+            matched = any(s.lower() in furl.lower() for s in subs) if furl else False
+            if fid or furl:
+                frames.append({"frameId": fid, "url": furl, "matched": matched})
+            for child in node.get("childFrames") or []:
+                _walk(child)
+
+        _walk(frame_tree)
+
+        frame_id = select_frame_id_by_url(frame_tree, subs)
+        if frame_id is None:
+            return {
+                "frames": frames,
+                "chatik_frame_found": False,
+                "chatik_frame_url": None,
+                "isolated_world_ok": False,
+                "context_id": None,
+            }
+
+        matched_furl = next((f["url"] for f in frames if f.get("frameId") == frame_id), None)
+
+        created = await _call("Page.createIsolatedWorld", {
+            "frameId": frame_id, "grantUniveralAccess": False,
+        })
+        ctx_id = created.get("executionContextId")
+        if ctx_id is None:
+            return {
+                "frames": frames,
+                "chatik_frame_found": True,
+                "chatik_frame_url": matched_furl,
+                "isolated_world_ok": False,
+                "context_id": None,
+            }
+
+        res = await _call("Runtime.evaluate", {
+            "expression": "1+1", "contextId": ctx_id,
+            "returnByValue": True, "awaitPromise": False,
+        })
+        inner = res.get("result", {})
+        val = inner.get("value")
+        val_str = str(val) if val is not None else inner.get("description", "")
+        isolated_ok = (val == 2 or val_str == "2")
+
+        return {
+            "frames": frames,
+            "chatik_frame_found": True,
+            "chatik_frame_url": matched_furl,
+            "isolated_world_ok": isolated_ok,
+            "context_id": ctx_id,
+        }
