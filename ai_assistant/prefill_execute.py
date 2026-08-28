@@ -393,3 +393,168 @@ def make_cdp_evaluate(cdp_url: str, url_substring: str):
         return loop.run_until_complete(_run())
 
     return evaluate_fn
+# ---------- isolated-world transport (read-only, cross-origin iframe) ---------
+#
+# Stage 30C-2: the HH chatik conversation lives in a CROSS-ORIGIN iframe
+# (chatik.hh.ru/chat/<id>) inside the hh.ru messages page. A main-frame
+# Runtime.evaluate (make_cdp_evaluate) cannot reach into that iframe's DOM, so
+# `fetch_hh_conversation_readonly` returned messages=[] even when a conversation
+# was open. The read-only fix: evaluate the SAME expression inside the chatik
+# iframe's own isolated world via CDP Page.createIsolatedWorld on the matching
+# frame, then Runtime.evaluate in that execution context. No navigation, no
+# clicks, no DOM writes, no sends - the same access as the existing transport.
+# This is a transport-only extension: the read-only JS (_CONVERSATION_JS) and
+# the CLI classify/preview handlers are unchanged in behaviour.
+
+
+class ChatikFrameNotFound(RuntimeError):
+    """Raised internally when no frame matches the expected chatik iframe."""
+
+
+# Sentinel returned by the isolated-world evaluate_fn when the expected chatik
+# iframe is not present, so callers degrade to the existing 'no messages,
+# nothing sent' safety path instead of raising mid-read.
+_EMPTY_CONVERSATION_JSON = json.dumps({
+    "error": "chatik frame not found",
+    "conversation_id": None,
+    "messages": [],
+    "composer_present": False,
+})
+
+
+def select_frame_id_by_url(frame_tree, url_substrings):
+    """Return the frameId of a frame whose URL contains any url_substring.
+
+    Prefers a frame whose URL contains '/chat/' (an open HH conversation);
+    otherwise returns the first matching frame. Returns None when none match.
+    Pure, deterministic - unit-testable without a browser.
+    """
+    subs = tuple(url_substrings) if not isinstance(url_substrings, str) else (url_substrings,)
+
+    def _walk(node, depth, matches):
+        frame = node.get("frame") or {}
+        url = frame.get("url") or ""
+        fid = frame.get("id")
+        if fid and url and any(s.lower() in url.lower() for s in subs):
+            matches.append((depth, url, fid))
+        for child in node.get("childFrames") or []:
+            _walk(child, depth + 1, matches)
+
+    matches = []
+    _walk(frame_tree or {}, 0, matches)
+    if not matches:
+        return None
+    chat = [m for m in matches if "/chat/" in m[1].lower()]
+    return (chat[0] if chat else matches[0])[2]
+
+
+def _run_coro(coro_fn, *args, **kwargs):
+    """Run a coroutine synchronously from the (possibly absent) event loop."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            raise RuntimeError("no sync loop")
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro_fn(*args, **kwargs))
+
+
+async def _cdp_evaluate_in_frame(ws_url: str, frame_substrings, expression: str) -> str:
+    """CDP: run `expression` inside the isolated world of the first frame whose
+    URL matches frame_substrings. Read-only, request/response only."""
+    import websockets
+
+    async with websockets.connect(ws_url, open_timeout=20, close_timeout=20) as ws:
+        _id = 0
+
+        async def _call(method, params=None):
+            nonlocal _id
+            _id += 1
+            req_id = _id
+            await asyncio.wait_for(ws.send(json.dumps({
+                "id": req_id, "method": method, "params": params or {},
+            })), 20)
+            while True:
+                raw = await asyncio.wait_for(ws.recv(), 20)
+                msg = json.loads(raw)
+                if msg.get("id") == req_id:
+                    if "error" in msg:
+                        raise RuntimeError(
+                            f"CDP {method} error: {json.dumps(msg['error'])}")
+                    return msg.get("result", {})
+
+        await _call("Page.enable")
+        tree = await _call("Page.getFrameTree")
+        frame_id = select_frame_id_by_url(tree.get("frameTree"), frame_substrings)
+        if frame_id is None:
+            raise ChatikFrameNotFound(
+                f"no HH chatik frame matched {frame_substrings}")
+        created = await _call("Page.createIsolatedWorld", {
+            "frameId": frame_id, "grantUniveralAccess": False})
+        ctx_id = created.get("executionContextId")
+        if ctx_id is None:
+            raise RuntimeError("Page.createIsolatedWorld returned no contextId")
+        res = await _call("Runtime.evaluate", {
+            "expression": expression, "contextId": ctx_id,
+            "returnByValue": True, "awaitPromise": False})
+        inner = res.get("result", {})
+        if inner.get("type") == "string":
+            return inner["value"]
+        raise RuntimeError(f"unexpected isolated-world result: {str(inner)[:200]}")
+
+
+def _cdp_list_targets(cdp_url: str):
+    """Return the CDP /json/list target array for cdp_url."""
+    import urllib.request
+
+    with urllib.request.urlopen(cdp_url.rstrip("/") + "/json/list", timeout=10) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def make_isolated_world_evaluate(
+    cdp_url: str,
+    page_substring: str,
+    frame_substrings,
+    _run_in_frame=None,
+):
+    """Return evaluate_fn(expression)->str bound to the isolated world of the
+    matching chatik iframe inside the open HH page tab.
+
+    Read-only transport: CDP Page.getFrameTree + Page.createIsolatedWorld +
+    Runtime.evaluate in the selected frame's own world (cross-origin safe).
+    Unlike make_cdp_evaluate, the expression runs in the IFRAME, not the main
+    frame, so _CONVERSATION_JS can actually see the chatik message DOM.
+
+    When the expected iframe is not present, evaluate_fn returns an empty
+    conversation JSON (messages:[]) so callers take the existing 'no messages,
+    nothing sent' safety path - never raising mid-read, never attempting a send.
+
+    _run_in_frame: injectable test seam (expression)->str.
+    """
+    if _run_in_frame is not None:
+        # Test seam: bypass target discovery + websocket entirely. Keeps the
+        # same read-only degrade contract (missing frame -> empty conversation).
+        def _seam(expression: str) -> str:
+            try:
+                return _run_in_frame(expression)
+            except ChatikFrameNotFound:
+                return _EMPTY_CONVERSATION_JSON
+        return _seam
+
+    tab = next((t for t in _cdp_list_targets(cdp_url)
+                if t.get("type") == "page"
+                and page_substring in (t.get("url") or "")
+                and t.get("webSocketDebuggerUrl")), None)
+    if tab is None:
+        raise RuntimeError(f"no open tab matching {page_substring!r} on {cdp_url}")
+    ws_url = tab["webSocketDebuggerUrl"]
+
+    def evaluate_fn(expression: str) -> str:
+        try:
+            return _run_coro(_cdp_evaluate_in_frame, ws_url,
+                             frame_substrings, expression)
+        except ChatikFrameNotFound:
+            return _EMPTY_CONVERSATION_JSON
+
+    return evaluate_fn

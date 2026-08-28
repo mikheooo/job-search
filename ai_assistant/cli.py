@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from typing import List
 
@@ -12,6 +13,8 @@ from .schema import Vacancy
 from .normalizer import normalize_vacancy
 from .matcher import JobMatcher, JobProfile
 from .candidate_profile import load_candidate_profile
+from .prefill_execute import make_cdp_evaluate, make_isolated_world_evaluate
+from . import hh_message_reply, email_message_reply, gmail_readonly_connector
 from .db import (
     init_db,
     save_vacancy,
@@ -101,6 +104,35 @@ def collect(sources: List[str]) -> int:
 
     logging.info("Collect stats: %s", stats)
     return stats["new"]
+
+
+def list_cmd(limit: int = 20, state: str | None = None) -> int:
+    """List stored vacancies (read-only).
+
+    Fulfils the `python -m ai_assistant.cli list [--limit N] [--state S]`
+    subcommand registered in `main()`. Reads vacancy rows from the DB via the
+    existing `list_vacancies` query and renders them with `_row_to_vacancy`.
+    Pure read: no fetch, no write, no send/submit.
+    """
+    try:
+        init_db()
+    except Exception as e:  # DB unavailable -> command fails, nothing mutated
+        print(f"Failed to open vacancy DB: {e}", file=sys.stderr)
+        return 1
+    rows = list_vacancies(limit=limit, state=state)
+    vacancies = [_row_to_vacancy(row) for row in rows if row]
+    if not vacancies:
+        print("No stored vacancies found.", file=sys.stderr)
+        return 0
+    print(f"{'SOURCE':12} | {'COMPANY':25} | TITLE")
+    print("-" * 100)
+    for vac in vacancies:
+        company = (vac.company or "")[:25]
+        print(f"{vac.source:12} | {company:25} | {(vac.title or '')[:55]}")
+        loc = vac.location or ""
+        print(f"          | {loc[:25]:25} | {vac.job_url}")
+    print(f"\n{len(vacancies)} vacancy(ies) listed (limit={limit}, state={state or 'all'}).")
+    return 0
 
 
 def analyze(top_n: int = 20, profile_path: str | None = None, persist: bool = False) -> None:
@@ -1399,6 +1431,367 @@ def dashboard_show_canonical(canonical_id: str) -> int:
     )
 
 
+# ---------------------------------------------------------------------------
+# Stage 30C Phase 1: REVIEW/READ-ONLY CLI wiring for Stage 21-29 modules.
+# These handlers MUST NOT send/submit anything. AUTO paths (process_auto_reply,
+# run_auto_apply, send_auto_reply, can_auto_send, confirm_live_send) are never
+# imported or called here. All evaluation is read-only via injected
+# evaluate_fn / transport / status_fn (fakes in tests; a live CDP/Gmail in use).
+# ---------------------------------------------------------------------------
+
+_DEFAULT_HH_CDP_URL = os.getenv("HH_CDP_URL", "http://127.0.0.1:9222")
+_DEFAULT_HH_MESSAGES_URL_SUBSTRING = "hh.ru"
+# Stage 30C-2: substrings used to locate the chatik iframe (the cross-origin
+# frame that actually renders the HH conversation) inside the hh.ru tab.
+_DEFAULT_CHATIK_FRAME_SUBSTRINGS = ("chatik.hh.ru", "/chat/")
+
+
+def _resolve_hh_evaluate(cdp_url=None, url_substring=None, evaluate_fn=None):
+    """Return the read-only HH evaluate_fn. Injected fake wins; otherwise build
+    from env/(optional args) via make_cdp_evaluate (Runtime.evaluate, no send)."""
+    if evaluate_fn is not None:
+        return evaluate_fn
+    sub = url_substring or _DEFAULT_HH_MESSAGES_URL_SUBSTRING
+    cdp = cdp_url or _DEFAULT_HH_CDP_URL
+    return make_cdp_evaluate(cdp, sub)
+
+
+def _resolve_chatik_evaluate(cdp_url=None, url_substring=None, evaluate_fn=None,
+                             isolate_substrings=None):
+    """Return a read-only evaluate_fn bound to the chatik iframe's isolated
+    world (Stage 30C-2). Injected fake wins; otherwise build an isolated-world
+    evaluate via make_isolated_world_evaluate so _CONVERSATION_JS can actually
+    see the chatik message DOM (a main-frame Runtime.evaluate cannot reach the
+    cross-origin chatik iframe). Still read-only: no send, no navigation."""
+    if evaluate_fn is not None:
+        return evaluate_fn
+    sub = url_substring or _DEFAULT_HH_MESSAGES_URL_SUBSTRING
+    cdp = cdp_url or _DEFAULT_HH_CDP_URL
+    isubs = list(isolate_substrings) if isolate_substrings else _DEFAULT_CHATIK_FRAME_SUBSTRINGS
+    return make_isolated_world_evaluate(cdp, sub, isubs)
+
+
+def _resolve_email_transport(transport=None, max_emails=None):
+    """Return a read-only email transport. Injected fake wins; otherwise the
+    Stage 28 Gmail read-only connector transport (gmail.readonly, no send)."""
+    if transport is not None:
+        return transport
+    limit = int(max_emails) if max_emails else gmail_readonly_connector.DEFAULT_MAX_LIVE_EMAILS
+    return gmail_readonly_connector.GmailReadOnlyConnector(max_live_emails=limit).transport()
+
+
+def hh_message_list(cdp_url=None, url_substring=None, evaluate_fn=None) -> int:
+    """List accessible HH dialog cards. READ-ONLY: no navigation, no send."""
+    try:
+        ev = _resolve_hh_evaluate(cdp_url=cdp_url, url_substring=url_substring,
+                                  evaluate_fn=evaluate_fn)
+        res = hh_message_reply.fetch_hh_dialogs_readonly(ev)
+    except Exception as e:  # read access failure; never a send attempt
+        print(f"[hh-message] list failed (read-only access error): {e}")
+        return 1
+    if "dialogs" not in res:
+        print(f"[hh-message] list unavailable: {res.get('error') or res}")
+        return 1
+    print(f"page: {res.get('url')}")
+    print(f"title: {res.get('title')}")
+    dialogs = res.get("dialogs") or []
+    if not dialogs:
+        print("no dialogs detected (open the HH messages page in the CDP browser)")
+    for i, d in enumerate(dialogs):
+        print(f"[{i}] {d.get('qa') or d.get('tag')} :: {(d.get('text') or '')[:120]}")
+    print("status: READ-ONLY — nothing sent.")
+    return 0
+
+
+def hh_message_preview(conversation_id: str, cdp_url=None, url_substring=None,
+                       evaluate_fn=None, profile=None) -> int:
+    """Preview one conversation's context + truth-only reply. READ-ONLY:
+    never sends, never calls confirm_live_send, never touches AUTO gates."""
+    try:
+        ev = _resolve_chatik_evaluate(cdp_url=cdp_url, url_substring=url_substring,
+                                      evaluate_fn=evaluate_fn)
+        fresh = hh_message_reply.fetch_hh_conversation_readonly(ev)
+    except Exception as e:  # read access failure; never a send attempt
+        print(f"[hh-message] preview failed (read-only access error): {e}")
+        return 1
+    msgs = fresh.get("messages") or []
+    if not msgs:
+        print("[hh-message] preview unavailable: no messages could be read. "
+              "Open the target conversation in the CDP browser so the chatik "
+              "iframe is present (the isolated-world evaluate reads the chatik "
+              "frame; if the chat page is not open, no messages are found). "
+              "PREVIEW ONLY, nothing sent.")
+        return 1
+    cid = fresh.get("conversation_id") or conversation_id
+    dialog = hh_message_reply.HHDialog(
+        conversation_id=str(cid),
+        vacancy_title=fresh.get("title") or "",
+        messages=[
+            hh_message_reply.HHMessage(
+                message_id=f"m{i}",
+                text=(m.get("text") or ""),
+                sender="candidate" if (m.get("direction") or "") == "OUTGOING" else "employer",
+            )
+            for i, m in enumerate(msgs)
+        ],
+    )
+    shown = str(fresh.get("conversation_id") or "")
+    if shown and shown != str(conversation_id):
+        print(f"[hh-message] note: open conversation id={shown} != requested "
+              f"{conversation_id}; showing the open one.")
+    cls = hh_message_reply.classify_message(dialog)
+    gen = hh_message_reply.generate_reply(dialog, profile=profile)
+    print(f"conversation_id: {dialog.conversation_id}")
+    print(f"classification: {cls.value}")
+    print("context:")
+    for m in dialog.messages:
+        who = "me" if m.sender == "candidate" else "them"
+        print(f"  [{who}] {m.text[:160]}")
+    print(f"prepared reply: {gen.get('reply') or '(none — needs human review)'}")
+    print(f"sources: {gen.get('sources')}")
+    print("status: PREVIEW ONLY — nothing sent, no AUTO path.")
+    return 0
+
+
+def email_list(transport=None, max_emails=None) -> int:
+    """List incoming emails via a read-only transport. NEVER sends."""
+    try:
+        tr = _resolve_email_transport(transport=transport, max_emails=max_emails)
+        res = email_message_reply.fetch_incoming_emails_readonly(transport=tr)
+    except Exception as e:  # read access failure; never a send attempt
+        print(f"[email] list failed (read-only access error): {e}")
+        return 1
+    if res.get("verdict") != "OK":
+        print(f"[email] list blocked: {res.get('reason')}")
+        return 1
+    emails = res.get("emails") or []
+    if not emails:
+        print("no incoming emails.")
+    for i, e in enumerate(emails):
+        print(f"[{i}] {e.sender_email or '?'} :: {e.subject or '(no subject)'}")
+    print("status: READ-ONLY — nothing sent (EmailSendGate always blocks any send).")
+    return 0
+
+
+def email_preview(target: str, transport=None, max_emails=None, profile=None) -> int:
+    """Preview a reply for the target email (index from 'email list'). READ-ONLY:
+    never sends; EmailSendGate is not instantiated/bypassed (reply is pure truth-only)."""
+    try:
+        tr = _resolve_email_transport(transport=transport, max_emails=max_emails)
+        res = email_message_reply.fetch_incoming_emails_readonly(transport=tr)
+    except Exception as e:  # read access failure; never a send attempt
+        print(f"[email] preview failed (read-only access error): {e}")
+        return 1
+    emails = res.get("emails") or []
+    if not emails:
+        print(f"[email] preview blocked: {res.get('reason', 'no emails')}")
+        return 1
+    try:
+        idx = int(target)
+    except Exception:
+        idx = -1
+    if not (0 <= idx < len(emails)):
+        print(f"[email] target {target!r} out of range (0..{len(emails) - 1}). "
+              f"Run 'email list' first — nothing sent.")
+        return 1
+    e = emails[idx]
+    ctx = email_message_reply.EmailContext(message=e, thread_messages=[e])
+    cls = email_message_reply.classify_email(ctx)
+    gen = email_message_reply.generate_email_reply(ctx, profile=profile)
+    print(f"to: {e.sender_email} ({e.sender_name})")
+    print(f"subject: {e.subject}")
+    print(f"classification: {cls.value}")
+    print(f"prepared reply: {gen.get('reply') or '(none — needs human review)'}")
+    print(f"sources: {gen.get('sources')}")
+    print("status: PREVIEW ONLY — EmailSendGate blocks any send.")
+    return 0
+
+
+def gmail_status(status_fn=None) -> int:
+    """Show gmail.readonly auth/connection status. READ-ONLY: no send/modify/delete."""
+    st = (status_fn or gmail_readonly_connector.gmail_provider_status)()
+    print(f"gmail status: {st.get('status')}")
+    print(f"reason: {st.get('reason')}")
+    print(f"scope: {gmail_readonly_connector.GMAIL_READONLY_SCOPE}")
+    return 0 if st.get("status") == "READY" else 1
+
+
+# ---------------------------------------------------------------------------
+# Stage 30C Phase 2A — REVIEW/READ-ONLY runtime wiring (new safe previews).
+# Only pure read-only helpers that do NOT send, NOT submit, NOT mutate Gmail,
+# NOT enable AUTO, NOT bypass any safety gate are exposed here.
+# ---------------------------------------------------------------------------
+
+## Stage 30C Phase 2A — not wired / gap:
+# - Stage 21 dual-mode apply orchestration (HH form prefill + submit pipeline)
+#   — not wired: requires browser submit + review gate + controlled submit;
+#   no safe REVIEW-only interpretation; AUTO never default.
+# - HH AUTO reply path (process_auto_reply / send_auto_reply / can_auto_send /
+#   is_safe_for_auto_reply etc) — not wired: AUTO execution with kill-switch
+#   HH_AUTO_REPLY_ENABLED and live send; REVIEW preview already covers read-only
+#   classify+generate. No AUTO wiring in this phase.
+# - Email send path and HH submit modules (send gate / controlled submit /
+#   hh submission flows / Gmail send/modify/delete) — not wired: physical send
+#   is blocked; no READ-ONLY entry. Gmail transport stays gmail.readonly only.
+# - Phase 1 known gap RESOLVED in 30C-2: hh-message preview/classify now use an
+#   isolated-world evaluate (make_isolated_world_evaluate -> Page.createIsolatedWorld
+#   on the chatik iframe) instead of main-frame-only make_cdp_evaluate, so the
+#   read-only _CONVERSATION_JS actually sees the chatik message DOM. Still no send.
+# - process_incoming_message / process_incoming_email deduplication stores
+#   (artifacts/*) — not wired as CLI: they persist state and mix preview+dedup;
+#   the stateless classify/generate/link helpers are wired instead (pure, no DB).
+# ---------------------------------------------------------------------------
+
+
+def hh_message_classify(conversation_id: str, cdp_url=None, url_substring=None,
+                        evaluate_fn=None, profile=None) -> int:
+    """Classify one conversation's last message. READ-ONLY: never sends."""
+    try:
+        ev = _resolve_chatik_evaluate(cdp_url=cdp_url, url_substring=url_substring,
+                                      evaluate_fn=evaluate_fn)
+        fresh = hh_message_reply.fetch_hh_conversation_readonly(ev)
+    except Exception as e:  # read access failure; never a send attempt
+        print(f"[hh-message] classify failed (read-only access error): {e}")
+        return 1
+    msgs = fresh.get("messages") or []
+    if not msgs:
+        print("[hh-message] classify unavailable: no messages could be read. "
+              "Open the target conversation in the CDP browser so the chatik "
+              "iframe is present (the isolated-world evaluate reads the chatik "
+              "frame; if the chat page is not open, no messages are found). "
+              "PREVIEW ONLY, nothing sent.")
+        return 1
+    cid = fresh.get("conversation_id") or conversation_id
+    dialog = hh_message_reply.HHDialog(
+        conversation_id=str(cid),
+        vacancy_title=fresh.get("title") or "",
+        messages=[
+            hh_message_reply.HHMessage(
+                message_id=f"m{i}",
+                text=(m.get("text") or ""),
+                sender="candidate" if (m.get("direction") or "") == "OUTGOING" else "employer",
+            )
+            for i, m in enumerate(msgs)
+        ],
+    )
+    cls = hh_message_reply.classify_message(dialog)
+    print(f"conversation_id: {dialog.conversation_id}")
+    print(f"classification: {cls.value}")
+    # also show last message snippet for review context (read-only)
+    last = dialog.messages[-1].text if dialog.messages else ""
+    print(f"last_message: {last[:200]}")
+    print("status: PREVIEW ONLY — nothing sent, no AUTO path.")
+    return 0
+
+
+def email_classify(target: str, transport=None, max_emails=None, profile=None) -> int:
+    """Classify one email by index. READ-ONLY: never sends, never mutates."""
+    try:
+        tr = _resolve_email_transport(transport=transport, max_emails=max_emails)
+        res = email_message_reply.fetch_incoming_emails_readonly(transport=tr)
+    except Exception as e:  # read access failure; never a send attempt
+        print(f"[email] classify failed (read-only access error): {e}")
+        return 1
+    if res.get("verdict") != "OK":
+        print(f"[email] classify blocked: {res.get('reason')}")
+        return 1
+    emails = res.get("emails") or []
+    if not emails:
+        print("[email] classify blocked: no emails — nothing sent.")
+        return 1
+    try:
+        idx = int(target)
+    except Exception:
+        idx = -1
+    if not (0 <= idx < len(emails)):
+        print(f"[email] target {target!r} out of range (0..{len(emails) - 1}). "
+              f"Run 'email list' first — nothing sent.")
+        return 1
+    e = emails[idx]
+    ctx = email_message_reply.EmailContext(message=e, thread_messages=[e])
+    cls = email_message_reply.classify_email(ctx)
+    print(f"to: {e.sender_email} ({e.sender_name})")
+    print(f"subject: {e.subject}")
+    print(f"classification: {cls.value}")
+    print("status: READ-ONLY — nothing sent.")
+    return 0
+
+
+def email_link(target: str, transport=None, max_emails=None) -> int:
+    """Show linkage of one email to a vacancy/company. READ-ONLY: never sends."""
+    try:
+        tr = _resolve_email_transport(transport=transport, max_emails=max_emails)
+        res = email_message_reply.fetch_incoming_emails_readonly(transport=tr)
+    except Exception as e:  # read access failure; never a send attempt
+        print(f"[email] link failed (read-only access error): {e}")
+        return 1
+    if res.get("verdict") != "OK":
+        print(f"[email] link blocked: {res.get('reason')}")
+        return 1
+    emails = res.get("emails") or []
+    if not emails:
+        print("[email] link blocked: no emails — nothing sent.")
+        return 1
+    try:
+        idx = int(target)
+    except Exception:
+        idx = -1
+    if not (0 <= idx < len(emails)):
+        print(f"[email] target {target!r} out of range (0..{len(emails) - 1}). "
+              f"Run 'email list' first — nothing sent.")
+        return 1
+    e = emails[idx]
+    ctx = email_message_reply.EmailContext(message=e, thread_messages=[e])
+    link = email_message_reply.link_email_to_vacancy(ctx)
+    print(f"to: {e.sender_email} ({e.sender_name})")
+    print(f"subject: {e.subject}")
+    print(f"linked_company: {link.get('linked_company') or '(none)'}")
+    print(f"linked_vacancy: {link.get('linked_vacancy') or '(none)'}")
+    print(f"confidence: {link.get('confidence')}")
+    print(f"note: {link.get('note')}")
+    print("status: READ-ONLY — nothing sent.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Stage 30C — system-info diagnostic (READ-ONLY, no network, no DB writes,
+# no env mutation, no HH/Gmail/email send). Safe standalone handler.
+# ---------------------------------------------------------------------------
+
+def system_info() -> int:
+    """Print environment/app diagnostics. READ-ONLY: no network, no DB, no send."""
+    import platform as _platform
+    import importlib as _importlib
+
+    print(f"Python: {sys.version}")
+    print(f"python_version: {_platform.python_version()}")
+    print(f"platform: {_platform.platform()}")
+
+    # Detect app_version only if a genuine version constant exists; do not invent one.
+    _app_version = None
+    for _mod_name, _attr in (
+        ("ai_assistant", "__version__"),
+        ("ai_assistant", "APP_VERSION"),
+        ("ai_assistant", "__VERSION__"),
+        ("ai_assistant.config", "__version__"),
+        ("ai_assistant.config", "APP_VERSION"),
+    ):
+        try:
+            _mod = _importlib.import_module(_mod_name)
+            _val = getattr(_mod, _attr, None)
+            if isinstance(_val, str) and _val.strip():
+                _app_version = _val.strip()
+                break
+        except Exception:
+            continue
+    if _app_version:
+        print(f"app_version: {_app_version}")
+    else:
+        print("app_version: (not defined - none found)")
+    print("status: READ-ONLY")
+    return 0
+
+
 def main() -> int:
     # Handle direct `review <id>` as `review show <id>`
     if len(sys.argv) >= 3 and sys.argv[1] == "review" and sys.argv[2] not in ["list", "show", "approve", "reject", "-h", "--help"]:
@@ -1546,6 +1939,45 @@ def main() -> int:
 
     duplicates_parser = subparsers.add_parser("duplicates", help="List probable and exact duplicate vacancies")
 
+    # Stage 30C Phase 1: REVIEW/READ-ONLY messaging & email/gmail wiring (NO send, NO AUTO).
+    hh_message_parser = subparsers.add_parser(
+        "hh-message", help="HH messaging (REVIEW-only; read-only list/preview, NO send)")
+    hh_message_sub = hh_message_parser.add_subparsers(dest="hh_message_command")
+    hh_message_list_p = hh_message_sub.add_parser("list", help="List HH dialog cards (read-only)")
+    hh_message_list_p.add_argument("--cdp-url", default=None, help="CDP endpoint (default: HH_CDP_URL or 127.0.0.1:9222)")
+    hh_message_list_p.add_argument("--url-substring", default=None, help="Page-tab URL substring to attach to (default: hh.ru)")
+    hh_message_prev_p = hh_message_sub.add_parser("preview", help="Preview a conversation context + reply (read-only)")
+    hh_message_prev_p.add_argument("conversation_id", type=str)
+    hh_message_prev_p.add_argument("--cdp-url", default=None)
+    hh_message_prev_p.add_argument("--url-substring", default=None)
+    # Stage 30C Phase 2A: additional REVIEW-only wiring (pure read-only helpers)
+    hh_message_classify_p = hh_message_sub.add_parser("classify", help="Classify conversation (read-only, no send)")
+    hh_message_classify_p.add_argument("conversation_id", type=str, help="Conversation ID to classify (read from open chatik)")
+    hh_message_classify_p.add_argument("--cdp-url", default=None)
+    hh_message_classify_p.add_argument("--url-substring", default=None)
+
+    email_parser = subparsers.add_parser("email", help="Email messaging (REVIEW-only; read-only list/preview, NO send)")
+    email_sub = email_parser.add_subparsers(dest="email_command")
+    email_list_p = email_sub.add_parser("list", help="List incoming emails (read-only)")
+    email_list_p.add_argument("--max-emails", type=int, default=None)
+    email_prev_p = email_sub.add_parser("preview", help="Preview reply for an email by index from 'email list' (read-only)")
+    email_prev_p.add_argument("target", type=str)
+    email_prev_p.add_argument("--max-emails", type=int, default=None)
+    # Stage 30C Phase 2A: additional REVIEW-only email helpers (classify/link)
+    email_classify_p = email_sub.add_parser("classify", help="Classify email by index (read-only, no send)")
+    email_classify_p.add_argument("target", type=str, help="Index from 'email list'")
+    email_classify_p.add_argument("--max-emails", type=int, default=None)
+    email_link_p = email_sub.add_parser("link", help="Show email linkage to company/vacancy (read-only)")
+    email_link_p.add_argument("target", type=str, help="Index from 'email list'")
+    email_link_p.add_argument("--max-emails", type=int, default=None)
+
+    gmail_parser = subparsers.add_parser("gmail", help="Gmail read-only status")
+    gmail_sub = gmail_parser.add_subparsers(dest="gmail_command")
+    gmail_sub.add_parser("status", help="Show gmail.readonly auth/connection status (read-only)")
+
+    # Stage 30C — standalone diagnostic (no args, read-only)
+    subparsers.add_parser("system-info", help="Show environment diagnostics (READ-ONLY, no network/DB/send)")
+
     args = None
     try:
         args = parser.parse_args()
@@ -1561,7 +1993,7 @@ def main() -> int:
     elif args.command == "prepare-applications":
         prepare_applications(args.top, profile_path=args.profile, force=args.force)
     elif args.command == "list":
-        list_cmd(args.limit, args.state)
+        return list_cmd(args.limit, args.state)
     elif args.command == "applications":
         if args.app_command == "list":
             applications_list(limit=args.limit, status_filter=args.status)
@@ -1688,6 +2120,35 @@ def main() -> int:
             return audit_warnings(scope=scope)
         else:
             return audit(scope=scope)
+    elif args.command == "hh-message":
+        if args.hh_message_command == "list":
+            return hh_message_list(cdp_url=args.cdp_url, url_substring=args.url_substring)
+        elif args.hh_message_command == "preview":
+            return hh_message_preview(args.conversation_id, cdp_url=args.cdp_url,
+                                      url_substring=args.url_substring)
+        elif args.hh_message_command == "classify":
+            return hh_message_classify(args.conversation_id, cdp_url=args.cdp_url,
+                                       url_substring=args.url_substring)
+        hh_message_parser.print_help()
+        return 1
+    elif args.command == "email":
+        if args.email_command == "list":
+            return email_list(max_emails=args.max_emails)
+        elif args.email_command == "preview":
+            return email_preview(args.target, max_emails=args.max_emails)
+        elif args.email_command == "classify":
+            return email_classify(args.target, max_emails=args.max_emails)
+        elif args.email_command == "link":
+            return email_link(args.target, max_emails=args.max_emails)
+        email_parser.print_help()
+        return 1
+    elif args.command == "gmail":
+        if args.gmail_command == "status":
+            return gmail_status()
+        gmail_parser.print_help()
+        return 1
+    elif args.command == "system-info":
+        return system_info()
     else:
         parser.print_help()
         return 1
