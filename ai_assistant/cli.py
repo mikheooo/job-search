@@ -9,6 +9,7 @@ from typing import List
 from .adapters.himalayas import HimalayasAdapter
 from .adapters.weworkremotely import WeWorkRemotelyAdapter
 from .adapters.remoteok import RemoteOkAdapter
+from .adapters.habr_career import HabrCareerAdapter
 from .schema import Vacancy
 from .normalizer import normalize_vacancy
 from .matcher import JobMatcher, JobProfile
@@ -73,6 +74,7 @@ SOURCES = {
     "himalayas": HimalayasAdapter(),
     "weworkremotely": WeWorkRemotelyAdapter(),
     "remoteok": RemoteOkAdapter(),
+    "habrcareer": HabrCareerAdapter(),
 }
 
 

@@ -14,11 +14,17 @@ def normalize_salary_text(raw: Any) -> Dict[str, Any]:
     cleaned = re.sub(r"\s+", " ", cleaned)
 
     currency = None
-    m = re.search(r"\b(USD|EUR|GBP|CAD|AUD|CHF|NZD|ZAR|INR|BRL|CZK|PLN|SGD|HKD)\b", cleaned, re.IGNORECASE)
-    if m:
-        currency = m.group(1).upper()
+    if re.search(r"[₽]|руб|\b(RUB|RUR)\b", cleaned, re.IGNORECASE):
+        currency = "RUB"
+    else:
+        m = re.search(r"\b(USD|EUR|GBP|CAD|AUD|CHF|NZD|ZAR|INR|BRL|CZK|PLN|SGD|HKD)\b|([$€£])", cleaned, re.IGNORECASE)
+        if m:
+            sym_map = {"$": "USD", "€": "EUR", "£": "GBP"}
+            currency = sym_map.get(m.group(0), m.group(0).upper())
 
-    numbers = re.findall(r"(?<!\d)([\d,]+)(?:\.\d+)?(?!\d)", cleaned)
+    num_cleaned = re.sub(r"(\d+)\s+(\d{3})\b", r"\1\2", cleaned)
+    num_cleaned = re.sub(r"(\d+)\s+(\d{3})\b", r"\1\2", num_cleaned)
+    numbers = re.findall(r"(?<!\d)([\d,]+)(?:\.\d+)?(?!\d)", num_cleaned)
     salary_min = None
     salary_max = None
     if numbers:
