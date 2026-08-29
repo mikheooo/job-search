@@ -116,7 +116,7 @@ def _call_llm_cover_letter(system_prompt: str, user_prompt: str) -> str:
     client = OpenAI(
         api_key=config.LLM_API_KEY if config.LLM_API_KEY else "dummy-key",
         base_url=config.LLM_BASE_URL if config.LLM_BASE_URL else "https://api.x.ai/v1",
-        timeout=12,
+        timeout=90,
     )
     resp = client.chat.completions.create(
         model=config.LLM_MODEL,
@@ -152,9 +152,13 @@ def _fallback_cover_letter(vacancy: Vacancy, profile: CandidateProfile, resume_t
     sentences = []
     sentences.append(f"Hello {vacancy.company} team,")
     sentences.append(f"I am an {profile.desired_roles[0] if profile.desired_roles else 'AI Automation Engineer'} with {years} years of confirmed experience in {target_skills}.")
-    # Mention vacancy specifics
+    # Mention vacancy specifics — skip empty description fragment to avoid "focusing on  aligns"
     title = vacancy.title or "your opening"
-    sentences.append(f"Your {title} role focusing on {(vacancy.description or '')[:120].strip()} aligns with my confirmed work in {', '.join(profile.skills[:3]) if profile.skills else 'automation'}.")
+    desc_fragment = (vacancy.description or "").strip()[:120].strip()
+    if desc_fragment:
+        sentences.append(f"Your {title} role focusing on {desc_fragment} aligns with my confirmed work in {', '.join(profile.skills[:3]) if profile.skills else 'automation'}.")
+    else:
+        sentences.append(f"Your {title} role aligns with my confirmed work in {', '.join(profile.skills[:3]) if profile.skills else 'automation'}.")
     # Experience points from resume/profile (truth only)
     exp_points = []
     if profile.skills:
@@ -178,12 +182,13 @@ def _fallback_cover_letter(vacancy: Vacancy, profile: CandidateProfile, resume_t
     sentences.append("Best regards,\nCandidate")
 
     letter = " ".join(sentences)
-    # Ensure 120-180 words
+    # Ensure 120-180 words — pad once, dedup pad if already present to avoid duplicate sentence
     words = letter.split()
     if len(words) < 120:
-        # Pad with confirmed generic statement without inventing
-        pad = "My focus is on building reliable n8n workflows, LLM integrations and API automation, as confirmed in my profile and resume. " * 2
-        letter = letter + " " + pad
+        # Pad with confirmed generic statement without inventing — add once
+        pad = "My focus is on building reliable n8n workflows, LLM integrations and API automation, as confirmed in my profile and resume."
+        if pad not in letter:
+            letter = letter + " " + pad
         words = letter.split()
     if len(words) > 180:
         # Truncate to 180

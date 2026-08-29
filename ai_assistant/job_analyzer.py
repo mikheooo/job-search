@@ -134,11 +134,11 @@ def _call_llm(system_prompt: str, user_prompt: str) -> str:
         raise RuntimeError("Offline mode - skip LLM")
     if OpenAI is None:
         raise RuntimeError("OpenAI client not available")
-    # short timeout to avoid hanging CLI when network unavailable
+    # short timeout — increased for local Ollama (Qwen 9B ~60-80s cold, ~30s warm)
     client = OpenAI(
         api_key=config.LLM_API_KEY if config.LLM_API_KEY else "dummy-key",
         base_url=config.LLM_BASE_URL if config.LLM_BASE_URL else "https://api.x.ai/v1",
-        timeout=12,
+        timeout=90,
     )
     resp = client.chat.completions.create(
         model=config.LLM_MODEL,

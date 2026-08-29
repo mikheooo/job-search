@@ -389,3 +389,31 @@ def test_force_regeneration():
     finally:
         config.DB_FILE = orig_db
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_fallback_empty_description_no_broken_phrase():
+    profile = _profile()
+    vac = _vac(title="Python Backend Developer (AI Agents System)", company="V4Scale", description="")
+    deep = _deep_apply()
+    letter = _fallback_cover_letter(vac, profile, "python, n8n", deep)
+    assert "focusing on  aligns" not in letter
+    assert "focusing on aligns" not in letter
+    assert "Your Python Backend Developer" in letter
+    assert "role aligns with" in letter
+
+
+def test_fallback_nonempty_description_uses_fragment():
+    profile = _profile()
+    vac = _vac(title="Backend Dev", company="Co", description="Build AI agent workflows for automation platform.")
+    deep = _deep_apply()
+    letter = _fallback_cover_letter(vac, profile, "python", deep)
+    assert "focusing on Build AI agent workflows" in letter
+
+
+def test_fallback_no_duplicate_pad():
+    profile = _profile()
+    vac = _vac(description="")
+    deep = _deep_apply()
+    letter = _fallback_cover_letter(vac, profile, "python, n8n", deep)
+    pad = "My focus is on building reliable n8n workflows, LLM integrations and API automation, as confirmed in my profile and resume."
+    assert letter.count(pad) == 1

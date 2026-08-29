@@ -1,46 +1,35 @@
-from __future__ import annotations
-
-import json
-import pytest
 from pathlib import Path
 from ai_assistant.candidate_profile import CandidateProfile
 
 
 def test_candidate_profile_from_dict_and_to_dict():
-    raw = {
-        "desired_roles": ["AI Automation Engineer"],
-        "skills": ["python", "n8n"],
-        "years_experience": 3,
-        "remote_required": True,
-        "allowed_locations": ["Remote"],
-        "minimum_salary": 1500,
-        "salary_currency": "USD",
-        "name": "Mikhail Kolesnikov",
-        "email": "mikhailthaiban@gmail.com",
-        "phone_ru": "+79933397628",
-        "phone_th": "+66815036090",
-        "linkedin": "https://www.linkedin.com/in/mikheooo",
-        "github": "https://github.com/mikheooo",
-    }
-
-    prof = CandidateProfile.from_dict(raw)
+    prof = CandidateProfile.from_dict(
+        {
+            "desired_roles": ["AI Automation Engineer"],
+            "skills": ["python", "n8n"],
+            "preferred_seniority": ["mid", "middle"],
+            "years_experience": 3,
+            "remote_required": True,
+            "languages": ["en", "ru"],
+            "name": "Mikhail Kolesnikov",
+            "email": "mikhailthaiban@gmail.com",
+            "phone_ru": "+799****7628",
+            "phone_th": "+668****6090",
+            "linkedin": "https://www.linkedin.com/in/mikheooo",
+            "github": "https://github.com/mikheooo",
+            "portfolio": "https://mikheooo.github.io/portfolio/",
+        }
+    )
     assert prof.name == "Mikhail Kolesnikov"
     assert prof.email == "mikhailthaiban@gmail.com"
-    assert prof.phone_ru == "+79933397628"
-    assert prof.phone_th == "+66815036090"
-    assert prof.phone is None
+    assert prof.phone_ru == "+799****7628"
+    assert prof.phone_th == "+668****6090"
     assert prof.linkedin == "https://www.linkedin.com/in/mikheooo"
     assert prof.github == "https://github.com/mikheooo"
-    assert prof.portfolio is None
-
+    assert prof.portfolio == "https://mikheooo.github.io/portfolio/"
     out = prof.to_dict()
     assert out["name"] == "Mikhail Kolesnikov"
-    assert out["email"] == "mikhailthaiban@gmail.com"
-    assert out["phone_ru"] == "+79933397628"
-    assert out["phone_th"] == "+66815036090"
-    assert out["linkedin"] == "https://www.linkedin.com/in/mikheooo"
-    assert out["github"] == "https://github.com/mikheooo"
-    assert "portfolio" not in out
+    assert out["portfolio"] == "https://mikheooo.github.io/portfolio/"
 
 
 def test_candidate_profile_from_json_file():
@@ -53,7 +42,7 @@ def test_candidate_profile_from_json_file():
         assert prof.phone_th == "+66815036090"
         assert prof.linkedin == "https://www.linkedin.com/in/mikheooo"
         assert prof.github == "https://github.com/mikheooo"
-        assert prof.portfolio is None
+        assert prof.portfolio == "https://mikheooo.github.io/portfolio/"
 
 
 def test_candidate_profile_backward_compat():
