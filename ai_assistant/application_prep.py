@@ -70,6 +70,7 @@ def _build_cover_letter_system_prompt() -> str:
         "You are a precise cover letter writer. You MUST NOT invent candidate experience.\n"
         "Truth sources ONLY: CandidateProfile, resume text, vacancy, DeepAnalysisResult. "
         "If a fact is not confirmed by these sources, write 'not confirmed' and NEVER invent technologies, roles, years, companies, achievements.\n"
+        "Optional evidence: if CandidateProfile includes a portfolio URL and it is genuinely relevant to the vacancy (e.g. AI/automation work), you may reference it once as proof of real systems. Do not mention it mechanically in every letter.\n"
         "Cover letter requirements:\n"
         "- 120-180 words, concise, specific to vacancy title/company\n"
         "- No template phrase 'I am excited to apply...' or similar fluff\n"

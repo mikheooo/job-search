@@ -43,6 +43,11 @@ class FlowType(str, Enum):
     AGGREGATOR_REDIRECT = "AGGREGATOR_REDIRECT" # TYPE C: Aggregator job board redirect / outbound link (RemoteOK, LinkedIn external apply, etc.)
     UNKNOWN = "UNKNOWN"                   # Classification undetermined or insufficient evidence
 
+class AuthState(str, Enum):
+    AUTHENTICATED = "AUTHENTICATED"
+    NOT_AUTHENTICATED = "NOT_AUTHENTICATED"
+    UNKNOWN = "UNKNOWN"
+
 KNOWN_ATS_DOMAINS = {
     "greenhouse.io", "boards.greenhouse.io",
     "jobs.lever.co", "lever.co",
@@ -185,9 +190,8 @@ def classify_apply_flow(
         target_url = apply_link if (apply_link and is_apply_ats) else final_url
         target_dom = apply_domain if (apply_link and is_apply_ats) else fin_domain
         is_ext = bool(target_dom and target_dom != src_clean)
-        flow_type = FlowType.AGGREGATOR_REDIRECT if is_src_aggregator else FlowType.EXTERNAL_ATS
         return FlowClassification(
-            flow_type=flow_type,
+            flow_type=FlowType.EXTERNAL_ATS,
             source_url=source_url,
             application_url=target_url,
             application_domain=target_dom,
@@ -206,14 +210,14 @@ def classify_apply_flow(
             target_dom = apply_domain if has_ext_apply else fin_domain
             is_ats = _is_match(target_dom, KNOWN_ATS_DOMAINS)
             return FlowClassification(
-                flow_type=FlowType.AGGREGATOR_REDIRECT,
+                flow_type=FlowType.EXTERNAL_ATS if is_ats else FlowType.AGGREGATOR_REDIRECT,
                 source_url=source_url,
                 application_url=target_url,
                 application_domain=target_dom,
                 redirect_chain=chain,
                 is_external_application=True,
                 verification_strategy="external_ats_verifier" if is_ats else "aggregator_redirect_pause",
-                confidence_reason=f"Aggregator '{src_clean}' routes to external destination '{target_dom}'",
+                confidence_reason=f"Aggregator '{src_clean}' routes to external destination '{target_dom}' (ATS: {is_ats})",
             )
         # Stays on aggregator domain without external apply link or external redirect
         return FlowClassification(
@@ -450,6 +454,10 @@ class MockBrowserAdapter(BrowserAdapter):
         sim = self.simulate
         href = sim.get("apply_link")
         btn_text = sim.get("button_text", "Apply Now" if (sim.get("apply_button") or href) else None)
+        auth = sim.get("authenticated")
+        if auth is None:
+            auth = "AUTHENTICATED" if (sim.get("fields") or "hh.ru" in str(sim.get("final_url", self.opened_url or "")) or sim.get("has_form")) else "NOT_AUTHENTICATED"
+        login_req = bool(sim.get("login_required", False))
         return {
             "title": sim.get("page_title", ""),
             "url": sim.get("final_url", self.opened_url or ""),
@@ -464,7 +472,10 @@ class MockBrowserAdapter(BrowserAdapter):
             "has_form": bool(sim.get("fields")),
             "fields": list(sim.get("fields", [])),
             "captcha": bool(sim.get("captcha", False)),
-            "login_required": bool(sim.get("login_required", False)),
+            "login_required": login_req,
+            "login_reason": sim.get("login_reason", "Login required for this application flow" if login_req else None),
+            "authenticated": auth,
+            "auth_reason": sim.get("auth_reason", "Simulated mock authentication state"),
         }
 
     def fill_field(self, selector: str, value: str) -> bool:
@@ -493,6 +504,9 @@ class MockBrowserAdapter(BrowserAdapter):
 
     def get_title(self) -> str:
         return self.simulate.get("page_title", "Mock Page")
+
+    def get_content(self) -> str:
+        return self.simulate.get("content", f"{self.get_title()} {self.get_current_url()}")
 
     def submit_application(self) -> Dict[str, Any]:
         self.calls.append("submit_application")
@@ -731,7 +745,95 @@ class CDPBrowserAdapter(BrowserAdapter):
 
                     const bodyContent = document.body ? document.body.innerText.toLowerCase() : '';
                     result.captcha = bodyContent.includes("captcha") || bodyContent.includes("cloudflare");
-                    result.login_required = bodyContent.includes("login required") || bodyContent.includes("please log in");
+
+                    // 4. Detect Authentication State
+                    let authState = "UNKNOWN";
+                    let authReason = "No explicit authentication indicators";
+
+                    const domain = window.location.hostname.toLowerCase().replace(/^www\./, '');
+
+                    if (domain.includes('hh.ru')) {
+                        const hasUserMenu = Boolean(document.querySelector('[data-qa="mainmenu_myResumes"], [data-qa="mainmenu_applicantProfile"], [data-qa="mainmenu_negotiations"], [data-qa="mainmenu_applicant_profile"], a[href*="/applicant/resumes"], a[href*="/applicant/negotiations"]'));
+                        const hasLoginBtn = Boolean(document.querySelector('[data-qa="mainmenu_login"], [data-qa="login"], a[href*="/account/login"]'));
+                        if (hasUserMenu && !hasLoginBtn) {
+                            authState = "AUTHENTICATED";
+                            authReason = "HH.ru active applicant session detected (profile/resume menu present)";
+                        } else if (hasLoginBtn) {
+                            authState = "NOT_AUTHENTICATED";
+                            authReason = "HH.ru guest session (login button present)";
+                        }
+                    } else if (domain.includes('career.habr.com')) {
+                        const hasUserMenu = Boolean(document.querySelector('.user_panel, [href*="/users/"], .session_user, a[href*="/logout"]'));
+                        const hasLoginBtn = Boolean(document.querySelector('a[href*="/login"], a[href*="/register"]'));
+                        if (hasUserMenu && !hasLoginBtn) {
+                            authState = "AUTHENTICATED";
+                            authReason = "Habr Career active session detected";
+                        } else if (hasLoginBtn) {
+                            authState = "NOT_AUTHENTICATED";
+                            authReason = "Habr Career guest session (login/register links present)";
+                        }
+                    } else if (domain.includes('weworkremotely.com')) {
+                        const hasAccountMenu = Boolean(document.querySelector('a[href*="/logout"], a[href*="/dashboard"], .account-dropdown'));
+                        const hasLoginLink = Boolean(document.querySelector('a[href*="/job-seekers/account/login"], a[href*="/job-seekers/account/register"]'));
+                        if (hasAccountMenu) {
+                            authState = "AUTHENTICATED";
+                            authReason = "WeWorkRemotely authenticated session detected";
+                        } else if (hasLoginLink) {
+                            authState = "NOT_AUTHENTICATED";
+                            authReason = "WeWorkRemotely guest session (account/register links present)";
+                        }
+                    } else if (domain.includes('himalayas.app')) {
+                        const hasUserAvatar = Boolean(document.querySelector('a[href*="/dashboard"], [data-testid="user-menu"], a[href*="/logout"]'));
+                        const hasSignupLink = Boolean(document.querySelector('a[href*="/signup"], a[href*="/login"]'));
+                        if (hasUserAvatar) {
+                            authState = "AUTHENTICATED";
+                            authReason = "Himalayas authenticated user session detected";
+                        } else if (hasSignupLink) {
+                            authState = "NOT_AUTHENTICATED";
+                            authReason = "Himalayas guest session (signup/login CTA present)";
+                        }
+                    } else if (domain.includes('remoteok.com')) {
+                        const hasUserSession = Boolean(document.querySelector('.logged-in, a[href*="/logout"]'));
+                        if (hasUserSession) {
+                            authState = "AUTHENTICATED";
+                            authReason = "RemoteOK user session detected";
+                        } else {
+                            authState = "NOT_AUTHENTICATED";
+                            authReason = "RemoteOK guest browsing state";
+                        }
+                    } else {
+                        const hasLoginModal = Boolean(document.querySelector('[id*="login"], [class*="login-form"], form[action*="login"]'));
+                        const hasJobForm = result.has_form;
+                        if (hasJobForm && !hasLoginModal) {
+                            authState = "AUTHENTICATED";
+                            authReason = "Public job application form allows guest submission without login";
+                        } else if (hasLoginModal) {
+                            authState = "NOT_AUTHENTICATED";
+                            authReason = "Login form / authentication wall detected";
+                        }
+                    }
+
+                    // 5. Detect Login Required
+                    let loginRequired = false;
+                    let loginReason = null;
+                    if (result.apply_element_href && (
+                        result.apply_element_href.includes('/login') ||
+                        result.apply_element_href.includes('/signin') ||
+                        result.apply_element_href.includes('/register') ||
+                        result.apply_element_href.includes('/signup') ||
+                        result.apply_element_href.includes('/job-seekers/account')
+                    )) {
+                        loginRequired = true;
+                        loginReason = `Apply CTA routes to account registration/login: ${result.apply_element_href}`;
+                    } else if (bodyContent.includes("create an account to apply") || bodyContent.includes("sign in to apply") || bodyContent.includes("login required") || bodyContent.includes("please log in")) {
+                        loginRequired = true;
+                        loginReason = "Page explicitly requires login/account creation to apply";
+                    }
+
+                    result.authenticated = authState;
+                    result.auth_reason = authReason;
+                    result.login_required = loginRequired;
+                    result.login_reason = loginReason;
 
                     return result;
                 })()"""
@@ -1712,7 +1814,7 @@ def prepare_application_in_browser(
                 from .application_review import get_application_review, ReviewStatus
                 rev = get_application_review(vacancy_stable_id)
                 is_approved = (rev is not None and rev.status == ReviewStatus.APPROVED)
-                is_valid = (validation_status == "VALID" or is_approved)
+                is_valid = (validation_status == "VALID") or (is_approved and validation_status != "INVALID")
 
                 if status == BrowserStatus.FORM_DETECTED:
                     if is_valid and not fields_skipped:
@@ -2354,10 +2456,12 @@ def audit_apply_flow_for_vacancy(
             evidence["apply_element_href"] = flow_info.get("apply_element_href") or apply_href
             evidence["apply_element_aria_label"] = flow_info.get("apply_element_aria_label")
             evidence["apply_detection_reason"] = flow_info.get("apply_detection_reason", "No detection reason")
-            evidence["button_text"] = flow_info.get("button_text")
             evidence["fields_detected"] = flow_info.get("fields", [])
             evidence["captcha"] = flow_info.get("captcha", False)
             evidence["login_required"] = flow_info.get("login_required", False)
+            evidence["login_reason"] = flow_info.get("login_reason")
+            evidence["authenticated"] = flow_info.get("authenticated", "UNKNOWN")
+            evidence["auth_reason"] = flow_info.get("auth_reason")
         else:
             insp = use_adapter.inspect_page()
             apply_present = insp.get("apply_button", False)
