@@ -610,7 +610,7 @@ class CDPBrowserAdapter(BrowserAdapter):
         async def _inspect_flow():
             import websockets, asyncio, json
             async with websockets.connect(self.ws_url, open_timeout=15, close_timeout=15) as ws:
-                script = """(() => {
+                script = r"""(() => {
                     const result = {
                         title: document.title || '',
                         url: window.location.href || '',
@@ -650,7 +650,7 @@ class CDPBrowserAdapter(BrowserAdapter):
                         if (!href || href === '#' || href.startsWith('javascript:')) return true;
                         try {
                             const u = new URL(href, window.location.href);
-                            const path = u.pathname.toLowerCase().replace(/\\/+$/, '');
+                            const path = u.pathname.toLowerCase().replace(/\/+$/, '');
                             if (NAV_HREF_BLACKLIST.includes(path) || NAV_HREF_BLACKLIST.includes(path + '/')) return true;
                             if (u.hostname === window.location.hostname && (path === '' || path === '/')) return true;
                         } catch(e) {}
@@ -687,7 +687,7 @@ class CDPBrowserAdapter(BrowserAdapter):
                         }
 
                         // ATS domain in href
-                        if (href && /boards\\.greenhouse\\.io|jobs\\.lever\\.co|apply\\.workable\\.com|jobs\\.ashbyhq\\.com|smartrecruiters\\.com|myworkdayjobs\\.com|bamboohr\\.com/i.test(href)) {
+                        if (href && /boards\.greenhouse\.io|jobs\.lever\.co|apply\.workable\.com|jobs\.ashbyhq\.com|smartrecruiters\.com|myworkdayjobs\.com|bamboohr\.com/i.test(href)) {
                             score += 120;
                             reason = `Direct external ATS link in href '${href}'`;
                         } else if (href && !isNavOrGenericLink(href) && /apply/i.test(href)) {
@@ -1745,17 +1745,33 @@ def prepare_application_in_browser(
             # Do not proceed to form detection beyond warning
         else:
             # Inspect page
+            flow_info = {}
+            if hasattr(use_adapter, "inspect_apply_flow"):
+                flow_info = use_adapter.inspect_apply_flow()
             inspect = use_adapter.inspect_page()
-            form_detected = bool(inspect.get("form_detected"))
-            fields_detected = inspect.get("fields", [])
-            apply_found = inspect.get("apply_button", False)
+            form_detected = bool(inspect.get("form_detected") or flow_info.get("has_form"))
+            fields_detected = inspect.get("fields") or flow_info.get("fields", [])
+            apply_found = inspect.get("apply_button") or flow_info.get("apply_present", False)
+            auth_state = flow_info.get("authenticated", "UNKNOWN")
+            login_req = flow_info.get("login_required") or inspect.get("login_required", False)
+            login_reason = flow_info.get("login_reason")
+
             if apply_found:
                 warnings.append("Apply button FOUND - Manual submission required. DO NOT CLICK Submit.")
             else:
                 warnings.append("Apply button not found")
-            if inspect.get("captcha"):
+
+            if inspect.get("captcha") or flow_info.get("captcha"):
                 warnings.append("CAPTCHA detected - BLOCKED, manual required")
                 status = BrowserStatus.BLOCKED
+            elif login_req and auth_state == "NOT_AUTHENTICATED":
+                warnings.append(f"Authentication required: {login_reason or 'login/signup required for this flow'} - BLOCKED")
+                status = BrowserStatus.BLOCKED
+                error = f"Authentication required: {login_reason or 'login/signup required for this flow'}"
+            elif login_req and auth_state == "UNKNOWN":
+                warnings.append("Authentication state unknown - BLOCKED")
+                status = BrowserStatus.BLOCKED
+                error = "Authentication state unknown for login-required flow"
             elif inspect.get("login_required"):
                 warnings.append("Login required - BLOCKED")
                 status = BrowserStatus.BLOCKED
@@ -2188,6 +2204,31 @@ def submit_application_in_browser(
             executor_version="v1",
             before_screenshot=before_screenshot,
         )
+
+    # Check for authentication / login requirement
+    if hasattr(use_adapter, "inspect_apply_flow"):
+        flow_info = use_adapter.inspect_apply_flow()
+        auth_state = flow_info.get("authenticated", "UNKNOWN")
+        login_req = flow_info.get("login_required", False)
+        login_reason = flow_info.get("login_reason")
+        if login_req and auth_state == "NOT_AUTHENTICATED":
+            return SubmitResult(
+                vacancy_stable_id=vacancy_stable_id,
+                submission_id=submission_id,
+                status="BLOCKED",
+                error=f"Authentication required: {login_reason or 'login/signup required for this flow'}",
+                executor_version="v1",
+                before_screenshot=before_screenshot,
+            )
+        if login_req and auth_state == "UNKNOWN":
+            return SubmitResult(
+                vacancy_stable_id=vacancy_stable_id,
+                submission_id=submission_id,
+                status="BLOCKED",
+                error="Authentication state unknown for login-required flow",
+                executor_version="v1",
+                before_screenshot=before_screenshot,
+            )
 
     # Check for blocked indicators
     content = (open_res.get("title", "") + " " + str(open_res)).lower()

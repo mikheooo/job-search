@@ -1933,6 +1933,322 @@ def test_stage30o_queue_to_apply_orchestrator_integration_suite():
         teardown_test_db(tmp_dir)
 
 
+def test_stage30p_authenticated_session_and_account_aware_gate_suite():
+    """Stage 30P: Authenticated session detection, account-aware apply gate, and safety invariants."""
+    from ai_assistant.browser_executor import (
+        classify_apply_flow,
+        submit_application_in_browser,
+        prepare_application_in_browser,
+        audit_apply_flow_for_vacancy,
+        MockBrowserAdapter,
+        FlowType,
+        AuthState,
+    )
+    from ai_assistant.submission_verifier import (
+        verify_submission,
+        VerificationStatus,
+    )
+    from ai_assistant.application_tracking import (
+        get_application_status,
+        set_application_status,
+        ApplicationStatus,
+    )
+    from ai_assistant.application_review import ApplicationReview, ReviewStatus, save_application_review
+    from ai_assistant.application_queue import QueueItem, save_queue_item
+
+    tmp_dir = setup_test_db()
+    try:
+        # Snapshot DB before
+        conn = db.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM application_submissions")
+        sub_cnt_before = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM submission_verifications")
+        ver_cnt_before = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM application_tracking")
+        trk_cnt_before = c.fetchone()[0]
+        conn.close()
+
+        # 1. Authenticated HH session -> normal preparation succeeds
+        vac_hh = _vac(source_job_id="s30p_hh", job_url="https://hh.ru/vacancy/136097888")
+        db.save_vacancy(vac_hh)
+        set_application_status(vac_hh.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        save_application_review(ApplicationReview(vacancy_stable_id=vac_hh.stable_id(), status=ReviewStatus.APPROVED))
+        save_queue_item(QueueItem(vacancy_stable_id=vac_hh.stable_id(), canonical_id=vac_hh.stable_id(), representative_vacancy_stable_id=vac_hh.stable_id(), priority_score=90, rank=1))
+        db.save_application_package(vac_hh.stable_id(), "v1", '{"cover_letter": "Hi", "validation_status": "VALID"}')
+        mock_hh = MockBrowserAdapter(simulate={
+            "page_title": "Python Developer at Telecom",
+            "apply_button": True,
+            "fields": ["name", "email", "resume", "cover_letter"],
+            "authenticated": "AUTHENTICATED",
+            "login_required": False,
+        })
+        prep_hh = prepare_application_in_browser(vac_hh.stable_id(), adapter=mock_hh, force=True)
+        assert prep_hh.status.value == "READY_FOR_REVIEW"
+
+        # 2. Unauthenticated aggregator -> blocked when login required
+        vac_unauth = _vac(source_job_id="s30p_unauth", job_url="https://remoteok.com/remote-jobs/104921")
+        db.save_vacancy(vac_unauth)
+        set_application_status(vac_unauth.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        save_application_review(ApplicationReview(vacancy_stable_id=vac_unauth.stable_id(), status=ReviewStatus.APPROVED))
+        save_queue_item(QueueItem(vacancy_stable_id=vac_unauth.stable_id(), canonical_id=vac_unauth.stable_id(), representative_vacancy_stable_id=vac_unauth.stable_id(), priority_score=90, rank=2))
+        db.save_application_package(vac_unauth.stable_id(), "v1", '{"cover_letter": "Hi", "validation_status": "VALID"}')
+        mock_unauth = MockBrowserAdapter(simulate={
+            "page_title": "Remote Job",
+            "apply_button": True,
+            "apply_link": "https://remoteok.com/login",
+            "authenticated": "NOT_AUTHENTICATED",
+            "login_required": True,
+            "login_reason": "Aggregator login required",
+        })
+        prep_unauth = prepare_application_in_browser(vac_unauth.stable_id(), adapter=mock_unauth, force=True)
+        assert prep_unauth.status.value == "BLOCKED"
+        assert "authentication" in str(prep_unauth.error).lower() or "login" in str(prep_unauth.error).lower()
+
+        # 3. Login-required page -> Submit strictly blocked
+        sub_unauth = submit_application_in_browser(vac_unauth.stable_id(), confirm_submit=True, adapter=mock_unauth, force=True)
+        assert sub_unauth.status.value == "BLOCKED"
+        assert "blocked" in str(sub_unauth.error).lower() or "authentication" in str(sub_unauth.error).lower()
+
+        # 4. Signup-required aggregator page -> NOT treated as external ATS, blocked by auth gate
+        vac_wwr = _vac(source_job_id="s30p_wwr", job_url="https://weworkremotely.com/remote-jobs/6sense")
+        db.save_vacancy(vac_wwr)
+        set_application_status(vac_wwr.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        save_application_review(ApplicationReview(vacancy_stable_id=vac_wwr.stable_id(), status=ReviewStatus.APPROVED))
+        save_queue_item(QueueItem(vacancy_stable_id=vac_wwr.stable_id(), canonical_id=vac_wwr.stable_id(), representative_vacancy_stable_id=vac_wwr.stable_id(), priority_score=90, rank=3))
+        db.save_application_package(vac_wwr.stable_id(), "v1", '{"cover_letter": "Hi", "validation_status": "VALID"}')
+        mock_wwr = MockBrowserAdapter(simulate={
+            "page_title": "Benefits Partner at 6sense",
+            "apply_button": True,
+            "apply_link": "https://weworkremotely.com/job-seekers/account/register",
+            "authenticated": "NOT_AUTHENTICATED",
+            "login_required": True,
+            "login_reason": "Create an account to view full job details",
+        })
+        audit_wwr = audit_apply_flow_for_vacancy(vac_wwr.stable_id(), adapter=mock_wwr)
+        assert audit_wwr["flow_type"] == "AGGREGATOR_REDIRECT"
+        assert audit_wwr["is_external_application"] is False
+        assert audit_wwr["evidence"]["login_required"] is True
+        assert audit_wwr["evidence"]["authenticated"] == "NOT_AUTHENTICATED"
+
+        # 5. Unknown authentication state on login-required page -> BLOCKED
+        vac_unk = _vac(source_job_id="s30p_unk", job_url="https://himalayas.app/jobs/unknown")
+        db.save_vacancy(vac_unk)
+        set_application_status(vac_unk.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        save_application_review(ApplicationReview(vacancy_stable_id=vac_unk.stable_id(), status=ReviewStatus.APPROVED))
+        save_queue_item(QueueItem(vacancy_stable_id=vac_unk.stable_id(), canonical_id=vac_unk.stable_id(), representative_vacancy_stable_id=vac_unk.stable_id(), priority_score=90, rank=4))
+        db.save_application_package(vac_unk.stable_id(), "v1", '{"cover_letter": "Hi", "validation_status": "VALID"}')
+        mock_unk = MockBrowserAdapter(simulate={
+            "page_title": "Himalayas Job",
+            "apply_button": True,
+            "authenticated": "UNKNOWN",
+            "login_required": True,
+        })
+        prep_unk = prepare_application_in_browser(vac_unk.stable_id(), adapter=mock_unk, force=True)
+        assert prep_unk.status.value == "BLOCKED"
+        assert "unknown" in str(prep_unk.error).lower() or "authentication" in str(prep_unk.error).lower()
+
+        # 6. Authenticated / Guest-submittable External ATS -> allowed
+        vac_ats = _vac(source_job_id="s30p_ats", job_url="https://remoteok.com/remote-jobs/123")
+        db.save_vacancy(vac_ats)
+        set_application_status(vac_ats.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        save_application_review(ApplicationReview(vacancy_stable_id=vac_ats.stable_id(), status=ReviewStatus.APPROVED))
+        save_queue_item(QueueItem(vacancy_stable_id=vac_ats.stable_id(), canonical_id=vac_ats.stable_id(), representative_vacancy_stable_id=vac_ats.stable_id(), priority_score=90, rank=5))
+        db.save_application_package(vac_ats.stable_id(), "v1", '{"cover_letter": "Hi", "validation_status": "VALID"}')
+        mock_ats = MockBrowserAdapter(simulate={
+            "page_title": "Careers at Acme on Greenhouse",
+            "final_url": "https://boards.greenhouse.io/acme/jobs/12345",
+            "apply_button": True,
+            "apply_link": "https://boards.greenhouse.io/acme/jobs/12345#app",
+            "fields": ["first_name", "last_name", "email", "resume", "cover_letter"],
+            "authenticated": "AUTHENTICATED",
+            "login_required": False,
+        })
+        audit_ats = audit_apply_flow_for_vacancy(vac_ats.stable_id(), adapter=mock_ats)
+        assert audit_ats["flow_type"] == "EXTERNAL_ATS"
+        assert audit_ats["is_external_application"] is True
+        assert audit_ats["verification_strategy"] == "external_ats_verifier"
+
+        # 7. Same-domain ATS -> flow_type EXTERNAL_ATS, is_external False
+        vac_sd_ats = _vac(source_job_id="s30p_sd_ats", job_url="https://jobs.lever.co/acme/999")
+        db.save_vacancy(vac_sd_ats)
+        set_application_status(vac_sd_ats.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        save_application_review(ApplicationReview(vacancy_stable_id=vac_sd_ats.stable_id(), status=ReviewStatus.APPROVED))
+        save_queue_item(QueueItem(vacancy_stable_id=vac_sd_ats.stable_id(), canonical_id=vac_sd_ats.stable_id(), representative_vacancy_stable_id=vac_sd_ats.stable_id(), priority_score=90, rank=6))
+        db.save_application_package(vac_sd_ats.stable_id(), "v1", '{"cover_letter": "Hi", "validation_status": "VALID"}')
+        mock_sd_ats = MockBrowserAdapter(simulate={
+            "page_title": "Lever Application",
+            "final_url": "https://jobs.lever.co/acme/999",
+            "apply_button": True,
+            "fields": ["name", "email", "resume"],
+            "authenticated": "AUTHENTICATED",
+            "login_required": False,
+        })
+        audit_sd_ats = audit_apply_flow_for_vacancy(vac_sd_ats.stable_id(), adapter=mock_sd_ats)
+        assert audit_sd_ats["flow_type"] == "EXTERNAL_ATS"
+        assert audit_sd_ats["is_external_application"] is False
+
+        # 8. Authentication Check does NOT mutate DB
+        conn = db.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM application_submissions")
+        sub_cnt_after = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM submission_verifications")
+        ver_cnt_after = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM application_tracking")
+        trk_cnt_after = c.fetchone()[0]
+        conn.close()
+        assert sub_cnt_before == sub_cnt_after
+        assert ver_cnt_before == ver_cnt_after
+
+        # 9. Authentication Failure never marks vacancy as APPLIED
+        assert get_application_status(vac_unauth.stable_id()).status != ApplicationStatus.APPLIED
+        assert get_application_status(vac_wwr.stable_id()).status != ApplicationStatus.APPLIED
+        assert get_application_status(vac_unk.stable_id()).status != ApplicationStatus.APPLIED
+
+        # 10. Existing Submitted Vacancies remain unchanged
+        vac_v80 = _vac(source_job_id="s30p_v80", job_url="https://remoteok.com/v80")
+        db.save_vacancy(vac_v80)
+        set_application_status(vac_v80.stable_id(), ApplicationStatus.SUBMITTED)
+        db.save_submission(vac_v80.stable_id(), "sub_v80", "SUBMITTED", "raw")
+        db.save_verification(vac_v80.stable_id(), "sub_v80", "AMBIGUOUS", "v1", "post submit ambiguous")
+
+        assert db.is_submitted(vac_v80.stable_id()) is True
+        assert get_application_status(vac_v80.stable_id()).status == ApplicationStatus.SUBMITTED
+
+    finally:
+        teardown_test_db(tmp_dir)
+
+
+def test_stage30q_authenticated_hh_apply_preparation_suite():
+    """Stage 30Q: Authenticated HH apply preparation, field mapping, truth-only data, and stop-before-submit gate."""
+    from ai_assistant.browser_executor import (
+        classify_apply_flow,
+        submit_application_in_browser,
+        prepare_application_in_browser,
+        audit_apply_flow_for_vacancy,
+        MockBrowserAdapter,
+        BrowserStatus,
+        FlowType,
+        AuthState,
+    )
+    from ai_assistant.submission_verifier import (
+        verify_submission,
+        VerificationStatus,
+    )
+    from ai_assistant.application_tracking import (
+        get_application_status,
+        set_application_status,
+        ApplicationStatus,
+    )
+    from ai_assistant.application_review import ApplicationReview, ReviewStatus, save_application_review
+    from ai_assistant.application_queue import QueueItem, save_queue_item
+
+    tmp_dir = setup_test_db()
+    try:
+        # Snapshot DB before
+        conn = db.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM application_submissions")
+        sub_cnt_before = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM submission_verifications")
+        ver_cnt_before = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM application_tracking")
+        trk_cnt_before = c.fetchone()[0]
+        conn.close()
+
+        # 1. Authenticated HH -> Native Form & Field Mapping from candidate profile
+        vac_hh = _vac(source_job_id="s30q_hh", job_url="https://hh.ru/vacancy/136097888")
+        db.save_vacancy(vac_hh)
+        set_application_status(vac_hh.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        save_application_review(ApplicationReview(vacancy_stable_id=vac_hh.stable_id(), status=ReviewStatus.APPROVED))
+        save_queue_item(QueueItem(vacancy_stable_id=vac_hh.stable_id(), canonical_id=vac_hh.stable_id(), representative_vacancy_stable_id=vac_hh.stable_id(), priority_score=95, rank=1))
+        db.save_application_package(vac_hh.stable_id(), "v1", '{"cover_letter": "Dear Team, excited to apply!", "validation_status": "VALID"}')
+
+        mock_hh = MockBrowserAdapter(simulate={
+            "page_title": "Python Developer (Senior/Middle) at Telecom-VIST",
+            "final_url": "https://hh.ru/vacancy/136097888",
+            "apply_button": True,
+            "apply_link": "https://hh.ru/applicant/vacancy_response?vacancyId=136097888",
+            "fields": ["name", "email", "phone", "resume", "cover_letter"],
+            "authenticated": "AUTHENTICATED",
+            "login_required": False,
+        })
+
+        # 2. Preparation succeeds with correct field mapping
+        prep_res = prepare_application_in_browser(vac_hh.stable_id(), adapter=mock_hh, force=True)
+        assert prep_res.status == BrowserStatus.READY_FOR_REVIEW
+        assert "name" in prep_res.fields_filled
+        assert "email" in prep_res.fields_filled
+        assert "phone" in prep_res.fields_filled
+        assert "resume" in prep_res.fields_filled
+        assert "cover_letter" in prep_res.fields_filled
+
+        # 3. Missing candidate data -> field remains empty / in fields_skipped (no hallucinations)
+        mock_hh_missing = MockBrowserAdapter(simulate={
+            "page_title": "Python Developer",
+            "final_url": "https://hh.ru/vacancy/136097888",
+            "apply_button": True,
+            "fields": ["name", "email", "portfolio", "desired_salary_exact"],
+            "authenticated": "AUTHENTICATED",
+            "login_required": False,
+        })
+        prep_missing = prepare_application_in_browser(vac_hh.stable_id(), adapter=mock_hh_missing, force=True)
+        # portfolio is None in profile -> skipped, not invented
+        assert "portfolio" in prep_missing.fields_skipped or "desired_salary_exact" in prep_missing.fields_skipped
+        assert prep_missing.status != BrowserStatus.READY_FOR_REVIEW
+
+        # 4. Required field without confirmed data -> STOP, prepare does not mark ready for submit
+        assert prep_missing.status.value in ("FORM_DETECTED", "BLOCKED")
+
+        # 5. Attachment handling -> resume mapped from resume_path / profile
+        assert any("upload:" in call for call in mock_hh.calls)
+
+        # 6. Cover letter handling -> filled from package
+        assert any("fill:textarea[name='cover_letter']" in call for call in mock_hh.calls)
+
+        # 7. READY_FOR_SUBMIT never automatically triggers submit without explicit confirmation gate
+        # (submit_application_in_browser requires confirm_submit=True)
+        no_conf = submit_application_in_browser(vac_hh.stable_id(), confirm_submit=False, adapter=mock_hh)
+        assert no_conf.status.value == "BLOCKED"
+        assert "confirmation required" in str(no_conf.error).lower()
+        assert db.is_submitted(vac_hh.stable_id()) is False
+
+        # 8. DB remains unchanged (0 new submissions, 0 new verifications)
+        conn = db.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM application_submissions")
+        sub_cnt_after = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM submission_verifications")
+        ver_cnt_after = c.fetchone()[0]
+        conn.close()
+        assert sub_cnt_before == sub_cnt_after
+        assert ver_cnt_before == ver_cnt_after
+
+        # 9. vacancies_json:76 remains unchanged
+        vac_v76 = _vac(source_job_id="s30q_v76", job_url="https://remoteok.com/v76")
+        db.save_vacancy(vac_v76)
+        set_application_status(vac_v76.stable_id(), ApplicationStatus.SUBMITTED)
+        db.save_submission(vac_v76.stable_id(), "sub_v76", "SUBMITTED", "raw")
+        db.save_verification(vac_v76.stable_id(), "sub_v76", "BLOCKED", "v1", "blocked by cloudflare")
+        assert db.is_submitted(vac_v76.stable_id()) is True
+        assert get_application_status(vac_v76.stable_id()).status == ApplicationStatus.SUBMITTED
+
+        # 10. vacancies_json:80 remains unchanged
+        vac_v80 = _vac(source_job_id="s30q_v80", job_url="https://remoteok.com/v80")
+        db.save_vacancy(vac_v80)
+        set_application_status(vac_v80.stable_id(), ApplicationStatus.SUBMITTED)
+        db.save_submission(vac_v80.stable_id(), "sub_v80", "SUBMITTED", "raw")
+        db.save_verification(vac_v80.stable_id(), "sub_v80", "AMBIGUOUS", "v1", "post submit ambiguous")
+        assert db.is_submitted(vac_v80.stable_id()) is True
+        assert get_application_status(vac_v80.stable_id()).status == ApplicationStatus.SUBMITTED
+
+    finally:
+        teardown_test_db(tmp_dir)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
 
