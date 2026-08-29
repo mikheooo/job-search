@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import sqlite3
@@ -156,9 +156,8 @@ def _get_required_data(vacancy_stable_id: str):
         raise ValueError(f"Browser preparation not found for {vacancy_stable_id} - need READY_FOR_REVIEW")
     # Allow BLOCKED for review creation, but not for approve (approve checks separately)
     # Only check existence here, not status, but ensure session exists
-    # For review creation, we allow both READY_FOR_REVIEW and BLOCKED, but BLOCKED will have warnings
-    if sess.status not in [BrowserStatus.READY_FOR_REVIEW, BrowserStatus.COMPLETED, BrowserStatus.BLOCKED]:
-        raise ValueError(f"Browser status {sess.status} is not READY_FOR_REVIEW/BLOCKED - cannot review.")
+    if sess.status not in [BrowserStatus.READY_FOR_REVIEW, BrowserStatus.COMPLETED, BrowserStatus.BLOCKED, BrowserStatus.FORM_DETECTED]:
+        raise ValueError(f"Browser status {sess.status} is not READY_FOR_REVIEW/FORM_DETECTED/BLOCKED - cannot review.")
 
     # vacancy
     row = get_vacancy_by_id(vacancy_stable_id)
@@ -229,7 +228,7 @@ def create_application_review(vacancy_stable_id: str) -> ApplicationReview:
     save_application_review(review)
     return review
 
-def approve_review(vacancy_stable_id: str) -> ApplicationReview:
+def approve_review(vacancy_stable_id: str, note: str | None = None, force: bool = False) -> ApplicationReview:
     _ensure_table()
     rev = get_application_review(vacancy_stable_id, REVIEW_VERSION)
     if not rev:
@@ -241,25 +240,48 @@ def approve_review(vacancy_stable_id: str) -> ApplicationReview:
         if rev.review_version != REVIEW_VERSION:
             raise ValueError(f"Review version mismatch for {vacancy_stable_id} - needs recreation")
     # Check browser status
-    from .browser_executor import get_browser_session, BrowserStatus
-    sess = get_browser_session(vacancy_stable_id)
-    if not sess or sess.status not in [BrowserStatus.READY_FOR_REVIEW, BrowserStatus.COMPLETED]:
-        raise ValueError(f"Cannot approve: browser status {sess.status if sess else None} is not READY_FOR_REVIEW. BLOCKED cannot be approved.")
+    if not force:
+        from .browser_executor import get_browser_session, BrowserStatus
+        sess = get_browser_session(vacancy_stable_id)
+        if sess and sess.status == BrowserStatus.BLOCKED:
+            raise ValueError(f"Cannot approve: browser status {sess.status} is BLOCKED. BLOCKED cannot be approved.")
     # Check tracking still READY
     from .application_tracking import get_application_status, ApplicationStatus
     track = get_application_status(vacancy_stable_id)
-    if not track or track.status != ApplicationStatus.READY_TO_APPLY:
-        raise ValueError(f"Cannot approve: tracking status {track.status if track else None} is not READY_TO_APPLY")
+    if track and track.status not in [ApplicationStatus.READY_TO_APPLY, ApplicationStatus.DISCOVERED, ApplicationStatus.ANALYZED]:
+        raise ValueError(f"Cannot approve: tracking status {track.status} is not READY_TO_APPLY")
     if rev.status == ReviewStatus.APPROVED:
+        if note and note != rev.note:
+            rev.note = note
+            rev.updated_at = _now()
+            save_application_review(rev)
         return rev  # idempotent
     if rev.status == ReviewStatus.REJECTED:
         raise ValueError(f"Cannot approve: review already REJECTED")
 
     # Safety: never change tracking to APPLIED, never call browser submit
     rev.status = ReviewStatus.APPROVED
+    if note:
+        rev.note = note
     rev.updated_at = _now()
     save_application_review(rev)
+
+    # Sync validation_status in application_packages table upon human approval
+    try:
+        from .db import get_application_package, save_application_package
+        pkg_row = get_application_package(vacancy_stable_id)
+        if pkg_row and pkg_row[2]:
+            pkg_data = json.loads(pkg_row[2])
+            pkg_data["validation_status"] = "VALID"
+            save_application_package(vacancy_stable_id, pkg_row[1], json.dumps(pkg_data, ensure_ascii=False))
+    except Exception:
+        pass
+
     return rev
+
+def is_review_approved(vacancy_stable_id: str) -> bool:
+    rev = get_application_review(vacancy_stable_id)
+    return rev is not None and rev.status == ReviewStatus.APPROVED
 
 def reject_review(vacancy_stable_id: str, note: str | None = None) -> ApplicationReview:
     _ensure_table()

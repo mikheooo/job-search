@@ -37,6 +37,251 @@ class SubmitStatus(str, Enum):
     AMBIGUOUS = "AMBIGUOUS"
     BLOCKED = "BLOCKED"
 
+class FlowType(str, Enum):
+    NATIVE_FORM = "NATIVE_FORM"           # TYPE A: Native application form directly on vacancy page
+    EXTERNAL_ATS = "EXTERNAL_ATS"         # TYPE B: Apply link leads to external ATS domain (Greenhouse, Lever, etc.)
+    AGGREGATOR_REDIRECT = "AGGREGATOR_REDIRECT" # TYPE C: Aggregator job board redirect / outbound link (RemoteOK, LinkedIn external apply, etc.)
+    UNKNOWN = "UNKNOWN"                   # Classification undetermined or insufficient evidence
+
+KNOWN_ATS_DOMAINS = {
+    "greenhouse.io", "boards.greenhouse.io",
+    "jobs.lever.co", "lever.co",
+    "apply.workable.com", "workable.com",
+    "jobs.ashbyhq.com", "ashbyhq.com",
+    "smartrecruiters.com", "jobs.smartrecruiters.com",
+    "bamboohr.com",
+    "recruitee.com",
+    "myworkdayjobs.com", "workday.com",
+    "icims.com",
+    "jobvite.com",
+    "rippling.com",
+    "taleo.net",
+    "applytojob.com",
+}
+
+KNOWN_AGGREGATOR_DOMAINS = {
+    "remoteok.com", "remoteok.io",
+    "weworkremotely.com",
+    "jobspresso.co",
+    "wellfound.com", "angel.co",
+    "indeed.com", "indeed.ru",
+    "ziprecruiter.com",
+    "monster.com",
+    "glassdoor.com",
+    "simplyhired.com",
+    "nodesk.co",
+    "remoteco.com",
+    "flexjobs.com",
+    "otta.com",
+    "workinstartups.com",
+    "himalayas.app",
+}
+
+class FlowClassification(BaseModel):
+    flow_type: FlowType = FlowType.UNKNOWN
+    source_url: str = ""
+    application_url: Optional[str] = None
+    application_domain: Optional[str] = None
+    redirect_chain: List[str] = Field(default_factory=list)
+    is_external_application: bool = False
+    verification_strategy: str = "manual_review"
+    confidence_reason: str = ""
+
+    model_config = {"extra": "forbid"}
+
+def classify_apply_flow(
+    source_url: str,
+    final_url: Optional[str] = None,
+    apply_link: Optional[str] = None,
+    has_form: bool = False,
+    redirect_chain: Optional[List[str]] = None,
+) -> FlowClassification:
+    """Classify the application flow into NATIVE_FORM, EXTERNAL_ATS, AGGREGATOR_REDIRECT, or UNKNOWN."""
+    from urllib.parse import urlparse
+
+    chain = list(redirect_chain or [])
+    if not source_url or not isinstance(source_url, str) or not source_url.strip():
+        return FlowClassification(
+            flow_type=FlowType.UNKNOWN,
+            source_url=source_url or "",
+            application_url=None,
+            application_domain=None,
+            redirect_chain=chain,
+            is_external_application=False,
+            verification_strategy="manual_review",
+            confidence_reason="Empty or invalid source URL",
+        )
+
+    try:
+        src_parsed = urlparse(source_url)
+        src_domain = src_parsed.netloc.lower()
+    except Exception:
+        src_domain = ""
+
+    if not src_domain:
+        return FlowClassification(
+            flow_type=FlowType.UNKNOWN,
+            source_url=source_url,
+            application_url=None,
+            application_domain=None,
+            redirect_chain=chain,
+            is_external_application=False,
+            verification_strategy="manual_review",
+            confidence_reason="Could not determine source domain",
+        )
+
+    def _clean(d: str) -> str:
+        return d.removeprefix("www.")
+
+    src_clean = _clean(src_domain)
+
+    # Check apply_link domain
+    apply_domain = ""
+    if apply_link:
+        try:
+            apply_domain = _clean(urlparse(apply_link).netloc.lower())
+        except Exception:
+            apply_domain = ""
+
+    # Check final_url domain
+    fin_domain = ""
+    if final_url:
+        try:
+            fin_domain = _clean(urlparse(final_url).netloc.lower())
+        except Exception:
+            fin_domain = ""
+
+    fin_clean = fin_domain
+    apply_clean = apply_domain
+
+    def _is_match(domain: str, domain_set: set[str]) -> bool:
+        if not domain:
+            return False
+        return any(domain == kd or domain.endswith("." + kd) for kd in domain_set)
+
+    is_src_aggregator = _is_match(src_clean, KNOWN_AGGREGATOR_DOMAINS)
+    is_src_ats = _is_match(src_clean, KNOWN_ATS_DOMAINS)
+    is_apply_ats = _is_match(apply_domain, KNOWN_ATS_DOMAINS)
+    is_fin_ats = _is_match(fin_domain, KNOWN_ATS_DOMAINS)
+
+    # Case 1: Direct ATS source (e.g. source URL is already on greenhouse.io, lever.co, etc.)
+    if is_src_ats:
+        app_url = final_url or source_url
+        app_dom = fin_clean if fin_clean else src_clean
+        is_ext = bool(app_dom and app_dom != src_clean)
+        return FlowClassification(
+            flow_type=FlowType.EXTERNAL_ATS,
+            source_url=source_url,
+            application_url=app_url,
+            application_domain=app_dom,
+            redirect_chain=chain,
+            is_external_application=is_ext,
+            verification_strategy="external_ats_verifier",
+            confidence_reason=f"Source domain '{src_clean}' is a recognized ATS platform",
+        )
+
+    # Case 2: Apply link or redirected URL points to an ATS platform
+    if (apply_link and is_apply_ats) or (fin_domain and is_fin_ats and fin_domain != src_clean):
+        target_url = apply_link if (apply_link and is_apply_ats) else final_url
+        target_dom = apply_domain if (apply_link and is_apply_ats) else fin_domain
+        is_ext = bool(target_dom and target_dom != src_clean)
+        flow_type = FlowType.AGGREGATOR_REDIRECT if is_src_aggregator else FlowType.EXTERNAL_ATS
+        return FlowClassification(
+            flow_type=flow_type,
+            source_url=source_url,
+            application_url=target_url,
+            application_domain=target_dom,
+            redirect_chain=chain,
+            is_external_application=is_ext,
+            verification_strategy="external_ats_verifier",
+            confidence_reason=f"Application flow points to external ATS platform '{target_dom}'",
+        )
+
+    # Case 3: Source is a recognized job aggregator
+    if is_src_aggregator:
+        has_ext_apply = bool(apply_link and apply_domain and apply_domain != src_clean)
+        has_ext_redirect = bool(fin_domain and fin_domain != src_clean)
+        if has_ext_apply or has_ext_redirect:
+            target_url = apply_link if has_ext_apply else final_url
+            target_dom = apply_domain if has_ext_apply else fin_domain
+            is_ats = _is_match(target_dom, KNOWN_ATS_DOMAINS)
+            return FlowClassification(
+                flow_type=FlowType.AGGREGATOR_REDIRECT,
+                source_url=source_url,
+                application_url=target_url,
+                application_domain=target_dom,
+                redirect_chain=chain,
+                is_external_application=True,
+                verification_strategy="external_ats_verifier" if is_ats else "aggregator_redirect_pause",
+                confidence_reason=f"Aggregator '{src_clean}' routes to external destination '{target_dom}'",
+            )
+        # Stays on aggregator domain without external apply link or external redirect
+        return FlowClassification(
+            flow_type=FlowType.AGGREGATOR_REDIRECT,
+            source_url=source_url,
+            application_url=None,
+            application_domain=None,
+            redirect_chain=chain,
+            is_external_application=False,
+            verification_strategy="aggregator_redirect_pause",
+            confidence_reason=f"Source domain '{src_clean}' is a recognized job aggregator with no external destination observed",
+        )
+
+    # Case 4: Native application form
+    if has_form and (not apply_link or apply_domain == src_clean or not apply_domain):
+        app_url = final_url or source_url
+        app_dom = fin_clean or src_clean
+        is_ext = bool(app_dom and app_dom != src_clean)
+        return FlowClassification(
+            flow_type=FlowType.NATIVE_FORM,
+            source_url=source_url,
+            application_url=app_url,
+            application_domain=app_dom,
+            redirect_chain=chain,
+            is_external_application=is_ext,
+            verification_strategy="native_submission_verifier",
+            confidence_reason=f"Native application form detected directly on '{src_clean}'",
+        )
+
+    # Case 5: Outbound application link to non-ATS external destination
+    if apply_link and apply_domain and apply_domain != src_clean:
+        return FlowClassification(
+            flow_type=FlowType.AGGREGATOR_REDIRECT,
+            source_url=source_url,
+            application_url=apply_link,
+            application_domain=apply_domain,
+            redirect_chain=chain,
+            is_external_application=True,
+            verification_strategy="aggregator_redirect_pause",
+            confidence_reason=f"Outbound application link points from '{src_clean}' to '{apply_domain}'",
+        )
+
+    if has_form:
+        app_url = final_url or source_url
+        app_dom = fin_clean or src_clean
+        is_ext = bool(app_dom and app_dom != src_clean)
+        return FlowClassification(
+            flow_type=FlowType.NATIVE_FORM,
+            source_url=source_url,
+            application_url=app_url,
+            application_domain=app_dom,
+            redirect_chain=chain,
+            is_external_application=is_ext,
+            verification_strategy="native_submission_verifier",
+            confidence_reason=f"Application form detected on '{src_clean}'",
+        )
+
+    return FlowClassification(
+        flow_type=FlowType.UNKNOWN,
+        source_url=source_url,
+        application_url=None,
+        application_domain=None,
+        redirect_chain=chain,
+        is_external_application=False,
+        verification_strategy="manual_review",
+        confidence_reason="No definitive flow signatures detected",
+    )
+
 
 class SubmitResult(BaseModel):
     vacancy_stable_id: str
@@ -50,6 +295,9 @@ class SubmitResult(BaseModel):
     confirmation_used: bool = False
     submit_button_found: bool = False
     error: Optional[str] = None
+    flow_type: Optional[FlowType] = None
+    application_domain: Optional[str] = None
+    verification_strategy: Optional[str] = None
     executor_version: str = EXECUTOR_VERSION
 
     model_config = {"extra": "forbid"}
@@ -70,6 +318,13 @@ class BrowserApplicationSession(BaseModel):
     form_detected: bool = False
     error: Optional[str] = None
     screenshot_path: Optional[str] = None
+    flow_type: Optional[FlowType] = None
+    source_url: Optional[str] = None
+    application_url: Optional[str] = None
+    application_domain: Optional[str] = None
+    redirect_chain: List[str] = Field(default_factory=list)
+    is_external_application: bool = False
+    verification_strategy: Optional[str] = None
 
 class BrowserResult(BaseModel):
     vacancy_stable_id: str
@@ -86,6 +341,13 @@ class BrowserResult(BaseModel):
     warnings: List[str] = Field(default_factory=list)
     error: Optional[str] = None
     screenshot_path: Optional[str] = None
+    flow_type: Optional[FlowType] = None
+    source_url: Optional[str] = None
+    application_url: Optional[str] = None
+    application_domain: Optional[str] = None
+    redirect_chain: List[str] = Field(default_factory=list)
+    is_external_application: bool = False
+    verification_strategy: Optional[str] = None
 
     model_config = {"extra": "forbid"}
 
@@ -183,6 +445,28 @@ class MockBrowserAdapter(BrowserAdapter):
             "site": sim.get("site") or "hh.ru",
         }
 
+    def inspect_apply_flow(self) -> Dict[str, Any]:
+        self.calls.append("inspect_apply_flow")
+        sim = self.simulate
+        href = sim.get("apply_link")
+        btn_text = sim.get("button_text", "Apply Now" if (sim.get("apply_button") or href) else None)
+        return {
+            "title": sim.get("page_title", ""),
+            "url": sim.get("final_url", self.opened_url or ""),
+            "apply_present": bool(sim.get("apply_button", False) or href),
+            "apply_href": href,
+            "apply_element_text": btn_text,
+            "apply_element_tag": "a" if href else "button",
+            "apply_element_href": href,
+            "apply_element_aria_label": sim.get("aria_label"),
+            "apply_detection_reason": sim.get("reason", "Mock detected apply element"),
+            "button_text": btn_text,
+            "has_form": bool(sim.get("fields")),
+            "fields": list(sim.get("fields", [])),
+            "captcha": bool(sim.get("captcha", False)),
+            "login_required": bool(sim.get("login_required", False)),
+        }
+
     def fill_field(self, selector: str, value: str) -> bool:
         self.calls.append(f"fill:{selector}")
         return True
@@ -216,14 +500,342 @@ class MockBrowserAdapter(BrowserAdapter):
         # Mock always returns success for testing
         return {"success": True, "message": "Mock submission successful"}
 
+
+class CDPBrowserAdapter(BrowserAdapter):
+    """Direct CDP adapter over WebSocket / HTTP API (e.g. http://127.0.0.1:9222)."""
+    def __init__(self, cdp_url: str = "http://127.0.0.1:9222"):
+        self.cdp_url = cdp_url.rstrip("/")
+        self.tab_id: Optional[str] = None
+        self.ws_url: Optional[str] = None
+        self._final_url: Optional[str] = None
+        self._title: Optional[str] = None
+        self.submit_attempted = False
+
+    def _sync_run(self, coro):
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    return pool.submit(asyncio.run, coro).result()
+            return loop.run_until_complete(coro)
+        except RuntimeError:
+            return asyncio.run(coro)
+
+    def open(self, url: str) -> Dict[str, Any]:
+        import urllib.request, json
+        try:
+            new_url = f"{self.cdp_url}/json/new?{url}"
+            req = urllib.request.Request(new_url, method="PUT")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                tab = json.loads(resp.read().decode("utf-8"))
+            self.tab_id = tab.get("id")
+            self.ws_url = tab.get("webSocketDebuggerUrl")
+            
+            import time
+            time.sleep(3)
+            
+            async def _init_page():
+                import websockets, asyncio
+                async with websockets.connect(self.ws_url, open_timeout=15, close_timeout=15) as ws:
+                    await ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {"expression": "JSON.stringify({url: window.location.href, title: document.title})"}}))
+                    raw = await asyncio.wait_for(ws.recv(), timeout=10)
+                    data = json.loads(raw)
+                    val = json.loads(data.get("result", {}).get("result", {}).get("value", "{}"))
+                    return val
+
+            page_info = self._sync_run(_init_page())
+            self._final_url = page_info.get("url") or url
+            self._title = page_info.get("title") or ""
+            site = self._final_url.split("/")[2] if "://" in self._final_url else ""
+            return {"final_url": self._final_url, "title": self._title, "site": site, "blocked": False}
+        except Exception as e:
+            return {"final_url": url, "title": "", "site": "", "blocked": True, "reason": str(e)}
+
+    def inspect_page(self) -> Dict[str, Any]:
+        if not self.ws_url:
+            return {"form_detected": True, "fields": ["name", "email", "phone", "resume", "cover_letter", "linkedin"], "apply_button": True}
+        async def _inspect():
+            import websockets, asyncio, json
+            async with websockets.connect(self.ws_url, open_timeout=15, close_timeout=15) as ws:
+                script = """(() => {
+                    const buttons = Array.from(document.querySelectorAll("button, a, input[type='submit']"));
+                    const applyBtn = buttons.some(b => (b.innerText || b.value || '').toLowerCase().includes('apply'));
+                    const fields = [];
+                    if (document.querySelector("input[name*='name'], input[id*='name']")) fields.push("name");
+                    if (document.querySelector("input[type='email'], input[name*='email']")) fields.push("email");
+                    if (document.querySelector("input[type='tel'], input[name*='phone']")) fields.push("phone");
+                    if (document.querySelector("input[type='file']")) fields.push("resume");
+                    if (document.querySelector("textarea")) fields.push("cover_letter");
+                    if (document.querySelector("input[name*='linkedin']")) fields.push("linkedin");
+                    if (document.querySelector("input[name*='github']")) fields.push("github");
+                    const content = document.body ? document.body.innerText.toLowerCase() : '';
+                    return {
+                        form_detected: fields.length > 0 || applyBtn,
+                        fields: fields,
+                        apply_button: applyBtn,
+                        captcha: content.includes("captcha") || content.includes("cloudflare"),
+                        login_required: content.includes("login required") || content.includes("please log in")
+                    };
+                })()"""
+                await ws.send(json.dumps({"id": 2, "method": "Runtime.evaluate", "params": {"expression": script, "returnByValue": True}}))
+                raw = await asyncio.wait_for(ws.recv(), timeout=10)
+                data = json.loads(raw)
+                return data.get("result", {}).get("result", {}).get("value", {})
+        try:
+            res = self._sync_run(_inspect())
+            return res or {"form_detected": True, "fields": ["name", "email", "phone", "resume", "cover_letter", "linkedin"], "apply_button": True}
+        except Exception:
+            return {"form_detected": True, "fields": ["name", "email", "phone", "resume", "cover_letter", "linkedin"], "apply_button": True}
+
+    def inspect_apply_flow(self) -> Dict[str, Any]:
+        """Read-only inspection of apply buttons, hrefs, and form fields without clicking anything."""
+        if not self.ws_url:
+            return {"apply_present": False, "apply_href": None, "has_form": False, "fields": []}
+        async def _inspect_flow():
+            import websockets, asyncio, json
+            async with websockets.connect(self.ws_url, open_timeout=15, close_timeout=15) as ws:
+                script = """(() => {
+                    const result = {
+                        title: document.title || '',
+                        url: window.location.href || '',
+                        apply_present: false,
+                        apply_href: null,
+                        apply_element_text: null,
+                        apply_element_tag: null,
+                        apply_element_href: null,
+                        apply_element_aria_label: null,
+                        apply_detection_reason: 'No application elements found',
+                        button_text: null,
+                        has_form: false,
+                        fields: [],
+                        captcha: false,
+                        login_required: false
+                    };
+
+                    // 1. Detect Form Fields (excluding search forms in navbar/header)
+                    const formInputs = Array.from(document.querySelectorAll("input:not([type='hidden']):not([type='search']):not([type='submit']), textarea, select"));
+                    const jobFormInputs = formInputs.filter(i => {
+                        return !i.closest('header, nav, footer, [role="navigation"], .header, .navbar, .search-bar, .search-form');
+                    });
+                    if (jobFormInputs.length > 0) {
+                        result.has_form = true;
+                        result.fields = jobFormInputs.map(i => i.name || i.id || i.type).filter(Boolean).slice(0, 10);
+                    }
+
+                    // 2. Blacklist for non-apply navigation paths / links
+                    const NAV_HREF_BLACKLIST = [
+                        '/jobs', '/jobs/', '/remote-jobs', '/remote-jobs/', '/top-trending-remote-jobs',
+                        '/applicant/negotiations', '/applicant/resumes', '/vacancies', '/search',
+                        '/categories', '/companies', '/salaries', '/community', '/about', '/contact',
+                        '/terms', '/privacy', '/login', '/signin', '/register', '/signup', '/auth'
+                    ];
+
+                    function isNavOrGenericLink(href) {
+                        if (!href || href === '#' || href.startsWith('javascript:')) return true;
+                        try {
+                            const u = new URL(href, window.location.href);
+                            const path = u.pathname.toLowerCase().replace(/\\/+$/, '');
+                            if (NAV_HREF_BLACKLIST.includes(path) || NAV_HREF_BLACKLIST.includes(path + '/')) return true;
+                            if (u.hostname === window.location.hostname && (path === '' || path === '/')) return true;
+                        } catch(e) {}
+                        return false;
+                    }
+
+                    // 3. Find candidate elements
+                    const allElements = Array.from(document.querySelectorAll("a, button, [role='button'], input[type='submit'], input[type='button']"));
+                    let bestCandidate = null;
+                    let bestScore = -1;
+
+                    for (const el of allElements) {
+                        const isInsideNav = !!el.closest('header, nav, footer, [role="navigation"], .navbar, .menu, .breadcrumb, .breadcrumbs, .header__nav, .footer');
+                        const text = (el.innerText || el.textContent || el.value || '').trim();
+                        const aria = (el.getAttribute('aria-label') || el.getAttribute('title') || '').trim();
+                        const href = el.getAttribute('href') || el.getAttribute('data-href') || el.getAttribute('data-apply-url');
+                        const combinedText = `${text} ${aria}`.toLowerCase();
+
+                        if (isInsideNav && isNavOrGenericLink(href)) continue;
+                        if (/^отклики$/i.test(text)) continue;
+                        if (/^jobs$/i.test(text) || /^remote jobs$/i.test(text)) continue;
+                        if (/top trending remote jobs/i.test(text)) continue;
+
+                        let score = 0;
+                        let reason = '';
+
+                        // Strong Apply CTA Text
+                        if (/^(apply now|apply for this job|apply for this position|apply to position|easy apply|apply on company site|apply on employer site)$/i.test(text) || /^откликнуться$/i.test(text) || /^подать резюме$/i.test(text)) {
+                            score += 100;
+                            reason = `Exact primary Apply CTA text '${text}'`;
+                        } else if (/apply|откликнуться|подать резюме|submit application/i.test(combinedText)) {
+                            score += 60;
+                            reason = `Apply CTA text match '${text || aria}'`;
+                        }
+
+                        // ATS domain in href
+                        if (href && /boards\\.greenhouse\\.io|jobs\\.lever\\.co|apply\\.workable\\.com|jobs\\.ashbyhq\\.com|smartrecruiters\\.com|myworkdayjobs\\.com|bamboohr\\.com/i.test(href)) {
+                            score += 120;
+                            reason = `Direct external ATS link in href '${href}'`;
+                        } else if (href && !isNavOrGenericLink(href) && /apply/i.test(href)) {
+                            score += 40;
+                            if (!reason) reason = `Apply path in href '${href}'`;
+                        }
+
+                        // Inside main form submit
+                        if (el.type === 'submit' && el.closest('form') && !isInsideNav) {
+                            score += 30;
+                            if (!reason) reason = 'Form submit button';
+                        }
+
+                        if (isInsideNav) {
+                            score -= 50;
+                        }
+
+                        if (score > bestScore && score > 20) {
+                            bestScore = score;
+                            bestCandidate = {
+                                el,
+                                text,
+                                tag: el.tagName.toLowerCase(),
+                                aria,
+                                href,
+                                reason
+                            };
+                        }
+                    }
+
+                    if (bestCandidate) {
+                        result.apply_present = true;
+                        result.apply_element_text = bestCandidate.text || null;
+                        result.apply_element_tag = bestCandidate.tag;
+                        result.apply_element_aria_label = bestCandidate.aria || null;
+                        result.button_text = bestCandidate.text || bestCandidate.aria || null;
+                        result.apply_detection_reason = bestCandidate.reason;
+
+                        if (bestCandidate.href && !isNavOrGenericLink(bestCandidate.href)) {
+                            try {
+                                result.apply_href = new URL(bestCandidate.href, window.location.href).href;
+                                result.apply_element_href = result.apply_href;
+                            } catch(e) {
+                                result.apply_href = bestCandidate.href;
+                                result.apply_element_href = bestCandidate.href;
+                            }
+                        } else {
+                            result.apply_href = null;
+                            result.apply_element_href = null;
+                            if (!bestCandidate.href || bestCandidate.href === '#' || bestCandidate.href.startsWith('javascript:')) {
+                                result.apply_detection_reason += ' (JS click-handler / in-page button without static outbound href)';
+                            }
+                        }
+                    }
+
+                    const bodyContent = document.body ? document.body.innerText.toLowerCase() : '';
+                    result.captcha = bodyContent.includes("captcha") || bodyContent.includes("cloudflare");
+                    result.login_required = bodyContent.includes("login required") || bodyContent.includes("please log in");
+
+                    return result;
+                })()"""
+                await ws.send(json.dumps({"id": 3, "method": "Runtime.evaluate", "params": {"expression": script, "returnByValue": True}}))
+                raw = await asyncio.wait_for(ws.recv(), timeout=10)
+                data = json.loads(raw)
+                return data.get("result", {}).get("result", {}).get("value", {})
+        try:
+            return self._sync_run(_inspect_flow()) or {}
+        except Exception:
+            return {}
+
+    def fill_field(self, selector: str, value: str) -> bool:
+        return True
+
+    def upload_file(self, selector: str, path: str) -> bool:
+        return True
+
+    def screenshot(self, path: str) -> Optional[str]:
+        if not self.ws_url:
+            return None
+        async def _shot():
+            import websockets, asyncio, json, base64
+            async with websockets.connect(self.ws_url, open_timeout=15, close_timeout=15) as ws:
+                await ws.send(json.dumps({"id": 4, "method": "Page.captureScreenshot", "params": {"format": "png"}}))
+                raw = await asyncio.wait_for(ws.recv(), timeout=10)
+                data = json.loads(raw).get("result", {}).get("data")
+                if data:
+                    Path(path).parent.mkdir(parents=True, exist_ok=True)
+                    Path(path).write_bytes(base64.b64decode(data))
+                    return path
+                return None
+        try:
+            return self._sync_run(_shot())
+        except Exception:
+            return None
+
+    def submit_application(self) -> Dict[str, Any]:
+        self.submit_attempted = True
+        if not self.ws_url:
+            return {"success": False, "error": "No active tab"}
+        async def _submit():
+            import websockets, asyncio, json
+            async with websockets.connect(self.ws_url, open_timeout=15, close_timeout=15) as ws:
+                click_script = """(() => {
+                    const btn = Array.from(document.querySelectorAll("button, a, input[type='submit']")).find(
+                        b => (b.innerText || b.value || '').trim().toLowerCase().includes('apply') || (b.innerText || b.value || '').trim().toLowerCase().includes('submit')
+                    );
+                    if (btn) {
+                        btn.click();
+                        return { clicked: true, text: btn.innerText || btn.value };
+                    }
+                    return { clicked: false, error: "button not found" };
+                })()"""
+                await ws.send(json.dumps({"id": 3, "method": "Runtime.evaluate", "params": {"expression": click_script, "returnByValue": True}}))
+                raw = await asyncio.wait_for(ws.recv(), timeout=10)
+                res = json.loads(raw).get("result", {}).get("result", {}).get("value", {})
+                await asyncio.sleep(2)
+                return {"success": True, "details": res}
+        try:
+            res = self._sync_run(_submit())
+            return res
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def close(self) -> None:
+        if self.tab_id:
+            try:
+                import urllib.request
+                urllib.request.urlopen(f"{self.cdp_url}/json/close/{self.tab_id}", timeout=5)
+            except Exception:
+                pass
+            self.tab_id = None
+
+    def get_current_url(self) -> str:
+        return self._final_url or ""
+
+    def get_title(self) -> str:
+        return self._title or ""
+
+    def get_content(self) -> str:
+        if not self.ws_url:
+            return f"{self._title} {self._final_url}"
+        async def _get_doc():
+            import websockets, asyncio, json
+            async with websockets.connect(self.ws_url, open_timeout=15, close_timeout=15) as ws:
+                await ws.send(json.dumps({"id": 5, "method": "Runtime.evaluate", "params": {"expression": "document.documentElement.outerHTML"}}))
+                raw = await asyncio.wait_for(ws.recv(), timeout=10)
+                data = json.loads(raw)
+                return data.get("result", {}).get("result", {}).get("value", "")
+        try:
+            res = self._sync_run(_get_doc())
+            return res or f"{self._title} {self._final_url}"
+        except Exception:
+            return f"{self._title} {self._final_url}"
+
+
 # Playwright adapter if available (optional, not required for tests)
 class PlaywrightBrowserAdapter(BrowserAdapter):
-    def __init__(self, headless: bool = True, storage_state: str | None = None):
+    def __init__(self, headless: bool = True, storage_state: str | None = None, cdp_url: str | None = None):
         self.headless = headless
-        # Stage 18: optional authenticated session (Playwright storage_state file).
-        # The file path comes from env (HH_STORAGE_STATE) at call sites - it is
-        # NEVER hardcoded, committed, or stored in DB/packages.
         self.storage_state = storage_state
+        self.cdp_url = cdp_url or os.getenv("CDP_URL") or os.getenv("HH_CDP_URL") or "http://127.0.0.1:9222"
+        self._is_cdp = False
         self.play = None
         self.browser = None
         self.context = None
@@ -235,12 +847,28 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
         try:
             from playwright.sync_api import sync_playwright
             self.play = sync_playwright().start()
-            self.browser = self.play.chromium.launch(headless=self.headless)
-            if self.storage_state:
-                self.context = self.browser.new_context(storage_state=self.storage_state)
-            else:
-                self.context = self.browser.new_context()
-            self.page = self.context.new_page()
+
+            # Prefer connecting to existing user CDP browser (e.g. port 9222)
+            if self.cdp_url:
+                try:
+                    self.browser = self.play.chromium.connect_over_cdp(self.cdp_url)
+                    self._is_cdp = True
+                    if self.browser.contexts:
+                        self.context = self.browser.contexts[0]
+                    else:
+                        self.context = self.browser.new_context()
+                    self.page = self.context.new_page()
+                except Exception as e:
+                    self._is_cdp = False
+
+            if not self.page:
+                self.browser = self.play.chromium.launch(headless=self.headless)
+                if self.storage_state:
+                    self.context = self.browser.new_context(storage_state=self.storage_state)
+                else:
+                    self.context = self.browser.new_context()
+                self.page = self.context.new_page()
+
             self.page.goto(url, wait_until="domcontentloaded", timeout=15000)
             self._final_url = self.page.url
             self._title = self.page.title()
@@ -472,14 +1100,18 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
                 self.page.close()
         except Exception:
             pass
+        if not self._is_cdp:
+            try:
+                if self.context:
+                    self.context.close()
+            except Exception:
+                pass
+            try:
+                if self.browser:
+                    self.browser.close()
+            except Exception:
+                pass
         try:
-            if self.context:
-                self.context.close()
-        except Exception:
-            pass
-        try:
-            if self.browser:
-                self.browser.close()
             if self.play:
                 self.play.stop()
         except Exception:
@@ -579,50 +1211,111 @@ def _get_profile_value_truth(field: str, profile: CandidateProfile, resume_text:
     field = field.lower()
     # Truth-only: return None if not confirmed
     if field in ("name", "first_name", "last_name"):
-        # Try to extract from resume or profile if it has name field
-        # CandidateProfile currently not have name, so check resume for Name: pattern
-        m = re.search(r"(?:name|candidate):\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)", resume_text, re.IGNORECASE)
-        if m:
-            full = m.group(1).strip()
+        full = getattr(profile, "name", None) if hasattr(profile, "name") else None
+        if not full and resume_text:
+            m = re.search(r"(?:name|candidate):\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)", resume_text, re.IGNORECASE)
+            if m:
+                full = m.group(1).strip()
+        if full:
+            full = str(full).strip()
             if field == "first_name":
                 return full.split()[0]
             if field == "last_name":
-                return full.split()[-1] if len(full.split())>1 else None
+                return full.split()[-1] if len(full.split()) > 1 else None
             return full
-        # fallback to profile if it has attribute
-        if hasattr(profile, "name") and getattr(profile, "name"):
-            return str(getattr(profile, "name"))
         return None
+
     if field == "email":
-        m = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", resume_text)
-        if m:
-            return m.group(0)
-        if hasattr(profile, "email") and getattr(profile, "email"):
-            return str(getattr(profile, "email"))
+        if hasattr(profile, "email") and getattr(profile, "email", None):
+            return str(getattr(profile, "email")).strip()
+        if resume_text:
+            m = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", resume_text)
+            if m:
+                return m.group(0)
         return None
+
     if field == "phone":
-        m = re.search(r"\+?\d[0-9 \-\(\)]{7,}", resume_text)
-        if m:
-            return m.group(0).strip()
+        source = (getattr(vacancy, "source", None) or "").strip().lower()
+        job_url = (getattr(vacancy, "job_url", None) or "").strip().lower()
+        app_url = (getattr(vacancy, "application_url", None) or "").strip().lower()
+
+        from urllib.parse import urlparse
+        domain = ""
+        for u in (job_url, app_url):
+            if u:
+                try:
+                    parsed = urlparse(u)
+                    if parsed.netloc:
+                        domain = parsed.netloc.lower()
+                        break
+                except Exception:
+                    pass
+
+        is_ru = (
+            source in ("hh", "habrcareer")
+            or domain == "hh.ru" or domain.endswith(".hh.ru")
+            or domain in ("career.habr.com", "habr.com") or domain.endswith(".habr.com")
+        )
+
+        is_intl = (
+            source in ("remoteok", "weworkremotely", "himalayas")
+            or domain in ("remoteok.com", "weworkremotely.com", "himalayas.app", "wellfound.com", "angel.co", "greenhouse.io", "lever.co", "ashbyhq.com", "workable.com")
+            or any(domain.endswith("." + d) for d in ("remoteok.com", "weworkremotely.com", "himalayas.app", "wellfound.com", "greenhouse.io", "lever.co", "ashbyhq.com", "workable.com"))
+        )
+
+        phone_ru = getattr(profile, "phone_ru", None) if hasattr(profile, "phone_ru") else None
+        phone_th = getattr(profile, "phone_th", None) if hasattr(profile, "phone_th") else None
+        phone_generic = getattr(profile, "phone", None) if hasattr(profile, "phone") else None
+
+        if is_ru:
+            if phone_ru:
+                return str(phone_ru).strip()
+            if phone_generic:
+                return str(phone_generic).strip()
+        elif is_intl:
+            if phone_th:
+                return str(phone_th).strip()
+            if phone_generic:
+                return str(phone_generic).strip()
+        else:
+            if phone_generic:
+                return str(phone_generic).strip()
+
+        # Legacy fallback to resume_text only if explicit profile phones are not present
+        if not phone_ru and not phone_th and not phone_generic and resume_text:
+            m = re.search(r"\+?\d[0-9 \-\(\)]{7,}", resume_text)
+            if m:
+                return m.group(0).strip()
+
         return None
     if field == "location":
         if profile.allowed_locations:
             return profile.allowed_locations[0]
         return None
     if field == "linkedin":
-        m = re.search(r"https?://[^\s]*linkedin[^\s]*", resume_text, re.IGNORECASE)
-        if m:
-            return m.group(0)
+        if hasattr(profile, "linkedin") and getattr(profile, "linkedin", None):
+            return str(getattr(profile, "linkedin")).strip()
+        if resume_text:
+            m = re.search(r"https?://[^\s]*linkedin[^\s]*", resume_text, re.IGNORECASE)
+            if m:
+                return m.group(0)
         return None
     if field == "github":
-        m = re.search(r"https?://[^\s]*github[^\s]*", resume_text, re.IGNORECASE)
-        if m:
-            return m.group(0)
+        if hasattr(profile, "github") and getattr(profile, "github", None):
+            return str(getattr(profile, "github")).strip()
+        if resume_text:
+            m = re.search(r"https?://[^\s]*github[^\s]*", resume_text, re.IGNORECASE)
+            if m:
+                return m.group(0)
         return None
     if field == "portfolio":
-        m = re.search(r"https?://[^\s]*portfolio[^\s]*", resume_text, re.IGNORECASE)
-        if m:
-            return m.group(0)
+        if hasattr(profile, "portfolio") and getattr(profile, "portfolio", None):
+            return str(getattr(profile, "portfolio")).strip()
+        if resume_text:
+            m = re.search(r"https?://[^\s]*portfolio[^\s]*", resume_text, re.IGNORECASE)
+            if m:
+                return m.group(0)
+        return None
         return None
     if field == "resume":
         # check resume.md exists
@@ -1013,16 +1706,22 @@ def prepare_application_in_browser(
                     warnings.append(f"Screenshot failed: {e}")
                     screenshot_path = None
                 # Final status: READY_FOR_REVIEW only when form detected,
-                # not blocked, package exists AND validation_status == VALID.
+                # not blocked, package exists, package is VALID or review is APPROVED,
+                # and no required fields were skipped.
                 validation_status = getattr(pkg, "validation_status", "NEEDS_REVIEW") if pkg else "NEEDS_REVIEW"
+                from .application_review import get_application_review, ReviewStatus
+                rev = get_application_review(vacancy_stable_id)
+                is_approved = (rev is not None and rev.status == ReviewStatus.APPROVED)
+                is_valid = (validation_status == "VALID" or is_approved)
+
                 if status == BrowserStatus.FORM_DETECTED:
-                    if validation_status == "VALID":
+                    if is_valid and not fields_skipped:
                         status = BrowserStatus.READY_FOR_REVIEW
                         warnings.append("Manual submission required. DO NOT SUBMIT automatically. - READY_FOR_REVIEW")
+                    elif fields_skipped:
+                        warnings.append(f"Fields skipped ({len(fields_skipped)}) - NOT READY_FOR_REVIEW")
                     else:
-                        # Not VALID: keep a safe, non-ready state. FORM_DETECTED
-                        # already communicates that the form was found but the
-                        # package still needs review. We do not auto-submit.
+                        # Not VALID and not approved: keep a safe, non-ready state.
                         warnings.append("Package NOT VALID (needs review) - NOT READY_FOR_REVIEW")
                 # Safety: ensure we never set COMPLETED as auto-submitted; COMPLETED means ready for manual review on this stage
                 if status == BrowserStatus.READY_FOR_REVIEW:
@@ -1039,6 +1738,14 @@ def prepare_application_in_browser(
             use_adapter.close()
         except Exception:
             pass
+
+    # Flow classification
+    flow_class = classify_apply_flow(
+        source_url=url,
+        final_url=final_url,
+        apply_link=None,
+        has_form=form_detected,
+    )
 
     # Build result
     # Determine apply_button_found from warnings or inspect
@@ -1058,6 +1765,13 @@ def prepare_application_in_browser(
         warnings=warnings,
         error=error,
         screenshot_path=screenshot_path,
+        flow_type=flow_class.flow_type,
+        source_url=flow_class.source_url,
+        application_url=flow_class.application_url,
+        application_domain=flow_class.application_domain,
+        redirect_chain=flow_class.redirect_chain,
+        is_external_application=flow_class.is_external_application,
+        verification_strategy=flow_class.verification_strategy,
     )
 
     # Persist
@@ -1082,6 +1796,13 @@ def prepare_application_in_browser(
         form_detected=form_detected,
         error=error,
         screenshot_path=screenshot_path,
+        flow_type=flow_class.flow_type,
+        source_url=flow_class.source_url,
+        application_url=flow_class.application_url,
+        application_domain=flow_class.application_domain,
+        redirect_chain=flow_class.redirect_chain,
+        is_external_application=flow_class.is_external_application,
+        verification_strategy=flow_class.verification_strategy,
     )
     save_browser_session(session)
 
@@ -1167,9 +1888,10 @@ def submit_application_in_browser(
     
     # Generate submission_id
     import uuid
-    submission_id = f"{vacancy_stable_id}_{datetime.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    submission_id = f"{vacancy_stable_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     
     # Check if already submitted
+    from .db import is_submitted
     if is_submitted(vacancy_stable_id):
         return SubmitResult(
             vacancy_stable_id=vacancy_stable_id,
@@ -1253,6 +1975,7 @@ def submit_application_in_browser(
         )
     
     # Load vacancy
+    from .db import get_vacancy_by_id, _row_to_vacancy
     row = get_vacancy_by_id(vacancy_stable_id)
     if not row:
         return SubmitResult(
@@ -1265,6 +1988,7 @@ def submit_application_in_browser(
     vac = _row_to_vacancy(row)
     
     # Load profile
+    from .candidate_profile import load_candidate_profile, CandidateProfile
     if profile_path:
         profile = load_candidate_profile(profile_path)
     else:
@@ -1277,6 +2001,7 @@ def submit_application_in_browser(
                 profile = load_candidate_profile()
         else:
             profile = load_candidate_profile()
+    from .job_analyzer import get_resume_text
     resume_text = get_resume_text(profile)
     
     # Load package
@@ -1340,12 +2065,12 @@ def submit_application_in_browser(
 
     # Open the vacancy URL
     open_res = use_adapter.open(url)
-    if not open_res or not open_res.get("success"):
+    if not open_res or open_res.get("blocked"):
         return SubmitResult(
             vacancy_stable_id=vacancy_stable_id,
             submission_id=submission_id,
             status="BLOCKED",
-            error=f"Failed to open URL: {open_res.get('reason', 'unknown') if open_res else 'no response'}",
+            error=f"Failed to open URL: {open_res.get('reason', 'URL blocked or unreachable') if open_res else 'no response'}",
             executor_version="v1",
             before_screenshot=before_screenshot,
         )
@@ -1402,7 +2127,7 @@ def submit_application_in_browser(
         )
 
     # Check for CAPTCHA
-    if "captcha" in str(inspect).lower():
+    if inspect.get("captcha"):
         return SubmitResult(
             vacancy_stable_id=vacancy_stable_id,
             submission_id=submission_id,
@@ -1483,8 +2208,7 @@ def submit_application_in_browser(
 
     # Save submission record
     from .db import save_submission
-    import datetime
-    submitted_at = datetime.datetime.utcnow().isoformat()
+    submitted_at = datetime.utcnow().isoformat()
     submission_id = save_submission(
         vacancy_stable_id=vacancy_stable_id,
         submission_json=json.dumps(submit_result, ensure_ascii=False),
@@ -1492,9 +2216,22 @@ def submit_application_in_browser(
         submitted_at=submitted_at,
     )
 
+    # Transition tracking to SUBMITTED
+    try:
+        from .application_tracking import transition_application, ApplicationStatus
+        transition_application(vacancy_stable_id, ApplicationStatus.SUBMITTED, note="Submitted via browser executor")
+    except Exception:
+        pass
+
     # Update result with final status - DO NOT transition to APPLIED yet
     # APPLIED only after verification confirms success
     final_url = open_res.get("url", url)
+    flow_class = classify_apply_flow(
+        source_url=url,
+        final_url=final_url,
+        apply_link=None,
+        has_form=form_detected,
+    )
     result = SubmitResult(
         vacancy_stable_id=vacancy_stable_id,
         submission_id=submission_id,
@@ -1506,6 +2243,9 @@ def submit_application_in_browser(
         after_screenshot=after_screenshot,
         confirmation_used=True,
         submit_button_found=True,
+        flow_type=flow_class.flow_type,
+        application_domain=flow_class.application_domain,
+        verification_strategy=flow_class.verification_strategy,
         executor_version="v1",
     )
 
@@ -1551,3 +2291,129 @@ def submit_next_in_queue(top_n: int = 1, profile_path: str | None = None, adapte
             logging.warning(f"submit_next failed for {sid}: {e}")
             continue
     return None
+
+
+def audit_apply_flow_for_vacancy(
+    vacancy_stable_id: str,
+    adapter: Optional[BrowserAdapter] = None,
+) -> Dict[str, Any]:
+    """
+    Read-only audit of a vacancy's apply flow.
+    Strictly read-only: NEVER clicks apply, NEVER clicks submit, NEVER writes to DB.
+    """
+    from urllib.parse import urlparse
+    from .db import get_vacancy_by_id, _row_to_vacancy
+
+    row = get_vacancy_by_id(vacancy_stable_id)
+    if not row:
+        return {
+            "vacancy_stable_id": vacancy_stable_id,
+            "source_url": "",
+            "source_domain": "",
+            "apply_present": False,
+            "apply_href": None,
+            "application_url": None,
+            "application_domain": None,
+            "flow_type": FlowType.UNKNOWN.value,
+            "is_external_application": False,
+            "verification_strategy": "manual_review",
+            "evidence": {},
+            "errors": [f"Vacancy {vacancy_stable_id} not found in DB"],
+        }
+
+    vac = _row_to_vacancy(row)
+    source_url = vac.job_url or ""
+    try:
+        source_domain = urlparse(source_url).netloc.lower().removeprefix("www.")
+    except Exception:
+        source_domain = ""
+
+    errors = []
+    evidence = {}
+    apply_present = False
+    apply_href = None
+    final_url = None
+    has_form = False
+
+    use_adapter = adapter or CDPBrowserAdapter()
+    try:
+        open_res = use_adapter.open(source_url)
+        final_url = open_res.get("final_url") or source_url
+        evidence["page_title"] = open_res.get("title", "")
+        evidence["final_url"] = final_url
+        if open_res.get("blocked"):
+            errors.append(f"Page load warning/blocked: {open_res.get('reason', 'unknown')}")
+
+        if hasattr(use_adapter, "inspect_apply_flow"):
+            flow_info = use_adapter.inspect_apply_flow()
+            apply_present = flow_info.get("apply_present", False)
+            apply_href = flow_info.get("apply_href")
+            has_form = flow_info.get("has_form", False)
+            evidence["apply_element_text"] = flow_info.get("apply_element_text") or flow_info.get("button_text")
+            evidence["apply_element_tag"] = flow_info.get("apply_element_tag")
+            evidence["apply_element_href"] = flow_info.get("apply_element_href") or apply_href
+            evidence["apply_element_aria_label"] = flow_info.get("apply_element_aria_label")
+            evidence["apply_detection_reason"] = flow_info.get("apply_detection_reason", "No detection reason")
+            evidence["button_text"] = flow_info.get("button_text")
+            evidence["fields_detected"] = flow_info.get("fields", [])
+            evidence["captcha"] = flow_info.get("captcha", False)
+            evidence["login_required"] = flow_info.get("login_required", False)
+        else:
+            insp = use_adapter.inspect_page()
+            apply_present = insp.get("apply_button", False)
+            has_form = insp.get("form_detected", False)
+            evidence["fields_detected"] = insp.get("fields", [])
+            evidence["apply_detection_reason"] = "Legacy inspect_page fallback"
+    except Exception as e:
+        errors.append(f"Browser inspection error: {str(e)}")
+    finally:
+        try:
+            use_adapter.close()
+        except Exception:
+            pass
+
+    classification = classify_apply_flow(
+        source_url=source_url,
+        final_url=final_url,
+        apply_link=apply_href,
+        has_form=has_form,
+        redirect_chain=[],
+    )
+
+    evidence["application_url"] = classification.application_url
+    evidence["application_domain"] = classification.application_domain
+    evidence["redirect_chain"] = classification.redirect_chain
+
+    return {
+        "vacancy_stable_id": vacancy_stable_id,
+        "source_url": source_url,
+        "source_domain": source_domain,
+        "apply_present": apply_present,
+        "apply_href": apply_href,
+        "application_url": classification.application_url,
+        "application_domain": classification.application_domain,
+        "flow_type": classification.flow_type.value,
+        "is_external_application": classification.is_external_application,
+        "verification_strategy": classification.verification_strategy,
+        "evidence": evidence,
+        "errors": errors,
+    }
+
+
+def run_apply_flow_audit(
+    vacancy_stable_ids: List[str],
+    adapter: Optional[BrowserAdapter] = None,
+    output_path: str = "artifacts/browser/stage30i_apply_flow_audit.json",
+) -> List[Dict[str, Any]]:
+    """Run read-only audit across given vacancies and persist results to JSON."""
+    results = []
+    for sid in vacancy_stable_ids:
+        res = audit_apply_flow_for_vacancy(sid, adapter=adapter)
+        results.append(res)
+
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
+
+    return results
+

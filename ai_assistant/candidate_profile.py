@@ -46,6 +46,15 @@ class CandidateProfile:
     employment_types: List[str] = field(default_factory=list)
     minimum_salary: Optional[float] = None
     salary_currency: Optional[str] = None
+    # contact info
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone_ru: Optional[str] = None
+    phone_th: Optional[str] = None
+    phone: Optional[str] = None
+    linkedin: Optional[str] = None
+    github: Optional[str] = None
+    portfolio: Optional[str] = None
     # exclusions (hard)
     excluded_roles: List[str] = field(default_factory=list)
     excluded_companies: List[str] = field(default_factory=list)
@@ -82,6 +91,22 @@ class CandidateProfile:
 
         if self.salary_currency:
             self.salary_currency = str(self.salary_currency).strip().upper() or None
+        if self.name:
+            self.name = str(self.name).strip() or None
+        if self.email:
+            self.email = str(self.email).strip() or None
+        if self.phone_ru:
+            self.phone_ru = str(self.phone_ru).strip() or None
+        if self.phone_th:
+            self.phone_th = str(self.phone_th).strip() or None
+        if self.phone:
+            self.phone = str(self.phone).strip() or None
+        if self.linkedin:
+            self.linkedin = str(self.linkedin).strip() or None
+        if self.github:
+            self.github = str(self.github).strip() or None
+        if self.portfolio:
+            self.portfolio = str(self.portfolio).strip() or None
         if self.minimum_salary is not None:
             try:
                 self.minimum_salary = float(self.minimum_salary)
@@ -136,6 +161,15 @@ class CandidateProfile:
         if min_salary is None:
             min_salary = data.get("min_salary")
         curr = data.get("salary_currency") or data.get("salaryCurrency") or data.get("currency")
+        # contact fields
+        name = data.get("name") or data.get("full_name") or data.get("fullName") or data.get("candidate_name")
+        email = data.get("email") or data.get("mail")
+        phone_ru = data.get("phone_ru") or data.get("phoneRu") or data.get("phone_russia")
+        phone_th = data.get("phone_th") or data.get("phoneTh") or data.get("phone_thailand")
+        phone = data.get("phone") or data.get("telephone") or data.get("mobile")
+        linkedin = data.get("linkedin") or data.get("linkedin_url") or data.get("linkedIn")
+        github = data.get("github") or data.get("github_url") or data.get("gitHub")
+        portfolio = data.get("portfolio") or data.get("portfolio_url") or data.get("website")
 
         return cls(
             desired_roles=_norm_list(desired),
@@ -150,6 +184,14 @@ class CandidateProfile:
             employment_types=_norm_list(emp),
             minimum_salary=min_salary,
             salary_currency=curr,
+            name=str(name).strip() if name else None,
+            email=str(email).strip() if email else None,
+            phone_ru=str(phone_ru).strip() if phone_ru else None,
+            phone_th=str(phone_th).strip() if phone_th else None,
+            phone=str(phone).strip() if phone else None,
+            linkedin=str(linkedin).strip() if linkedin else None,
+            github=str(github).strip() if github else None,
+            portfolio=str(portfolio).strip() if portfolio else None,
             excluded_roles=_norm_list(data.get("excluded_roles") or data.get("excludedRoles") or []),
             excluded_companies=_norm_list(data.get("excluded_companies") or data.get("excludedCompanies") or []),
             excluded_countries=_norm_list(data.get("excluded_countries") or data.get("excludedCountries") or []),
@@ -168,7 +210,7 @@ class CandidateProfile:
         return cls.from_dict(data)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "desired_roles": self.desired_roles,
             "alternative_roles": self.alternative_roles,
             "skills": self.skills,
@@ -186,6 +228,23 @@ class CandidateProfile:
             "excluded_countries": self.excluded_countries,
             "excluded_industries": self.excluded_industries,
         }
+        if self.name is not None:
+            d["name"] = self.name
+        if self.email is not None:
+            d["email"] = self.email
+        if self.phone_ru is not None:
+            d["phone_ru"] = self.phone_ru
+        if self.phone_th is not None:
+            d["phone_th"] = self.phone_th
+        if self.phone is not None:
+            d["phone"] = self.phone
+        if self.linkedin is not None:
+            d["linkedin"] = self.linkedin
+        if self.github is not None:
+            d["github"] = self.github
+        if self.portfolio is not None:
+            d["portfolio"] = self.portfolio
+        return d
 
 
 # Default search locations (project root and ai_assistant folder)

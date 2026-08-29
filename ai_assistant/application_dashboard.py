@@ -78,6 +78,31 @@ class ActionItem:
     deep_score: Optional[float] = None
 
 
+def _extract_verification_status(ver: Any) -> Optional[str]:
+    if ver is None:
+        return None
+    if isinstance(ver, (tuple, list)):
+        return str(ver[3]) if len(ver) > 3 and ver[3] is not None else None
+    if hasattr(ver, 'verification_status'):
+        val = ver.verification_status
+        return val.value if hasattr(val, 'value') else str(val)
+    if isinstance(ver, dict):
+        return ver.get("status") or ver.get("verification_status")
+    return str(ver)
+
+
+def _extract_verification_vacancy_id(ver: Any) -> Optional[str]:
+    if ver is None:
+        return None
+    if isinstance(ver, (tuple, list)):
+        return str(ver[0]) if len(ver) > 0 and ver[0] is not None else None
+    if hasattr(ver, 'vacancy_stable_id'):
+        return str(ver.vacancy_stable_id)
+    if isinstance(ver, dict):
+        return ver.get("vacancy_stable_id")
+    return None
+
+
 @dataclass
 class ApplicationDashboard:
     generated_at: str
@@ -341,8 +366,9 @@ def build_dashboard() -> ApplicationDashboard:
     all_verifications = list_verifications(limit=10000)
     ver_status_counts = {}
     for ver in all_verifications:
-        status = ver.verification_status.value if hasattr(ver.verification_status, 'value') else str(ver.verification_status)
-        ver_status_counts[status] = ver_status_counts.get(status, 0) + 1
+        status = _extract_verification_status(ver)
+        if status:
+            ver_status_counts[status] = ver_status_counts.get(status, 0) + 1
     
     dashboard.blocked = ver_status_counts.get("BLOCKED", 0)
     dashboard.ambiguous = ver_status_counts.get("AMBIGUOUS", 0)
@@ -358,28 +384,18 @@ def _build_canonical_action_items(canonical_groups: Dict[str, List[Tuple[Any, st
     """Build action items at canonical level."""
     actions = []
     
-    # Map verifications by canonical_id
+    # Map verifications by vacancy_stable_id
     all_verifications = list_verifications(limit=10000)
-    ver_by_canonical: Dict[str, str] = {}
+    ver_by_vid: Dict[str, str] = {}
     for ver in all_verifications:
-        ver_status = ver.verification_status.value if hasattr(ver.verification_status, 'value') else str(ver.verification_status)
-        # Need to get canonical_id for this verification
-        from .db import get_submission
-        sub_row = get_submission(ver.vacancy_stable_id, ver.submission_id)
-        if sub_row:
-            try:
-                sub_json = json.loads(sub_row[3]) if sub_row[3] else {}
-                submission_id = sub_json.get("submission_id")
-                # Find canonical_id for this submission
-                from .vacancy_identity import get_aliases_for_canonical
-                # We need to find which canonical this submission belongs to
-                # For simplicity, use the first alias's canonical_id
-                pass
-            except Exception:
-                pass
+        ver_vid = _extract_verification_vacancy_id(ver)
+        ver_status = _extract_verification_status(ver)
+        if ver_vid and ver_status and ver_vid not in ver_by_vid:
+            ver_by_vid[ver_vid] = ver_status
     
-    # Map queue items by canonical_id
+    # Map queue items by canonical_id and vacancy_stable_id
     queue_items = _get_all_queue_items()
+    queue_by_sid = {q.vacancy_stable_id: q for q in queue_items}
     queue_by_canonical: Dict[str, Any] = {}
     for q in queue_items:
         canonical_id = q.canonical_id
@@ -394,16 +410,11 @@ def _build_canonical_action_items(canonical_groups: Dict[str, List[Tuple[Any, st
         if canonical_status in terminal_statuses:
             continue
         
-        # Get verification status
-        # Find the most recent verification for this canonical
+        # Get verification status for this canonical
         ver_status = None
-        for ver in list_verifications(limit=10000):
-            # Check if this verification belongs to an alias in this canonical group
-            for track, sid in aliases:
-                if track.vacancy_stable_id == ver.vacancy_stable_id:
-                    ver_status = ver.verification_status.value if hasattr(ver.verification_status, 'value') else str(ver.verification_status)
-                    break
-            if ver_status:
+        for track, sid in aliases:
+            if track.vacancy_stable_id in ver_by_vid:
+                ver_status = ver_by_vid[track.vacancy_stable_id]
                 break
         
         # Determine action
@@ -420,14 +431,9 @@ def _build_canonical_action_items(canonical_groups: Dict[str, List[Tuple[Any, st
         if action != ActionType.NO_ACTION:
             # Get priority from queue
             queue_item = None
-            # Find queue item for this canonical
             for track, sid in aliases:
-                if sid in {q.vacancy_stable_id for q in _get_all_queue_items()}:
-                    for q in _get_all_queue_items():
-                        if q.vacancy_stable_id == sid:
-                            queue_item = q
-                            break
-                if queue_item:
+                if sid in queue_by_sid:
+                    queue_item = queue_by_sid[sid]
                     break
             
             priority = queue_item.priority_score if queue_item else 0
@@ -822,8 +828,10 @@ def _build_action_items(
     # Map verifications by vacancy
     ver_by_vacancy = {}
     for ver in all_verifications:
-        ver_status = ver.verification_status.value if hasattr(ver.verification_status, 'value') else str(ver.verification_status)
-        ver_by_vacancy[ver.vacancy_stable_id] = ver_status
+        ver_status = _extract_verification_status(ver)
+        ver_vid = _extract_verification_vacancy_id(ver)
+        if ver_vid and ver_status:
+            ver_by_vacancy[ver_vid] = ver_status
     
     # Map queue items by vacancy
     queue_by_vacancy = {q.vacancy_stable_id: q for q in queue_items}

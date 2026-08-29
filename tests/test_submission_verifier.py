@@ -758,5 +758,580 @@ def test_verify_submission_in_browser_integration():
         teardown_test_db(tmp_dir)
 
 
+def test_stage30e_confirmation_gate_and_verification_suite():
+    """Stage 30E: Comprehensive test suite for confirmation gate and post-submit verification."""
+    tmp_dir = setup_test_db()
+    try:
+        vac = _vac(source_job_id="stage30e_1")
+        db.save_vacancy(vac)
+        
+        # Setup: tracking READY_TO_APPLY, review APPROVED, browser session READY_FOR_REVIEW, package exists, queue exists
+        set_application_status(vac.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        from ai_assistant.application_review import ApplicationReview, ReviewStatus, save_application_review
+        rev = ApplicationReview(vacancy_stable_id=vac.stable_id(), status=ReviewStatus.APPROVED)
+        save_application_review(rev)
+        from ai_assistant.browser_executor import BrowserApplicationSession, BrowserStatus, save_browser_session
+        now_str = datetime.utcnow().isoformat()
+        sess = BrowserApplicationSession(
+            vacancy_stable_id=vac.stable_id(),
+            url=vac.job_url,
+            status=BrowserStatus.READY_FOR_REVIEW,
+            created_at=now_str,
+            updated_at=now_str,
+        )
+        save_browser_session(sess)
+
+        from ai_assistant.application_queue import QueueItem, save_queue_item
+        q = QueueItem(
+            vacancy_stable_id=vac.stable_id(),
+            canonical_id=vac.stable_id(),
+            representative_vacancy_stable_id=vac.stable_id(),
+            priority_score=80,
+            rank=1,
+            match_score=80.0,
+            deep_score=80.0,
+        )
+        save_queue_item(q)
+
+        pkg_json = json.dumps({"cover_letter": "Letters", "validation_status": "VALID"})
+        db.save_application_package(vac.stable_id(), "v1", pkg_json)
+
+        # Test A: confirm_submit=False -> Submit is BLOCKED, not executed
+        mock_adapter_no_confirm = MockBrowserAdapter(simulate={"fields": ["name", "email"], "apply_button": True})
+        res_no_confirm = submit_application_in_browser(vac.stable_id(), confirm_submit=False, adapter=mock_adapter_no_confirm)
+        assert res_no_confirm.status == "BLOCKED"
+        assert "confirmation required" in res_no_confirm.error.lower()
+        assert mock_adapter_no_confirm.submit_attempted is False
+        assert db.is_submitted(vac.stable_id()) is False
+        assert get_application_status(vac.stable_id()).status == ApplicationStatus.READY_TO_APPLY
+
+        # Test B: confirm_submit=True -> Submit executed
+        mock_adapter_confirm = MockBrowserAdapter(simulate={"fields": ["name", "email"], "apply_button": True})
+        res_confirm = submit_application_in_browser(vac.stable_id(), confirm_submit=True, adapter=mock_adapter_confirm)
+        assert res_confirm.status == "SUBMITTED"
+        assert mock_adapter_confirm.submit_attempted is True
+        assert db.is_submitted(vac.stable_id()) is True
+        assert get_application_status(vac.stable_id()).status == ApplicationStatus.SUBMITTED
+
+        # Test D: duplicate submit blocked
+        res_duplicate = submit_application_in_browser(vac.stable_id(), confirm_submit=True, adapter=mock_adapter_confirm)
+        assert res_duplicate.status == "BLOCKED"
+        assert "already submitted" in res_duplicate.error.lower()
+
+        # Test C: Post-Submit verifier distinguishes success / failure / ambiguous / blocked
+        # C1: success
+        mock_success = MockBrowserAdapter(simulate={"page_title": "Thank you for applying", "final_url": "https://example.com/done"})
+        ver_success = verify_submission(vac.stable_id(), res_confirm.submission_id, adapter=mock_success)
+        assert ver_success.verification_status == VerificationStatus.VERIFIED
+        assert get_application_status(vac.stable_id()).status == ApplicationStatus.APPLIED
+
+        # C2: error/blocked signals
+        mock_error = MockBrowserAdapter(simulate={"page_title": "Error: submission failed", "final_url": "https://example.com/error"})
+        s2, e2, b2 = _detect_signals("Error: submission failed", "Error", "https://example.com/error")
+        assert len(e2) > 0
+
+        mock_blocked = MockBrowserAdapter(simulate={"page_title": "Cloudflare captcha", "final_url": "https://example.com/challenge"})
+        s3, e3, b3 = _detect_signals("Cloudflare captcha verification required", "Captcha", "https://example.com")
+        assert len(b3) > 0
+
+        # Test E: Cannot bypass confirmation via submit_vacancy CLI wrapper
+        from ai_assistant.cli import submit_vacancy
+        vac_e = _vac(source_job_id="stage30e_e")
+        db.save_vacancy(vac_e)
+        code = submit_vacancy(vac_e.stable_id(), confirm_submit=False)
+        assert code == 1
+        assert db.is_submitted(vac_e.stable_id()) is False
+
+    finally:
+        teardown_test_db(tmp_dir)
+
+
+def test_stage30f_ambiguous_post_submit_verification_invariants():
+    """Stage 30F: Verify that AMBIGUOUS post-submit state preserves honest truth and does not fake VERIFIED."""
+    tmp_dir = setup_test_db()
+    try:
+        vac = _vac(source_job_id="stage30f_1")
+        db.save_vacancy(vac)
+
+        # 1. Setup ready vacancy
+        set_application_status(vac.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        from ai_assistant.application_review import ApplicationReview, ReviewStatus, save_application_review
+        rev = ApplicationReview(vacancy_stable_id=vac.stable_id(), status=ReviewStatus.APPROVED)
+        save_application_review(rev)
+
+        from ai_assistant.browser_executor import BrowserApplicationSession, BrowserStatus, save_browser_session
+        now_str = datetime.utcnow().isoformat()
+        sess = BrowserApplicationSession(
+            vacancy_stable_id=vac.stable_id(),
+            url=vac.job_url,
+            status=BrowserStatus.READY_FOR_REVIEW,
+            created_at=now_str,
+            updated_at=now_str,
+        )
+        save_browser_session(sess)
+
+        from ai_assistant.application_queue import QueueItem, save_queue_item
+        q = QueueItem(
+            vacancy_stable_id=vac.stable_id(),
+            canonical_id=vac.stable_id(),
+            representative_vacancy_stable_id=vac.stable_id(),
+            priority_score=80,
+            rank=1,
+            match_score=80.0,
+            deep_score=80.0,
+        )
+        save_queue_item(q)
+
+        pkg_json = json.dumps({"cover_letter": "Letters", "validation_status": "VALID"})
+        db.save_application_package(vac.stable_id(), "v1", pkg_json)
+
+        # 2. Perform submit with confirm_submit=True
+        mock_adapter = MockBrowserAdapter(simulate={"fields": ["name", "email"], "apply_button": True})
+        submit_res = submit_application_in_browser(vac.stable_id(), confirm_submit=True, adapter=mock_adapter)
+        assert submit_res.status == "SUBMITTED"
+        assert db.is_submitted(vac.stable_id()) is True
+
+        # Invariant 1: Application tracking is SUBMITTED
+        assert get_application_status(vac.stable_id()).status == ApplicationStatus.SUBMITTED
+
+        # 3. Post-submit verification on page with NO explicit confirmation message (e.g. RemoteOK job board page)
+        mock_no_signal_adapter = MockBrowserAdapter(simulate={
+            "page_title": "Remote Job Listing at Company",
+            "final_url": "https://example.com/job/123",
+            "body_text": "Company is hiring remote engineers. Apply here.",
+        })
+        ver_res = verify_submission(vac.stable_id(), submit_res.submission_id, adapter=mock_no_signal_adapter)
+
+        # Invariant 2: Result MUST be AMBIGUOUS (not falsely VERIFIED, not FAILED)
+        assert ver_res.verification_status == VerificationStatus.AMBIGUOUS
+        assert ver_res.success_signal is None
+        assert "No clear success/error/blocked signals found" in ver_res.warnings
+
+        # Invariant 3: AMBIGUOUS MUST NOT transition tracking to APPLIED or VERIFIED
+        tracking_rec = get_application_status(vac.stable_id())
+        assert tracking_rec.status == ApplicationStatus.SUBMITTED
+        assert tracking_rec.status != ApplicationStatus.APPLIED
+        assert tracking_rec.status != ApplicationStatus.VERIFIED
+
+        # Invariant 4: Duplicate submit is strictly BLOCKED even when verification is AMBIGUOUS
+        dup_res = submit_application_in_browser(vac.stable_id(), confirm_submit=True, adapter=mock_adapter)
+        assert dup_res.status == "BLOCKED"
+        assert "already submitted" in dup_res.error.lower()
+
+        # Invariant 5: When real success signal IS present, status transitions to VERIFIED -> APPLIED
+        mock_real_success = MockBrowserAdapter(simulate={
+            "page_title": "Thank you for applying",
+            "final_url": "https://example.com/thanks",
+            "body_text": "Your application has been received. Thank you for your application.",
+        })
+        ver_real = verify_submission(vac.stable_id(), submit_res.submission_id, adapter=mock_real_success)
+        assert ver_real.verification_status == VerificationStatus.VERIFIED
+        assert get_application_status(vac.stable_id()).status == ApplicationStatus.APPLIED
+
+    finally:
+        teardown_test_db(tmp_dir)
+
+
+def test_stage30g_flow_classification_and_routing():
+    """Stage 30G: Apply Flow Classification + Safe Routing test suite."""
+    from ai_assistant.browser_executor import (
+        FlowType,
+        classify_apply_flow,
+        prepare_application_in_browser,
+        submit_application_in_browser,
+        BrowserStatus,
+    )
+    from ai_assistant.submission_verifier import verify_submission, VerificationStatus
+
+    # A. Native form -> NATIVE_FORM
+    res_a = classify_apply_flow(
+        source_url="https://careers.google.com/jobs/results/123",
+        final_url="https://careers.google.com/jobs/results/123",
+        has_form=True,
+    )
+    assert res_a.flow_type == FlowType.NATIVE_FORM
+    assert res_a.is_external_application is False
+    assert res_a.verification_strategy == "native_submission_verifier"
+    assert res_a.application_domain == "careers.google.com"
+
+    # B. External ATS redirect -> EXTERNAL_ATS
+    res_b1 = classify_apply_flow(
+        source_url="https://company.com/careers/engineer",
+        final_url="https://jobs.lever.co/company/456",
+        apply_link="https://jobs.lever.co/company/456",
+    )
+    assert res_b1.flow_type == FlowType.EXTERNAL_ATS
+    assert res_b1.is_external_application is True
+    assert res_b1.application_domain == "jobs.lever.co"
+    assert res_b1.verification_strategy == "external_ats_verifier"
+
+    res_b2 = classify_apply_flow(
+        source_url="https://startup.io/jobs/1",
+        apply_link="https://boards.greenhouse.io/startup/jobs/789",
+    )
+    assert res_b2.flow_type == FlowType.EXTERNAL_ATS
+    assert res_b2.application_domain == "boards.greenhouse.io"
+
+    # C. Aggregator redirect -> AGGREGATOR_REDIRECT
+    # C1: Aggregator with external destination
+    res_c1 = classify_apply_flow(
+        source_url="https://remoteok.com/remote-jobs/remote-engineer-105820",
+        apply_link="https://company.com/apply",
+    )
+    assert res_c1.flow_type == FlowType.AGGREGATOR_REDIRECT
+    assert res_c1.is_external_application is True
+    assert res_c1.verification_strategy == "aggregator_redirect_pause"
+    assert res_c1.application_domain == "company.com"
+
+    res_c2 = classify_apply_flow(
+        source_url="https://weworkremotely.com/remote-jobs/example",
+        apply_link="https://company.com/apply",
+    )
+    assert res_c2.flow_type == FlowType.AGGREGATOR_REDIRECT
+    assert res_c2.is_external_application is True
+
+    # C3: Aggregator staying on same domain
+    res_c3 = classify_apply_flow(
+        source_url="https://remoteok.com/remote-jobs/remote-engineer-105820",
+        final_url="https://remoteok.com/remote-jobs/remote-engineer-105820",
+    )
+    assert res_c3.flow_type == FlowType.AGGREGATOR_REDIRECT
+    assert res_c3.is_external_application is False
+    assert res_c3.application_url is None
+    assert res_c3.application_domain is None
+
+    # D. Unknown -> UNKNOWN
+    res_d = classify_apply_flow(source_url="")
+    assert res_d.flow_type == FlowType.UNKNOWN
+    assert res_d.verification_strategy == "manual_review"
+
+    # E. Aggregator click does NOT become VERIFIED without explicit employer confirmation
+    tmp_dir = setup_test_db()
+    try:
+        vac_e = _vac(source_job_id="stage30g_agg", job_url="https://remoteok.com/remote-jobs/105820")
+        db.save_vacancy(vac_e)
+        set_application_status(vac_e.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        from ai_assistant.application_review import ApplicationReview, ReviewStatus, save_application_review
+        save_application_review(ApplicationReview(vacancy_stable_id=vac_e.stable_id(), status=ReviewStatus.APPROVED))
+        from ai_assistant.browser_executor import BrowserApplicationSession, save_browser_session
+        now_str = datetime.utcnow().isoformat()
+        save_browser_session(BrowserApplicationSession(
+            vacancy_stable_id=vac_e.stable_id(),
+            url=vac_e.job_url,
+            status=BrowserStatus.READY_FOR_REVIEW,
+            created_at=now_str,
+            updated_at=now_str,
+        ))
+        from ai_assistant.application_queue import QueueItem, save_queue_item
+        save_queue_item(QueueItem(
+            vacancy_stable_id=vac_e.stable_id(),
+            canonical_id=vac_e.stable_id(),
+            representative_vacancy_stable_id=vac_e.stable_id(),
+            priority_score=80,
+            rank=1,
+            match_score=80.0,
+            deep_score=80.0,
+        ))
+        db.save_application_package(vac_e.stable_id(), "v1", json.dumps({"cover_letter": "Letter", "validation_status": "VALID"}))
+
+        # Submit on aggregator
+        mock_agg = MockBrowserAdapter(simulate={"fields": ["name", "email"], "apply_button": True, "page_title": "Remote Job on RemoteOK"})
+        submit_agg = submit_application_in_browser(vac_e.stable_id(), confirm_submit=True, adapter=mock_agg)
+        assert submit_agg.status == "SUBMITTED"
+
+        # Verify on aggregator page without explicit success text
+        mock_ver_agg = MockBrowserAdapter(simulate={"page_title": "Remote Job on RemoteOK", "body_text": "Apply now at RemoteOK"})
+        ver_agg = verify_submission(vac_e.stable_id(), submit_agg.submission_id, adapter=mock_ver_agg)
+        assert ver_agg.verification_status == VerificationStatus.AMBIGUOUS
+        assert ver_agg.flow_type == FlowType.AGGREGATOR_REDIRECT
+        assert get_application_status(vac_e.stable_id()).status == ApplicationStatus.SUBMITTED
+
+        # F. External ATS without confirmation does NOT become VERIFIED
+        vac_f = _vac(source_job_id="stage30g_ats", job_url="https://jobs.lever.co/company/123")
+        db.save_vacancy(vac_f)
+        set_application_status(vac_f.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        save_application_review(ApplicationReview(vacancy_stable_id=vac_f.stable_id(), status=ReviewStatus.APPROVED))
+        save_browser_session(BrowserApplicationSession(
+            vacancy_stable_id=vac_f.stable_id(),
+            url=vac_f.job_url,
+            status=BrowserStatus.READY_FOR_REVIEW,
+            created_at=now_str,
+            updated_at=now_str,
+        ))
+        save_queue_item(QueueItem(
+            vacancy_stable_id=vac_f.stable_id(),
+            canonical_id=vac_f.stable_id(),
+            representative_vacancy_stable_id=vac_f.stable_id(),
+            priority_score=80,
+            rank=1,
+            match_score=80.0,
+            deep_score=80.0,
+        ))
+        db.save_application_package(vac_f.stable_id(), "v1", json.dumps({"cover_letter": "Letter", "validation_status": "VALID"}))
+        mock_ats = MockBrowserAdapter(simulate={"fields": ["name", "email"], "apply_button": True, "page_title": "Job at Lever"})
+        submit_ats = submit_application_in_browser(vac_f.stable_id(), confirm_submit=True, adapter=mock_ats)
+
+        mock_ver_ats = MockBrowserAdapter(simulate={"page_title": "Job at Lever", "body_text": "Submit application to company."})
+        ver_ats = verify_submission(vac_f.stable_id(), submit_ats.submission_id, adapter=mock_ver_ats)
+        assert ver_ats.verification_status == VerificationStatus.AMBIGUOUS
+        assert ver_ats.flow_type == FlowType.EXTERNAL_ATS
+
+        # G. Only explicit success signal -> VERIFIED
+        mock_ver_success = MockBrowserAdapter(simulate={"page_title": "Thank you for applying", "body_text": "Your application has been received."})
+        ver_success = verify_submission(vac_f.stable_id(), submit_ats.submission_id, adapter=mock_ver_success)
+        assert ver_success.verification_status == VerificationStatus.VERIFIED
+        assert get_application_status(vac_f.stable_id()).status == ApplicationStatus.APPLIED
+
+    finally:
+        teardown_test_db(tmp_dir)
+
+
+def test_stage30h_apply_destination_detection_invariants():
+    """Stage 30H: Rigorous test suite for destination detection, redirect chains, and external invariants."""
+    from ai_assistant.browser_executor import (
+        FlowType,
+        classify_apply_flow,
+    )
+
+    # A. RemoteOK -> external ATS
+    res_a = classify_apply_flow(
+        source_url="https://remoteok.com/remote-jobs/105820",
+        apply_link="https://boards.greenhouse.io/company/jobs/123",
+    )
+    assert res_a.flow_type == FlowType.AGGREGATOR_REDIRECT
+    assert res_a.is_external_application is True
+    assert res_a.application_url == "https://boards.greenhouse.io/company/jobs/123"
+    assert res_a.application_domain == "boards.greenhouse.io"
+    assert res_a.verification_strategy == "external_ats_verifier"
+
+    # B. RemoteOK -> same domain RemoteOK
+    res_b = classify_apply_flow(
+        source_url="https://remoteok.com/remote-jobs/105820",
+        final_url="https://remoteok.com/remote-jobs/105820-senior-developer",
+    )
+    assert res_b.flow_type == FlowType.AGGREGATOR_REDIRECT
+    assert res_b.is_external_application is False
+    assert res_b.application_url is None
+    assert res_b.application_domain is None
+
+    # C. RemoteOK without detected Apply href
+    res_c = classify_apply_flow(
+        source_url="https://remoteok.com/remote-jobs/105820",
+        apply_link=None,
+    )
+    assert res_c.flow_type == FlowType.AGGREGATOR_REDIRECT
+    assert res_c.is_external_application is False
+    assert res_c.application_url is None
+    assert res_c.application_domain is None
+
+    # D. Native application (source_domain == application_domain)
+    res_d = classify_apply_flow(
+        source_url="https://careers.google.com/jobs/results/123",
+        final_url="https://careers.google.com/jobs/results/123",
+        has_form=True,
+    )
+    assert res_d.flow_type == FlowType.NATIVE_FORM
+    assert res_d.is_external_application is False
+    assert res_d.application_domain == "careers.google.com"
+
+    # E. Greenhouse / Lever / Workable
+    # E1: Outbound link to Lever
+    res_e1 = classify_apply_flow(
+        source_url="https://corp.com/careers/engineer",
+        apply_link="https://jobs.lever.co/corp/789",
+    )
+    assert res_e1.flow_type == FlowType.EXTERNAL_ATS
+    assert res_e1.is_external_application is True
+    assert res_e1.application_domain == "jobs.lever.co"
+
+    # E2: Direct ATS source
+    res_e2 = classify_apply_flow(
+        source_url="https://apply.workable.com/company/j/12345",
+    )
+    assert res_e2.flow_type == FlowType.EXTERNAL_ATS
+    assert res_e2.is_external_application is False
+    assert res_e2.application_domain == "apply.workable.com"
+
+    # F. Unknown (insufficient data)
+    res_f1 = classify_apply_flow(source_url="")
+    assert res_f1.flow_type == FlowType.UNKNOWN
+    assert res_f1.is_external_application is False
+    assert res_f1.application_url is None
+    assert res_f1.application_domain is None
+
+    res_f2 = classify_apply_flow(source_url="not-a-valid-url")
+    assert res_f2.flow_type == FlowType.UNKNOWN
+    assert res_f2.is_external_application is False
+
+    # G. Invariant: NEVER is_external_application=True if source_domain == application_domain
+    for test_domain in ["example.com", "remoteok.com", "hh.ru", "jobs.lever.co", "company.io"]:
+        res_g = classify_apply_flow(
+            source_url=f"https://{test_domain}/job/1",
+            final_url=f"https://{test_domain}/job/1/apply",
+            apply_link=f"https://{test_domain}/submit",
+            has_form=True,
+        )
+        if res_g.application_domain:
+            assert res_g.application_domain == test_domain
+        assert res_g.is_external_application is False, f"Invariant violated for {test_domain}"
+
+
+def test_stage30i_read_only_apply_flow_audit_invariants():
+    """Stage 30I: Verify read-only audit never submits, never creates submissions/verifications, and preserves DB."""
+    from pathlib import Path
+    from ai_assistant.browser_executor import (
+        audit_apply_flow_for_vacancy,
+        run_apply_flow_audit,
+        MockBrowserAdapter,
+        FlowType,
+    )
+    from ai_assistant.application_tracking import get_application_status
+
+    tmp_dir = setup_test_db()
+    try:
+        # Create test vacancies
+        vac1 = _vac(source_job_id="s30i_1", job_url="https://remoteok.com/remote-jobs/105820")
+        vac2 = _vac(source_job_id="s30i_2", job_url="https://jobs.lever.co/corp/123")
+        vac3 = _vac(source_job_id="s30i_3", job_url="https://careers.google.com/jobs/456")
+
+        db.save_vacancy(vac1)
+        db.save_vacancy(vac2)
+        db.save_vacancy(vac3)
+
+        set_application_status(vac1.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        set_application_status(vac2.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        set_application_status(vac3.stable_id(), ApplicationStatus.READY_TO_APPLY)
+
+        mock_adapter = MockBrowserAdapter(simulate={
+            "page_title": "Job Title",
+            "apply_button": True,
+            "apply_link": "https://boards.greenhouse.io/corp/jobs/789",
+            "fields": ["name", "email"],
+        })
+
+        # Run audit on vac1
+        res1 = audit_apply_flow_for_vacancy(vac1.stable_id(), adapter=mock_adapter)
+
+        # Verify classification
+        assert res1["flow_type"] == FlowType.AGGREGATOR_REDIRECT.value
+        assert res1["is_external_application"] is True
+        assert res1["apply_href"] == "https://boards.greenhouse.io/corp/jobs/789"
+        assert res1["application_domain"] == "boards.greenhouse.io"
+
+        # Check safety invariants: ZERO submits, ZERO DB submissions, ZERO DB verifications
+        assert mock_adapter.submit_attempted is False
+        assert "submit_application" not in mock_adapter.calls
+        assert db.is_submitted(vac1.stable_id()) is False
+
+        # Verify tracking status unchanged
+        assert get_application_status(vac1.stable_id()).status == ApplicationStatus.READY_TO_APPLY
+
+        # Run multi-vacancy audit
+        audit_file = str(Path(tmp_dir) / "audit_results.json")
+        all_res = run_apply_flow_audit([vac1.stable_id(), vac2.stable_id(), vac3.stable_id()], adapter=mock_adapter, output_path=audit_file)
+        assert len(all_res) == 3
+        assert Path(audit_file).exists()
+
+        # Ensure no submission/verification records created in DB
+        conn = db.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM application_submissions")
+        assert c.fetchone()[0] == 0
+        c.execute("SELECT COUNT(*) FROM submission_verifications")
+        assert c.fetchone()[0] == 0
+
+    finally:
+        teardown_test_db(tmp_dir)
+
+
+def test_stage30j_real_apply_destination_detection_suite():
+    """Stage 30J: Test accurate detection of real apply CTA vs navigation links and extended evidence."""
+    from pathlib import Path
+    from ai_assistant.browser_executor import (
+        audit_apply_flow_for_vacancy,
+        classify_apply_flow,
+        MockBrowserAdapter,
+        FlowType,
+    )
+
+    tmp_dir = setup_test_db()
+    try:
+        # A. Real Apply link on Greenhouse from RemoteOK
+        vac_a = _vac(source_job_id="s30j_a", job_url="https://remoteok.com/remote-jobs/105820_a")
+        db.save_vacancy(vac_a)
+        mock_a = MockBrowserAdapter(simulate={
+            "page_title": "Senior Engineer at RemoteOK",
+            "apply_button": True,
+            "apply_link": "https://boards.greenhouse.io/company/jobs/123",
+            "button_text": "Apply for this job",
+            "reason": "Direct external ATS link in href",
+        })
+        res_a = audit_apply_flow_for_vacancy(vac_a.stable_id(), adapter=mock_a)
+        assert res_a["flow_type"] == FlowType.AGGREGATOR_REDIRECT.value
+        assert res_a["is_external_application"] is True
+        assert res_a["apply_href"] == "https://boards.greenhouse.io/company/jobs/123"
+        assert res_a["application_domain"] == "boards.greenhouse.io"
+        assert res_a["verification_strategy"] == "external_ats_verifier"
+        assert res_a["evidence"]["apply_element_text"] == "Apply for this job"
+        assert "Direct external ATS link" in res_a["evidence"]["apply_detection_reason"]
+
+        # B. Apply link to company website from WeWorkRemotely
+        vac_b = _vac(source_job_id="s30j_b", job_url="https://weworkremotely.com/remote-jobs/123_b")
+        db.save_vacancy(vac_b)
+        mock_b = MockBrowserAdapter(simulate={
+            "page_title": "Developer at Company",
+            "apply_button": True,
+            "apply_link": "https://company.com/careers/apply/456",
+            "button_text": "Apply for this position",
+            "reason": "Exact primary Apply CTA text",
+        })
+        res_b = audit_apply_flow_for_vacancy(vac_b.stable_id(), adapter=mock_b)
+        assert res_b["flow_type"] == FlowType.AGGREGATOR_REDIRECT.value
+        assert res_b["is_external_application"] is True
+        assert res_b["apply_href"] == "https://company.com/careers/apply/456"
+        assert res_b["application_domain"] == "company.com"
+        assert res_b["verification_strategy"] == "aggregator_redirect_pause"
+
+        # C. JS button without static outbound href (modal / in-page)
+        vac_c = _vac(source_job_id="s30j_c", job_url="https://remoteok.com/remote-jobs/105820_c")
+        db.save_vacancy(vac_c)
+        mock_c = MockBrowserAdapter(simulate={
+            "page_title": "Remote Job",
+            "apply_button": True,
+            "apply_link": None,
+            "button_text": "Apply Now",
+            "reason": "Exact primary Apply CTA text 'Apply Now' (JS click-handler / in-page button without static outbound href)",
+        })
+        res_c = audit_apply_flow_for_vacancy(vac_c.stable_id(), adapter=mock_c)
+        assert res_c["flow_type"] == FlowType.AGGREGATOR_REDIRECT.value
+        assert res_c["is_external_application"] is False
+        assert res_c["apply_href"] is None
+        assert res_c["application_url"] is None
+        assert res_c["application_domain"] is None
+        assert res_c["verification_strategy"] == "aggregator_redirect_pause"
+        assert "JS click-handler" in res_c["evidence"]["apply_detection_reason"]
+
+        # D. Russian HH.ru CTA vs navigation
+        vac_d = _vac(source_job_id="s30j_d", job_url="https://hh.ru/vacancy/136097888_d")
+        db.save_vacancy(vac_d)
+        mock_d = MockBrowserAdapter(simulate={
+            "page_title": "Python Developer на HH.ru",
+            "apply_button": True,
+            "apply_link": None,
+            "button_text": "Откликнуться",
+            "fields": ["resume", "cover_letter"],
+            "reason": "Exact primary Apply CTA text 'Откликнуться'",
+        })
+        res_d = audit_apply_flow_for_vacancy(vac_d.stable_id(), adapter=mock_d)
+        assert res_d["flow_type"] == FlowType.NATIVE_FORM.value
+        assert res_d["is_external_application"] is False
+        assert res_d["application_domain"] == "hh.ru"
+        assert res_d["evidence"]["apply_element_text"] == "Откликнуться"
+
+    finally:
+        teardown_test_db(tmp_dir)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+

@@ -1,4 +1,4 @@
-﻿# job-search
+# job-search
 
 Personal job-search automation system. Collects remote vacancies, scores them
 against a candidate profile, prepares tailored applications, and — behind
@@ -11,8 +11,8 @@ opt-in via environment kill-switches and never guess facts.
 
 ## 1. What it does
 
-- Collects vacancies from remote job boards (remoteok, weworkremotely,
-  himalayas; legacy: linkedin, wellfound).
+- Collects vacancies from remote and tech job boards (habrcareer, remoteok,
+  weworkremotely, himalayas; legacy: linkedin, wellfound).
 - Normalizes and deduplicates them into a canonical identity store.
 - Prefilters by stop-words / required words / minimum salary.
 - Scores vacancies against `candidate_profile.json` (hard constraints +
@@ -57,54 +57,30 @@ collectors (adapters/*, linkedin, wellfound_scraper)
     → cli.py                   (single entry point for all commands)
 ```
 
-## 3. Stages 1–20 (historical architecture)
+## 3. Stage map (1-30, compact)
 
-- Stages 1–3: MVP pipeline (collect → prefilter → LLM analysis → Telegram
-  notification). Legacy `pipeline.py` / `core.py` / `bot.py` remain from this
-  era but are not part of the current flow.
-- Stages 4–9: collectors, normalizer, matcher, deep analysis.
-- Stages 10–12: application lifecycle, queue, review, prep.
-- Stages 13–14: browser executor, canonical identity, submission
-  verifier/recovery.
-- Stage 15: integrity audit layer.
-- Stage 16: audit CLI hardening (exit codes, JSON contract, --tracked).
-- Stage 17: real HH form extraction (`hh_extractor.py`) + truth-only Q&A
-  (`application_qa.py`).
-- Stage 18: authenticated session wiring (`HH_STORAGE_STATE` → Playwright).
-- Stage 19: safety finding — GET on `hh.ru/applicant/vacancy_response` can
-  auto-submit; navigation to response URLs is forbidden; read-only
-  inspection only.
-- Stage 20 (A–K): manual form capture, normalization, prefill plan/execute/
-  orchestrate, review gate, controlled single-click submit, human-confirmed
-  submission, read-only verification.
-
-## 4. Stages 21–29 (messaging / auto-apply / email)
-
-- Stage 21: `auto_apply_modes.py` — dual-mode (REVIEW default / AUTO opt-in
-  via `HH_APPLY_MODE=AUTO`) orchestration; form classification; cover-letter
-  requiredness proven from DOM only; one submit per vacancy.
-- Stage 22: HH message reply MVP — classification, truth-only reply preview,
-  SendGate (REVIEW never sends).
-- Stage 23/23B: HH dialog discovery + CDP diagnostics (chatik iframe).
-- Stage 24: full HH dialog read-only extraction (INCOMING/OUTGOING, composer
-  detection; HH provides no message_id — documented).
-- Stage 25: limited AUTO reply — allowlist + kill switch
-  `HH_AUTO_REPLY_ENABLED=true` + `MAX_AUTO_REPLIES_PER_RUN=3` + race-check.
-- Stage 26: first live AUTO infrastructure — `target_conversation_id` +
-  `confirm_live_send` explicit confirmation.
-- Stage 27: `email_message_reply.py` — REVIEW-only email reply MVP;
-  `EmailSendGate` always blocks.
-- Stage 28: `gmail_readonly_connector.py` — Gmail read-only transport
-  (ADC, `gmail.readonly` scope, list/get/threads only).
-- Stage 29/29B/29C: Gmail ADC/OAuth diagnostics (`gmail_provider_status`).
+| Stage | Focus | Key modules / outcome |
+|-------|-------|----------------------|
+| 1-3 | MVP pipeline (legacy) | collect -> prefilter -> LLM -> Telegram; `pipeline.py`/`core.py`/`bot.py` legacy, not in current flow |
+| 4-9 | Collectors & scoring | adapters, normalizer, prefilter, matcher, deep analysis |
+| 10-12 | Application lifecycle | queue, review, prep |
+| 13-14 | Browser + identity | browser_executor, canonical identity, submission verifier/recovery |
+| 15 | Integrity audit | `cli audit` layer |
+| 16 | Audit CLI hardening | exit codes, JSON contract, `--tracked` |
+| 17 | Real HH form extraction | `hh_extractor.py`, `application_qa.py` (truth-only Q&A) |
+| 18 | Authenticated session | `HH_STORAGE_STATE` -> Playwright |
+| 19 | Safety finding | GET on `applicant/vacancy_response` can auto-submit; navigation forbidden, read-only only |
+| 20 (A-K) | Controlled application | manual capture, normalization, prefill plan/execute/orchestrate, review gate, single-click submit, human-confirmed submit, read-only verify |
+| 21 | Auto-apply modes | `auto_apply_modes.py` (REVIEW default / AUTO opt-in) |
+| 22-26 | HH messaging | `hh_message_reply.py`: read-only dialogs, truth-only replies, REVIEW default, limited AUTO (kill switch + allowlist + cap 3/run) |
+| 27 | Email reply MVP | `email_message_reply.py` (REVIEW-only, `EmailSendGate` always blocks) |
+| 28-29 | Gmail read-only | `gmail_readonly_connector.py` (ADC, `gmail.readonly`), `gmail_provider_status` diagnostics |
 
 ## 5. Setup
 
 ```bash
 python -m venv .venv && .venv\Scripts\activate   # Windows
-pip install -r requirements.txt
-# optional integrations (live browser / Gmail):
-pip install playwright feedparser google-auth google-api-python-client
+pip install -r requirements.txt -r requirements-dev.txt
 playwright install chromium
 ```
 
@@ -139,13 +115,15 @@ resume text); missing facts always route to HUMAN_REVIEW, never guessed.
 ## 7. CLI
 
 ```
-python -m ai_assistant.cli collect <source...>        # fetch vacancies
+python -m ai_assistant.cli collect <source...>        # fetch vacancies (habrcareer, himalayas, remoteok, weworkremotely)
+python -m ai_assistant.cli list [--limit 20]           # list stored vacancies
 python -m ai_assistant.cli analyze                     # basic analysis
 python -m ai_assistant.cli analyze-deep                # LLM deep analysis
 python -m ai_assistant.cli prepare-applications        # build packages
 python -m ai_assistant.cli applications                # lifecycle status
 python -m ai_assistant.cli queue                       # priority queue
 python -m ai_assistant.cli review                      # review records
+python -m ai_assistant.cli ui [--port 8000]            # launch interactive web dashboard
 python -m ai_assistant.cli browser                     # browser prep/execute
 python -m ai_assistant.cli submit / submit-next        # gated submit
 python -m ai_assistant.cli submissions                 # submissions + verify/recover
@@ -166,6 +144,11 @@ The suite covers stages 1–29: core lifecycle (tracked since Stage 15) plus
 Stage 16–29 modules (HH form extraction, prefill, gates, submission,
 messaging, email/Gmail). Tests use fakes/mocks only — no live browser, no
 network, no DB writes outside temp dirs.
+
+The Stage 20D regression fixture `artifacts/hh_manual_form_snapshot.json`
+(real HH application-form DOM structure, no cookies/tokens/personal data;
+self-described as "structure only") is tracked in git, so the suite runs
+unchanged in a clean clone.
 
 ## 9. Safety model
 
@@ -210,6 +193,7 @@ network, no DB writes outside temp dirs.
 | `candidate_profile.json` | personal candidate profile (ignored) |
 | `artifacts/` | runtime state, snapshots, live artifacts (ignored) |
 | `baseline_stage14_snapshot/`, `snapshot_stage15_current/` | DR snapshots (ignored) |
+| `baseline_stage14_manifest.txt`, `snapshot_stage15_manifest.txt` | local sha256 manifests of snapshot contents (ignored) |
 
 ## 12. Current limitations
 
@@ -220,5 +204,5 @@ network, no DB writes outside temp dirs.
   confirmation); live AUTO sends are capped (3 per run) and never retried.
 - Email sending is physically blocked in the current MVP (REVIEW-only).
 - `vacancies.json` is a tracked data snapshot; collectors refresh it.
-- Playwright / feedparser / google clients are optional dependencies (see
-  requirements.txt).
+- Playwright / feedparser / google clients are optional at runtime but required
+  by the full test suite (see requirements-dev.txt).

@@ -453,12 +453,16 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action })
         });
-        const d = await res.json();
-        alert(d.message || 'Статус обновлен');
+        const d = await res.json().catch(() => ({ detail: 'Ошибка ответа сервера' }));
+        if (!res.ok) {
+          alert('Внимание: ' + (d.detail || d.message || 'Не удалось обновить статус'));
+          return;
+        }
+        alert(d.message || 'Статус успешно обновлен');
         closeModal();
         loadAllData();
       } catch (e) {
-        alert('Ошибка ревью: ' + e);
+        alert('Ошибка при выполнении ревью: ' + e.message);
       }
     }
 

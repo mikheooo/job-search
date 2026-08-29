@@ -81,4 +81,74 @@ def test_ui_package_detail_endpoint():
     assert data["vacancy"]["title"] == "AI Automation Engineer"
     assert data["vacancy"]["company"] == "TechCorp"
     assert data["package"]["cover_letter"] == "Tailored cover letter text"
+    assert data["deep_analysis"] is None
+
+
+def test_ui_package_detail_with_sqlite_deep_analysis_tuple():
+    """Regression test: verify get_package_detail correctly unpacks SQLite deep_analysis tuple."""
+    vac = Vacancy(
+        source="test",
+        source_job_id="102",
+        title="Senior AI Engineer",
+        company="AI Labs",
+        description="LLM / Agents / PyTorch",
+        job_url="https://example.com/102",
+    )
+    db.save_vacancy(vac)
+    sid = vac.stable_id()
+    db.save_application_package(sid, "v1", '{"cover_letter": "AI Labs cover letter"}')
+    db.save_deep_analysis(
+        sid,
+        "v1",
+        88,
+        "RECOMMENDED",
+        '{"pros": ["Strong Python", "LLM experience"], "cons": ["Remote timezone shift"], "summary": "Strong fit for AI role"}'
+    )
+
+    response = client.get(f"/api/package/{sid}")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["vacancy"]["title"] == "Senior AI Engineer"
+    assert data["deep_analysis"] is not None
+    assert data["deep_analysis"]["fit_score"] == 88
+    assert data["deep_analysis"]["recommendation"] == "RECOMMENDED"
+    assert data["deep_analysis"]["pros"] == ["Strong Python", "LLM experience"]
+    assert data["deep_analysis"]["cons"] == ["Remote timezone shift"]
+    assert data["deep_analysis"]["summary"] == "Strong fit for AI role"
+
+
+def test_ui_package_detail_with_mocked_sqlite_tuple(monkeypatch):
+    """Regression test: explicitly mock get_deep_analysis to return raw SQLite tuple."""
+    vac = Vacancy(
+        source="test",
+        source_job_id="103",
+        title="Lead Python Developer",
+        company="GlobalTech",
+        description="Python backend",
+        job_url="https://example.com/103",
+    )
+    db.save_vacancy(vac)
+    sid = vac.stable_id()
+
+    # Raw SQLite tuple: (vacancy_stable_id, analyzer_version, fit_score, recommendation, analysis_json, analyzed_at)
+    raw_tuple = (
+        sid,
+        "v2",
+        95,
+        "APPLY_NOW",
+        '{"pros": ["FastAPI", "AsyncIO"], "cons": [], "summary": "Perfect technical fit"}',
+        "2026-08-28T12:00:00",
+    )
+    import ai_assistant.ui.app as app_module
+    monkeypatch.setattr(app_module, "get_deep_analysis", lambda _sid: raw_tuple)
+
+    response = client.get(f"/api/package/{sid}")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["deep_analysis"]["fit_score"] == 95
+    assert data["deep_analysis"]["recommendation"] == "APPLY_NOW"
+    assert data["deep_analysis"]["pros"] == ["FastAPI", "AsyncIO"]
+    assert data["deep_analysis"]["cons"] == []
+    assert data["deep_analysis"]["summary"] == "Perfect technical fit"
+
 

@@ -241,7 +241,7 @@ def list_cmd(limit: int = 20, state: str | None = None, eligibility: str | None 
 
 def analyze(top_n: int = 20, profile_path: str | None = None, persist: bool = False) -> None:
     init_db()
-    rows = list_vacancies(limit=BATCH_LIMIT * 10)
+    rows = list_vacancies(limit=50000)
     vacancies = [_row_to_vacancy(row) for row in rows if row]
 
     if profile_path:
@@ -308,7 +308,7 @@ def analyze_deep(top_n: int = 20, profile_path: str | None = None, force: bool =
     from .job_analyzer import ANALYZER_VERSION, analyze_job_deep, should_analyze, get_resume_text
 
     init_db()
-    rows = list_vacancies(limit=BATCH_LIMIT * 20)
+    rows = list_vacancies(limit=50000)
     vacancies = [_row_to_vacancy(row) for row in rows if row]
 
     if profile_path:
@@ -419,7 +419,7 @@ def prepare_applications(top_n: int = 20, profile_path: str | None = None, force
     from .job_analyzer import DeepAnalysisResult
 
     init_db()
-    rows = list_vacancies(limit=BATCH_LIMIT * 20)
+    rows = list_vacancies(limit=50000)
     vacancies = [_row_to_vacancy(row) for row in rows if row]
 
     if profile_path:
@@ -1607,28 +1607,77 @@ def hh_message_list(cdp_url=None, url_substring=None, evaluate_fn=None) -> int:
     return 0
 
 
-def hh_message_preview(conversation_id: str, cdp_url=None, url_substring=None,
-                       evaluate_fn=None, profile=None) -> int:
+def hh_message_preview(conversation_id: str | None = None, cdp_url=None, url_substring=None,
+                       evaluate_fn=None, limit: int | None = None, as_json: bool = False,
+                       profile=None) -> int:
     """Preview one conversation's context + truth-only reply. READ-ONLY:
     never sends, never calls confirm_live_send, never touches AUTO gates."""
+    errors = []
+    fresh: Dict[str, Any] = {}
     try:
         ev = _resolve_chatik_evaluate(cdp_url=cdp_url, url_substring=url_substring,
                                       evaluate_fn=evaluate_fn)
         fresh = hh_message_reply.fetch_hh_conversation_readonly(ev)
+        if fresh.get("error"):
+            errors.append(str(fresh.get("error")))
     except Exception as e:  # read access failure; never a send attempt
-        print(f"[hh-message] preview failed (read-only access error): {e}")
+        errors.append(f"read-only access error: {e}")
+
+    msgs = fresh.get("messages") or [] if not errors else []
+    cid = fresh.get("conversation_id") or conversation_id
+    url = fresh.get("url")
+    participant = fresh.get("participant")
+    composer_present = bool(fresh.get("composer_present", False))
+    message_count = len(msgs)
+
+    # Format structured message list
+    formatted_msgs = []
+    for m in msgs:
+        dir_val = (m.get("direction") or "").upper()
+        author = "candidate" if dir_val == "OUTGOING" else "employer"
+        formatted_msgs.append({
+            "author": author,
+            "text": m.get("text") or "",
+            "timestamp": m.get("timestamp"),
+        })
+
+    # Apply limit if requested
+    if limit is not None and limit > 0:
+        displayed_msgs = formatted_msgs[-limit:]
+    else:
+        displayed_msgs = formatted_msgs
+
+    if as_json:
+        import json
+        payload = {
+            "conversation_id": cid,
+            "url": url,
+            "participant": participant,
+            "message_count": message_count,
+            "composer_present": composer_present,
+            "messages": displayed_msgs,
+            "errors": errors,
+            "status": "READ-ONLY",
+        }
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    if errors:
+        print(f"[hh-message] preview failed (read-only access error): {'; '.join(errors)}")
+        print("status: READ-ONLY — nothing sent.")
         return 1
-    msgs = fresh.get("messages") or []
+
     if not msgs:
         print("[hh-message] preview unavailable: no messages could be read. "
               "Open the target conversation in the CDP browser so the chatik "
-              "iframe is present (the isolated-world evaluate reads the chatik "
+              "iframe or /chat/ page is present (the isolated-world evaluate reads the chatik "
               "frame; if the chat page is not open, no messages are found). "
               "PREVIEW ONLY, nothing sent.")
+        print("status: PREVIEW ONLY — nothing sent, no AUTO path.")
         return 1
-    cid = fresh.get("conversation_id") or conversation_id
+
     dialog = hh_message_reply.HHDialog(
-        conversation_id=str(cid),
+        conversation_id=str(cid or ""),
         vacancy_title=fresh.get("title") or "",
         messages=[
             hh_message_reply.HHMessage(
@@ -1640,15 +1689,29 @@ def hh_message_preview(conversation_id: str, cdp_url=None, url_substring=None,
         ],
     )
     shown = str(fresh.get("conversation_id") or "")
-    if shown and shown != str(conversation_id):
+    if shown and conversation_id and shown != str(conversation_id):
         print(f"[hh-message] note: open conversation id={shown} != requested "
               f"{conversation_id}; showing the open one.")
+
     cls = hh_message_reply.classify_message(dialog)
     gen = hh_message_reply.generate_reply(dialog, profile=profile)
+
+    print("[hh-message] preview (READ-ONLY)")
+    print(f"conversation: {cid or '(unknown)'}")
+    print(f"url: {url or '(unknown)'}")
+    print(f"participant: {participant or '(none)'}")
+    print(f"messages: {message_count}")
+    print(f"composer: {'available' if composer_present else 'unavailable'}")
+    print()
+    print("--- last messages ---")
+    for m in displayed_msgs:
+        snippet = m["text"].replace("\n", " ")[:120]
+        print(f"[{m['author']}] {snippet}")
+    print()
     print(f"conversation_id: {dialog.conversation_id}")
     print(f"classification: {cls.value}")
     print("context:")
-    for m in dialog.messages:
+    for m in dialog.messages[- (limit or len(dialog.messages)):]:
         who = "me" if m.sender == "candidate" else "them"
         print(f"  [{who}] {m.text[:160]}")
     print(f"prepared reply: {gen.get('reply') or '(none — needs human review)'}")
@@ -1747,28 +1810,75 @@ def gmail_status(status_fn=None) -> int:
 # ---------------------------------------------------------------------------
 
 
-def hh_message_classify(conversation_id: str, cdp_url=None, url_substring=None,
-                        evaluate_fn=None, profile=None) -> int:
-    """Classify one conversation's last message. READ-ONLY: never sends."""
+def hh_message_classify(conversation_id: str | None = None, cdp_url=None, url_substring=None,
+                        evaluate_fn=None, limit: int | None = None, as_json: bool = False,
+                        profile=None) -> int:
+    """Classify one conversation's context and draft reply. READ-ONLY: never sends."""
+    errors = []
+    fresh: Dict[str, Any] = {}
     try:
         ev = _resolve_chatik_evaluate(cdp_url=cdp_url, url_substring=url_substring,
                                       evaluate_fn=evaluate_fn)
         fresh = hh_message_reply.fetch_hh_conversation_readonly(ev)
+        if fresh.get("error"):
+            errors.append(str(fresh.get("error")))
     except Exception as e:  # read access failure; never a send attempt
-        print(f"[hh-message] classify failed (read-only access error): {e}")
-        return 1
-    msgs = fresh.get("messages") or []
-    if not msgs:
-        print("[hh-message] classify unavailable: no messages could be read. "
-              "Open the target conversation in the CDP browser so the chatik "
-              "iframe is present (the isolated-world evaluate reads the chatik "
-              "frame; if the chat page is not open, no messages are found). "
-              "PREVIEW ONLY, nothing sent.")
-        return 1
+        errors.append(f"read-only access error: {e}")
+
+    msgs = fresh.get("messages") or [] if not errors else []
     cid = fresh.get("conversation_id") or conversation_id
+
+    if as_json and errors:
+        import json
+        payload = {
+            "conversation_id": cid,
+            "classification": "HUMAN_REVIEW",
+            "confidence": 0.0,
+            "reason": "; ".join(errors),
+            "context": [],
+            "prepared_reply": None,
+            "sources": [],
+            "status": "READ-ONLY",
+        }
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    if errors:
+        print(f"[hh-message] classify failed (read-only access error): {'; '.join(errors)}")
+        print("status: READ-ONLY — nothing sent.")
+        return 1
+
+    if not msgs:
+        if as_json:
+            import json
+            payload = {
+                "conversation_id": cid,
+                "classification": "EMPTY_CONVERSATION",
+                "confidence": 1.0,
+                "reason": "Conversation has no messages.",
+                "context": [],
+                "prepared_reply": None,
+                "sources": [],
+                "status": "READ-ONLY",
+            }
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return 0
+        else:
+            print("[hh-message] classify unavailable: no messages could be read. "
+                  "Open the target conversation in the CDP browser so the chatik "
+                  "iframe or /chat/ page is present (the isolated-world evaluate reads the chatik "
+                  "frame; if the chat page is not open, no messages are found). "
+                  "PREVIEW ONLY, nothing sent.")
+            print("status: PREVIEW ONLY — nothing sent, no AUTO path.")
+            return 1
+
+    vac_id = fresh.get("vacancy_id")
+    vac_stable_id = f"hh:{vac_id}" if vac_id else ""
     dialog = hh_message_reply.HHDialog(
-        conversation_id=str(cid),
+        conversation_id=str(cid or ""),
         vacancy_title=fresh.get("title") or "",
+        vacancy_stable_id=vac_stable_id,
+        employer=fresh.get("employer") or "",
         messages=[
             hh_message_reply.HHMessage(
                 message_id=f"m{i}",
@@ -1778,14 +1888,751 @@ def hh_message_classify(conversation_id: str, cdp_url=None, url_substring=None,
             for i, m in enumerate(msgs)
         ],
     )
-    cls = hh_message_reply.classify_message(dialog)
+
+    det = hh_message_reply.classify_hh_conversation_detailed(dialog, profile=profile)
+    context_list = det.get("context", [])
+    if limit is not None and limit > 0:
+        displayed_context = context_list[-limit:]
+    else:
+        displayed_context = context_list
+
+    if as_json:
+        import json
+        payload = {
+            "conversation_id": cid,
+            "classification": det.get("classification"),
+            "confidence": det.get("confidence"),
+            "reason": det.get("reason"),
+            "question": det.get("question"),
+            "required_facts": det.get("required_facts", []),
+            "available_facts": det.get("available_facts", []),
+            "missing_facts": det.get("missing_facts", []),
+            "context": displayed_context,
+            "prepared_reply": det.get("prepared_reply"),
+            "sources": det.get("sources"),
+            "status": "READ-ONLY",
+        }
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    print("[hh-message] classify (READ-ONLY)")
+    print()
+    print(f"conversation: {cid or '(unknown)'}")
+    print(f"classification: {det.get('classification')}")
+    print(f"confidence: {det.get('confidence', 0.0):.2f}")
+    print(f"reason: {det.get('reason')}")
+    print()
+    print("context:")
+    for c in displayed_context:
+        who = "me" if c.get("author") == "candidate" else "them"
+        snippet = (c.get("text") or "").replace("\n", " ")[:160]
+        print(f"  [{who}] {snippet}")
+    print()
+    print("prepared reply:")
+    if det.get("prepared_reply"):
+        for line in det.get("prepared_reply").splitlines():
+            print(f"  {line}")
+    else:
+        print("  (none — needs human review)")
+    print()
+    print("sources:")
+    sources = det.get("sources") or []
+    if sources:
+        for s in sources:
+            print(f"  {s}")
+    else:
+        print("  none")
+    print()
     print(f"conversation_id: {dialog.conversation_id}")
-    print(f"classification: {cls.value}")
-    # also show last message snippet for review context (read-only)
+    legacy_cls = hh_message_reply.classify_message(dialog)
+    print(f"classification: {legacy_cls.value}")
     last = dialog.messages[-1].text if dialog.messages else ""
     print(f"last_message: {last[:200]}")
     print("status: PREVIEW ONLY — nothing sent, no AUTO path.")
     return 0
+
+
+def hh_message_validate(conversation_id: str | None = None, cdp_url=None, url_substring=None,
+                        evaluate_fn=None, limit: int | None = None, as_json: bool = False,
+                        profile=None) -> int:
+    """Validate prepared reply draft against safety rules and profile evidence. READ-ONLY: never sends."""
+    errors = []
+    fresh: Dict[str, Any] = {}
+    try:
+        ev = _resolve_chatik_evaluate(cdp_url=cdp_url, url_substring=url_substring,
+                                      evaluate_fn=evaluate_fn)
+        fresh = hh_message_reply.fetch_hh_conversation_readonly(ev)
+        if fresh.get("error"):
+            errors.append(str(fresh.get("error")))
+    except Exception as e:
+        errors.append(f"read-only access error: {e}")
+
+    msgs = fresh.get("messages") or [] if not errors else []
+    cid = fresh.get("conversation_id") or conversation_id
+
+    if as_json and errors:
+        import json
+        payload = {
+            "conversation_id": cid,
+            "classification": "HUMAN_REVIEW",
+            "draft": None,
+            "validation": "HUMAN_REVIEW",
+            "checks": {
+                "answers_last_question": False,
+                "uses_supported_facts": False,
+                "contains_unverified_claims": False,
+                "contains_sensitive_claims": False,
+                "is_empty": True,
+            },
+            "reasons": errors,
+            "status": "READ-ONLY",
+        }
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    if errors:
+        print(f"[hh-message] validate failed (read-only access error): {'; '.join(errors)}")
+        print("status: READ-ONLY — nothing sent.")
+        return 1
+
+    if not msgs:
+        if as_json:
+            import json
+            payload = {
+                "conversation_id": cid,
+                "classification": "EMPTY_CONVERSATION",
+                "draft": None,
+                "validation": "REJECTED",
+                "checks": {
+                    "answers_last_question": False,
+                    "uses_supported_facts": False,
+                    "contains_unverified_claims": False,
+                    "contains_sensitive_claims": False,
+                    "is_empty": True,
+                },
+                "reasons": ["Conversation has no messages."],
+                "status": "READ-ONLY",
+            }
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return 0
+        else:
+            print("[hh-message] validate unavailable: no messages could be read. "
+                  "Open the target conversation in the CDP browser so the chatik "
+                  "iframe or /chat/ page is present. PREVIEW ONLY, nothing sent.")
+            print("status: PREVIEW ONLY — nothing sent, no AUTO path.")
+            return 1
+
+    vac_id = fresh.get("vacancy_id")
+    vac_stable_id = f"hh:{vac_id}" if vac_id else ""
+    dialog = hh_message_reply.HHDialog(
+        conversation_id=str(cid or ""),
+        vacancy_title=fresh.get("title") or "",
+        vacancy_stable_id=vac_stable_id,
+        employer=fresh.get("employer") or "",
+        messages=[
+            hh_message_reply.HHMessage(
+                message_id=f"m{i}",
+                text=(m.get("text") or ""),
+                sender="candidate" if (m.get("direction") or "") == "OUTGOING" else "employer",
+            )
+            for i, m in enumerate(msgs)
+        ],
+    )
+
+    det = hh_message_reply.classify_hh_conversation_detailed(dialog, profile=profile)
+    val = hh_message_reply.validate_hh_reply_draft(
+        dialog,
+        draft=det.get("prepared_reply"),
+        classification=det.get("classification"),
+        profile=profile,
+    )
+
+    if as_json:
+        import json
+        payload = {
+            "conversation_id": cid,
+            "classification": val.get("classification"),
+            "draft": val.get("draft"),
+            "validation": val.get("validation"),
+            "checks": val.get("checks"),
+            "reasons": val.get("reasons"),
+            "status": "READ-ONLY",
+        }
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    print("[hh-message] validate (READ-ONLY)")
+    print()
+    print(f"conversation: {cid or '(unknown)'}")
+    print(f"classification: {val.get('classification')}")
+    print(f"validation: {val.get('validation')}")
+    print()
+    print("checks:")
+    for k, v in (val.get("checks") or {}).items():
+        print(f"  {k}: {v}")
+    print()
+    print("reasons:")
+    reasons = val.get("reasons") or []
+    if reasons:
+        for r in reasons:
+            print(f"  - {r}")
+    else:
+        print("  none")
+    print()
+    print("draft:")
+    if val.get("draft"):
+        for line in val.get("draft").splitlines():
+            print(f"  {line}")
+    else:
+        print("  (none)")
+    print()
+    print("status: READ-ONLY — nothing sent.")
+    return 0
+
+
+def hh_message_send(conversation_id: str | None = None, confirm: bool = False,
+                    cdp_url=None, url_substring=None, evaluate_fn=None,
+                    limit: int | None = None, as_json: bool = False,
+                    profile=None) -> int:
+    """Stage 30D.6: Controlled human-confirmed HH reply send.
+    Requires --confirm to send. Without --confirm, returns AWAITING_CONFIRMATION (dry-run).
+    """
+    ev = evaluate_fn
+    if ev is None:
+        try:
+            ev = _resolve_chatik_evaluate(cdp_url=cdp_url, url_substring=url_substring)
+        except Exception as e:
+            if as_json:
+                import json
+                payload = {
+                    "conversation_id": conversation_id,
+                    "classification": None,
+                    "validation": None,
+                    "draft": None,
+                    "confirmed": confirm,
+                    "sent": False,
+                    "post_send_verified": False,
+                    "errors": [f"CDP connection failed: {e}"],
+                    "status": "BLOCKED_TARGET_NOT_FOUND",
+                }
+                print(json.dumps(payload, indent=2, ensure_ascii=False))
+                return 1
+            else:
+                print(f"[hh-message] send blocked: CDP connection failed ({e}).")
+                print("status: BLOCKED — nothing sent.")
+                return 1
+
+    try:
+        fresh = hh_message_reply.fetch_hh_conversation_readonly(ev)
+    except Exception as e:
+        if as_json:
+            import json
+            payload = {
+                "conversation_id": conversation_id,
+                "classification": None,
+                "validation": None,
+                "draft": None,
+                "confirmed": confirm,
+                "sent": False,
+                "post_send_verified": False,
+                "errors": [f"Failed to read conversation DOM: {e}"],
+                "status": "BLOCKED_DOM_INACCESSIBLE",
+            }
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return 1
+        else:
+            print(f"[hh-message] send blocked: failed to read conversation DOM ({e}).")
+            print("status: BLOCKED — nothing sent.")
+            return 1
+
+    cid = fresh.get("conversation_id")
+    msgs = fresh.get("messages") or []
+
+    if not cid or not msgs:
+        err = "No active conversation or messages found in DOM."
+        if as_json:
+            import json
+            payload = {
+                "conversation_id": cid or conversation_id,
+                "classification": None,
+                "validation": None,
+                "draft": None,
+                "confirmed": confirm,
+                "sent": False,
+                "post_send_verified": False,
+                "errors": [err],
+                "status": "BLOCKED_DOM_INACCESSIBLE",
+            }
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return 1
+        else:
+            print(f"[hh-message] send blocked: {err}")
+            print("status: BLOCKED — nothing sent.")
+            return 1
+
+    if conversation_id and str(conversation_id).strip() != str(cid).strip():
+        err = f"Specified conversation ID ({conversation_id}) does not match open chat ({cid})."
+        if as_json:
+            import json
+            payload = {
+                "conversation_id": cid,
+                "classification": None,
+                "validation": None,
+                "draft": None,
+                "confirmed": confirm,
+                "sent": False,
+                "post_send_verified": False,
+                "errors": [err],
+                "status": "BLOCKED_CONVERSATION_MISMATCH",
+            }
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return 1
+        else:
+            print(f"[hh-message] send blocked: {err}")
+            print("status: BLOCKED — nothing sent.")
+            return 1
+
+    vac_id = fresh.get("vacancy_id")
+    vac_stable_id = f"hh:{vac_id}" if vac_id else ""
+    dialog = hh_message_reply.HHDialog(
+        conversation_id=str(cid or ""),
+        vacancy_title=fresh.get("title") or "",
+        vacancy_stable_id=vac_stable_id,
+        employer=fresh.get("employer") or "",
+        messages=[
+            hh_message_reply.HHMessage(
+                message_id=f"m{i}",
+                text=(m.get("text") or ""),
+                sender="candidate" if (m.get("direction") or "") == "OUTGOING" else "employer",
+            )
+            for i, m in enumerate(msgs)
+        ],
+    )
+
+    det = hh_message_reply.classify_hh_conversation_detailed(dialog, profile=profile)
+    draft = det.get("prepared_reply")
+    classification = det.get("classification")
+
+    val = hh_message_reply.validate_hh_reply_draft(
+        dialog,
+        draft=draft,
+        classification=classification,
+        profile=profile,
+    )
+    validation = val.get("validation")
+    reasons = val.get("reasons") or []
+
+    # Check if eligible for send
+    is_eligible = (
+        classification == "NEEDS_REPLY"
+        and validation == "APPROVED"
+        and bool(draft and draft.strip())
+    )
+
+    if not is_eligible:
+        errs = list(reasons)
+        if classification != "NEEDS_REPLY" and not errs:
+            errs.append(f"Classification is {classification}; reply is not needed.")
+        if validation != "APPROVED" and not errs:
+            errs.append(f"Validation status is {validation}; automated send blocked.")
+
+        status = f"BLOCKED_VALIDATION_{validation}" if validation != "APPROVED" else "BLOCKED_CLASSIFICATION"
+        if as_json:
+            import json
+            payload = {
+                "conversation_id": cid,
+                "classification": classification,
+                "validation": validation,
+                "draft": draft,
+                "confirmed": confirm,
+                "sent": False,
+                "post_send_verified": False,
+                "errors": errs,
+                "status": status,
+            }
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return 1
+        else:
+            print(f"[hh-message] send blocked: {', '.join(errs)}")
+            print()
+            print(f"conversation: {cid}")
+            print(f"classification: {classification}")
+            print(f"validation: {validation}")
+            print(f"status: {status} — nothing sent.")
+            return 1
+
+    # If NOT confirmed -> Dry-run review
+    if not confirm:
+        if as_json:
+            import json
+            payload = {
+                "conversation_id": cid,
+                "classification": classification,
+                "validation": validation,
+                "draft": draft,
+                "confirmed": False,
+                "sent": False,
+                "post_send_verified": False,
+                "errors": [],
+                "status": "AWAITING_CONFIRMATION",
+            }
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return 0
+        else:
+            print("[hh-message] send (AWAITING CONFIRMATION)")
+            print()
+            print(f"conversation: {cid}")
+            print(f"classification: {classification}")
+            print(f"validation: {validation}")
+            print()
+            print("draft:")
+            for line in (draft or "").splitlines():
+                print(f"  {line}")
+            print()
+            print("status: AWAITING CONFIRMATION — run with --confirm to send.")
+            return 0
+
+    # Confirmed! Perform minimal isolated DOM send
+    pre_count = len(msgs)
+    pre_outgoing_count = sum(1 for m in msgs if m.get("direction") == "OUTGOING")
+    pre_fingerprints = {(m.get("direction"), (m.get("text") or "").strip()) for m in msgs}
+
+    send_res = hh_message_reply.send_confirmed_hh_reply(ev, draft)
+    if not send_res.get("ok"):
+        err = send_res.get("reason", "DOM send operation failed")
+        if as_json:
+            import json
+            payload = {
+                "conversation_id": cid,
+                "classification": classification,
+                "validation": validation,
+                "draft": draft,
+                "confirmed": True,
+                "sent": False,
+                "post_send_verified": False,
+                "errors": [err],
+                "status": "SEND_FAILED",
+            }
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return 1
+        else:
+            print(f"[hh-message] send failed: {err}")
+            print("status: SEND_FAILED")
+            return 1
+
+    # Robust differential post-send verification
+    import time
+    post_send_verified = False
+    errors = []
+    draft_clean = draft.strip()
+    draft_prefix = draft_clean[:40].lower()
+
+    for attempt in range(3):
+        time.sleep(0.7)
+        try:
+            fresh_post = hh_message_reply.fetch_hh_conversation_readonly(ev)
+            post_cid = fresh_post.get("conversation_id")
+            post_msgs = fresh_post.get("messages") or []
+            post_count = len(post_msgs)
+            post_outgoing_count = sum(1 for m in post_msgs if m.get("direction") == "OUTGOING")
+
+            # 1. Target conversation ID check
+            if post_cid and str(post_cid).strip() != str(cid).strip():
+                errors.append(f"Conversation ID shifted during verification ({cid} -> {post_cid}).")
+                break
+
+            # 2. Check for new messages
+            if post_count > pre_count or post_outgoing_count > pre_outgoing_count:
+                new_msgs = post_msgs[pre_count:] if post_count > pre_count else [
+                    m for m in post_msgs if (m.get("direction"), (m.get("text") or "").strip()) not in pre_fingerprints
+                ]
+                new_outgoing = [m for m in new_msgs if m.get("direction") == "OUTGOING"]
+                for nm in new_outgoing:
+                    n_text = (nm.get("text") or "").strip()
+                    if draft_prefix in n_text.lower() or draft_clean == n_text:
+                        post_send_verified = True
+                        break
+                if post_send_verified:
+                    break
+        except Exception as e:
+            errors.append(f"Post-send evaluation error: {e}")
+
+    if post_send_verified:
+        status = "SENT"
+        errors = []
+        rc = 0
+    else:
+        status = "SEND_UNVERIFIED"
+        if not errors:
+            errors.append("Message submitted to DOM but no new outgoing message matching draft appeared in conversation DOM.")
+        rc = 1
+
+    if as_json:
+        import json
+        payload = {
+            "conversation_id": cid,
+            "classification": classification,
+            "validation": validation,
+            "draft": draft,
+            "confirmed": True,
+            "sent": True,
+            "post_send_verified": post_send_verified,
+            "errors": errors,
+            "status": status,
+        }
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return rc
+    else:
+        print(f"[hh-message] send ({status})")
+        print()
+        print(f"conversation: {cid}")
+        print(f"classification: {classification}")
+        print(f"validation: {validation}")
+        print(f"post_send_verified: {post_send_verified}")
+        print()
+        print("draft:")
+        for line in (draft or "").splitlines():
+            print(f"  {line}")
+        print()
+        if errors:
+            print("errors:")
+            for e in errors:
+                print(f"  - {e}")
+            print()
+        print(f"status: {status}")
+        return rc
+
+
+def hh_message_triage(conversation_id: str | None = None, limit: int | None = None,
+                      cdp_url=None, url_substring=None, evaluate_fn=None,
+                      as_json: bool = False, profile=None) -> int:
+    """Stage 30D.9: Multi-conversation read-only triage.
+    Discovers available HH conversations, resolves metadata/vacancies,
+    performs classification, facts analysis, draft generation and validation.
+    Strictly READ-ONLY: never modifies DOM, never navigates, never sends.
+    """
+    ev = evaluate_fn
+    if ev is None:
+        try:
+            ev = _resolve_chatik_evaluate(cdp_url=cdp_url, url_substring=url_substring)
+        except Exception as e:
+            if as_json:
+                import json
+                payload = {
+                    "status": "READ-ONLY",
+                    "conversation_count": 0,
+                    "items": [],
+                    "errors": [f"CDP connection failed: {e}"],
+                }
+                print(json.dumps(payload, indent=2, ensure_ascii=False))
+                return 1
+            else:
+                print(f"[hh-message] triage failed: CDP connection failed ({e}).")
+                print("status: READ-ONLY — nothing sent.")
+                return 1
+
+    errors = []
+    try:
+        raw_list = hh_message_reply.fetch_hh_conversations_list_readonly(ev)
+        raw_convs = raw_list.get("conversations") or []
+    except Exception as e:
+        raw_convs = []
+        errors.append(f"Failed to fetch conversation list: {e}")
+
+    # Deduplicate by conversation_id
+    seen_ids = set()
+    unique_convs = []
+    for c in raw_convs:
+        cid = str(c.get("conversation_id") or "").strip()
+        if cid and cid not in seen_ids:
+            seen_ids.add(cid)
+            unique_convs.append(c)
+
+    # Filter by conversation_id if specified
+    if conversation_id:
+        target_cid = str(conversation_id).strip()
+        filtered = [c for c in unique_convs if str(c.get("conversation_id")).strip() == target_cid]
+        if not filtered:
+            # Fallback: construct from active open chat
+            filtered = [{
+                "conversation_id": target_cid,
+                "url": f"https://hh.ru/chat/{target_cid}",
+                "title": None,
+                "employer": None,
+                "snippet": None,
+                "is_selected": True,
+            }]
+        unique_convs = filtered
+
+    # Apply limit
+    if limit is not None and limit > 0:
+        unique_convs = unique_convs[:limit]
+
+    items = []
+    for c in unique_convs:
+        cid = str(c.get("conversation_id") or "")
+        try:
+            is_sel = c.get("is_selected", False)
+            title = c.get("title")
+            employer = c.get("employer")
+
+            if is_sel:
+                try:
+                    fresh = hh_message_reply.fetch_hh_conversation_readonly(ev)
+                    msgs = fresh.get("messages") or []
+                    if fresh.get("title") and "Чаты" not in fresh.get("title"):
+                        title = fresh.get("title")
+                    employer = fresh.get("employer") or employer
+                except Exception:
+                    msgs = []
+                
+                dialog = hh_message_reply.HHDialog(
+                    conversation_id=cid,
+                    vacancy_title=title or "",
+                    employer=employer or "",
+                    messages=[
+                        hh_message_reply.HHMessage(
+                            message_id=f"m{i}",
+                            text=(m.get("text") or ""),
+                            sender="candidate" if (m.get("direction") or "") == "OUTGOING" else "employer",
+                        )
+                        for i, m in enumerate(msgs)
+                    ],
+                )
+            else:
+                snippet = (c.get("snippet") or "").replace("\xa0", " ").strip()
+                snippet_lower = snippet.lower()
+                if "отклик на вакансию" in snippet_lower:
+                    sender = "candidate"
+                else:
+                    sender = "employer"
+
+                dialog = hh_message_reply.HHDialog(
+                    conversation_id=cid,
+                    vacancy_title=title or "",
+                    employer=employer or "",
+                    messages=[
+                        hh_message_reply.HHMessage(
+                            message_id="m0",
+                            text=snippet,
+                            sender=sender,
+                        )
+                    ] if snippet else [],
+                )
+
+            # Link vacancy
+            v_match = hh_message_reply.resolve_vacancy_for_dialog(dialog) or {}
+            vac_stable_id = v_match.get("stable_id")
+            if v_match.get("employer") and not dialog.employer:
+                dialog.employer = v_match.get("employer")
+            resolved_employer = dialog.employer or v_match.get("employer") or employer or None
+
+            # Classification
+            det = hh_message_reply.classify_hh_conversation_detailed(dialog, profile=profile)
+            classification = det.get("classification")
+            confidence = det.get("confidence", 0.9)
+            question = det.get("question")
+            req_facts = det.get("required_facts", [])
+            avail_facts = det.get("available_facts", [])
+            miss_facts = det.get("missing_facts", [])
+            draft = det.get("prepared_reply")
+
+            # Validation
+            if classification == "NEEDS_REPLY":
+                val = hh_message_reply.validate_hh_reply_draft(
+                    dialog,
+                    draft=draft,
+                    classification=classification,
+                    profile=profile,
+                )
+                validation = val.get("validation", "REJECTED")
+            elif classification == "HUMAN_REVIEW":
+                validation = "HUMAN_REVIEW"
+                draft = None
+            else:
+                validation = "REJECTED"
+                draft = None
+
+            item = {
+                "conversation_id": cid,
+                "participant": title or resolved_employer or None,
+                "vacancy_stable_id": vac_stable_id or None,
+                "employer": resolved_employer,
+                "classification": classification,
+                "confidence": confidence,
+                "question": question,
+                "required_facts": req_facts,
+                "available_facts": avail_facts,
+                "missing_facts": miss_facts,
+                "draft": draft,
+                "validation": validation,
+            }
+            items.append(item)
+        except Exception as e:
+            items.append({
+                "conversation_id": cid,
+                "participant": c.get("title") or c.get("employer") or None,
+                "vacancy_stable_id": None,
+                "employer": c.get("employer"),
+                "classification": "ERROR",
+                "confidence": 0.0,
+                "question": None,
+                "required_facts": [],
+                "available_facts": [],
+                "missing_facts": [],
+                "draft": None,
+                "validation": "REJECTED",
+                "error": str(e),
+            })
+
+    if as_json:
+        import json
+        payload = {
+            "status": "READ-ONLY",
+            "conversation_count": len(items),
+            "items": items,
+            "errors": errors,
+        }
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    else:
+        print("[hh-message] triage (READ-ONLY)")
+        print()
+        print(f"found: {len(unique_convs)} conversations")
+        print(f"triaged: {len(items)}")
+        print()
+        if items:
+            print("items:")
+            for it in items:
+                cid = it.get("conversation_id")
+                part = it.get("participant") or "Unknown"
+                emp = f" ({it.get('employer')})" if it.get("employer") else ""
+                cls = it.get("classification")
+                conf = it.get("confidence", 0.0)
+                val = it.get("validation")
+                draft = it.get("draft")
+                print(f"  [{cid}] {part}{emp}")
+                print(f"    classification: {cls} (conf: {conf:.2f})")
+                print(f"    validation: {val}")
+                if draft:
+                    print(f"    draft: {draft[:80]}...")
+                else:
+                    print("    draft: (none)")
+                print()
+
+        # Summary
+        counts = {"NEEDS_REPLY": 0, "NO_REPLY_NEEDED": 0, "HUMAN_REVIEW": 0, "ERROR": 0}
+        for it in items:
+            c_type = it.get("classification")
+            counts[c_type] = counts.get(c_type, 0) + 1
+
+        print("summary:")
+        for k, v in counts.items():
+            print(f"  {k}: {v}")
+        print(f"  errors: {len(errors)}")
+        print()
+        print("status: READ-ONLY — nothing sent.")
+        return 0
 
 
 def email_classify(target: str, transport=None, max_emails=None, profile=None) -> int:
@@ -1919,15 +2766,21 @@ def hh_message_diagnose(
         for t in page_targets:
             t_url = t.get("url") or ""
             t_title = t.get("title") or ""
-            if url_sub in t_url:
+            if url_sub.lower() in t_url.lower():
                 matching_tabs.append({"url": t_url, "title": t_title})
-                if ws_url is None:
-                    ws_url = t.get("webSocketDebuggerUrl")
-                    page_url = t_url
-                    page_title = t_title
 
         hh_page_present = len(matching_tabs) > 0
-        if not hh_page_present:
+        if hh_page_present:
+            best_target = prefill_execute.select_best_hh_target(page_targets, url_sub)
+            if best_target:
+                ws_url = best_target.get("webSocketDebuggerUrl")
+                page_url = best_target.get("url")
+                page_title = best_target.get("title")
+            else:
+                ws_url = matching_tabs[0].get("webSocketDebuggerUrl") if hasattr(matching_tabs[0], "get") else None
+                page_url = matching_tabs[0]["url"]
+                page_title = matching_tabs[0]["title"]
+        else:
             errors.append(f"No open tab matching {url_sub!r} found among {len(page_targets)} page tab(s)")
 
     # Step 3: Main frame / Messages page check
@@ -2354,14 +3207,48 @@ def main() -> int:
     hh_message_list_p.add_argument("--cdp-url", default=None, help="CDP endpoint (default: HH_CDP_URL or 127.0.0.1:9222)")
     hh_message_list_p.add_argument("--url-substring", default=None, help="Page-tab URL substring to attach to (default: hh.ru)")
     hh_message_prev_p = hh_message_sub.add_parser("preview", help="Preview a conversation context + reply (read-only)")
-    hh_message_prev_p.add_argument("conversation_id", type=str)
+    hh_message_prev_p.add_argument("conversation_id", nargs="?", default=None, type=str, help="Optional conversation ID (default: open chat)")
+    hh_message_prev_p.add_argument("--conversation-id", dest="conversation_id_opt", default=None, type=str, help="Optional conversation ID")
+    hh_message_prev_p.add_argument("--limit", type=int, default=None, help="Limit number of recent messages to show")
+    hh_message_prev_p.add_argument("--json", action="store_true", help="Output preview as machine-readable JSON")
     hh_message_prev_p.add_argument("--cdp-url", default=None)
     hh_message_prev_p.add_argument("--url-substring", default=None)
     # Stage 30C Phase 2A: additional REVIEW-only wiring (pure read-only helpers)
-    hh_message_classify_p = hh_message_sub.add_parser("classify", help="Classify conversation (read-only, no send)")
-    hh_message_classify_p.add_argument("conversation_id", type=str, help="Conversation ID to classify (read from open chatik)")
+    hh_message_classify_p = hh_message_sub.add_parser("classify", help="Classify conversation and draft reply (read-only, no send)")
+    hh_message_classify_p.add_argument("conversation_id", nargs="?", default=None, type=str, help="Optional conversation ID (default: open chat)")
+    hh_message_classify_p.add_argument("--conversation-id", dest="conversation_id_opt", default=None, type=str, help="Optional conversation ID")
+    hh_message_classify_p.add_argument("--limit", type=int, default=None, help="Limit number of context messages")
+    hh_message_classify_p.add_argument("--json", action="store_true", help="Output classification as machine-readable JSON")
     hh_message_classify_p.add_argument("--cdp-url", default=None)
     hh_message_classify_p.add_argument("--url-substring", default=None)
+
+    # Stage 30D.4: validate command (validate prepared reply against profile evidence and safety gates)
+    hh_message_validate_p = hh_message_sub.add_parser("validate", help="Validate prepared reply draft against safety rules (read-only, no send)")
+    hh_message_validate_p.add_argument("conversation_id", nargs="?", default=None, type=str, help="Optional conversation ID (default: open chat)")
+    hh_message_validate_p.add_argument("--conversation-id", dest="conversation_id_opt", default=None, type=str, help="Optional conversation ID")
+    hh_message_validate_p.add_argument("--limit", type=int, default=None, help="Limit number of context messages")
+    hh_message_validate_p.add_argument("--json", action="store_true", help="Output validation as machine-readable JSON")
+    hh_message_validate_p.add_argument("--cdp-url", default=None)
+    hh_message_validate_p.add_argument("--url-substring", default=None)
+
+    # Stage 30D.6: send command (controlled, human-confirmed reply send)
+    hh_message_send_p = hh_message_sub.add_parser("send", help="Controlled human-confirmed reply send (requires --confirm)")
+    hh_message_send_p.add_argument("conversation_id", nargs="?", default=None, type=str, help="Optional conversation ID (default: open chat)")
+    hh_message_send_p.add_argument("--conversation-id", dest="conversation_id_opt", default=None, type=str, help="Optional conversation ID")
+    hh_message_send_p.add_argument("--confirm", action="store_true", help="Explicit human confirmation to execute send")
+    hh_message_send_p.add_argument("--limit", type=int, default=None, help="Limit number of context messages")
+    hh_message_send_p.add_argument("--json", action="store_true", help="Output result as machine-readable JSON")
+    hh_message_send_p.add_argument("--cdp-url", default=None)
+    hh_message_send_p.add_argument("--url-substring", default=None)
+
+    # Stage 30D.9: triage command (multi-conversation read-only triage)
+    hh_message_triage_p = hh_message_sub.add_parser("triage", help="Multi-conversation read-only triage (READ-ONLY, no send)")
+    hh_message_triage_p.add_argument("conversation_id", nargs="?", default=None, type=str, help="Optional conversation ID (filter to single dialog)")
+    hh_message_triage_p.add_argument("--conversation-id", dest="conversation_id_opt", default=None, type=str, help="Optional conversation ID")
+    hh_message_triage_p.add_argument("--limit", type=int, default=None, help="Limit number of conversations to triage")
+    hh_message_triage_p.add_argument("--json", action="store_true", help="Output triage result as machine-readable JSON")
+    hh_message_triage_p.add_argument("--cdp-url", default=None)
+    hh_message_triage_p.add_argument("--url-substring", default=None)
 
     # Stage 30D: diagnose command (probe health of HH message / chatik flow)
     hh_message_diag_p = hh_message_sub.add_parser("diagnose", help="Probe HH message flow health (READ-ONLY probe)")
@@ -2545,11 +3432,36 @@ def main() -> int:
         if args.hh_message_command == "list":
             return hh_message_list(cdp_url=args.cdp_url, url_substring=args.url_substring)
         elif args.hh_message_command == "preview":
-            return hh_message_preview(args.conversation_id, cdp_url=args.cdp_url,
-                                      url_substring=args.url_substring)
+            conv_id = getattr(args, "conversation_id_opt", None) or getattr(args, "conversation_id", None)
+            return hh_message_preview(conv_id, cdp_url=args.cdp_url,
+                                      url_substring=args.url_substring,
+                                      limit=getattr(args, "limit", None),
+                                      as_json=getattr(args, "json", False))
         elif args.hh_message_command == "classify":
-            return hh_message_classify(args.conversation_id, cdp_url=args.cdp_url,
-                                       url_substring=args.url_substring)
+            conv_id = getattr(args, "conversation_id_opt", None) or getattr(args, "conversation_id", None)
+            return hh_message_classify(conv_id, cdp_url=args.cdp_url,
+                                       url_substring=args.url_substring,
+                                       limit=getattr(args, "limit", None),
+                                       as_json=getattr(args, "json", False))
+        elif args.hh_message_command == "validate":
+            conv_id = getattr(args, "conversation_id_opt", None) or getattr(args, "conversation_id", None)
+            return hh_message_validate(conv_id, cdp_url=args.cdp_url,
+                                       url_substring=args.url_substring,
+                                       limit=getattr(args, "limit", None),
+                                       as_json=getattr(args, "json", False))
+        elif args.hh_message_command == "send":
+            conv_id = getattr(args, "conversation_id_opt", None) or getattr(args, "conversation_id", None)
+            return hh_message_send(conv_id, confirm=getattr(args, "confirm", False),
+                                   cdp_url=args.cdp_url,
+                                   url_substring=args.url_substring,
+                                   limit=getattr(args, "limit", None),
+                                   as_json=getattr(args, "json", False))
+        elif args.hh_message_command == "triage":
+            conv_id = getattr(args, "conversation_id_opt", None) or getattr(args, "conversation_id", None)
+            return hh_message_triage(conv_id, limit=getattr(args, "limit", None),
+                                     cdp_url=args.cdp_url,
+                                     url_substring=args.url_substring,
+                                     as_json=getattr(args, "json", False))
         elif args.hh_message_command == "diagnose":
             return hh_message_diagnose(cdp_url=args.cdp_url, url_substring=args.url_substring,
                                        frame_substrings=args.frame_substrings, as_json=args.json)

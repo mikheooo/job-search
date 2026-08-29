@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
@@ -348,6 +349,56 @@ def execute_prefill_plan(
 
 # ---------- raw CDP transport ----------
 
+_HH_MESSAGES_PATTERN = re.compile(r"messages|messaging|negotiations|/chat/\d+", re.IGNORECASE)
+
+
+def select_best_hh_target(targets: List[Dict[str, Any]], url_substring: str) -> Optional[Dict[str, Any]]:
+    """Select the most appropriate page target matching url_substring.
+
+    Priority:
+    1) Page target whose URL matches messages/messaging/negotiations;
+    2) Among messages targets, prefer one with a specific conversation query/path;
+    3) Otherwise, the first page target matching url_substring.
+    Pure and deterministic - unit-testable without a browser.
+    """
+    if not targets:
+        return None
+
+    sub_lc = url_substring.lower()
+
+    # Filter page targets matching substring
+    page_targets = [
+        t for t in targets
+        if t.get("type") == "page"
+        and sub_lc in (t.get("url") or "").lower()
+        and t.get("webSocketDebuggerUrl")
+    ]
+    if not page_targets:
+        # Fallback if webSocketDebuggerUrl is missing in fakes/mocks
+        page_targets = [
+            t for t in targets
+            if t.get("type") == "page"
+            and sub_lc in (t.get("url") or "").lower()
+        ]
+    if not page_targets:
+        return None
+
+    messages_tabs = [
+        t for t in page_targets
+        if _HH_MESSAGES_PATTERN.search(t.get("url") or "")
+    ]
+    if messages_tabs:
+        # Prefer tab with specific conversation parameter or /chat/
+        chat_tabs = [
+            t for t in messages_tabs
+            if "messageconversationid" in (t.get("url") or "").lower()
+            or "/chat/" in (t.get("url") or "").lower()
+        ]
+        return chat_tabs[0] if chat_tabs else messages_tabs[0]
+
+    return page_targets[0]
+
+
 def make_cdp_evaluate(cdp_url: str, url_substring: str):
     """Return evaluate_fn(expression)->str bound to the already-open tab whose
     URL contains url_substring. Read-only transport (Runtime.evaluate)."""
@@ -358,12 +409,10 @@ def make_cdp_evaluate(cdp_url: str, url_substring: str):
             return json.loads(r.read().decode("utf-8"))
 
     targets = _list_targets()
-    tab = next((t for t in targets
-                if t.get("type") == "page" and url_substring in (t.get("url") or "")
-                and t.get("webSocketDebuggerUrl")), None)
+    tab = select_best_hh_target(targets, url_substring)
     if tab is None:
         raise RuntimeError(f"no open tab matching {url_substring!r} on {cdp_url}")
-    ws_url = tab["webSocketDebuggerUrl"]
+    ws_url = tab.get("webSocketDebuggerUrl")
 
     def evaluate_fn(expression: str) -> str:
         async def _run() -> str:
@@ -542,13 +591,11 @@ def make_isolated_world_evaluate(
                 return _EMPTY_CONVERSATION_JSON
         return _seam
 
-    tab = next((t for t in _cdp_list_targets(cdp_url)
-                if t.get("type") == "page"
-                and page_substring in (t.get("url") or "")
-                and t.get("webSocketDebuggerUrl")), None)
+    targets = _cdp_list_targets(cdp_url)
+    tab = select_best_hh_target(targets, page_substring)
     if tab is None:
         raise RuntimeError(f"no open tab matching {page_substring!r} on {cdp_url}")
-    ws_url = tab["webSocketDebuggerUrl"]
+    ws_url = tab.get("webSocketDebuggerUrl")
 
     def evaluate_fn(expression: str) -> str:
         try:

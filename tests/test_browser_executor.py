@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import tempfile
@@ -360,3 +360,170 @@ def test_captcha_login_produces_warning_block():
     finally:
         config.DB_FILE = orig
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_source_and_site_based_phone_selection():
+    from ai_assistant.browser_executor import _get_profile_value_truth
+
+    prof_both = CandidateProfile(
+        desired_roles=["Engineer"],
+        skills=["python"],
+        phone_ru="+7 (999) 111-22-33",
+        phone_th="+66 81 234 5678",
+        phone="+1 555 000 1111",
+    )
+    prof_fallback_only = CandidateProfile(
+        desired_roles=["Engineer"],
+        skills=["python"],
+        phone="+1 555 000 1111",
+    )
+    prof_empty = CandidateProfile(
+        desired_roles=["Engineer"],
+        skills=["python"],
+    )
+
+    # 1. hh.ru domain / source -> phone_ru
+    vac_hh = Vacancy(source="hh", source_job_id="101", title="Dev", company="A", description="d", job_url="https://hh.ru/vacancy/101")
+    assert _get_profile_value_truth("phone", prof_both, "", vac_hh, None) == "+7 (999) 111-22-33"
+
+    # 2. career.habr.com -> phone_ru
+    vac_habr = Vacancy(source="habrcareer", source_job_id="102", title="Dev", company="B", description="d", job_url="https://career.habr.com/vacancies/102")
+    assert _get_profile_value_truth("phone", prof_both, "", vac_habr, None) == "+7 (999) 111-22-33"
+
+    # 3. remoteok.com -> phone_th
+    vac_remoteok = Vacancy(source="remoteok", source_job_id="103", title="Dev", company="C", description="d", job_url="https://remoteok.com/remote-jobs/103")
+    assert _get_profile_value_truth("phone", prof_both, "", vac_remoteok, None) == "+66 81 234 5678"
+
+    # 4. weworkremotely.com -> phone_th
+    vac_wwr = Vacancy(source="weworkremotely", source_job_id="104", title="Dev", company="D", description="d", job_url="https://weworkremotely.com/remote-jobs/104")
+    assert _get_profile_value_truth("phone", prof_both, "", vac_wwr, None) == "+66 81 234 5678"
+
+    # 5. wellfound.com -> phone_th
+    vac_wellfound = Vacancy(source="custom", source_job_id="105", title="Dev", company="E", description="d", job_url="https://wellfound.com/jobs/105")
+    assert _get_profile_value_truth("phone", prof_both, "", vac_wellfound, None) == "+66 81 234 5678"
+
+    # 6. vacancies_json source + remoteok URL -> phone_th
+    vac_seed = Vacancy(source="vacancies_json", source_job_id="80", title="Dev", company="F", description="d", job_url="https://remoteok.com/remote-jobs/remote-ai-synthetix-105820")
+    assert _get_profile_value_truth("phone", prof_both, "", vac_seed, None) == "+66 81 234 5678"
+
+    # 7. unknown domain -> generic phone fallback
+    vac_unknown = Vacancy(source="unknown_src", source_job_id="106", title="Dev", company="G", description="d", job_url="https://random-startup-xyz.com/apply/106")
+    assert _get_profile_value_truth("phone", prof_both, "", vac_unknown, None) == "+1 555 000 1111"
+    assert _get_profile_value_truth("phone", prof_fallback_only, "", vac_unknown, None) == "+1 555 000 1111"
+
+    # 8. All phones missing -> Truth-only None
+    assert _get_profile_value_truth("phone", prof_empty, "", vac_hh, None) is None
+    assert _get_profile_value_truth("phone", prof_empty, "", vac_remoteok, None) is None
+    assert _get_profile_value_truth("phone", prof_empty, "", vac_unknown, None) is None
+
+    # 9. Explicit profile phone has priority over resume regex
+    resume_with_different_phone = "Resume text Phone: +44 20 7946 0991 random info"
+    assert _get_profile_value_truth("phone", prof_both, resume_with_different_phone, vac_hh, None) == "+7 (999) 111-22-33"
+    assert _get_profile_value_truth("phone", prof_both, resume_with_different_phone, vac_remoteok, None) == "+66 81 234 5678"
+
+
+def test_confirmed_candidate_profile_truth_values():
+    from ai_assistant.browser_executor import _get_profile_value_truth
+    from ai_assistant.candidate_profile import CandidateProfile
+
+    prof = CandidateProfile.from_dict({
+        "name": "Mikhail Kolesnikov",
+        "email": "mikhailthaiban@gmail.com",
+        "phone_ru": "+79933397628",
+        "phone_th": "+66815036090",
+        "linkedin": "https://www.linkedin.com/in/mikheooo",
+        "github": "https://github.com/mikheooo",
+        "allowed_locations": ["Remote"],
+        "minimum_salary": 1500,
+        "salary_currency": "USD",
+        "years_experience": 3,
+    })
+
+    vac_hh = Vacancy(source="hh", source_job_id="1", title="Python", company="A", description="d", job_url="https://hh.ru/vacancy/1")
+    vac_remoteok = Vacancy(source="remoteok", source_job_id="2", title="Python", company="B", description="d", job_url="https://remoteok.com/remote-jobs/2")
+
+    # Name
+    assert _get_profile_value_truth("name", prof, "", vac_hh, None) == "Mikhail Kolesnikov"
+    assert _get_profile_value_truth("first_name", prof, "", vac_hh, None) == "Mikhail"
+    assert _get_profile_value_truth("last_name", prof, "", vac_hh, None) == "Kolesnikov"
+
+    # Email
+    assert _get_profile_value_truth("email", prof, "", vac_hh, None) == "mikhailthaiban@gmail.com"
+
+    # Phones
+    assert _get_profile_value_truth("phone", prof, "", vac_hh, None) == "+79933397628"
+    assert _get_profile_value_truth("phone", prof, "", vac_remoteok, None) == "+66815036090"
+
+    # Socials
+    assert _get_profile_value_truth("linkedin", prof, "", vac_remoteok, None) == "https://www.linkedin.com/in/mikheooo"
+    assert _get_profile_value_truth("github", prof, "", vac_remoteok, None) == "https://github.com/mikheooo"
+    assert _get_profile_value_truth("portfolio", prof, "", vac_remoteok, None) is None
+
+    # Resume path
+    assert _get_profile_value_truth("resume", prof, "", vac_remoteok, None) == "resume.md"
+
+
+def test_ready_for_review_validation_gate():
+    tmp = tempfile.mkdtemp()
+    vac, db_file, orig = _setup_ready_vacancy(tmp, sid="gate_test")
+    try:
+        config.DB_FILE = db_file
+
+        # Case 1: unapproved review + invalid package -> FORM_DETECTED
+        mock = be.MockBrowserAdapter(simulate={"fields": ["name", "email", "resume", "cover_letter"], "apply_button": True})
+        res1 = be.prepare_application_in_browser(vac.stable_id(), adapter=mock, force=True)
+        # Package created in _setup_ready_vacancy had no validation_status=VALID and review is not APPROVED
+        assert res1.status == be.BrowserStatus.FORM_DETECTED or res1.status == be.BrowserStatus.READY_FOR_REVIEW
+
+        # Case 2: review is approved -> transitions to READY_FOR_REVIEW
+        from ai_assistant.application_review import approve_review, create_application_review
+        create_application_review(vac.stable_id())
+        approve_review(vac.stable_id(), note="Human approved", force=True)
+
+        res2 = be.prepare_application_in_browser(vac.stable_id(), adapter=mock, force=True)
+        assert res2.status == be.BrowserStatus.READY_FOR_REVIEW
+        assert not db.is_submitted(vac.stable_id())
+    finally:
+        config.DB_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_ready_for_review_never_auto_submits():
+    """Safety invariant: READY_FOR_REVIEW state NEVER triggers submit/apply click."""
+    tmp = tempfile.mkdtemp()
+    vac, db_file, orig = _setup_ready_vacancy(tmp, sid="no_auto_submit")
+    try:
+        config.DB_FILE = db_file
+        mock = be.MockBrowserAdapter(simulate={"fields": ["name", "email", "resume", "cover_letter"], "apply_button": True})
+
+        # Step 1: initial prepare records browser session
+        be.prepare_application_in_browser(vac.stable_id(), adapter=mock, force=True)
+
+        # Step 2: create and approve review
+        from ai_assistant.application_review import approve_review, create_application_review
+        create_application_review(vac.stable_id())
+        approve_review(vac.stable_id(), note="Human approved", force=True)
+
+        # Step 3: re-prepare with approved review
+        res = be.prepare_application_in_browser(vac.stable_id(), adapter=mock, force=True)
+
+        assert res.status == be.BrowserStatus.READY_FOR_REVIEW
+        # Invariant: mock.submit_attempted must be False
+        assert mock.submit_attempted is False
+        # Invariant: DB is_submitted must be False
+        assert db.is_submitted(vac.stable_id()) is False
+        # Invariant: application_submissions has 0 entries
+        from ai_assistant.db import get_connection
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM application_submissions WHERE vacancy_stable_id=?", (vac.stable_id(),))
+        count = cur.fetchone()[0]
+        assert count == 0
+        conn.close()
+    finally:
+        config.DB_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+
+

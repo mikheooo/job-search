@@ -237,6 +237,571 @@ def generate_reply(
     }
 
 
+_REJECTION_RE = re.compile(
+    r"^отказ$|^нет$|не готовы пригласить|ваканси[а-я]* закрыт|позици[а-я]* закрыт|к сожалению,.*отказ|вынуждены отказать|выбрали другого|не подош[её]л",
+    re.IGNORECASE,
+)
+
+_GREETING_ONLY_RE = re.compile(
+    r"^(здравствуйте|добрый (день|вечер|утро)|приветствую|привет|hello|hi|good (morning|afternoon|evening))[\s.,!?:;0-9-]*$",
+    re.IGNORECASE,
+)
+
+
+def resolve_vacancy_for_dialog(dialog: HHDialog) -> Optional[Dict[str, Any]]:
+    """Look up linked vacancy in database if available (read-only)."""
+    try:
+        from ai_assistant import db
+        conn = db.get_connection()
+        cur = conn.cursor()
+        if dialog.vacancy_stable_id:
+            cur.execute("SELECT * FROM vacancies WHERE stable_id=?", (dialog.vacancy_stable_id,))
+            row = cur.fetchone()
+            if row:
+                cols = [d[0] for d in cur.description]
+                return dict(zip(cols, row))
+        m = re.search(r"(\d+)", dialog.vacancy_stable_id or "")
+        if m:
+            job_id = m.group(1)
+            cur.execute("SELECT * FROM vacancies WHERE source_job_id=? OR stable_id=?", (job_id, f"hh:{job_id}"))
+            row = cur.fetchone()
+            if row:
+                cols = [d[0] for d in cur.description]
+                return dict(zip(cols, row))
+    except Exception:
+        pass
+    return None
+
+
+def classify_hh_conversation_detailed(
+    dialog: HHDialog,
+    profile: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Stage 30D.5: Context-aware, truth-only classification, fact checking, and draft generation.
+    Returns:
+        conversation_id: str
+        classification: NEEDS_REPLY | NO_REPLY_NEEDED | HUMAN_REVIEW | EMPTY_CONVERSATION
+        confidence: float
+        reason: str
+        question: Optional[str]
+        required_facts: List[str]
+        available_facts: List[str]
+        missing_facts: List[str]
+        context: List[Dict[str, str]]
+        prepared_reply: Optional[str]
+        sources: List[str]
+        status: str ("READ-ONLY")
+    """
+    messages = dialog.messages or []
+    context = [
+        {
+            "author": "candidate" if m.sender == "candidate" else "employer",
+            "text": m.text or "",
+        }
+        for m in messages
+    ]
+
+    prof = profile if profile is not None else _load_profile()
+    profile_skills = [str(s) for s in (prof.get("skills") or [])]
+    profile_roles = [str(r) for r in (prof.get("desired_roles") or [])]
+    years_exp = prof.get("years_experience", 0)
+
+    # Base available facts
+    available_facts: List[str] = []
+    if profile_skills:
+        available_facts.append(f"skills: {', '.join(profile_skills)}")
+    if profile_roles:
+        available_facts.append(f"roles: {', '.join(profile_roles[:3])}")
+    if years_exp:
+        available_facts.append(f"experience: {years_exp} years")
+
+    # Link vacancy if available
+    vac_data = resolve_vacancy_for_dialog(dialog)
+    if vac_data:
+        v_title = vac_data.get("title") or ""
+        v_comp = vac_data.get("company") or ""
+        if v_title:
+            available_facts.append(f"vacancy: {v_title} ({v_comp})")
+
+    if not messages:
+        return {
+            "conversation_id": dialog.conversation_id,
+            "classification": "EMPTY_CONVERSATION",
+            "confidence": 1.0,
+            "reason": "Conversation has no messages.",
+            "question": None,
+            "required_facts": [],
+            "available_facts": available_facts,
+            "missing_facts": [],
+            "context": [],
+            "prepared_reply": None,
+            "sources": [],
+            "status": "READ-ONLY",
+        }
+
+    # Find employer and candidate messages
+    employer_indices = [i for i, m in enumerate(messages) if m.sender != "candidate"]
+    candidate_indices = [i for i, m in enumerate(messages) if m.sender == "candidate"]
+
+    if not employer_indices:
+        return {
+            "conversation_id": dialog.conversation_id,
+            "classification": "NO_REPLY_NEEDED",
+            "confidence": 0.95,
+            "reason": "No messages from employer yet; waiting for response.",
+            "question": None,
+            "required_facts": [],
+            "available_facts": available_facts,
+            "missing_facts": [],
+            "context": context,
+            "prepared_reply": None,
+            "sources": [],
+            "status": "READ-ONLY",
+        }
+
+    last_emp_idx = employer_indices[-1]
+    last_emp_msg = messages[last_emp_idx]
+    last_emp_text = (last_emp_msg.text or "").strip()
+
+    # 1. Rejection / Closure notice
+    if _REJECTION_RE.search(last_emp_text):
+        return {
+            "conversation_id": dialog.conversation_id,
+            "classification": "NO_REPLY_NEEDED",
+            "confidence": 0.95,
+            "reason": "Employer sent rejection or closed vacancy notice; no reply needed.",
+            "question": None,
+            "required_facts": [],
+            "available_facts": available_facts,
+            "missing_facts": [],
+            "context": context,
+            "prepared_reply": None,
+            "sources": [],
+            "status": "READ-ONLY",
+        }
+
+    # 2. Automated status notification (e.g. view notification, delivery)
+    low_last = last_emp_text.lower()
+    if any(m in low_last for m in _NO_REPLY_MARKERS) and not _REPLY_PROBE.search(last_emp_text):
+        return {
+            "conversation_id": dialog.conversation_id,
+            "classification": "NO_REPLY_NEEDED",
+            "confidence": 0.90,
+            "reason": "System/platform notification; no candidate reply needed.",
+            "question": None,
+            "required_facts": [],
+            "available_facts": available_facts,
+            "missing_facts": [],
+            "context": context,
+            "prepared_reply": None,
+            "sources": [],
+            "status": "READ-ONLY",
+        }
+
+    # 3. Check for substantive questions in employer messages
+    question_emp_indices = [
+        i for i in employer_indices
+        if _REPLY_PROBE.search(messages[i].text or "")
+        or "?" in (messages[i].text or "")
+        or "？" in (messages[i].text or "")
+        or "опыт" in (messages[i].text or "").lower()
+    ]
+
+    if question_emp_indices:
+        last_q_idx = question_emp_indices[-1]
+        q_msg = messages[last_q_idx]
+        q_text = (q_msg.text or "").strip()
+
+        # Check candidate responses sent after this question
+        cand_replies_after_q = [
+            messages[i] for i in candidate_indices if i > last_q_idx
+        ]
+
+        has_substantive_cand_reply = False
+        for c_msg in cand_replies_after_q:
+            c_text = (c_msg.text or "").strip()
+            # If candidate sent more than just a greeting, they answered
+            if not _GREETING_ONLY_RE.match(c_text):
+                has_substantive_cand_reply = True
+                break
+
+        if has_substantive_cand_reply:
+            return {
+                "conversation_id": dialog.conversation_id,
+                "classification": "NO_REPLY_NEEDED",
+                "confidence": 0.90,
+                "reason": "Candidate has already answered the employer's question.",
+                "question": q_text,
+                "required_facts": [],
+                "available_facts": available_facts,
+                "missing_facts": [],
+                "context": context,
+                "prepared_reply": None,
+                "sources": [],
+                "status": "READ-ONLY",
+            }
+
+        # Analyze question requirements
+        required_facts: List[str] = []
+        missing_facts: List[str] = []
+        sources: List[str] = ["candidate_profile.json: skills", "candidate_profile.json: desired_roles"]
+        if vac_data:
+            sources.append(f"database: vacancy {vac_data.get('stable_id')}")
+
+        lang = detect_language(q_text)
+
+        # Sensitive questions (salary, calendar time) -> HUMAN_REVIEW
+        if re.search(r"зарплат|оплат|оклад|salary|ставк|уровень дохода|денег", q_text, re.IGNORECASE):
+            return {
+                "conversation_id": dialog.conversation_id,
+                "classification": "HUMAN_REVIEW",
+                "confidence": 0.85,
+                "reason": "Employer asked about specific salary expectations; requires human decision.",
+                "question": q_text,
+                "required_facts": ["exact salary expectation"],
+                "available_facts": available_facts,
+                "missing_facts": ["salary agreement for this vacancy"],
+                "context": context,
+                "prepared_reply": None,
+                "sources": sources,
+                "status": "READ-ONLY",
+            }
+
+        if re.search(r"какую дату|в какое время|собеседован|интервью|когда.*(мож|смож)", q_text, re.IGNORECASE):
+            return {
+                "conversation_id": dialog.conversation_id,
+                "classification": "HUMAN_REVIEW",
+                "confidence": 0.85,
+                "reason": "Employer asked about interview scheduling; requires human calendar confirmation.",
+                "question": q_text,
+                "required_facts": ["specific interview schedule"],
+                "available_facts": available_facts,
+                "missing_facts": ["available calendar slot"],
+                "context": context,
+                "prepared_reply": None,
+                "sources": sources,
+                "status": "READ-ONLY",
+            }
+
+        # Domain experience: E-commerce / Marketplaces (Ozon/WB)
+        if re.search(r"e-commerce|маркетплейс|ozon|wildberries|wb", q_text, re.IGNORECASE):
+            required_facts.append("e-commerce / marketplace experience (Ozon/WB)")
+            # Check if candidate profile has confirmed Ozon/WB
+            prof_combined = " ".join(profile_skills + profile_roles).lower()
+            has_ecom = any(k in prof_combined for k in ("ozon", "wildberries", "wb", "e-commerce", "ecommerce", "маркетплейс", "marketplace"))
+            if not has_ecom:
+                missing_facts.append("Ozon / Wildberries marketplace experience")
+                if lang == "ru":
+                    reply_text = (
+                        "Здравствуйте! У меня есть опыт автоматизации процессов, работы с API, n8n и Python. "
+                        "Непосредственно с Ozon и Wildberries подтверждённого коммерческого опыта в профиле нет, "
+                        "но готов применить навыки интеграции и автоматизации для ваших задач."
+                    )
+                else:
+                    reply_text = (
+                        "Hello! I have hands-on experience in workflow automation, APIs, n8n, and Python. "
+                        "I do not have direct commercial experience with Ozon/WB in my profile, "
+                        "but I am ready to apply my automation and integration skills."
+                    )
+                reason = "Employer asked a direct question about e-commerce experience; drafted honest response highlighting verified automation/API skills without claiming unverified Ozon/WB experience."
+            else:
+                if lang == "ru":
+                    reply_text = (
+                        "Здравствуйте! Да, у меня есть подтверждённый опыт работы с e-commerce и маркетплейсами, "
+                        "а также автоматизации процессов. Готов обсудить детали."
+                    )
+                else:
+                    reply_text = (
+                        "Hello! Yes, I have verified experience with e-commerce, marketplaces, and process automation. "
+                        "I would be glad to discuss the details."
+                    )
+                reason = "Employer asked a direct question about e-commerce experience; verified in profile."
+
+            return {
+                "conversation_id": dialog.conversation_id,
+                "classification": "NEEDS_REPLY",
+                "confidence": 0.90,
+                "reason": reason,
+                "question": q_text,
+                "required_facts": required_facts,
+                "available_facts": available_facts,
+                "missing_facts": missing_facts,
+                "context": context,
+                "prepared_reply": reply_text,
+                "sources": sources,
+                "status": "READ-ONLY",
+            }
+
+        # General / technical stack questions
+        required_facts.append("technical stack / role qualifications")
+        roles_str = ", ".join(profile_roles[:2]) if profile_roles else "AI Automation Engineer"
+        if lang == "ru":
+            reply_text = (
+                "Здравствуйте! Спасибо за сообщение. Готов ответить на ваши вопросы и обсудить детали вакансии. "
+                f"Я рассматриваю роли: {roles_str}."
+            )
+        else:
+            reply_text = (
+                "Hello! Thank you for your message. I am happy to answer your questions and discuss the details. "
+                f"I am targeting roles in: {roles_str}."
+            )
+
+        return {
+            "conversation_id": dialog.conversation_id,
+            "classification": "NEEDS_REPLY",
+            "confidence": 0.90,
+            "reason": "Employer asked a direct question; drafted response using verified profile roles and skills.",
+            "question": q_text,
+            "required_facts": required_facts,
+            "available_facts": available_facts,
+            "missing_facts": [],
+            "context": context,
+            "prepared_reply": reply_text,
+            "sources": sources,
+            "status": "READ-ONLY",
+        }
+
+    # If candidate was the last sender and no question pending
+    if candidate_indices and candidate_indices[-1] > employer_indices[-1]:
+        return {
+            "conversation_id": dialog.conversation_id,
+            "classification": "NO_REPLY_NEEDED",
+            "confidence": 0.90,
+            "reason": "Last message was sent by candidate; waiting for employer reply.",
+            "question": None,
+            "required_facts": [],
+            "available_facts": available_facts,
+            "missing_facts": [],
+            "context": context,
+            "prepared_reply": None,
+            "sources": [],
+            "status": "READ-ONLY",
+        }
+
+    # Otherwise ambiguous -> HUMAN_REVIEW
+    return {
+        "conversation_id": dialog.conversation_id,
+        "classification": "HUMAN_REVIEW",
+        "confidence": 0.70,
+        "reason": "Dialogue context is ambiguous or informational; requires human review.",
+        "question": None,
+        "required_facts": [],
+        "available_facts": available_facts,
+        "missing_facts": [],
+        "context": context,
+        "prepared_reply": None,
+        "sources": [],
+        "status": "READ-ONLY",
+    }
+
+
+_SENSITIVE_CLAIM_RE = re.compile(
+    r"(\$|руб|usd|eur|\d+\s*(тыс|k|т\.)|зарплат|ставк|оклад|\d{1,2}:\d{2}|\d{1,2}\s+(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек))",
+    re.IGNORECASE,
+)
+
+_OFF_TOPIC_RE = re.compile(
+    r"^\s*(submit|curl|fetch|http|javascript|select|insert|update|delete|drop|run_command|click|navigate)",
+    re.IGNORECASE,
+)
+
+
+def validate_hh_reply_draft(
+    dialog: HHDialog,
+    draft: Optional[str] = None,
+    classification: Optional[str] = None,
+    profile: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Stage 30D.4/30D.5: READ-ONLY validation gate for prepared HH reply draft.
+    Checks:
+    - answers_last_question: does draft address the active question/context?
+    - uses_supported_facts: are all claims backed by candidate_profile.json?
+    - contains_unverified_claims: are there positive claims not in profile (e.g. Ozon/WB when missing)?
+    - contains_sensitive_claims: are there salary/calendar/visa claims?
+    - is_empty: is draft missing/empty?
+
+    Returns structured validation dict:
+    - conversation_id
+    - classification
+    - draft
+    - validation: APPROVED | HUMAN_REVIEW | REJECTED
+    - checks: dict
+    - reasons: list of str
+    - status: "READ-ONLY"
+    """
+    prof = profile if profile is not None else _load_profile()
+    cid = dialog.conversation_id
+
+    # If classification is not passed, infer from detailed classification
+    if classification is None or draft is None:
+        det = classify_hh_conversation_detailed(dialog, profile=prof)
+        if classification is None:
+            classification = det.get("classification") or "HUMAN_REVIEW"
+        if draft is None:
+            draft = det.get("prepared_reply")
+
+    is_empty = not draft or not draft.strip()
+    reasons: List[str] = []
+
+    if classification == "HUMAN_REVIEW":
+        return {
+            "conversation_id": cid,
+            "classification": classification,
+            "draft": draft,
+            "validation": "HUMAN_REVIEW",
+            "checks": {
+                "answers_last_question": False,
+                "uses_supported_facts": False,
+                "contains_unverified_claims": False,
+                "contains_sensitive_claims": False,
+                "is_empty": is_empty,
+            },
+            "reasons": ["Dialogue classification requires human review; automated approval blocked."],
+            "status": "READ-ONLY",
+        }
+
+    if is_empty:
+        return {
+            "conversation_id": cid,
+            "classification": classification,
+            "draft": draft,
+            "validation": "REJECTED",
+            "checks": {
+                "answers_last_question": False,
+                "uses_supported_facts": False,
+                "contains_unverified_claims": False,
+                "contains_sensitive_claims": False,
+                "is_empty": True,
+            },
+            "reasons": ["Draft reply is empty."],
+            "status": "READ-ONLY",
+        }
+
+    if _OFF_TOPIC_RE.search(draft.strip()):
+        return {
+            "conversation_id": cid,
+            "classification": classification,
+            "draft": draft,
+            "validation": "REJECTED",
+            "checks": {
+                "answers_last_question": False,
+                "uses_supported_facts": False,
+                "contains_unverified_claims": False,
+                "contains_sensitive_claims": False,
+                "is_empty": False,
+            },
+            "reasons": ["Draft contains instructions or off-topic commands instead of a candidate reply."],
+            "status": "READ-ONLY",
+        }
+
+    if classification in ("EMPTY_CONVERSATION", "NO_REPLY_NEEDED"):
+        return {
+            "conversation_id": cid,
+            "classification": classification,
+            "draft": draft,
+            "validation": "REJECTED",
+            "checks": {
+                "answers_last_question": False,
+                "uses_supported_facts": False,
+                "contains_unverified_claims": False,
+                "contains_sensitive_claims": False,
+                "is_empty": False,
+            },
+            "reasons": [f"Classification is {classification}; no reply should be sent."],
+            "status": "READ-ONLY",
+        }
+
+    # Extract claims from draft
+    contains_sensitive_claims = bool(_SENSITIVE_CLAIM_RE.search(draft))
+    if contains_sensitive_claims:
+        reasons.append("Draft contains sensitive claims (salary/rates/calendar slot).")
+
+    # Profile evidence checking
+    profile_skills = {str(s).lower() for s in (prof.get("skills") or [])}
+    profile_roles = {str(r).lower() for r in (prof.get("desired_roles") or []) + (prof.get("alternative_roles") or [])}
+    profile_combined = " ".join(profile_skills | profile_roles).lower()
+
+    contains_unverified_claims = False
+    uses_supported_facts = True
+
+    draft_low = draft.lower()
+
+    # Check disclaimers (e.g. "опыта нет", "в профиле нет", "непосредственно с Ozon и Wildberries подтверждённого опыта нет")
+    is_disclaiming_ecom = any(neg in draft_low for neg in (
+        "опыта нет", "опыта не имею", "не работал", "в профиле нет",
+        "нет опыта", "нет коммерческого опыта", "подтверждённого опыта нет",
+        "подтвержденного опыта нет", "подтверждённого коммерческого опыта нет",
+        "подтвержденного коммерческого опыта нет", "не хочу приписывать",
+        "no direct experience", "do not have direct", "without direct"
+    ))
+
+    # 1. E-commerce / Ozon / WB positive claim check
+    if any(k in draft_low for k in ("ozon", "wildberries", "wb", "e-commerce", "ecommerce", "маркетплейс")):
+        has_ecom_in_profile = any(k in profile_combined for k in ("ozon", "wildberries", "wb", "e-commerce", "ecommerce", "маркетплейс", "marketplace"))
+        if not has_ecom_in_profile and not is_disclaiming_ecom:
+            contains_unverified_claims = True
+            uses_supported_facts = False
+            reasons.append("Draft claims Ozon/WB experience, but candidate profile does not contain evidence for this claim.")
+
+    # 2. Excluded / Unverified technologies
+    excluded = {str(x).lower() for x in (prof.get("excluded_roles") or [])}
+    for exc in excluded:
+        if exc in draft_low and not is_disclaiming_ecom:
+            contains_unverified_claims = True
+            uses_supported_facts = False
+            reasons.append(f"Draft claims experience in excluded technology ({exc}).")
+
+    # 3. Years of experience check
+    m_exp = re.search(r"(\d+)\s+(лет|года|год|years)", draft_low)
+    if m_exp:
+        years_claimed = int(m_exp.group(1))
+        profile_years = prof.get("years_experience", 0)
+        if years_claimed > profile_years:
+            contains_unverified_claims = True
+            uses_supported_facts = False
+            reasons.append(f"Draft claims {years_claimed} years of experience, exceeding verified profile experience ({profile_years} years).")
+
+    # 4. Answers last question check
+    answers_last_question = True
+    employer_msgs = [m for m in (dialog.messages or []) if m.sender != "candidate"]
+    if employer_msgs:
+        last_emp_text = (employer_msgs[-1].text or "").lower()
+        if "?" in last_emp_text or "опыт" in last_emp_text or "уточните" in last_emp_text:
+            if len(draft.strip()) < 5:
+                answers_last_question = False
+                reasons.append("Draft is too brief to answer the employer question.")
+
+    # Status determination
+    if classification == "HUMAN_REVIEW":
+        validation = "HUMAN_REVIEW"
+        if not reasons:
+            reasons.append("Dialogue classification requires human review; automated approval blocked.")
+    elif contains_unverified_claims or contains_sensitive_claims:
+        validation = "HUMAN_REVIEW"
+    elif not answers_last_question:
+        validation = "REJECTED"
+    elif classification == "NEEDS_REPLY" and uses_supported_facts and not contains_unverified_claims and not contains_sensitive_claims:
+        validation = "APPROVED"
+    else:
+        validation = "HUMAN_REVIEW"
+
+    return {
+        "conversation_id": cid,
+        "classification": classification,
+        "draft": draft,
+        "validation": validation,
+        "checks": {
+            "answers_last_question": answers_last_question,
+            "uses_supported_facts": uses_supported_facts,
+            "contains_unverified_claims": contains_unverified_claims,
+            "contains_sensitive_claims": contains_sensitive_claims,
+            "is_empty": is_empty,
+        },
+        "reasons": reasons,
+        "status": "READ-ONLY",
+    }
+
+
 # ------------- persistent deduplication (file-backed, no DB change) ---------
 
 class ReplyStateStore:
@@ -418,7 +983,7 @@ def process_incoming_message(
 
 # ------------- read-only HH fetch (reuses existing CDP transport) ----------
 
-_DIALOG_LIST_JS = """() => {
+_DIALOG_LIST_JS = r"""() => {
     // Read-only: enumerate visible dialog/card elements on the HH messages page.
     // Never navigates, never activates UI, never sends. Structure only.
     const sels = ['[data-qa="dialog-item"]', '[data-qa="messaging-dialog"]',
@@ -441,7 +1006,7 @@ _DIALOG_LIST_JS = """() => {
         url: location.href,
         title: document.title,
         dialogs: seen.slice(0, 30),
-        pageIsMessages: /messages|messaging|negotiations/i.test(location.href)
+        pageIsMessages: /messages|messaging|negotiations|\/chat\/\d+/i.test(location.href)
     });
 }"""
 
@@ -457,9 +1022,6 @@ def fetch_hh_dialogs_readonly(
     never navigates; navigation to the messages section is left to the user
     (mirrors the manual-form capture contract).
     """
-    # _DIALOG_LIST_JS is an IIFE-style arrow function; raw CDP needs it
-    # invoked so Runtime.evaluate returns the JSON string (not a function).
-    # The JS itself returns JSON.stringify(...) - no extra serialization.
     expr = _DIALOG_LIST_JS
     if expr.lstrip().startswith("() =>"):
         expr = "(" + expr + ")()"
@@ -469,6 +1031,82 @@ def fetch_hh_dialogs_readonly(
     except Exception as e:
         return {"error": str(e), "url": current_url, "dialogs": [],
                 "pageIsMessages": False}
+
+
+_CONVERSATIONS_LIST_JS = r"""() => {
+    const out = [];
+    const chatEls = Array.from(document.querySelectorAll('a[data-qa*="chatik-open-chat-"], a[class*="chat-cell"], a[href*="/chat/"]'));
+    
+    for (const a of chatEls) {
+        const m = (a.href || '').match(/\/chat\/([0-9]+)/);
+        const cid = m ? m[1] : null;
+        if (!cid || cid === '-1') continue;
+        if (out.some(x => x.conversation_id === cid)) continue;
+
+        const titleEl = a.querySelector('[data-qa*="title"], [class*="title"]');
+        const subtitleEl = a.querySelector('[data-qa*="subtitle"], [class*="subtitle"], [class*="employer"]');
+        const snippetEl = a.querySelector('[data-qa*="message"], [data-qa*="snippet"], [class*="message"], [class*="snippet"], [class*="preview"], [class*="last-message"]');
+        const isSelected = /selected/.test(a.className || '') || location.pathname.includes('/chat/' + cid);
+        
+        const rawLines = (a.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+        const title = titleEl ? (titleEl.innerText || '').trim() : (rawLines[0] || null);
+        let employer = subtitleEl ? (subtitleEl.innerText || '').trim() : null;
+        let snippet = snippetEl ? (snippetEl.innerText || '').trim() : null;
+        
+        if (!employer && rawLines.length >= 3) {
+            employer = rawLines[2];
+        }
+        if (!snippet && rawLines.length >= 4) {
+            snippet = rawLines[3];
+        } else if (!snippet && rawLines.length === 3) {
+            snippet = rawLines[2];
+        }
+
+        out.push({
+            conversation_id: cid,
+            url: (a.href || '').split('?')[0],
+            title: title,
+            employer: employer,
+            snippet: snippet,
+            is_selected: isSelected
+        });
+    }
+
+    const openMatch = location.pathname.match(/\/chat\/([0-9]+)/);
+    if (openMatch && openMatch[1] && !out.some(x => x.conversation_id === openMatch[1])) {
+        const hTitle = document.querySelector('[data-qa*="chat-header"] [class*="title" i], [class*="header"] [class*="title" i]');
+        const hEmp = document.querySelector('a[href*="/employer/"]');
+        out.unshift({
+            conversation_id: openMatch[1],
+            url: location.href.split('?')[0],
+            title: hTitle ? (hTitle.innerText || '').trim() : document.title,
+            employer: hEmp ? (hEmp.innerText || '').trim() : null,
+            snippet: null,
+            is_selected: true
+        });
+    }
+
+    return JSON.stringify({
+        url: location.href,
+        title: document.title,
+        conversations: out
+    });
+}"""
+
+
+def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> Dict[str, Any]:
+    """Stage 30D.9: Read-only enumeration of all visible conversations in HH chat interface.
+    Returns:
+        conversations: List[Dict[str, Any]] (conversation_id, url, title, employer, snippet, is_selected)
+    """
+    expr = _CONVERSATIONS_LIST_JS
+    if expr.lstrip().startswith("() =>"):
+        expr = "(" + expr + ")()"
+    raw = evaluate_fn(expr)
+    try:
+        return json.loads(raw)
+    except Exception as e:
+        return {"error": str(e), "conversations": []}
 
 
 # Read-only JS: extract the full open conversation from the chatik iframe.
@@ -510,11 +1148,14 @@ _CONVERSATION_JS = """() => {
     for (const m of out) {
         if (!uniq.some(u => u.direction === m.direction && u.text === m.text)) uniq.push(m);
     }
-    const composer = document.querySelector('textarea[data-qa="chatik-new-message-text"]');
+    const composer = document.querySelector('textarea[data-qa="chatik-new-message-text"], textarea[data-qa*="message"], [data-qa*="chatik-new-message"], textarea');
+    const partEl = document.querySelector('[data-qa*="chat-header"] [class*="name" i], [class*="chat-header"] [class*="title" i], [class*="header"] [class*="title" i]');
+    const participant = partEl ? ((partEl.innerText || '').trim() || null) : null;
     return JSON.stringify({
         url: location.href,
         title: document.title,
         conversation_id: (location.pathname.match(/\\/chat\\/([0-9]+)/) || [])[1] || null,
+        participant: participant,
         messages: uniq,
         composer_present: !!composer
     });
@@ -885,6 +1526,45 @@ def process_auto_reply(
     return report
 
 
+def send_confirmed_hh_reply(
+    evaluate_fn: Callable[[str], str],
+    reply: str,
+) -> Dict[str, Any]:
+    """Stage 30D.6: Execute minimal DOM/CDP send for a human-confirmed, validated reply.
+    Strictly isolated: does not navigate, does not touch cookies/storage, does not click other elements.
+    """
+    value = json.dumps(reply, ensure_ascii=False)
+    js = """(() => {
+        const ta = document.querySelector('textarea[data-qa="text-input"], textarea[data-qa="chatik-new-message-text"], textarea');
+        if (!ta) return JSON.stringify({ok: false, reason: 'composer textarea not found'});
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(ta, __REPLY_VALUE__);
+        ta.dispatchEvent(new Event('input', {bubbles: true}));
+        ta.dispatchEvent(new Event('change', {bubbles: true}));
+
+        const container = ta.closest('[data-qa="chatik-message-input"]') || document;
+        let sendBtn = container.querySelector('button[data-qa*="send"], button[data-qa*="submit"], [aria-label*="Отправить" i], [aria-label*="Send" i]');
+        if (!sendBtn) {
+            const btns = Array.from(container.querySelectorAll('button, [role="button"]'));
+            sendBtn = btns.find(b => /^(Отправить|Send|Отпр|Сенд)$/i.test((b.innerText || '').trim()) || (b.getAttribute('aria-label') || '').match(/отправ|send/i));
+        }
+        if (sendBtn && !sendBtn.disabled) {
+            sendBtn.click();
+            return JSON.stringify({ok: true, method: 'button_click'});
+        }
+        const evDown = new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true});
+        ta.dispatchEvent(evDown);
+        const evUp = new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true});
+        ta.dispatchEvent(evUp);
+        return JSON.stringify({ok: true, method: 'enter_key'});
+    })()""".replace("__REPLY_VALUE__", value)
+    try:
+        raw = evaluate_fn(js)
+        return json.loads(raw)
+    except Exception as e:
+        return {"ok": False, "reason": str(e)}
+
+
 __all__ = [
     "DEFAULT_MODE",
     "HHDialog",
@@ -901,10 +1581,13 @@ __all__ = [
     "classify_message",
     "detect_language",
     "fetch_hh_conversation_readonly",
+    "fetch_hh_conversations_list_readonly",
     "fetch_hh_dialogs_readonly",
     "generate_reply",
     "is_safe_for_auto_reply",
     "process_auto_reply",
     "process_incoming_message",
+    "resolve_vacancy_for_dialog",
     "send_auto_reply",
+    "send_confirmed_hh_reply",
 ]

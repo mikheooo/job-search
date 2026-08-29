@@ -12,8 +12,15 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 from . import config
-from .db import get_connection, init_db
-from .browser_executor import BrowserAdapter, MockBrowserAdapter, PlaywrightBrowserAdapter
+from .db import init_db, get_connection
+from .browser_executor import (
+    BrowserAdapter,
+    MockBrowserAdapter,
+    PlaywrightBrowserAdapter,
+    FlowType,
+    FlowClassification,
+    classify_apply_flow,
+)
 
 VERIFICATION_VERSION = "v1"
 
@@ -38,6 +45,13 @@ class SubmissionVerification(BaseModel):
     screenshot_path: Optional[str] = None
     verified_at: str
     warnings: List[str] = Field(default_factory=list)
+    flow_type: Optional[FlowType] = None
+    source_url: Optional[str] = None
+    application_url: Optional[str] = None
+    application_domain: Optional[str] = None
+    redirect_chain: List[str] = Field(default_factory=list)
+    is_external_application: bool = False
+    verification_strategy: Optional[str] = None
     verification_version: str = VERIFICATION_VERSION
 
     model_config = {"extra": "forbid"}
@@ -282,11 +296,11 @@ def verify_submission(
         page_title = open_res.get("title", "")
 
         # Get page content for signal detection
-        if hasattr(use_adapter, 'page') and use_adapter.page:
-            # Playwright adapter
+        if hasattr(use_adapter, "get_content"):
+            content = use_adapter.get_content()
+        elif hasattr(use_adapter, "page") and use_adapter.page:
             content = use_adapter.page.content()
         else:
-            # Mock adapter - use title and url for content, not the dict representation
             content = f"{page_title} {final_url}"
 
         # Take screenshot for evidence
@@ -303,6 +317,14 @@ def verify_submission(
         # Detect signals
         success_signals, error_signals, blocked_signals = _detect_signals(content, page_title, final_url)
 
+        # Flow classification
+        flow_class = classify_apply_flow(
+            source_url=vac.job_url,
+            final_url=final_url,
+            apply_link=None,
+            has_form=bool(success_signals or not error_signals),
+        )
+
         evidence = {
             "success_signals": success_signals,
             "error_signals": error_signals,
@@ -310,6 +332,13 @@ def verify_submission(
             "content_length": len(content),
             "url": final_url,
             "title": page_title,
+            "flow_type": flow_class.flow_type.value,
+            "source_url": flow_class.source_url,
+            "application_url": flow_class.application_url,
+            "application_domain": flow_class.application_domain,
+            "redirect_chain": flow_class.redirect_chain,
+            "is_external_application": flow_class.is_external_application,
+            "verification_strategy": flow_class.verification_strategy,
         }
 
         # Determine verification status
@@ -327,7 +356,12 @@ def verify_submission(
             warnings.append(f"Success confirmed: {success_signal}")
         else:
             status = VerificationStatus.AMBIGUOUS
-            warnings.append("No clear success/error/blocked signals found")
+            if flow_class.flow_type == FlowType.AGGREGATOR_REDIRECT:
+                warnings.append(f"Aggregator redirect flow ({flow_class.application_domain}): clicking Apply on aggregator does not confirm employer receipt")
+            elif flow_class.flow_type == FlowType.EXTERNAL_ATS:
+                warnings.append(f"External ATS flow ({flow_class.application_domain}): confirmation not detected on ATS domain")
+            else:
+                warnings.append("No clear success/error/blocked signals found")
             success_signal = None
 
     except Exception as e:
@@ -352,8 +386,24 @@ def verify_submission(
         screenshot_path=screenshot_path,
         verified_at=datetime.utcnow().isoformat(),
         warnings=warnings,
+        flow_type=flow_class.flow_type,
+        source_url=flow_class.source_url,
+        application_url=flow_class.application_url,
+        application_domain=flow_class.application_domain,
+        redirect_chain=flow_class.redirect_chain,
+        is_external_application=flow_class.is_external_application,
+        verification_strategy=flow_class.verification_strategy,
         verification_version=VERIFICATION_VERSION,
     )
 
     save_verification(verification)
+
+    # Transition tracking based on verified status
+    try:
+        from .application_tracking import verify_and_apply
+        if status == VerificationStatus.VERIFIED:
+            verify_and_apply(vacancy_stable_id, "VERIFIED", note="Submission verified by browser verifier")
+    except Exception as e:
+        logger.debug(f"Tracking update note: {e}")
+
     return verification

@@ -203,7 +203,7 @@ def get_package_detail(vacancy_stable_id: str) -> Dict[str, Any]:
     pkg_tuple = get_application_package(vacancy_stable_id)
     vac_row = get_vacancy_by_id(vacancy_stable_id)
     vac = _row_to_vacancy(vac_row) if vac_row else None
-    deep = get_deep_analysis(vacancy_stable_id)
+    deep_row = get_deep_analysis(vacancy_stable_id)
     review = get_application_review(vacancy_stable_id)
 
     pkg_data = None
@@ -213,6 +213,42 @@ def get_package_detail(vacancy_stable_id: str) -> Dict[str, Any]:
             pkg_data = json.loads(raw_json)
         except Exception:
             pkg_data = {"raw": raw_json}
+
+    deep_data = None
+    if deep_row:
+        if isinstance(deep_row, tuple):
+            fit_score = deep_row[2] if len(deep_row) > 2 else None
+            recommendation = deep_row[3] if len(deep_row) > 3 else None
+            raw_analysis = deep_row[4] if len(deep_row) > 4 else None
+            parsed_analysis = {}
+            if raw_analysis:
+                try:
+                    parsed_analysis = json.loads(raw_analysis) if isinstance(raw_analysis, str) else raw_analysis
+                except Exception:
+                    parsed_analysis = {}
+            deep_data = {
+                "fit_score": fit_score if fit_score is not None else parsed_analysis.get("fit_score"),
+                "recommendation": recommendation or parsed_analysis.get("recommendation"),
+                "pros": parsed_analysis.get("pros", []),
+                "cons": parsed_analysis.get("cons", []),
+                "summary": parsed_analysis.get("summary", ""),
+            }
+        elif isinstance(deep_row, dict):
+            deep_data = {
+                "fit_score": deep_row.get("fit_score"),
+                "recommendation": deep_row.get("recommendation"),
+                "pros": deep_row.get("pros", []),
+                "cons": deep_row.get("cons", []),
+                "summary": deep_row.get("summary", ""),
+            }
+        else:
+            deep_data = {
+                "fit_score": getattr(deep_row, "fit_score", None),
+                "recommendation": getattr(deep_row, "recommendation", None),
+                "pros": getattr(deep_row, "pros", []),
+                "cons": getattr(deep_row, "cons", []),
+                "summary": getattr(deep_row, "summary", ""),
+            }
 
     return {
         "vacancy": {
@@ -227,13 +263,7 @@ def get_package_detail(vacancy_stable_id: str) -> Dict[str, Any]:
             "salary_max": vac.salary_max if vac else None,
             "salary_currency": vac.salary_currency if vac else None,
         } if vac else None,
-        "deep_analysis": {
-            "fit_score": deep.fit_score,
-            "recommendation": deep.recommendation,
-            "pros": deep.pros,
-            "cons": deep.cons,
-            "summary": deep.summary,
-        } if deep else None,
+        "deep_analysis": deep_data,
         "package": pkg_data,
         "review": {
             "status": review.status.value if hasattr(review.status, "value") else str(review.status),
@@ -245,14 +275,70 @@ def get_package_detail(vacancy_stable_id: str) -> Dict[str, Any]:
 @app.post("/api/review/{vacancy_stable_id}")
 def review_package(vacancy_stable_id: str, req: ReviewRequest) -> Dict[str, Any]:
     init_db()
-    if req.action.lower() == "approve":
-        approve_review(vacancy_stable_id, note=req.note or "Approved via Web UI")
-        return {"status": "success", "message": f"Vacancy {vacancy_stable_id} APPROVED"}
-    elif req.action.lower() == "reject":
-        reject_review(vacancy_stable_id, note=req.note or "Rejected via Web UI")
-        return {"status": "success", "message": f"Vacancy {vacancy_stable_id} REJECTED"}
-    else:
+    from ..application_review import (
+        get_application_review,
+        approve_review,
+        reject_review,
+        ApplicationReview,
+        ReviewStatus,
+        save_application_review,
+        REVIEW_VERSION,
+    )
+    from ..application_tracking import get_application_status
+    from ..db import get_vacancy_by_id, get_application_package, _row_to_vacancy
+    from datetime import datetime
+
+    action = req.action.lower()
+    if action not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail="Invalid action, must be 'approve' or 'reject'")
+
+    rev = get_application_review(vacancy_stable_id)
+    if not rev:
+        vac_row = get_vacancy_by_id(vacancy_stable_id)
+        vac = _row_to_vacancy(vac_row) if vac_row else None
+        pkg_row = get_application_package(vacancy_stable_id)
+        pkg_json = {}
+        if pkg_row and pkg_row[2]:
+            try:
+                pkg_json = json.loads(pkg_row[2])
+            except Exception:
+                pkg_json = {}
+        track = get_application_status(vacancy_stable_id)
+        now = datetime.utcnow().isoformat()
+        rev = ApplicationReview(
+            vacancy_stable_id=vacancy_stable_id,
+            company=vac.company if vac else "",
+            title=vac.title if vac else "",
+            source=vac.source if vac else "",
+            vacancy_url=vac.job_url if vac else "",
+            final_url=vac.job_url if vac else "",
+            match_score=getattr(track, "match_score", None),
+            deep_score=getattr(track, "deep_score", None),
+            application_strategy=pkg_json.get("application_strategy"),
+            resume_summary=pkg_json.get("resume_summary"),
+            tailored_skills=pkg_json.get("tailored_skills", []),
+            relevant_experience=pkg_json.get("relevant_experience", []),
+            cover_letter=pkg_json.get("cover_letter"),
+            status=ReviewStatus.PENDING_REVIEW,
+            note=None,
+            created_at=now,
+            updated_at=now,
+            review_version=REVIEW_VERSION,
+        )
+        save_application_review(rev)
+
+    try:
+        if action == "approve":
+            approve_review(vacancy_stable_id, note=req.note or "Approved via Web UI", force=True)
+            return {"status": "success", "message": f"Вакансия успешно утверждена (APPROVED)"}
+        else:
+            reject_review(vacancy_stable_id, note=req.note or "Rejected via Web UI")
+            return {"status": "success", "message": f"Вакансия отклонена (REJECTED)"}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logging.exception("Failed to review package for %s", vacancy_stable_id)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/applications/move")

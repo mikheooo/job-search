@@ -21,8 +21,9 @@ node_modules/
 !package-lock.json
 !vacancies.json
 
-# Browser artifacts
-artifacts/
+# Browser artifacts (runtime screenshots/state; tracked fixture exception below)
+artifacts/*
+!artifacts/hh_manual_form_snapshot.json
 
 
 # HH authenticated session storage (NEVER commit)
@@ -42,3 +43,10 @@ snapshot_stage15_current/
 
 # Candidate profile TEMPLATE exception (real candidate_profile.json stays local via *.json)
 !candidate_profile.example.json
+
+# DR snapshot manifests (local sha256 hashes of snapshot contents)
+baseline_stage14_manifest.txt
+snapshot_stage15_manifest.txt
+
+# Personal resume (not part of the product)
+resume.md
