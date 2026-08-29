@@ -1703,6 +1703,67 @@ def prepare_application_in_browser(
     fields_filled: List[str] = []
     fields_skipped: List[str] = []
 
+    # Defense-in-Depth Hard Constraint Gate
+    from .matcher import _hard_constraints, _coerce_profile
+    from .remote_filter import is_strictly_remote
+
+    if getattr(profile, "remote_required", False):
+        is_rem, rem_reason = is_strictly_remote(vac)
+        if not is_rem:
+            warnings.append(f"Hard constraint violation (remote_required): {rem_reason}")
+            flow_class = classify_apply_flow(source_url=url, final_url=url, apply_link=None, has_form=False)
+            return BrowserResult(
+                vacancy_stable_id=vacancy_stable_id,
+                url=url,
+                final_url=url,
+                page_title="",
+                site=site,
+                status=BrowserStatus.BLOCKED,
+                form_detected=False,
+                apply_button_found=False,
+                fields_detected=[],
+                fields_filled=[],
+                fields_skipped=[],
+                warnings=warnings,
+                error=f"Hard constraint violation (remote_required): {rem_reason}",
+                screenshot_path=None,
+                flow_type=flow_class.flow_type,
+                source_url=flow_class.source_url,
+                application_url=flow_class.application_url,
+                application_domain=flow_class.application_domain,
+                redirect_chain=flow_class.redirect_chain,
+                is_external_application=flow_class.is_external_application,
+                verification_strategy=flow_class.verification_strategy,
+            )
+
+    hard_reject, hard_reason = _hard_constraints(_coerce_profile(profile), vac)
+    if hard_reject:
+        warnings.append(f"Hard constraint violation: {hard_reason}")
+        flow_class = classify_apply_flow(source_url=url, final_url=url, apply_link=None, has_form=False)
+        return BrowserResult(
+            vacancy_stable_id=vacancy_stable_id,
+            url=url,
+            final_url=url,
+            page_title="",
+            site=site,
+            status=BrowserStatus.BLOCKED,
+            form_detected=False,
+            apply_button_found=False,
+            fields_detected=[],
+            fields_filled=[],
+            fields_skipped=[],
+            warnings=warnings,
+            error=f"Hard constraint violation: {hard_reason}",
+            screenshot_path=None,
+            flow_type=flow_class.flow_type,
+            source_url=flow_class.source_url,
+            application_url=flow_class.application_url,
+            application_domain=flow_class.application_domain,
+            redirect_chain=flow_class.redirect_chain,
+            is_external_application=flow_class.is_external_application,
+            verification_strategy=flow_class.verification_strategy,
+        )
+
     # Choose adapter
     use_adapter = adapter
     if use_adapter is None:
@@ -2018,80 +2079,7 @@ def submit_application_in_browser(
             error="Already submitted. Duplicate submission not allowed.",
             executor_version="v1",
         )
-    
-    # Get review
-    from .application_review import get_application_review, ReviewStatus
-    review = get_application_review(vacancy_stable_id)
-    if not review or review.status != ReviewStatus.APPROVED:
-        return SubmitResult(
-            vacancy_stable_id=vacancy_stable_id,
-            submission_id=submission_id,
-            status="BLOCKED",
-            error="Review not approved or not found. Only APPROVED reviews can be submitted.",
-            executor_version="v1",
-        )
-    
-    # Check tracking status
-    from .application_tracking import get_application_status, ApplicationStatus
-    track = get_application_status(vacancy_stable_id)
-    if not track or track.status != ApplicationStatus.READY_TO_APPLY:
-        return SubmitResult(
-            vacancy_stable_id=vacancy_stable_id,
-            submission_id=submission_id,
-            status="BLOCKED",
-            error=f"Tracking status {track.status if track else 'None'} is not READY_TO_APPLY",
-            executor_version="v1",
-        )
-    
-    # Check browser session
-    sess = get_browser_session(vacancy_stable_id)
-    if not sess or sess.status != BrowserStatus.READY_FOR_REVIEW:
-        return SubmitResult(
-            vacancy_stable_id=vacancy_stable_id,
-            submission_id=submission_id,
-            status="BLOCKED",
-            error=f"Browser session not ready for submit. Status: {sess.status if sess else 'None'}",
-            executor_version="v1",
-        )
-    
-    # Check queue
-    q_item = None
-    try:
-        from .application_queue import get_queue_item
-        q_item = get_queue_item(vacancy_stable_id)
-    except Exception:
-        pass
-    if not q_item:
-        return SubmitResult(
-            vacancy_stable_id=vacancy_stable_id,
-            submission_id=submission_id,
-            status="BLOCKED",
-            error="Queue item not found",
-            executor_version="v1",
-        )
-    
-    # Check package
-    from .db import get_application_package
-    pkg_row = get_application_package(vacancy_stable_id)
-    if not pkg_row:
-        return SubmitResult(
-            vacancy_stable_id=vacancy_stable_id,
-            submission_id=submission_id,
-            status="BLOCKED",
-            error="Application package not found",
-            executor_version="v1",
-        )
-    
-    # Check if already submitted
-    if is_submitted(vacancy_stable_id):
-        return SubmitResult(
-            vacancy_stable_id=vacancy_stable_id,
-            submission_id=submission_id,
-            status="BLOCKED",
-            error="Already submitted. Duplicate submission not allowed.",
-            executor_version="v1",
-        )
-    
+
     # Load vacancy
     from .db import get_vacancy_by_id, _row_to_vacancy
     row = get_vacancy_by_id(vacancy_stable_id)
@@ -2104,7 +2092,7 @@ def submit_application_in_browser(
             executor_version="v1",
         )
     vac = _row_to_vacancy(row)
-    
+
     # Load profile
     from .candidate_profile import load_candidate_profile, CandidateProfile
     if profile_path:
@@ -2121,8 +2109,85 @@ def submit_application_in_browser(
             profile = load_candidate_profile()
     from .job_analyzer import get_resume_text
     resume_text = get_resume_text(profile)
-    
-    # Load package
+
+    # Defense-in-Depth Hard Constraint Gate
+    from .matcher import _hard_constraints, _coerce_profile
+    from .remote_filter import is_strictly_remote
+
+    if getattr(profile, "remote_required", False):
+        is_rem, rem_reason = is_strictly_remote(vac)
+        if not is_rem:
+            return SubmitResult(
+                vacancy_stable_id=vacancy_stable_id,
+                submission_id=submission_id,
+                status="BLOCKED",
+                error=f"Submit blocked by remote_required hard constraint: {rem_reason}",
+                executor_version="v1",
+            )
+
+    hard_reject, hard_reason = _hard_constraints(_coerce_profile(profile), vac)
+    if hard_reject:
+        return SubmitResult(
+            vacancy_stable_id=vacancy_stable_id,
+            submission_id=submission_id,
+            status="BLOCKED",
+            error=f"Submit blocked by hard constraint gate: {hard_reason}",
+            executor_version="v1",
+        )
+
+    # Get review
+    from .application_review import get_application_review, ReviewStatus
+    review = get_application_review(vacancy_stable_id)
+    if not review or review.status != ReviewStatus.APPROVED:
+        return SubmitResult(
+            vacancy_stable_id=vacancy_stable_id,
+            submission_id=submission_id,
+            status="BLOCKED",
+            error="Review not approved or not found. Only APPROVED reviews can be submitted.",
+            executor_version="v1",
+        )
+
+    # Check tracking status
+    from .application_tracking import get_application_status, ApplicationStatus
+    track = get_application_status(vacancy_stable_id)
+    if not track or track.status != ApplicationStatus.READY_TO_APPLY:
+        return SubmitResult(
+            vacancy_stable_id=vacancy_stable_id,
+            submission_id=submission_id,
+            status="BLOCKED",
+            error=f"Tracking status {track.status if track else 'None'} is not READY_TO_APPLY",
+            executor_version="v1",
+        )
+
+    # Check browser session
+    sess = get_browser_session(vacancy_stable_id)
+    if not sess or sess.status != BrowserStatus.READY_FOR_REVIEW:
+        return SubmitResult(
+            vacancy_stable_id=vacancy_stable_id,
+            submission_id=submission_id,
+            status="BLOCKED",
+            error=f"Browser session not ready for submit. Status: {sess.status if sess else 'None'}",
+            executor_version="v1",
+        )
+
+    # Check queue
+    q_item = None
+    try:
+        from .application_queue import get_queue_item
+        q_item = get_queue_item(vacancy_stable_id)
+    except Exception:
+        pass
+    if not q_item:
+        return SubmitResult(
+            vacancy_stable_id=vacancy_stable_id,
+            submission_id=submission_id,
+            status="BLOCKED",
+            error="Queue item not found",
+            executor_version="v1",
+        )
+
+    # Check package
+    from .db import get_application_package
     pkg_row = get_application_package(vacancy_stable_id)
     if not pkg_row:
         return SubmitResult(

@@ -358,3 +358,128 @@ def test_repeated_generation_is_idempotent():
     finally:
         config.DB_FILE = orig
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_stage30z_queue_anti_bypass_negative_cases():
+    """Stage 30Z: Test that office, hybrid, unknown format, and already applied vacancies are strictly excluded from queue."""
+    tmp = tempfile.mkdtemp()
+    orig = config.DB_FILE
+    try:
+        db_file = str(Path(tmp) / "q.db")
+        config.DB_FILE = db_file
+        db.init_db()
+
+        from ai_assistant.application_review import ApplicationReview, ReviewStatus, save_application_review
+        from ai_assistant.candidate_profile import load_candidate_profile
+        from ai_assistant.matcher import JobMatcher
+
+        prof = load_candidate_profile()
+
+        # 1. Office vacancy
+        v_office = Vacancy(
+            source="hh",
+            source_job_id="neg_off",
+            title="Backend Python Developer",
+            company="Office Corp",
+            description="Работа в офисе в Москве 5/2.",
+            location="Москва (Офис)",
+            job_url="https://hh.ru/vacancy/neg_off",
+        )
+        # 2. Hybrid vacancy
+        v_hybrid = Vacancy(
+            source="hh",
+            source_job_id="neg_hyb",
+            title="Python Developer",
+            company="Hybrid Ltd",
+            description="Гибридный формат работы.",
+            location="Москва",
+            job_url="https://hh.ru/vacancy/neg_hyb",
+        )
+        # 3. Unknown remote vacancy
+        v_unknown = Vacancy(
+            source="hh",
+            source_job_id="neg_unk",
+            title="Python Engineer",
+            company="Unknown Corp",
+            description="Разработка сервисов.",
+            location="Казань",
+            job_url="https://hh.ru/vacancy/neg_unk",
+        )
+        # 4. Already applied vacancy
+        v_applied = Vacancy(
+            source="hh",
+            source_job_id="neg_app",
+            title="Python Developer",
+            company="Remote Tech",
+            description="100% удаленная работа. Python, FastAPI.",
+            location="Remote",
+            country_restrictions=["Worldwide"],
+            job_url="https://hh.ru/vacancy/neg_app",
+        )
+
+        for v in (v_office, v_hybrid, v_unknown, v_applied):
+            db.save_vacancy(v)
+            save_application_review(ApplicationReview(vacancy_stable_id=v.stable_id(), status=ReviewStatus.APPROVED))
+
+        # Set tracking
+        set_application_status(v_office.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        set_application_status(v_hybrid.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        set_application_status(v_unknown.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        set_application_status(v_applied.stable_id(), ApplicationStatus.APPLIED)
+
+        queue = generate_queue(top_n=10)
+        q_ids = [it.vacancy_stable_id for it in queue]
+
+        assert v_office.stable_id() not in q_ids
+        assert v_hybrid.stable_id() not in q_ids
+        assert v_unknown.stable_id() not in q_ids
+        assert v_applied.stable_id() not in q_ids
+    finally:
+        config.DB_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_stage30z_real_pass_enters_queue_ready_for_prepare():
+    """Stage 30Z: Test that a genuine PASS vacancy successfully enters the queue and is idempotent."""
+    tmp = tempfile.mkdtemp()
+    orig = config.DB_FILE
+    try:
+        db_file = str(Path(tmp) / "q.db")
+        config.DB_FILE = db_file
+        db.init_db()
+
+        from ai_assistant.application_review import ApplicationReview, ReviewStatus, save_application_review
+
+        pass_vac = Vacancy(
+            source="hh",
+            source_job_id="128659037",
+            title="AI Automation Developer",
+            company="Qulix Systems",
+            description="Разработка AI агентов, автоматизация процессов n8n, Python, FastAPI, Docker, REST API. 100% удаленная работа.",
+            location="Remote",
+            salary_min=3000,
+            salary_max=5000,
+            salary_currency="USD",
+            country_restrictions=["Worldwide"],
+            job_url="https://hh.ru/vacancy/128659037",
+        )
+        db.save_vacancy(pass_vac)
+        save_application_review(ApplicationReview(vacancy_stable_id=pass_vac.stable_id(), status=ReviewStatus.APPROVED))
+        set_application_status(pass_vac.stable_id(), ApplicationStatus.READY_TO_APPLY, match_score=69)
+
+        # Generate queue
+        q1 = generate_queue(top_n=10)
+        q1_ids = [it.vacancy_stable_id for it in q1]
+        assert pass_vac.stable_id() in q1_ids
+
+        item = get_queue_item(pass_vac.stable_id())
+        assert item is not None
+        assert item.match_score == 69
+
+        # Idempotency
+        q2 = generate_queue(top_n=10)
+        assert len([it for it in q2 if it.vacancy_stable_id == pass_vac.stable_id()]) == 1
+    finally:
+        config.DB_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+

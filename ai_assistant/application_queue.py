@@ -689,9 +689,25 @@ def generate_queue(top_n: int = 20, profile_path: Optional[str] = None, status_f
         if str(e_status).lower() in ("ineligible", "unknown"):
             continue
 
-        vacancies.append(vac)
+        # Defense-in-Depth: Hard constraints & strict remote filter
+        from .remote_filter import is_strictly_remote
+        from .matcher import _hard_constraints, _coerce_profile
+
+        if profile.remote_required:
+            is_rem, _ = is_strictly_remote(vac)
+            if not is_rem:
+                continue
+
+        hard_rej, _ = _hard_constraints(_coerce_profile(profile), vac)
+        if hard_rej:
+            continue
+
         # compute match
         m = matcher.match(vac)
+        if m.decision == "SKIP":
+            continue
+
+        vacancies.append(vac)
         match_map[sid] = m
         # deep
         from .db import get_deep_analysis
@@ -735,8 +751,24 @@ def generate_queue(top_n: int = 20, profile_path: Optional[str] = None, status_f
             if str(e_status).lower() in ("ineligible", "unknown"):
                 continue
 
-            vacancies.append(vac)
+            # Defense-in-Depth: Hard constraints & strict remote filter
+            from .remote_filter import is_strictly_remote
+            from .matcher import _hard_constraints, _coerce_profile
+
+            if profile.remote_required:
+                is_rem, _ = is_strictly_remote(vac)
+                if not is_rem:
+                    continue
+
+            hard_rej, _ = _hard_constraints(_coerce_profile(profile), vac)
+            if hard_rej:
+                continue
+
             m = matcher.match(vac)
+            if m.decision == "SKIP":
+                continue
+
+            vacancies.append(vac)
             match_map[r.vacancy_stable_id] = m
             deep_row = get_deep_analysis(r.vacancy_stable_id)
             if deep_row and deep_row[4]:

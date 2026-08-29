@@ -2247,8 +2247,230 @@ def test_stage30q_authenticated_hh_apply_preparation_suite():
         teardown_test_db(tmp_dir)
 
 
+def test_stage30r_real_single_application_confirm_submit_suite():
+    """Stage 30R: Real single-application confirm-submit flow, post-submit verification, and state machine invariants."""
+    from ai_assistant.browser_executor import (
+        submit_application_in_browser,
+        prepare_application_in_browser,
+        MockBrowserAdapter,
+        BrowserStatus,
+        SubmitStatus,
+    )
+    from ai_assistant.submission_verifier import (
+        verify_submission,
+        VerificationStatus,
+    )
+    from ai_assistant.application_tracking import (
+        get_application_status,
+        set_application_status,
+        ApplicationStatus,
+    )
+    from ai_assistant.application_review import ApplicationReview, ReviewStatus, save_application_review
+    from ai_assistant.application_queue import QueueItem, save_queue_item
+
+    tmp_dir = setup_test_db()
+    try:
+        # Snapshot DB before
+        conn = db.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM application_submissions")
+        sub_cnt_before = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM submission_verifications")
+        ver_cnt_before = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM application_tracking")
+        trk_cnt_before = c.fetchone()[0]
+        conn.close()
+
+        # 1. Prepare target vacancy
+        vac = _vac(source_job_id="s30r_target", job_url="https://hh.ru/vacancy/135854121")
+        db.save_vacancy(vac)
+        set_application_status(vac.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        save_application_review(ApplicationReview(vacancy_stable_id=vac.stable_id(), status=ReviewStatus.APPROVED))
+        save_queue_item(QueueItem(vacancy_stable_id=vac.stable_id(), canonical_id=vac.stable_id(), representative_vacancy_stable_id=vac.stable_id(), priority_score=95, rank=1))
+        db.save_application_package(vac.stable_id(), "v1", '{"cover_letter": "AI Developer application", "validation_status": "VALID"}')
+
+        # 2. Mock Verified Submission Flow
+        mock_verified = MockBrowserAdapter(simulate={
+            "page_title": "Application submitted successfully - TutorPlace",
+            "final_url": "https://hh.ru/applicant/negotiations",
+            "apply_button": True,
+            "fields": ["name", "email", "phone", "resume"],
+            "submit_success": True,
+            "authenticated": "AUTHENTICATED",
+            "login_required": False,
+        })
+        prep_res = prepare_application_in_browser(vac.stable_id(), adapter=mock_verified, force=True)
+        assert prep_res.status == BrowserStatus.READY_FOR_REVIEW
+        sub_res = submit_application_in_browser(vac.stable_id(), confirm_submit=True, adapter=mock_verified)
+        assert sub_res.status == SubmitStatus.SUBMITTED
+
+        # Verify submission -> VERIFIED -> tracking APPLIED
+        ver = verify_submission(vac.stable_id(), sub_res.submission_id, adapter=mock_verified)
+        assert ver.verification_status == VerificationStatus.VERIFIED
+        assert get_application_status(vac.stable_id()).status == ApplicationStatus.APPLIED
+
+        # 3. Mock Ambiguous Submission Flow (awaiting employer confirmation)
+        vac_amb = _vac(source_job_id="s30r_amb", job_url="https://hh.ru/vacancy/135854122")
+        db.save_vacancy(vac_amb)
+        set_application_status(vac_amb.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        save_application_review(ApplicationReview(vacancy_stable_id=vac_amb.stable_id(), status=ReviewStatus.APPROVED))
+        save_queue_item(QueueItem(vacancy_stable_id=vac_amb.stable_id(), canonical_id=vac_amb.stable_id(), representative_vacancy_stable_id=vac_amb.stable_id(), priority_score=90, rank=2))
+        db.save_application_package(vac_amb.stable_id(), "v1", '{"cover_letter": "Amb application", "validation_status": "VALID"}')
+
+        mock_amb = MockBrowserAdapter(simulate={
+            "page_title": "HeadHunter - Custom Questions",
+            "final_url": "https://hh.ru/applicant/vacancy_response?vacancyId=135854122",
+            "apply_button": True,
+            "fields": ["name", "email", "phone", "resume"],
+            "submit_success": True,
+            "authenticated": "AUTHENTICATED",
+            "login_required": False,
+        })
+        prep_amb = prepare_application_in_browser(vac_amb.stable_id(), adapter=mock_amb, force=True)
+        assert prep_amb.status == BrowserStatus.READY_FOR_REVIEW
+        sub_amb_res = submit_application_in_browser(vac_amb.stable_id(), confirm_submit=True, adapter=mock_amb)
+        ver_amb = verify_submission(vac_amb.stable_id(), sub_amb_res.submission_id, adapter=mock_amb)
+        assert ver_amb.verification_status == VerificationStatus.AMBIGUOUS
+        # Strict rule: AMBIGUOUS keeps status as SUBMITTED (never APPLIED)
+        assert get_application_status(vac_amb.stable_id()).status == ApplicationStatus.SUBMITTED
+
+        # 4. Mock Blocked Submission Flow (captcha / challenge)
+        vac_blk = _vac(source_job_id="s30r_blk", job_url="https://hh.ru/vacancy/135854123")
+        db.save_vacancy(vac_blk)
+        set_application_status(vac_blk.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        save_application_review(ApplicationReview(vacancy_stable_id=vac_blk.stable_id(), status=ReviewStatus.APPROVED))
+        save_queue_item(QueueItem(vacancy_stable_id=vac_blk.stable_id(), canonical_id=vac_blk.stable_id(), representative_vacancy_stable_id=vac_blk.stable_id(), priority_score=85, rank=3))
+        db.save_application_package(vac_blk.stable_id(), "v1", '{"cover_letter": "Blk application", "validation_status": "VALID"}')
+
+        mock_blk = MockBrowserAdapter(simulate={
+            "page_title": "Cloudflare / Captcha Challenge",
+            "final_url": "https://hh.ru/captcha",
+            "apply_button": True,
+            "captcha": True,
+            "fields": ["name", "email", "phone", "resume"],
+            "authenticated": "AUTHENTICATED",
+            "login_required": False,
+        })
+        prepare_application_in_browser(vac_blk.stable_id(), adapter=mock_blk, force=True)
+        sub_blk_res = submit_application_in_browser(vac_blk.stable_id(), confirm_submit=True, adapter=mock_blk)
+        assert sub_blk_res.status == SubmitStatus.BLOCKED
+
+        # 5. DB Invariants: exactly expected additions, no duplicates
+        assert db.is_submitted(vac.stable_id()) is True
+        assert db.is_submitted(vac_amb.stable_id()) is True
+
+        # 6. vacancies_json:76 and vacancies_json:80 invariants
+        vac_v76 = _vac(source_job_id="s30r_v76", job_url="https://remoteok.com/v76")
+        db.save_vacancy(vac_v76)
+        set_application_status(vac_v76.stable_id(), ApplicationStatus.SUBMITTED)
+        db.save_submission(vac_v76.stable_id(), "sub_v76", "SUBMITTED", "raw")
+        db.save_verification(vac_v76.stable_id(), "sub_v76", "BLOCKED", "v1", "blocked by cloudflare")
+        assert db.is_submitted(vac_v76.stable_id()) is True
+        assert get_application_status(vac_v76.stable_id()).status == ApplicationStatus.SUBMITTED
+
+        vac_v80 = _vac(source_job_id="s30r_v80", job_url="https://remoteok.com/v80")
+        db.save_vacancy(vac_v80)
+        set_application_status(vac_v80.stable_id(), ApplicationStatus.SUBMITTED)
+        db.save_submission(vac_v80.stable_id(), "sub_v80", "SUBMITTED", "raw")
+        db.save_verification(vac_v80.stable_id(), "sub_v80", "AMBIGUOUS", "v1", "post submit ambiguous")
+        assert db.is_submitted(vac_v80.stable_id()) is True
+        assert get_application_status(vac_v80.stable_id()).status == ApplicationStatus.SUBMITTED
+
+    finally:
+        teardown_test_db(tmp_dir)
+
+
+def test_stage30s_hh_post_submit_questionnaire_handling_suite():
+    """Stage 30S: Post-submit questionnaire detection, read-only inspection, and zero duplicate submission invariants."""
+    from ai_assistant.browser_executor import (
+        submit_application_in_browser,
+        prepare_application_in_browser,
+        MockBrowserAdapter,
+        BrowserStatus,
+        SubmitStatus,
+    )
+    from ai_assistant.submission_verifier import (
+        verify_submission,
+        VerificationStatus,
+    )
+    from ai_assistant.application_tracking import (
+        get_application_status,
+        set_application_status,
+        ApplicationStatus,
+    )
+
+    tmp_dir = setup_test_db()
+    try:
+        # 1. Target vacancy with existing single submission in AMBIGUOUS state
+        vac = _vac(source_job_id="135854121", job_url="https://hh.ru/vacancy/135854121")
+        db.save_vacancy(vac)
+        set_application_status(vac.stable_id(), ApplicationStatus.SUBMITTED)
+        sub_id = f"{vac.stable_id()}_20260829_055113"
+        db.save_submission(vac.stable_id(), '{"text_snippet": "Для отклика необходимо ответить на несколько вопросов работодателя"}', "SUBMITTED", submission_id=sub_id)
+        db.save_verification(vac.stable_id(), sub_id, "v1", "AMBIGUOUS", '{"reason": "Submit button clicked, awaiting explicit employer confirmation"}')
+
+        # Verify initial DB state
+        conn = db.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM application_submissions WHERE vacancy_stable_id=?", (vac.stable_id(),))
+        assert c.fetchone()[0] == 1
+        c.execute("SELECT COUNT(*) FROM submission_verifications WHERE vacancy_stable_id=?", (vac.stable_id(),))
+        assert c.fetchone()[0] == 1
+        conn.close()
+
+        # 2. Simulate read-only inspection of post-submit questionnaire
+        mock_quest = MockBrowserAdapter(simulate={
+            "page_title": "HeadHunter - Отклик на вакансию",
+            "final_url": "https://hh.ru/applicant/vacancy_response?vacancyId=135854121",
+            "apply_button": True,
+            "fields": ["task_328775217", "task_328775220_text", "task_328775221_text"],
+            "authenticated": "AUTHENTICATED",
+            "login_required": False,
+        })
+
+        # Idempotency guard: submitting without completing answers or trying a new submit is blocked
+        res_dup = submit_application_in_browser(vac.stable_id(), confirm_submit=True, adapter=mock_quest)
+        assert res_dup.status.value == "BLOCKED"
+        assert "already submitted" in str(res_dup.error).lower()
+
+        # 3. Read-only verification check returns AMBIGUOUS
+        ver = verify_submission(vac.stable_id(), sub_id, adapter=mock_quest)
+        assert ver.verification_status == VerificationStatus.AMBIGUOUS
+        assert get_application_status(vac.stable_id()).status == ApplicationStatus.SUBMITTED
+
+        # 4. Invariants check: Exactly 1 submission, 1 verification, no duplicate records
+        conn = db.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM application_submissions WHERE vacancy_stable_id=?", (vac.stable_id(),))
+        assert c.fetchone()[0] == 1
+        c.execute("SELECT COUNT(*) FROM submission_verifications WHERE vacancy_stable_id=?", (vac.stable_id(),))
+        assert c.fetchone()[0] == 1
+        conn.close()
+
+        # 5. v80 and v76 invariants intact
+        vac_v80 = _vac(source_job_id="s30s_v80", job_url="https://remoteok.com/v80")
+        db.save_vacancy(vac_v80)
+        set_application_status(vac_v80.stable_id(), ApplicationStatus.SUBMITTED)
+        db.save_submission(vac_v80.stable_id(), "sub_v80", "SUBMITTED", "raw")
+        db.save_verification(vac_v80.stable_id(), "sub_v80", "AMBIGUOUS", "v1", "ambiguous")
+        assert db.is_submitted(vac_v80.stable_id()) is True
+        assert get_application_status(vac_v80.stable_id()).status == ApplicationStatus.SUBMITTED
+
+        vac_v76 = _vac(source_job_id="s30s_v76", job_url="https://remoteok.com/v76")
+        db.save_vacancy(vac_v76)
+        set_application_status(vac_v76.stable_id(), ApplicationStatus.SUBMITTED)
+        db.save_submission(vac_v76.stable_id(), "sub_v76", "SUBMITTED", "raw")
+        db.save_verification(vac_v76.stable_id(), "sub_v76", "BLOCKED", "v1", "blocked")
+        assert db.is_submitted(vac_v76.stable_id()) is True
+        assert get_application_status(vac_v76.stable_id()).status == ApplicationStatus.SUBMITTED
+
+    finally:
+        teardown_test_db(tmp_dir)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
 
 
 

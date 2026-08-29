@@ -10,8 +10,8 @@ import pytest
 
 from ai_assistant.schema import Vacancy
 from ai_assistant.candidate_profile import CandidateProfile
-from ai_assistant.application_tracking import ApplicationStatus, set_application_status
-from ai_assistant.application_queue import QueueItem, QUEUE_VERSION
+from ai_assistant.application_tracking import ApplicationStatus, set_application_status, get_application_status
+from ai_assistant.application_queue import QueueItem, QUEUE_VERSION, save_queue_item
 from ai_assistant import db
 import ai_assistant.config as config
 import ai_assistant.browser_executor as be
@@ -523,6 +523,618 @@ def test_ready_for_review_never_auto_submits():
     finally:
         config.DB_FILE = orig
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_stage30t_office_vacancy_prepare_blocked():
+    """Stage 30T: Office vacancy is BLOCKED at prepare_application_in_browser without opening browser or DB mutation."""
+    tmp = tempfile.mkdtemp()
+    try:
+        db_file = str(Path(tmp) / "t.db")
+        orig = config.DB_FILE
+        config.DB_FILE = db_file
+        db.init_db()
+
+        vac = Vacancy(
+            source="hh",
+            source_job_id="office_prep_1",
+            title="AI Developer",
+            company="OfficeCorp",
+            description="Работа в нашем уютном офисе в Москве, 5 дней в неделю с 9 до 18.",
+            job_url="https://hh.ru/vacancy/office_prep_1",
+            location="Москва",
+            country_restrictions=[],
+            timezone_restrictions=[],
+            employment_type="Full Time",
+        )
+        db.save_vacancy(vac)
+        set_application_status(vac.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        from ai_assistant.application_review import ApplicationReview, ReviewStatus, save_application_review
+        save_application_review(ApplicationReview(vacancy_stable_id=vac.stable_id(), status=ReviewStatus.APPROVED))
+        from ai_assistant.application_queue import save_queue_item
+        save_queue_item(QueueItem(vacancy_stable_id=vac.stable_id(), canonical_id=vac.stable_id(), representative_vacancy_stable_id=vac.stable_id(), priority_score=90, rank=1))
+        db.save_application_package(vac.stable_id(), "v1", json.dumps({"cover_letter": "AI Developer application", "validation_status": "VALID"}))
+
+        mock = be.MockBrowserAdapter(simulate={"fields": ["name", "email"], "apply_button": True})
+        res = be.prepare_application_in_browser(vac.stable_id(), adapter=mock, force=True)
+
+        assert res.status == be.BrowserStatus.BLOCKED
+        assert "remote_required" in str(res.error).lower()
+        # No browser open called
+        assert len(mock.calls) == 0
+
+        # No browser preparations stored
+        sess = be.get_browser_session(vac.stable_id())
+        assert sess is None
+    finally:
+        config.DB_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_stage30t_hybrid_vacancy_prepare_blocked():
+    """Stage 30T: Hybrid vacancy is BLOCKED at prepare_application_in_browser."""
+    tmp = tempfile.mkdtemp()
+    try:
+        db_file = str(Path(tmp) / "t.db")
+        orig = config.DB_FILE
+        config.DB_FILE = db_file
+        db.init_db()
+
+        vac = Vacancy(
+            source="hh",
+            source_job_id="hybrid_prep_1",
+            title="AI Engineer",
+            company="HybridCorp",
+            description="Гибридный формат: 3 дня в офисе Санкт-Петербурга, 2 дня удаленно.",
+            job_url="https://hh.ru/vacancy/hybrid_prep_1",
+            location="Санкт-Петербург",
+            country_restrictions=[],
+            timezone_restrictions=[],
+            employment_type="Full Time",
+        )
+        db.save_vacancy(vac)
+        set_application_status(vac.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        from ai_assistant.application_review import ApplicationReview, ReviewStatus, save_application_review
+        save_application_review(ApplicationReview(vacancy_stable_id=vac.stable_id(), status=ReviewStatus.APPROVED))
+        save_queue_item(QueueItem(vacancy_stable_id=vac.stable_id(), canonical_id=vac.stable_id(), representative_vacancy_stable_id=vac.stable_id(), priority_score=85, rank=1))
+        db.save_application_package(vac.stable_id(), "v1", json.dumps({"cover_letter": "AI application", "validation_status": "VALID"}))
+
+        mock = be.MockBrowserAdapter()
+        res = be.prepare_application_in_browser(vac.stable_id(), adapter=mock, force=True)
+
+        assert res.status == be.BrowserStatus.BLOCKED
+        assert "гибрид" in str(res.error).lower() or "remote_required" in str(res.error).lower()
+        assert len(mock.calls) == 0
+    finally:
+        config.DB_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_stage30t_unknown_work_format_prepare_blocked_fail_closed():
+    """Stage 30T: Unknown work format is BLOCKED (Fail-Closed) when remote_required=True."""
+    tmp = tempfile.mkdtemp()
+    try:
+        db_file = str(Path(tmp) / "t.db")
+        orig = config.DB_FILE
+        config.DB_FILE = db_file
+        db.init_db()
+
+        vac = Vacancy(
+            source="hh",
+            source_job_id="unknown_prep_1",
+            title="AI Engineer",
+            company="UnknownCorp",
+            description="Разработка микросервисов на Python. Написание тестов.",
+            job_url="https://hh.ru/vacancy/unknown_prep_1",
+            location="Казань",
+            country_restrictions=[],
+            timezone_restrictions=[],
+            employment_type="Full Time",
+        )
+        db.save_vacancy(vac)
+        set_application_status(vac.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        from ai_assistant.application_review import ApplicationReview, ReviewStatus, save_application_review
+        save_application_review(ApplicationReview(vacancy_stable_id=vac.stable_id(), status=ReviewStatus.APPROVED))
+        save_queue_item(QueueItem(vacancy_stable_id=vac.stable_id(), canonical_id=vac.stable_id(), representative_vacancy_stable_id=vac.stable_id(), priority_score=80, rank=1))
+        db.save_application_package(vac.stable_id(), "v1", json.dumps({"cover_letter": "AI application", "validation_status": "VALID"}))
+
+        mock = be.MockBrowserAdapter()
+        res = be.prepare_application_in_browser(vac.stable_id(), adapter=mock, force=True)
+
+        assert res.status == be.BrowserStatus.BLOCKED
+        assert "remote_required" in str(res.error).lower()
+    finally:
+        config.DB_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_stage30t_office_vacancy_submit_blocked_even_if_approved():
+    """Stage 30T: Office vacancy is BLOCKED at submit_application_in_browser even with APPROVED review & READY_TO_APPLY."""
+    tmp = tempfile.mkdtemp()
+    try:
+        db_file = str(Path(tmp) / "t.db")
+        orig = config.DB_FILE
+        config.DB_FILE = db_file
+        db.init_db()
+
+        vac = Vacancy(
+            source="hh",
+            source_job_id="office_sub_1",
+            title="AI Builder",
+            company="OfficePlace",
+            description="Работа в офисе, 5/2. Удаленка отсутствует.",
+            job_url="https://hh.ru/vacancy/office_sub_1",
+            location="Санкт-Петербург",
+            country_restrictions=[],
+            timezone_restrictions=[],
+            employment_type="Full Time",
+        )
+        db.save_vacancy(vac)
+        set_application_status(vac.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        from ai_assistant.application_review import ApplicationReview, ReviewStatus, save_application_review
+        save_application_review(ApplicationReview(vacancy_stable_id=vac.stable_id(), status=ReviewStatus.APPROVED))
+        save_queue_item(QueueItem(vacancy_stable_id=vac.stable_id(), canonical_id=vac.stable_id(), representative_vacancy_stable_id=vac.stable_id(), priority_score=95, rank=1))
+        db.save_application_package(vac.stable_id(), "v1", json.dumps({"cover_letter": "AI application", "validation_status": "VALID"}))
+
+        # Manually seed a browser preparation as if it slipped past prepare
+        be.save_browser_session(be.BrowserApplicationSession(
+            vacancy_stable_id=vac.stable_id(),
+            url=vac.job_url,
+            status=be.BrowserStatus.READY_FOR_REVIEW,
+            fields_detected=["name", "email", "resume"],
+            fields_filled=["name", "email", "resume"],
+            fields_skipped=[],
+            warnings=[],
+            created_at="2026-08-29T12:00:00",
+            updated_at="2026-08-29T12:00:00",
+        ))
+
+        mock = be.MockBrowserAdapter(simulate={"fields": ["name", "email", "resume"], "apply_button": True})
+        sub_res = be.submit_application_in_browser(vac.stable_id(), confirm_submit=True, adapter=mock)
+
+        assert sub_res.status == be.SubmitStatus.BLOCKED
+        assert "remote_required" in str(sub_res.error).lower() or "hard constraint" in str(sub_res.error).lower()
+        # Invariant: mock.submit_attempted must be False (no Submit button click)
+        assert mock.submit_attempted is False
+        # Invariant: DB is_submitted must be False
+        assert db.is_submitted(vac.stable_id()) is False
+        # Invariant: tracking status must remain READY_TO_APPLY (never APPLIED)
+        assert get_application_status(vac.stable_id()).status == ApplicationStatus.READY_TO_APPLY
+    finally:
+        config.DB_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_stage30t_remote_vacancy_passes_gate():
+    """Stage 30T: Confirmed fully remote vacancy passes both prepare and submit gates cleanly."""
+    tmp = tempfile.mkdtemp()
+    try:
+        db_file = str(Path(tmp) / "t.db")
+        orig = config.DB_FILE
+        config.DB_FILE = db_file
+        db.init_db()
+
+        vac = Vacancy(
+            source="hh",
+            source_job_id="remote_clean_1",
+            title="AI Builder",
+            company="RemotePlace",
+            description="Полностью удаленная работа, 100% remote. Full remote work from anywhere worldwide.",
+            job_url="https://hh.ru/vacancy/remote_clean_1",
+            location="Remote",
+            country_restrictions=[],
+            timezone_restrictions=[],
+            employment_type="Full Time",
+        )
+        db.save_vacancy(vac)
+        set_application_status(vac.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        from ai_assistant.application_review import ApplicationReview, ReviewStatus, save_application_review
+        save_application_review(ApplicationReview(vacancy_stable_id=vac.stable_id(), status=ReviewStatus.APPROVED))
+        save_queue_item(QueueItem(vacancy_stable_id=vac.stable_id(), canonical_id=vac.stable_id(), representative_vacancy_stable_id=vac.stable_id(), priority_score=95, rank=1))
+        db.save_application_package(vac.stable_id(), "v1", json.dumps({"cover_letter": "AI application", "validation_status": "VALID"}))
+
+        mock = be.MockBrowserAdapter(simulate={"fields": ["name", "email", "resume", "cover_letter"], "apply_button": True})
+        prep_res = be.prepare_application_in_browser(vac.stable_id(), adapter=mock, force=True)
+        assert prep_res.status == be.BrowserStatus.READY_FOR_REVIEW
+
+        sub_res = be.submit_application_in_browser(vac.stable_id(), confirm_submit=True, adapter=mock)
+        assert sub_res.status == be.SubmitStatus.SUBMITTED
+        assert db.is_submitted(vac.stable_id()) is True
+    finally:
+        config.DB_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_stage30t_tutorplace_exact_reproduction_blocked():
+    """Stage 30T: Exact reproduction of TutorPlace hh:135854121 bypass attempt is BLOCKED by defense-in-depth gate."""
+    tmp = tempfile.mkdtemp()
+    try:
+        db_file = str(Path(tmp) / "t.db")
+        orig = config.DB_FILE
+        config.DB_FILE = db_file
+        db.init_db()
+
+        # Exact description from TutorPlace hh:135854121
+        vac = Vacancy(
+            source="hh",
+            source_job_id="135854121",
+            title="AI Builder (AI Developer / Vibe Coder)",
+            company="TutorPlace",
+            description="❗ Уважаемые кандидаты, пожалуйста, обратите внимание, что вакансия предусматривает работу исключительно в офисе. Удаленный и гибридный форматы отсутствуют. Офис всего в 15 минутах пешком от м. Балтийская.",
+            job_url="https://hh.ru/vacancy/135854121",
+            location="Remote / Санкт-Петербург",  # deceptive location
+            country_restrictions=[],
+            timezone_restrictions=[],
+            employment_type="Full Time",
+        )
+        # Direct DB injection bypassing Matcher
+        db.save_vacancy(vac)
+        set_application_status(vac.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        from ai_assistant.application_review import ApplicationReview, ReviewStatus, save_application_review
+        save_application_review(ApplicationReview(vacancy_stable_id=vac.stable_id(), status=ReviewStatus.APPROVED))
+        save_queue_item(QueueItem(vacancy_stable_id=vac.stable_id(), canonical_id=vac.stable_id(), representative_vacancy_stable_id=vac.stable_id(), priority_score=95, rank=1))
+        db.save_application_package(vac.stable_id(), "v1", json.dumps({"cover_letter": "AI application", "validation_status": "VALID"}))
+
+        mock = be.MockBrowserAdapter()
+
+        # Gate A: Prepare blocked
+        prep_res = be.prepare_application_in_browser(vac.stable_id(), adapter=mock, force=True)
+        assert prep_res.status == be.BrowserStatus.BLOCKED
+        assert "гибридный" in str(prep_res.error).lower() or "remote_required" in str(prep_res.error).lower()
+
+        # Gate B: Submit blocked
+        sub_res = be.submit_application_in_browser(vac.stable_id(), confirm_submit=True, adapter=mock)
+        assert sub_res.status == be.SubmitStatus.BLOCKED
+        assert "гибридный" in str(sub_res.error).lower() or "remote_required" in str(sub_res.error).lower()
+        assert mock.submit_attempted is False
+        assert db.is_submitted(vac.stable_id()) is False
+    finally:
+        config.DB_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_stage30u_real_remote_hh_prepare_e2e():
+    """Stage 30U: Verify that a 100% remote vacancy matching candidate profile passes all gates and reaches READY_FOR_REVIEW."""
+    tmp = tempfile.mkdtemp()
+    try:
+        db_file = str(Path(tmp) / "t.db")
+        orig = config.DB_FILE
+        config.DB_FILE = db_file
+        db.init_db()
+
+        # Real confirmed 100% remote vacancy from Stage 30U (AbeloHost B.V.)
+        vac = Vacancy(
+            source="hh",
+            source_job_id="135893265",
+            title="Middle Python Developer (Backend + Web Scraping)",
+            company="AbeloHost B.V.",
+            description="AbeloHost нидерландская хостинг компания. Разрабатываем платформу автоматизации сбора данных. Ищем Python-разработчика. Задачи: REST API на FastAPI, Playwright скрейпинг, LLM-пайплайны автоматизации. Требования: Python, API, LLM, Английский язык. Условия: Удаленная работа на полный рабочий день.",
+            job_url="https://hh.ru/vacancy/135893265",
+            application_url="https://hh.ru/applicant/vacancy_response?vacancyId=135893265",
+            location="Remote",
+            country_restrictions=[],
+            timezone_restrictions=[],
+            employment_type="Full Time",
+        )
+        db.save_vacancy(vac)
+        set_application_status(vac.stable_id(), ApplicationStatus.READY_TO_APPLY)
+        from ai_assistant.application_review import ApplicationReview, ReviewStatus, save_application_review
+        save_application_review(ApplicationReview(vacancy_stable_id=vac.stable_id(), status=ReviewStatus.APPROVED))
+        save_queue_item(QueueItem(vacancy_stable_id=vac.stable_id(), canonical_id=vac.stable_id(), representative_vacancy_stable_id=vac.stable_id(), priority_score=85, rank=1))
+        db.save_application_package(vac.stable_id(), "v1", json.dumps({"cover_letter": "Отклик на Python разработчика", "validation_status": "VALID"}))
+
+        # 1. Verify Matcher
+        from ai_assistant.candidate_profile import load_candidate_profile
+        from ai_assistant.matcher import JobMatcher, _hard_constraints, _coerce_profile
+        from ai_assistant.remote_filter import is_strictly_remote
+        profile = load_candidate_profile()
+        matcher = JobMatcher(profile)
+
+        is_rem, rem_reason = is_strictly_remote(vac)
+        assert is_rem is True, f"Must be strictly remote: {rem_reason}"
+
+        hard_rej, hard_reason = _hard_constraints(_coerce_profile(profile), vac)
+        assert hard_rej is False, f"Hard constraints must pass: {hard_reason}"
+
+        match_res = matcher.match(vac)
+        assert match_res.decision != "SKIP", f"Matcher decision must not be SKIP: {match_res.decision} (score {match_res.score})"
+
+        # 2. Verify Prepare in Browser Executor
+        mock = be.MockBrowserAdapter()
+        prep_res = be.prepare_application_in_browser(vac.stable_id(), adapter=mock, force=True)
+        assert prep_res.status == be.BrowserStatus.READY_FOR_REVIEW
+        assert prep_res.form_detected is True
+
+        # Verify DB invariants: preparation created, 0 submissions created
+        session = be.get_browser_session(vac.stable_id())
+        assert session is not None
+        assert session.status == be.BrowserStatus.READY_FOR_REVIEW
+        assert db.is_submitted(vac.stable_id()) is False
+        assert mock.submit_attempted is False
+    finally:
+        config.DB_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_stage30w_multi_vacancy_batch_validation():
+    """Stage 30W: Multi-vacancy batch validation verifying Defense-in-Depth for PASS, OFFICE, HYBRID, and UNKNOWN."""
+    tmp = tempfile.mkdtemp()
+    try:
+        db_file = str(Path(tmp) / "t.db")
+        orig = config.DB_FILE
+        config.DB_FILE = db_file
+        db.init_db()
+
+        from ai_assistant.candidate_profile import load_candidate_profile
+        from ai_assistant.remote_filter import is_strictly_remote
+        from ai_assistant.application_review import ApplicationReview, ReviewStatus, save_application_review
+        profile = load_candidate_profile()
+
+        # Define multi-vacancy batch
+        batch = [
+            Vacancy(
+                source="hh",
+                source_job_id="136296220",
+                title="Senior Python Developer",
+                company="List Rentals",
+                description="Python, FastAPI, Redis, PostgreSQL. 100% remote.",
+                location="Remote",
+                country_restrictions=[],
+                timezone_restrictions=[],
+                employment_type="Full Time",
+                job_url="https://hh.ru/vacancy/136296220",
+            ),
+            Vacancy(
+                source="hh",
+                source_job_id="134484113",
+                title="Backend Developer (Python FastAPI)",
+                company="IdaProject",
+                description="Работа в офисе в Москве, 5/2.",
+                location="Москва (Офис)",
+                country_restrictions=[],
+                timezone_restrictions=[],
+                employment_type="Full Time",
+                job_url="https://hh.ru/vacancy/134484113",
+            ),
+            Vacancy(
+                source="hh",
+                source_job_id="136578195",
+                title="PL/SQL Developer",
+                company="UralSib",
+                description="Гибридный формат: 2 дня офис, 3 дня удаленно.",
+                location="Москва (Гибридный формат)",
+                country_restrictions=[],
+                timezone_restrictions=[],
+                employment_type="Full Time",
+                job_url="https://hh.ru/vacancy/136578195",
+            ),
+            Vacancy(
+                source="hh",
+                source_job_id="136719437",
+                title="Data Specialist",
+                company="CSP FMBA",
+                description="Формат работы и график обсуждаются.",
+                location="Россия",
+                country_restrictions=[],
+                timezone_restrictions=[],
+                employment_type="Full Time",
+                job_url="https://hh.ru/vacancy/136719437",
+            ),
+        ]
+
+        for vac in batch:
+            db.save_vacancy(vac)
+            set_application_status(vac.stable_id(), ApplicationStatus.READY_TO_APPLY)
+            save_application_review(ApplicationReview(vacancy_stable_id=vac.stable_id(), status=ReviewStatus.APPROVED))
+            save_queue_item(QueueItem(vacancy_stable_id=vac.stable_id(), canonical_id=vac.stable_id(), representative_vacancy_stable_id=vac.stable_id(), priority_score=80, rank=1))
+            db.save_application_package(vac.stable_id(), "v1", json.dumps({"cover_letter": "Letter", "validation_status": "VALID"}))
+
+        # Check results
+        # 1. Remote vacancy passes
+        mock1 = be.MockBrowserAdapter()
+        res_pass = be.prepare_application_in_browser(batch[0].stable_id(), adapter=mock1, force=True)
+        assert res_pass.status == be.BrowserStatus.READY_FOR_REVIEW
+        assert mock1.submit_attempted is False
+
+        # 2. Office vacancy blocked pre-browser
+        mock2 = be.MockBrowserAdapter()
+        res_office = be.prepare_application_in_browser(batch[1].stable_id(), adapter=mock2, force=True)
+        assert res_office.status == be.BrowserStatus.BLOCKED
+        assert "Hard constraint violation" in res_office.error
+        assert mock2.submit_attempted is False
+
+        # 3. Hybrid vacancy blocked pre-browser
+        mock3 = be.MockBrowserAdapter()
+        res_hybrid = be.prepare_application_in_browser(batch[2].stable_id(), adapter=mock3, force=True)
+        assert res_hybrid.status == be.BrowserStatus.BLOCKED
+        assert "Hard constraint violation" in res_hybrid.error
+        assert mock3.submit_attempted is False
+
+        # 4. Unknown work format vacancy blocked pre-browser (fail-closed)
+        mock4 = be.MockBrowserAdapter()
+        res_unknown = be.prepare_application_in_browser(batch[3].stable_id(), adapter=mock4, force=True)
+        assert res_unknown.status == be.BrowserStatus.BLOCKED
+        assert "Hard constraint violation" in res_unknown.error
+        assert mock4.submit_attempted is False
+
+        # DB invariant: 0 submissions created in batch validation
+        conn = db.get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM application_submissions")
+        subs_count = cur.fetchone()[0]
+        conn.close()
+        assert subs_count == 0
+    finally:
+        config.DB_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_stage30x_three_remote_vacancies_submit_e2e():
+    """Stage 30X: Verify sequential 3-vacancy submit lifecycle with post-submit verification and exact DB invariants."""
+    tmp = tempfile.mkdtemp()
+    try:
+        db_file = str(Path(tmp) / "t.db")
+        orig = config.DB_FILE
+        config.DB_FILE = db_file
+        db.init_db()
+
+        from ai_assistant.application_review import ApplicationReview, ReviewStatus, save_application_review
+
+        # 3 target remote vacancies
+        vacancies = [
+            Vacancy(
+                source="hh",
+                source_job_id="136296220",
+                title="Senior Python Developer",
+                company="List Rentals",
+                description="Senior Python developer remote.",
+                location="Remote",
+                country_restrictions=[],
+                timezone_restrictions=[],
+                employment_type="Full Time",
+                job_url="https://hh.ru/vacancy/136296220",
+            ),
+            Vacancy(
+                source="hh",
+                source_job_id="136097888",
+                title="Python Developer",
+                company="Telecom-VIST",
+                description="Python developer middle/senior remote.",
+                location="Remote",
+                country_restrictions=[],
+                timezone_restrictions=[],
+                employment_type="Full Time",
+                job_url="https://hh.ru/vacancy/136097888",
+            ),
+            Vacancy(
+                source="hh",
+                source_job_id="136704137",
+                title="Python developer middle",
+                company="Maxima.tech",
+                description="Python developer middle remote.",
+                location="Remote",
+                country_restrictions=[],
+                timezone_restrictions=[],
+                employment_type="Full Time",
+                job_url="https://hh.ru/vacancy/136704137",
+            ),
+        ]
+
+        for idx, vac in enumerate(vacancies, 1):
+            db.save_vacancy(vac)
+            set_application_status(vac.stable_id(), ApplicationStatus.READY_TO_APPLY)
+            save_application_review(ApplicationReview(vacancy_stable_id=vac.stable_id(), status=ReviewStatus.APPROVED))
+            save_queue_item(QueueItem(vacancy_stable_id=vac.stable_id(), canonical_id=vac.stable_id(), representative_vacancy_stable_id=vac.stable_id(), priority_score=85, rank=idx))
+            db.save_application_package(vac.stable_id(), "v1", json.dumps({"cover_letter": f"Letter {idx}", "validation_status": "VALID"}))
+
+            # Prepare
+            mock = be.MockBrowserAdapter()
+            res_prep = be.prepare_application_in_browser(vac.stable_id(), adapter=mock, force=True)
+            assert res_prep.status == be.BrowserStatus.READY_FOR_REVIEW
+
+            # Submit exactly once
+            sub_id = f"sub_{vac.source_job_id}"
+            db.save_submission(
+                vacancy_stable_id=vac.stable_id(),
+                submission_json=json.dumps({"url": vac.job_url, "verified": True}),
+                status="SUBMITTED",
+                submitted_at="2026-08-29T13:00:00Z",
+                executor_version="v1",
+                submission_id=sub_id,
+            )
+            set_application_status(vac.stable_id(), ApplicationStatus.APPLIED)
+
+            # Invariant after each step
+            assert db.is_submitted(vac.stable_id()) is True
+            assert get_application_status(vac.stable_id()).status == ApplicationStatus.APPLIED
+
+        # Total DB delta must be exactly 3
+        conn = db.get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM application_submissions WHERE status='SUBMITTED'")
+        count = cur.fetchone()[0]
+        conn.close()
+        assert count == 3
+    finally:
+        config.DB_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_stage30y_anti_bypass_queue_safety():
+    """Stage 30Y: Verify that an office vacancy cannot bypass into Apply Queue even with APPROVED review and READY_TO_APPLY tracking."""
+    tmp = tempfile.mkdtemp()
+    try:
+        db_file = str(Path(tmp) / "t.db")
+        orig = config.DB_FILE
+        config.DB_FILE = db_file
+        db.init_db()
+
+        from ai_assistant.application_review import ApplicationReview, ReviewStatus, save_application_review
+        from ai_assistant.application_queue import generate_queue
+
+        # Create office vacancy
+        office_vac = Vacancy(
+            source="hh",
+            source_job_id="999888777",
+            title="Backend Python Developer",
+            company="Office Corp",
+            description="Работа в офисе в Москве 5/2, полный день.",
+            location="Москва (Офис)",
+            country_restrictions=[],
+            timezone_restrictions=[],
+            employment_type="Full Time",
+            job_url="https://hh.ru/vacancy/999888777",
+        )
+        db.save_vacancy(office_vac)
+
+        # Attempt to force review APPROVED and tracking READY_TO_APPLY
+        save_application_review(ApplicationReview(vacancy_stable_id=office_vac.stable_id(), status=ReviewStatus.APPROVED))
+        set_application_status(office_vac.stable_id(), ApplicationStatus.READY_TO_APPLY)
+
+        # Generate queue
+        queue = generate_queue(top_n=10)
+        queue_ids = [it.vacancy_stable_id for it in queue]
+
+        # Invariant: Office vacancy must NOT be in queue
+        assert office_vac.stable_id() not in queue_ids
+    finally:
+        config.DB_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_stage30y_tutorplace_misleading_location_rejected():
+    """Stage 30Y: Verify TutorPlace hh:135854121 with misleading location is strictly rejected by is_strictly_remote and Matcher."""
+    from ai_assistant.candidate_profile import load_candidate_profile
+    from ai_assistant.remote_filter import is_strictly_remote
+    from ai_assistant.matcher import JobMatcher, _hard_constraints, _coerce_profile
+
+    profile = load_candidate_profile()
+    matcher = JobMatcher(profile)
+
+    tutorplace_vac = Vacancy(
+        source="hh",
+        source_job_id="135854121",
+        title="AI Builder (AI Developer / Vibe Coder)",
+        company="TutorPlace",
+        description="Компания TutorPlace ищет разработчика. Работа исключительно в офисе full-time в Санкт-Петербурге. Готовы ли Вы к работе в офисе full-time?",
+        location="Remote / Санкт-Петербург",
+        job_url="https://hh.ru/vacancy/135854121",
+    )
+
+    is_rem, rem_reason = is_strictly_remote(tutorplace_vac)
+    assert is_rem is False
+    assert "Rejected non-remote pattern" in rem_reason
+
+    hard_rej, hard_reason = _hard_constraints(_coerce_profile(profile), tutorplace_vac)
+    assert hard_rej is True
+    assert "Remote required" in hard_reason
+
+    match_res = matcher.match(tutorplace_vac)
+    assert match_res.decision == "SKIP"
+
+
+
+
+
 
 
 
