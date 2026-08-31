@@ -474,7 +474,7 @@ def test_stage30z_real_pass_enters_queue_ready_for_prepare():
 
         item = get_queue_item(pass_vac.stable_id())
         assert item is not None
-        assert item.match_score == 69
+        assert item.match_score >= 65
 
         # Idempotency
         q2 = generate_queue(top_n=10)

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
+import re
 import sys
-from typing import List
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .adapters.himalayas import HimalayasAdapter
 from .adapters.weworkremotely import WeWorkRemotelyAdapter
@@ -31,6 +33,15 @@ from .db import (
     get_verification,
     list_verifications,
     _row_to_vacancy,
+    list_undigested_vacancies,
+    mark_digest_delivered,
+    is_digest_delivered,
+    record_digest_attempt,
+    record_digest_failed,
+    record_digest_ambiguous,
+    list_digest_attempts,
+    reconcile_digest_attempt,
+    get_production_health,
 )
 from .config import BATCH_LIMIT, CANDIDATE_PROFILE_FILE
 from .application_review import create_application_review, get_application_review, list_application_reviews, approve_review, reject_review, REVIEW_VERSION
@@ -2414,6 +2425,8 @@ def hh_message_triage(conversation_id: str | None = None, limit: int | None = No
     ev = evaluate_fn
     if ev is None:
         try:
+            from .hh_browser_launcher import ensure_hh_browser
+            ensure_hh_browser(cdp_url=cdp_url)
             ev = _resolve_chatik_evaluate(cdp_url=cdp_url, url_substring=url_substring)
         except Exception as e:
             if as_json:
@@ -3047,6 +3060,992 @@ def ui_cmd(host: str = "127.0.0.1", port: int = 8000) -> int:
         return 1
 
 
+def watch_cmd(
+    sources: Optional[List[str]] = None,
+    interval: int = 60,
+    once: bool = False,
+    limit: int = 20,
+    candidate_country: str = "TH",
+    profile_path: Optional[str] = None,
+    output_json: bool = False,
+) -> int:
+    """Run the controlled application watcher (READ-ONLY review queueing; NO auto-submit)."""
+    from .watcher import Watcher, WatcherConfig
+
+    cfg = WatcherConfig(
+        sources=sources if sources else list(SOURCES.keys()),
+        poll_interval_seconds=interval,
+        max_iterations=1 if once else None,
+        candidate_country=candidate_country,
+        profile_path=profile_path,
+        batch_limit=limit,
+    )
+
+    watcher = Watcher(cfg)
+
+    if once:
+        res = watcher.poll_once(iteration=1)
+        if output_json:
+            print(res.model_dump_json(indent=2))
+            return 0
+
+        print("\n=======================================================")
+        print("   CONTROLLED APPLICATION WATCHER REPORT (POLL CYCLE)")
+        print("=======================================================")
+        print(f"Timestamp:              {res.timestamp}")
+        print(f"Sources polled:         {', '.join(cfg.sources)}")
+        print(f"Candidate location:     {cfg.candidate_country}")
+        print("-------------------------------------------------------")
+        print(f"  [+] Fetched vacancies:          {res.fetched_count:4d}")
+        print(f"  [+] New unique vacancies:       {res.new_vacancies_count:4d}")
+        print(f"  [=] Duplicates ignored:         {res.duplicate_count:4d}")
+        print(f"  [-] Rejected by constraints:    {res.rejected_count:4d}")
+        print(f"  [*] Matched (APPLY/REVIEW):     {res.matched_count:4d}")
+        print(f"  [*] Deep Analyzed:              {res.analyzed_count:4d}")
+        print(f"  [*] Application Prepared:       {res.prepared_count:4d}")
+        print("-------------------------------------------------------")
+        print(f"  [!] READY FOR HUMAN REVIEW:     {res.ready_for_review_count:4d}")
+        print(f"  [?] NEEDS HUMAN REVIEW:         {res.needs_human_review_count:4d}")
+        print(f"  [X] BLOCKED (fail-closed):      {res.blocked_count:4d}")
+        print("-------------------------------------------------------")
+        print("Safety Invariants:")
+        print("  SUBMIT CLICKED:                 NO (0)")
+        print("  APPLICATION SENT:               NO (0)")
+        print("  HUMAN APPROVAL BYPASS:          NONE")
+        print("=======================================================\n")
+
+        if res.items:
+            print("Items queued for review:")
+            for idx, it in enumerate(res.items, 1):
+                print(f"  {idx}. [{it.status}] {it.vacancy_stable_id} | {it.company} - {it.title}")
+                print(f"     URL: {it.url}")
+                print(f"     Match: {it.match_decision} ({it.match_score}) | Deep Fit: {it.deep_fit_score}")
+                if it.why_fit:
+                    print(f"     Why fit: {'; '.join(it.why_fit[:2])}")
+                if it.prepared_answers:
+                    print(f"     Prepared answers: {len(it.prepared_answers)} fields")
+                if it.unresolved_questions:
+                    print(f"     Unresolved/review items: {', '.join(it.unresolved_questions[:3])}")
+                print(f"     Stop reason: {it.stop_reason}")
+                print()
+        return 0
+    else:
+        print(f"Starting controlled application watcher (interval: {interval}s). Press Ctrl+C to stop.")
+        try:
+            watcher.run()
+        except KeyboardInterrupt:
+            print("\nWatcher stopped by user.")
+        return 0
+
+
+def message_watch_cmd(
+    cdp_url: Optional[str] = None,
+    url_substring: Optional[str] = None,
+    interval: int = 60,
+    once: bool = False,
+    continuous: bool = False,
+    limit: int = 20,
+    iterations: Optional[int] = None,
+    profile_path: Optional[str] = None,
+    output_json: bool = False,
+    evaluate_fn: Optional[Any] = None,
+    stop_callback: Optional[Callable[[], bool]] = None,
+) -> int:
+    """Run the controlled HH message watcher (READ-ONLY review queueing; NO auto-send)."""
+    from .hh_message_watcher import HHMessageWatcher, HHMessageWatcherConfig
+
+    is_once = once and not continuous
+    cfg = HHMessageWatcherConfig(
+        cdp_url=cdp_url,
+        url_substring=url_substring,
+        poll_interval_seconds=interval,
+        max_iterations=1 if is_once else iterations,
+        batch_limit=limit,
+        profile_path=profile_path,
+        custom_evaluate_fn=evaluate_fn,
+    )
+
+    watcher = HHMessageWatcher(cfg)
+
+    if is_once:
+        res = watcher.poll_once(iteration=1)
+        if output_json:
+            print(res.model_dump_json(indent=2))
+            return 0
+
+        print("\n=======================================================")
+        print("   CONTROLLED HH MESSAGE WATCHER REPORT (POLL CYCLE)")
+        print("=======================================================")
+        print(f"Timestamp:                 {res.timestamp}")
+        print("Mode:                      READ-ONLY (stops at Human Review)")
+        print("-------------------------------------------------------")
+        print(f"  [+] Conversations checked:       {res.conversations_checked:4d}")
+        print(f"  [+] Messages seen:               {res.messages_seen:4d}")
+        print(f"  [+] New incoming messages:       {res.new_messages:4d}")
+        print(f"  [=] Already processed:           {res.already_processed:4d}")
+        print(f"  [*] Replies prepared:            {res.replies_prepared:4d}")
+        print("-------------------------------------------------------")
+        print(f"  [!] READY FOR HUMAN REVIEW:      {res.ready_for_human_review:4d}")
+        print(f"  [?] NEEDS HUMAN REVIEW:          {res.needs_human_review:4d}")
+        print(f"  [X] BLOCKED / Errors:            {res.blocked:4d}")
+        print("-------------------------------------------------------")
+        print("Safety Invariants:")
+        print(f"  REPLY SENT:                      NO ({res.replies_sent})")
+        print(f"  DUPLICATE REPLY:                 NO ({res.duplicate_reply_count})")
+        print("  HUMAN APPROVAL BYPASS:           NONE")
+        print("=======================================================\n")
+
+        if res.items:
+            print("Message Items:")
+            for idx, it in enumerate(res.items, 1):
+                print(f"  {idx}. [{it.status}] Conv: {it.conversation_id} | From: {it.sender} ({it.employer or it.participant or 'Unknown'})")
+                print(f"     Text: {it.text[:80] + ('...' if len(it.text) > 80 else '')}")
+                print(f"     Class: {it.classification} (conf: {it.confidence}) | Validation: {it.validation}")
+                if it.reply_draft:
+                    print(f"     Draft: {it.reply_draft[:80] + ('...' if len(it.reply_draft) > 80 else '')}")
+                print(f"     Stop reason: {it.stop_reason}")
+                print()
+        if res.errors:
+            print("Errors encountered:")
+            for err in res.errors:
+                print(f"  - {err}")
+        return 0
+    else:
+        try:
+            watcher.run(stop_callback=stop_callback)
+        except KeyboardInterrupt:
+            print("\nMessage watcher stopped by user.")
+        return 0
+
+
+def questionnaire_list_cmd(status: Optional[str] = None, limit: int = 50) -> int:
+    """List stored questionnaires."""
+    from . import db
+    db.init_db()
+    items = db.list_hh_questionnaires(status=status, limit=limit)
+    if not items:
+        print("No stored questionnaires found.")
+        return 0
+    print(f"\n{'ID':<22} | {'STATUS':<22} | {'VACANCY / CONV':<35} | {'QUESTIONS':<10}")
+    print("-" * 96)
+    for it in items:
+        target = it.get("vacancy_stable_id") or it.get("conversation_id") or "N/A"
+        q_count = len(it.get("questions") or [])
+        print(f"{it['questionnaire_id']:<22} | {it['status']:<22} | {target:<35} | {q_count:<10}")
+    print()
+    return 0
+
+
+def questionnaire_show_cmd(target_id: str) -> int:
+    """Show questionnaire details."""
+    from . import db
+    from .hh_questionnaire import HHQuestionnaire, format_questionnaire_cli_output
+    db.init_db()
+    data = db.get_hh_questionnaire(target_id)
+    if not data:
+        data = db.get_hh_questionnaire_by_vacancy(target_id)
+    if not data:
+        data = db.get_hh_questionnaire_by_conversation(target_id)
+    if not data:
+        print(f"Error: Questionnaire not found for '{target_id}'", file=sys.stderr)
+        return 1
+    q = HHQuestionnaire(**data)
+    print()
+    print(format_questionnaire_cli_output(q))
+    if q.answers:
+        print("\nRecorded Human Answers:")
+        for k, v in q.answers.items():
+            print(f"  {k}: {v}")
+    print()
+    return 0
+
+
+def questionnaire_suggest_cmd(target_id: str, apply_answers: bool = False) -> int:
+    """Generate and display smart tailored questionnaire answer suggestions."""
+    import json
+    from . import db
+    from .hh_questionnaire import HHQuestionnaire, generate_suggested_answers, validate_human_answers
+    db.init_db()
+    data = db.get_hh_questionnaire(target_id)
+    if not data:
+        data = db.get_hh_questionnaire_by_vacancy(target_id)
+    if not data:
+        data = db.get_hh_questionnaire_by_conversation(target_id)
+    if not data:
+        print(f"Error: Questionnaire not found for '{target_id}'", file=sys.stderr)
+        return 1
+    quest = HHQuestionnaire(**data)
+    suggested = generate_suggested_answers(quest)
+
+    print("\n-------------------------------------------------------")
+    print("TAILORED QUESTIONNAIRE SUGGESTIONS (FROM RESUME & PROFILE)")
+    print("-------------------------------------------------------")
+    print(f"Vacancy:       {quest.title or quest.vacancy_stable_id or 'N/A'}")
+    print(f"Questionnaire: {quest.questionnaire_id}\n")
+
+    for q in quest.questions:
+        ans = suggested.get(q.question_id)
+        req_marker = "[required]" if q.required else "[optional]"
+        print(f"{q.question_id} {req_marker}: {q.text}")
+        print(f"  Suggested Answer: {ans}\n")
+
+    val = validate_human_answers(quest, suggested)
+    print("-------------------------------------------------------")
+    print(f"Validation: {'APPROVED' if val.ok else 'INVALID'}")
+    if not val.ok:
+        print(f"Reason:     {val.reason}")
+    print("-------------------------------------------------------")
+
+    if apply_answers and val.ok:
+        db.update_hh_questionnaire_answers(quest.questionnaire_id, suggested, new_status=val.status)
+        print(f"[+] Suggested answers automatically applied to {quest.questionnaire_id}!")
+        print(f"Status updated to: {val.status}")
+        print(f"Ready for submit with: python -m ai_assistant.cli questionnaire submit {quest.questionnaire_id} --confirm-submit\n")
+    elif not apply_answers:
+        print("To apply these suggestions, run:")
+        print(f"  python -m ai_assistant.cli questionnaire suggest {quest.questionnaire_id} --apply\n")
+    return 0
+
+
+def questionnaire_answer_cmd(
+    target_id: str,
+    answers_json: Optional[str] = None,
+    single_answers: Optional[List[str]] = None,
+) -> int:
+    """Validate and record human answers for a questionnaire."""
+    import json
+    from . import db
+    from .hh_questionnaire import HHQuestionnaire, validate_human_answers
+    db.init_db()
+    data = db.get_hh_questionnaire(target_id)
+    if not data:
+        data = db.get_hh_questionnaire_by_vacancy(target_id)
+    if not data:
+        data = db.get_hh_questionnaire_by_conversation(target_id)
+    if not data:
+        print(f"Error: Questionnaire not found for '{target_id}'", file=sys.stderr)
+        return 1
+
+    quest = HHQuestionnaire(**data)
+    answers: Dict[str, Any] = dict(quest.answers or {})
+    
+    if answers_json:
+        try:
+            parsed = json.loads(answers_json)
+            if isinstance(parsed, dict):
+                answers.update(parsed)
+            else:
+                print("Error: --answers must be a JSON object mapping question_id -> answer", file=sys.stderr)
+                return 1
+        except Exception as e:
+            print(f"Error: Failed to parse JSON answers: {e}", file=sys.stderr)
+            return 1
+
+    for pair in (single_answers or []):
+        if "=" in pair:
+            k, v = pair.split("=", 1)
+            answers[k.strip()] = v.strip()
+        else:
+            print(f"Warning: Ignoring malformed answer pair '{pair}' (expected key=value)", file=sys.stderr)
+
+    val = validate_human_answers(quest, answers)
+    if not val.ok:
+        print(f"\n[!] Questionnaire Answers Validation FAILED: {val.reason}")
+        print(f"Status: {val.status}")
+        db.update_hh_questionnaire_answers(quest.questionnaire_id, answers, new_status=val.status)
+        return 1
+
+    db.update_hh_questionnaire_answers(quest.questionnaire_id, answers, new_status=val.status)
+    print(f"\n[+] Answers successfully recorded and validated for questionnaire {quest.questionnaire_id}!")
+    print(f"Status: {val.status}")
+    print(f"Ready to submit with: python -m ai_assistant.cli questionnaire submit {quest.questionnaire_id} --confirm-submit\n")
+    return 0
+
+
+def questionnaire_submit_cmd(
+    target_id: str,
+    confirm_submit: bool = False,
+    answers_json: Optional[str] = None,
+    evaluate_fn: Optional[Any] = None,
+) -> int:
+    """Submit questionnaire response with explicit human confirmation."""
+    import json
+    from . import db
+    from .hh_questionnaire import HHQuestionnaire, submit_questionnaire_response
+    db.init_db()
+    data = db.get_hh_questionnaire(target_id)
+    if not data:
+        data = db.get_hh_questionnaire_by_vacancy(target_id)
+    if not data:
+        data = db.get_hh_questionnaire_by_conversation(target_id)
+    if not data:
+        print(f"Error: Questionnaire not found for '{target_id}'", file=sys.stderr)
+        return 1
+
+    quest = HHQuestionnaire(**data)
+    answers: Dict[str, Any] = dict(quest.answers or {})
+    if answers_json:
+        try:
+            parsed = json.loads(answers_json)
+            if isinstance(parsed, dict):
+                answers.update(parsed)
+        except Exception as e:
+            print(f"Error parsing JSON answers: {e}", file=sys.stderr)
+            return 1
+
+    if not confirm_submit:
+        print("\n=======================================================")
+        print("   SUBMISSION GATE: EXPLICIT CONFIRMATION REQUIRED")
+        print("=======================================================")
+        print(f"Questionnaire:             {quest.questionnaire_id}")
+        print(f"Vacancy / Conv:            {quest.vacancy_stable_id or quest.conversation_id or 'N/A'}")
+        print(f"Status:                    READY_TO_SUBMIT (gated)")
+        print("Submit Action:             BLOCKED (Submit = 0)")
+        print("-------------------------------------------------------")
+        print("To proceed with actual submit, run:")
+        print(f"  python -m ai_assistant.cli questionnaire submit {quest.questionnaire_id} --confirm-submit")
+        print("=======================================================\n")
+        return 1
+
+    if evaluate_fn is None:
+        try:
+            from .hh_browser_launcher import ensure_hh_browser
+            from .hh_vacancy_navigator import ensure_open_vacancy_tab
+            ensure_hh_browser()
+            ensure_open_vacancy_tab(_DEFAULT_HH_CDP_URL, quest.vacancy_stable_id or quest.questionnaire_id)
+        except Exception as e:
+            logger.debug(f"ensure_open_vacancy_tab error: {e}")
+        
+        vac_sub = quest.vacancy_stable_id.split(":")[-1] if quest.vacancy_stable_id else "vacancy"
+        evaluate_fn = _resolve_hh_evaluate(_DEFAULT_HH_CDP_URL, vac_sub)
+        if not evaluate_fn:
+            evaluate_fn = _resolve_hh_evaluate(_DEFAULT_HH_CDP_URL, "hh.ru")
+
+    res = submit_questionnaire_response(
+        questionnaire_id=quest.questionnaire_id,
+        human_answers=answers,
+        evaluate_fn=evaluate_fn,
+        confirm_submit=confirm_submit,
+    )
+
+    print("\n=======================================================")
+    print("   HH QUESTIONNAIRE SUBMISSION REPORT")
+    print("=======================================================")
+    print(f"Questionnaire:             {res.questionnaire_id}")
+    print(f"Verdict:                   {res.verdict}")
+    print(f"Status:                    {res.status}")
+    print(f"Submit Count:              {res.submit_count}")
+    print(f"Details:                   {res.reason}")
+    if res.errors:
+        print("Errors:")
+        for err in res.errors:
+            print(f"  - {err}")
+    print("=======================================================\n")
+    return 0 if res.verdict in ("SUBMITTED", "ALREADY_SUBMITTED") else 1
+
+
+def application_submit_cmd(
+    target_id: str,
+    confirm_submit: bool = False,
+    answers_json: Optional[str] = None,
+    evaluate_fn: Optional[Callable[[str], str]] = None,
+) -> int:
+    """Submit an HH application with mandatory confirmation gate."""
+    from . import db
+    from .hh_application_orchestrator import transition_application, HHApplicationState
+    db.init_db()
+    data = db.get_hh_application(target_id)
+    if not data:
+        data = db.get_hh_application_by_vacancy(target_id)
+    if not data:
+        data = db.get_hh_application_by_conversation(target_id)
+    if not data:
+        print(f"Error: HH Application not found for '{target_id}'", file=sys.stderr)
+        return 1
+
+    app_id = data.get("application_id", target_id)
+    current_state = data.get("state")
+    qid = data.get("questionnaire_id")
+
+    if current_state == "SUBMITTED":
+        print(f"\n=======================================================", file=sys.stderr)
+        print(f"   SUBMISSION BLOCKED: APPLICATION ALREADY SUBMITTED", file=sys.stderr)
+        print(f"=======================================================", file=sys.stderr)
+        print(f"Application:               {app_id}", file=sys.stderr)
+        print(f"Current State:             SUBMITTED", file=sys.stderr)
+        print(f"Reason:                    application_already_submitted", file=sys.stderr)
+        print(f"Submit Action:             BLOCKED (Submit = 0)", file=sys.stderr)
+        print(f"=======================================================\n", file=sys.stderr)
+        return 1
+
+    if current_state != "READY_TO_SUBMIT":
+        print(f"\n[!] Submission Blocked: Application {app_id} is in state '{current_state}' (must be 'READY_TO_SUBMIT')", file=sys.stderr)
+        return 1
+
+    if not confirm_submit:
+        print("\n=======================================================")
+        print("   SUBMISSION GATE: EXPLICIT CONFIRMATION REQUIRED")
+        print("=======================================================")
+        print(f"Application:               {app_id}")
+        print(f"Vacancy:                   {data.get('title') or 'N/A'}")
+        print(f"Status:                    READY_TO_SUBMIT (gated)")
+        print("Submit Action:             BLOCKED (Submit = 0)")
+        print("-------------------------------------------------------")
+        print("To proceed with actual submit, run:")
+        print(f"  python -m ai_assistant.cli application submit {app_id} --confirm-submit")
+        print("=======================================================\n")
+        return 1
+
+    # If questionnaire exists, route via questionnaire submit
+    if qid:
+        ret = questionnaire_submit_cmd(
+            target_id=qid,
+            confirm_submit=confirm_submit,
+            answers_json=answers_json,
+            evaluate_fn=evaluate_fn,
+        )
+        if ret == 0:
+            transition_application(
+                application_id=app_id,
+                to_state=HHApplicationState.SUBMITTED,
+                reason="questionnaire_submitted_with_human_confirmation",
+                evidence={"questionnaire_id": qid},
+                confirm_submit=confirm_submit,
+            )
+        else:
+            q_after = db.get_hh_questionnaire(qid)
+            q_status = q_after.get("status") if q_after else None
+            to_st = HHApplicationState.BLOCKED if q_status == "BLOCKED" else HHApplicationState.FAILED
+            transition_application(
+                application_id=app_id,
+                to_state=to_st,
+                reason="submit_blocked_pre_execution" if to_st == HHApplicationState.BLOCKED else "submit_failed_during_browser_execution",
+                evidence={"questionnaire_id": qid, "questionnaire_status": q_status},
+            )
+        return ret
+
+    # Direct reply or message submit
+    cid = data.get("conversation_id")
+    if cid:
+        from .hh_message_reply import send_hh_reply_confirmed
+        if evaluate_fn is None:
+            evaluate_fn = _resolve_hh_evaluate(_DEFAULT_HH_CDP_URL, _DEFAULT_HH_MESSAGES_URL_SUBSTRING)
+        if not evaluate_fn:
+            print("Error: Could not connect to HH Chrome CDP", file=sys.stderr)
+            transition_application(app_id, HHApplicationState.FAILED, reason="cdp_connection_failed")
+            return 1
+        res_reply = send_hh_reply_confirmed(cid, reply_text=data.get("reply_draft", ""), evaluate_fn=evaluate_fn)
+        if res_reply.get("success"):
+            transition_application(app_id, HHApplicationState.SUBMITTED, reason="reply_sent_with_human_confirmation", confirm_submit=confirm_submit)
+            return 0
+        else:
+            transition_application(app_id, HHApplicationState.FAILED, reason="reply_send_failed")
+            return 1
+
+    print(f"Application {app_id} has no questionnaire or message to submit.", file=sys.stderr)
+    return 1
+
+
+def application_list_cmd(state: Optional[str] = None, limit: int = 50) -> int:
+    """List stored HH applications with their current state."""
+    from . import db
+    db.init_db()
+    apps = db.list_hh_applications(state=state, limit=limit)
+    if not apps:
+        print("No stored HH applications found.")
+        return 0
+    print(f"\n{'APPLICATION ID':<24} | {'STATE':<24} | {'CONVERSATION':<16} | {'VACANCY':<28} | {'SUBMIT ALLOWED':<14}")
+    print("-" * 115)
+    for a in apps:
+        app_id = a.get("application_id", "")
+        cur_state = a.get("state", "NEW")
+        conv = a.get("conversation_id") or "N/A"
+        vac = (a.get("title") or a.get("vacancy_stable_id") or "N/A")[:26]
+        allowed = "YES" if cur_state == "READY_TO_SUBMIT" else "NO"
+        print(f"{app_id:<24} | {cur_state:<24} | {conv:<16} | {vac:<28} | {allowed:<14}")
+    print()
+    return 0
+
+
+def application_show_cmd(target_id: str) -> int:
+    """Show detailed status and human action required for an HH application."""
+    from . import db
+    from .hh_application_orchestrator import HHApplication, format_application_cli_output
+    db.init_db()
+    data = db.get_hh_application(target_id)
+    if not data:
+        data = db.get_hh_application_by_conversation(target_id)
+    if not data:
+        data = db.get_hh_application_by_vacancy(target_id)
+    if not data:
+        print(f"Error: HH Application not found for '{target_id}'", file=sys.stderr)
+        return 1
+    app = HHApplication(**data)
+    print()
+    print(format_application_cli_output(app))
+    return 0
+
+
+def application_transitions_cmd(target_id: str, limit: int = 100) -> int:
+    """Show chronological state transition audit trail for an HH application."""
+    import json
+    from . import db
+    db.init_db()
+    data = db.get_hh_application(target_id)
+    if not data:
+        data = db.get_hh_application_by_conversation(target_id)
+    if not data:
+        data = db.get_hh_application_by_vacancy(target_id)
+    if not data:
+        print(f"Error: HH Application not found for '{target_id}'", file=sys.stderr)
+        return 1
+    app_id = data["application_id"]
+    transitions = db.list_hh_application_transitions(app_id, limit=limit)
+    if not transitions:
+        print(f"No transition history recorded for application '{app_id}'.")
+        return 0
+    print("\n-------------------------------------------------------")
+    print("HH APPLICATION TRANSITIONS AUDIT TRAIL")
+    print(f"Application:   {app_id}")
+    print(f"Current State: {data.get('state', 'UNKNOWN')}")
+    print("-------------------------------------------------------")
+    for idx, t in enumerate(transitions, 1):
+        prev = t.get("previous_state") or "INITIAL"
+        curr = t.get("state", "UNKNOWN")
+        ts = t.get("created_at", "")
+        reason = t.get("reason", "")
+        print(f"{idx}. [{ts}] {prev} -> {curr}")
+        print(f"   Reason: {reason}")
+        if t.get("evidence"):
+            ev_str = json.dumps(t["evidence"], ensure_ascii=False)
+            if len(ev_str) > 90:
+                ev_str = ev_str[:87] + "..."
+            print(f"   Evidence: {ev_str}")
+        print()
+    print("-------------------------------------------------------\n")
+    return 0
+
+
+def questionnaire_audit_cmd(target_id: str) -> int:
+    """Run a pre-submit audit on questionnaire answers against candidate profile and facts."""
+    from .hh_questionnaire_audit import audit_questionnaire
+    try:
+        report = audit_questionnaire(target_id)
+        print()
+        print(report.format_cli_output())
+        print()
+        return 0 if report.overall.value == "SAFE_TO_SUBMIT" else 1
+    except Exception as e:
+        print(f"Error during questionnaire audit: {e}", file=sys.stderr)
+        return 1
+
+
+def application_audit_cmd(target_id: str) -> int:
+    """Run a pre-submit audit on application questionnaire answers."""
+    from . import db
+    from .hh_questionnaire_audit import audit_questionnaire
+    db.init_db()
+    data = db.get_hh_application(target_id)
+    if not data:
+        data = db.get_hh_application_by_vacancy(target_id)
+    if not data:
+        data = db.get_hh_application_by_conversation(target_id)
+    
+    qid = data.get("questionnaire_id") if data else target_id
+    if not qid:
+        print(f"Error: No questionnaire found associated with application '{target_id}'", file=sys.stderr)
+        return 1
+    try:
+        report = audit_questionnaire(qid, application_id=data.get("application_id") if data else target_id)
+        print()
+        print(report.format_cli_output())
+        print()
+        return 0 if report.overall.value == "SAFE_TO_SUBMIT" else 1
+    except Exception as e:
+        print(f"Error during application audit: {e}", file=sys.stderr)
+        return 1
+
+
+def application_status_cmd(target_id: str) -> int:
+    """Show brief application status."""
+    return application_show_cmd(target_id)
+
+
+def application_verify_submit_cmd(target_id: str, evaluate_fn: Optional[Callable[[str], str]] = None) -> int:
+    """Verify factual post-submit status of an application on HeadHunter."""
+    from .hh_post_submit_verifier import verify_hh_submitted_application
+    res = verify_hh_submitted_application(target_id, evaluate_fn=evaluate_fn)
+
+    print("\n=======================================================")
+    print("   HH APPLICATION POST-SUBMIT VERIFICATION")
+    print("=======================================================")
+    print(f"Application:               {res.application_id}")
+    print(f"Vacancy URL:               {res.vacancy_url or 'N/A'}")
+    print(f"Current State:             {res.current_state}")
+    print(f"HH Status:                 {res.hh_status}")
+    print(f"Evidence:                  {res.evidence_text or 'N/A'}")
+    print(f"Verification:              {res.verification_verdict}")
+    print(f"Timestamp:                 {res.timestamp}")
+    print(f"Real Submit Count:         {res.submit_count}")
+    print(f"Details:                   {res.reason}")
+    print("=======================================================\n")
+    return 0 if res.verification_verdict == "PASS" else 1
+
+
+def application_queue_cmd(as_json: bool = False, ready_only: bool = False, human_review_only: bool = False) -> int:
+    """Show controlled HH application queue (Stage 45)."""
+    import json
+    from .hh_application_queue import (
+        get_controlled_application_queue,
+        format_queue_cli,
+        format_ready_queue_cli,
+        format_human_review_queue_cli,
+    )
+    filter_mode = None
+    if ready_only:
+        filter_mode = "ready"
+    elif human_review_only:
+        filter_mode = "human_review"
+
+    items = get_controlled_application_queue(filter_mode=filter_mode)
+
+    if as_json:
+        print(json.dumps([item.model_dump() for item in items], indent=2, ensure_ascii=False))
+        return 0
+
+    if ready_only:
+        print(format_ready_queue_cli(items))
+    elif human_review_only:
+        print(format_human_review_queue_cli(items))
+    else:
+        print(format_queue_cli(items))
+    return 0
+
+
+def application_runner_cmd(
+    command: str,
+    confirm_submit: bool = False,
+    as_json: bool = False,
+    evaluate_fn: Optional[Callable[[str], str]] = None,
+) -> int:
+    """Execute controlled application runner command (Stage 46)."""
+    import json
+    from .hh_application_runner import (
+        preview_next_application,
+        run_next_application,
+        format_runner_result_cli,
+    )
+    if command == "preview":
+        res = preview_next_application()
+    elif command == "next":
+        if evaluate_fn is None:
+            try:
+                from .cli import _resolve_hh_evaluate, _DEFAULT_HH_CDP_URL
+                from .hh_browser_launcher import ensure_hh_browser
+                ensure_hh_browser()
+                evaluate_fn = _resolve_hh_evaluate(_DEFAULT_HH_CDP_URL, "hh.ru")
+            except Exception:
+                evaluate_fn = None
+        res = run_next_application(confirm_submit=confirm_submit, evaluate_fn=evaluate_fn)
+    else:
+        print(f"Unknown runner command: {command}", file=sys.stderr)
+        return 1
+
+    if as_json:
+        print(json.dumps(res.model_dump(), indent=2, ensure_ascii=False))
+        return 0
+
+def export_digest_cmd(
+    format_type: str = "telegram",
+    limit: int = 10,
+    min_score: float = 60.0,
+    profile_path: Optional[str] = None,
+    output_json: bool = False,
+    mark_delivered: bool = False,
+    include_legacy: bool = False,
+) -> int:
+    """Export validated vacancy digest from state.db (Stage 75, Stage 78).
+    
+    Pure read-only query against state.db by default.
+    Selects fresh undigested vacancies (or all if include_legacy=True).
+    Applies CandidateProfile hard constraints and matching score.
+    Outputs structured Markdown for Telegram @remotejobd or JSON.
+    Only marks delivered if mark_delivered=True (explicit atomic delivery).
+    """
+    try:
+        init_db()
+    except Exception as e:
+        print(f"Failed to open vacancy DB: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        if profile_path:
+            profile = load_candidate_profile(profile_path)
+        else:
+            profile = load_candidate_profile()
+    except Exception:
+        profile = None
+
+    if include_legacy:
+        rows = list_vacancies(limit=5000)
+        vacancies = [_row_to_vacancy(row) for row in rows if row]
+    else:
+        vacancies = list_undigested_vacancies(limit=5000)
+
+    matcher = JobMatcher(profile) if profile is not None else None
+    matched_candidates = []
+
+    for v in vacancies:
+        if matcher is not None:
+            m_res = matcher.match(v)
+            score = m_res.score
+            decision = m_res.decision
+            decision_class = getattr(m_res, "decision_class", "MATCH" if score >= 75 else "BORDERLINE")
+            eligibility = getattr(m_res, "eligibility", "ELIGIBLE")
+            role_family = getattr(m_res, "role_family", "OTHER")
+            role_priority = getattr(m_res, "role_priority", "P1")
+            reasons = m_res.reasons
+        else:
+            score = v.match_score if v.match_score is not None else 70.0
+            decision = v.match_decision if v.match_decision else "APPLY"
+            decision_class = "MATCH" if score >= 75 else "BORDERLINE"
+            eligibility = "ELIGIBLE"
+            role_family = "OTHER"
+            role_priority = "P1"
+            reasons = [v.match_reasons] if v.match_reasons else []
+
+        if decision in ("APPLY", "REVIEW") and score >= min_score:
+            matched_candidates.append({
+                "score": score,
+                "decision": decision,
+                "decision_class": decision_class,
+                "eligibility": eligibility,
+                "role_family": role_family,
+                "role_priority": role_priority,
+                "vacancy": v,
+                "reasons": reasons,
+            })
+
+    # Ranking priority:
+    # 1. Decision class (STRONG_MATCH > MATCH > STRETCH > BORDERLINE > REJECT)
+    # 2. Role priority (P1 > P2 > P3)
+    # 3. Score descending
+    # 4. Eligibility confidence (ELIGIBLE > BORDERLINE)
+    # 5. Recency (published_at / first_seen_at)
+    decision_class_rank = {
+        "STRONG_MATCH": 5,
+        "MATCH": 4,
+        "STRETCH": 3,
+        "BORDERLINE": 2,
+        "REJECT": 1,
+    }
+    role_priority_rank = {
+        "P1": 3,
+        "P2": 2,
+        "P3": 1,
+        "NOT_TARGET": 0,
+    }
+    eligibility_rank = {
+        "ELIGIBLE": 2,
+        "BORDERLINE": 1,
+        "INELIGIBLE": 0,
+    }
+
+    matched_candidates.sort(
+        key=lambda x: (
+            decision_class_rank.get(x["decision_class"], 0),
+            role_priority_rank.get(x.get("role_priority", "P1"), 0),
+            x["score"],
+            eligibility_rank.get(x["eligibility"], 0),
+            str(x["vacancy"].published_at or x["vacancy"].first_seen_at or "")
+        ),
+        reverse=True
+    )
+
+    # Diversity & Duplicate Role Control:
+    # - Cap max 2 per company
+    # - Cap max 4 per role family (unless score >= 90)
+    # - Deduplicate near-identical title + company
+    company_counts: Dict[str, int] = {}
+    family_counts: Dict[str, int] = {}
+    seen_normalized_keys: Set[str] = set()
+
+    top_items = []
+    for cand in matched_candidates:
+        if len(top_items) >= limit:
+            break
+        v = cand["vacancy"]
+        comp = (v.company or "").strip().lower()
+        fam = cand["role_family"]
+        norm_title = re.sub(r"[^\w\s]", "", (v.title or "").lower()).strip()
+        norm_key = f"{comp}::{norm_title}"
+
+        if norm_key in seen_normalized_keys:
+            continue
+
+        if comp and company_counts.get(comp, 0) >= 2:
+            continue
+
+        if fam and fam != "OTHER" and family_counts.get(fam, 0) >= 4 and cand["score"] < 90:
+            continue
+
+        company_counts[comp] = company_counts.get(comp, 0) + 1
+        family_counts[fam] = family_counts.get(fam, 0) + 1
+        seen_normalized_keys.add(norm_key)
+        top_items.append((cand["score"], v, cand["reasons"]))
+
+
+    formatted_items = []
+    for score, vac, reasons in top_items:
+        sal = "не указана"
+        if vac.salary_min is not None and vac.salary_max is not None:
+            curr = vac.salary_currency or "USD"
+            if vac.salary_min == vac.salary_max:
+                sal = f"${vac.salary_min:,.0f} {curr}" if curr == "USD" else f"{vac.salary_min:,.0f} {curr}"
+            else:
+                sal = f"${vac.salary_min:,.0f} - ${vac.salary_max:,.0f} {curr}" if curr == "USD" else f"{vac.salary_min:,.0f} - {vac.salary_max:,.0f} {curr}"
+        elif vac.salary_min is not None:
+            curr = vac.salary_currency or "USD"
+            sal = f"от ${vac.salary_min:,.0f} {curr}" if curr == "USD" else f"от {vac.salary_min:,.0f} {curr}"
+        elif vac.salary_max is not None:
+            curr = vac.salary_currency or "USD"
+            sal = f"до ${vac.salary_max:,.0f} {curr}" if curr == "USD" else f"до {vac.salary_max:,.0f} {curr}"
+
+        loc = vac.location or "Remote"
+        reason_text = reasons[0] if reasons else "Соответствует профилю AI / Python / Automation"
+
+        formatted_items.append({
+            "id": vac.stable_id(),
+            "title": vac.title,
+            "company": vac.company or "Компания",
+            "url": vac.job_url or vac.application_url or "",
+            "salary": sal,
+            "location": loc,
+            "score": score,
+            "reason": reason_text,
+        })
+
+    if not formatted_items:
+        post_text = "Сегодня новых подходящих вакансий не найдено — все уже обработаны."
+    else:
+        post_lines = ["🚀 **Дайджест новых удалённых вакансий** (AI Automation / Python / n8n)\n"]
+        for idx, item in enumerate(formatted_items, 1):
+            post_lines.append(f"**🎯 {item['title']}**")
+            post_lines.append(f"🏢 Company: {item['company']}")
+            post_lines.append(f"💰 Salary: {item['salary']}")
+            post_lines.append(f"📍 Location: {item['location']}")
+            post_lines.append(f"🔗 URL: {item['url']}")
+            post_lines.append(f"📝 Why it fits: {item['reason']}")
+            post_lines.append("")
+        post_text = "\n".join(post_lines).strip()
+
+    # If explicit atomic delivery was requested, record delivery in database
+    if mark_delivered and formatted_items:
+        mark_digest_delivered([it["id"] for it in formatted_items])
+
+    if output_json or format_type == "json":
+        out = {
+            "telegram_post": post_text,
+            "new_vacancies_data": formatted_items,
+            "count": len(formatted_items),
+        }
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+    else:
+        print(post_text)
+
+    return 0
+
+
+def digest_attempts_cmd(
+    action: str = "list",
+    batch_key: Optional[str] = None,
+    new_status: Optional[str] = None,
+    limit: int = 50,
+    output_json: bool = False,
+) -> int:
+    """Inspect or reconcile digest delivery attempts (Stage 80/81)."""
+    try:
+        init_db()
+    except Exception as e:
+        print(f"Failed to open DB: {e}", file=sys.stderr)
+        return 1
+
+    if action == "list" or not action:
+        attempts = list_digest_attempts(limit=limit)
+        if output_json:
+            print(json.dumps({"attempts": attempts, "count": len(attempts)}, ensure_ascii=False, indent=2))
+        else:
+            if not attempts:
+                print("No digest delivery attempts recorded.")
+            else:
+                print(f"=== DIGEST DELIVERY ATTEMPTS (Total: {len(attempts)}) ===")
+                for att in attempts:
+                    retry_str = "[RETRY PERMITTED]" if att["retry_permitted"] else "[NO AUTO RETRY]"
+                    stale_str = " [STALE]" if att.get("stale") else ""
+                    reconcile_str = " [ACTION REQUIRED]" if att.get("requires_reconciliation") else ""
+                    print(f"Batch: {att['batch_key']} | Persisted: {att['status']} | Effective: {att['effective_status']}{stale_str}{reconcile_str}")
+                    print(f"  Age: {att.get('age_minutes', 0)} min | Created: {att.get('created_at')} | Updated: {att.get('last_updated_at')}")
+                    print(f"  Chat: {att['chat_id']} | Vacancies: {att['vacancy_count']} | Retry: {retry_str}")
+                    if att["vacancies"]:
+                        print(f"  IDs: {', '.join(att['vacancies'][:5])}{'...' if len(att['vacancies']) > 5 else ''}")
+                    print("-" * 60)
+        return 0
+
+    elif action == "recover":
+        if not batch_key or not new_status:
+            print("Error: --batch and --status [DELIVERED|FAILED|AMBIGUOUS] are required for recover.", file=sys.stderr)
+            return 1
+        if new_status == "FAILED":
+            print("WARNING: Marking an ambiguous/stale batch FAILED permits Telegram resend.")
+            print("Only do this after confirming the previous message was not delivered.")
+        try:
+            reconcile_digest_attempt(batch_key, new_status)
+            print(f"[SUCCESS] Reconciled batch '{batch_key}' and associated vacancies to status '{new_status}'.")
+            return 0
+        except KeyError as k_err:
+            print(f"[ERROR] {k_err}", file=sys.stderr)
+            return 1
+        except Exception as err:
+            print(f"[ERROR] Failed to reconcile batch '{batch_key}': {err}", file=sys.stderr)
+            return 1
+    else:
+        print(f"Unknown action: {action}", file=sys.stderr)
+        return 1
+
+
+def production_health_cmd(output_json: bool = False) -> int:
+    """Inspect production state and evaluate overall operational health (Stage 83)."""
+    from .db import get_production_health
+    res = get_production_health()
+    
+    if output_json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+    else:
+        status_color = res["health"]
+        print(f"=== PRODUCTION PIPELINE HEALTH: {status_color} ===")
+        print(f"Database Path: {res['db_path']} (Accessible: {res['db_accessible']})")
+        print(f"Evaluation Timestamp: {res['evaluation_timestamp']}")
+        print("-" * 60)
+        m = res["metrics"]
+        print(f"Delivery Records Total: {m['total_delivery_records']} (Batches: {m['digest_batch_records']}, Vacancies: {m['job_digest_records']})")
+        print(f"Attempt States: Delivered={m['delivered_count']}, Attempting={m['attempting_count']}, Stale={m['stale_count']}, Ambiguous={m['ambiguous_count']}, Failed={m['failed_count']}")
+        print(f"Duplicate Delivery Keys: {m['duplicate_delivery_keys_count']}")
+        print(f"Consecutive Failures: {m['consecutive_failures']}")
+        print(f"Last Attempt: {m['last_digest_attempt_at'] or 'Never'}")
+        print(f"Last Successful Delivery: {m['last_successful_digest_at'] or 'Never'}")
+        print(f"Pending Undigested Vacancies: {m['pending_undigested_vacancies_count']}")
+        print("-" * 60)
+        if res["alerts"]:
+            print(f"ACTIVE ALERTS ({len(res['alerts'])}):")
+            for alt in res["alerts"]:
+                print(f"  [{alt['severity']}] {alt['message']}")
+        else:
+            print("Active Alerts: None (All systems operational)")
+        print("=" * 60)
+        
+    return 0 if res["health"] in ("HEALTHY", "DEGRADED") else 1
+
+
 def main() -> int:
     # Handle direct `review <id>` as `review show <id>`
     if len(sys.argv) >= 3 and sys.argv[1] == "review" and sys.argv[2] not in ["list", "show", "approve", "reject", "-h", "--help"]:
@@ -3284,6 +4283,155 @@ def main() -> int:
     ui_parser.add_argument("--host", default="127.0.0.1", help="Host (default: 127.0.0.1)")
     ui_parser.add_argument("--port", type=int, default=8000, help="Port (default: 8000)")
 
+    # Stage 31 — Controlled Auto-Apply Watcher
+    watch_parser = subparsers.add_parser("watch", help="Controlled application watcher (polls sources, filters, prepares, stops at review gate)")
+    watch_parser.add_argument("--sources", nargs="*", default=list(SOURCES.keys()), help="Sources to poll")
+    watch_parser.add_argument("--interval", type=int, default=60, help="Polling interval in seconds (default: 60)")
+    watch_parser.add_argument("--once", action="store_true", help="Run a single poll cycle and exit")
+    watch_parser.add_argument("--limit", type=int, default=20, help="Batch limit per cycle")
+    watch_parser.add_argument("--country", type=str, default="TH", help="Candidate country code (default: TH)")
+    watch_parser.add_argument("--profile", type=str, default=None, help="Path to candidate_profile.json")
+    watch_parser.add_argument("--json", action="store_true", help="Output cycle result as JSON")
+
+    # Stage 32 / 33 — HH Message Watcher
+    msg_watch_parser = subparsers.add_parser("message-watch", help="Controlled HH message watcher (polls conversations, detects new incoming messages, prepares replies, stops at human review)")
+    msg_watch_parser.add_argument("--cdp-url", default=None, help="CDP endpoint (default: HH_CDP_URL or 127.0.0.1:9222)")
+    msg_watch_parser.add_argument("--url-substring", default=None, help="Page-tab URL substring to attach to (default: hh.ru)")
+    msg_watch_parser.add_argument("--interval", type=int, default=60, help="Polling interval in seconds (default: 60)")
+    msg_watch_parser.add_argument("--once", action="store_true", help="Run a single poll cycle and exit")
+    msg_watch_parser.add_argument("--continuous", action="store_true", help="Run continuous polling watcher")
+    msg_watch_parser.add_argument("--limit", type=int, default=20, help="Batch limit per cycle")
+    msg_watch_parser.add_argument("--iterations", type=int, default=None, help="Maximum iterations to run in continuous mode")
+    msg_watch_parser.add_argument("--profile", type=str, default=None, help="Path to candidate_profile.json")
+    msg_watch_parser.add_argument("--json", action="store_true", help="Output cycle result as JSON")
+
+    # Stage 34 — HH Screening Questionnaire (Human-in-the-Loop)
+    quest_parser = subparsers.add_parser("questionnaire", help="HH Screening Questionnaire (Human-in-the-Loop review and answers)")
+    quest_sub = quest_parser.add_subparsers(dest="questionnaire_command")
+    quest_list_p = quest_sub.add_parser("list", help="List stored questionnaires")
+    quest_list_p.add_argument("--status", type=str, default=None, help="Filter by status (NEEDS_HUMAN_REVIEW, READY_TO_SUBMIT, SUBMITTED, BLOCKED)")
+    quest_list_p.add_argument("--limit", type=int, default=50, help="Limit results")
+    
+    quest_show_p = quest_sub.add_parser("show", help="Show questionnaire and required questions")
+    quest_show_p.add_argument("target_id", type=str, help="Questionnaire ID, Vacancy ID, or Conversation ID")
+    
+    quest_ans_p = quest_sub.add_parser("answer", help="Provide human answers for questionnaire questions")
+    quest_ans_p.add_argument("target_id", type=str, help="Questionnaire ID, Vacancy ID, or Conversation ID")
+    quest_ans_p.add_argument("--answers", type=str, default=None, help="JSON string of answers mapping question_id -> answer")
+    quest_ans_p.add_argument("--answer", action="append", default=[], help="Single answer in format key=value (can be repeated)")
+    
+    quest_sug_p = quest_sub.add_parser("suggest", help="Generate tailored answer suggestions from resume and vacancy profile")
+    quest_sug_p.add_argument("target_id", type=str, help="Questionnaire ID, Vacancy ID, or Conversation ID")
+    quest_sug_p.add_argument("--apply", action="store_true", help="Automatically apply validated suggestions to the questionnaire")
+
+    quest_audit_p = quest_sub.add_parser("audit", help="Run a pre-submit audit on questionnaire answers against candidate profile")
+    quest_audit_p.add_argument("target_id", type=str, help="Questionnaire ID, Vacancy ID, or Conversation ID")
+
+    quest_sub_p = quest_sub.add_parser("submit", help="Submit confirmed questionnaire application")
+    quest_sub_p.add_argument("target_id", type=str, help="Questionnaire ID, Vacancy ID, or Conversation ID")
+    quest_sub_p.add_argument("--confirm-submit", action="store_true", help="Explicit human confirmation to proceed with submit")
+    quest_sub_p.add_argument("--answers", type=str, default=None, help="Optional JSON string of answers")
+
+    # Stage 35 — HH Application State Machine & Orchestrator
+    single_app_parser = subparsers.add_parser("application", help="HH Application state machine and lifecycle (Stage 35)")
+    single_app_sub = single_app_parser.add_subparsers(dest="single_app_command")
+    
+    single_app_list_p = single_app_sub.add_parser("list", help="List stored HH applications")
+    single_app_list_p.add_argument("--state", type=str, default=None, help="Filter by state (NEW, MESSAGE_DETECTED, ANALYZED, DRAFT_READY, QUESTIONNAIRE_REQUIRED, NEEDS_HUMAN_REVIEW, READY_TO_SUBMIT, SUBMITTED, BLOCKED, FAILED, STALE)")
+    single_app_list_p.add_argument("--limit", type=int, default=50, help="Limit results")
+    
+    single_app_show_p = single_app_sub.add_parser("show", help="Show HH application state and action items")
+    single_app_show_p.add_argument("target_id", type=str, help="Application ID, Conversation ID, or Vacancy ID")
+    
+    single_app_trans_p = single_app_sub.add_parser("transitions", help="Show chronological state transition audit trail")
+    single_app_trans_p.add_argument("target_id", type=str, help="Application ID, Conversation ID, or Vacancy ID")
+    single_app_trans_p.add_argument("--limit", type=int, default=100, help="Limit history records")
+    
+    single_app_status_p = single_app_sub.add_parser("status", help="Show HH application status")
+    single_app_status_p.add_argument("target_id", type=str, help="Application ID, Conversation ID, or Vacancy ID")
+
+    single_app_audit_p = single_app_sub.add_parser("audit", help="Run a pre-submit audit on application questionnaire answers")
+    single_app_audit_p.add_argument("target_id", type=str, help="Application ID, Conversation ID, or Vacancy ID")
+
+    single_app_submit_p = single_app_sub.add_parser("submit", help="Submit confirmed application to HH with safety gate")
+    single_app_submit_p.add_argument("target_id", type=str, help="Application ID, Conversation ID, or Vacancy ID")
+    single_app_submit_p.add_argument("--confirm-submit", action="store_true", help="Explicit human confirmation to proceed with submit")
+    single_app_submit_p.add_argument("--answers", type=str, default=None, help="Optional JSON string of answers")
+
+    single_app_verify_p = single_app_sub.add_parser("verify-submit", help="Verify factual post-submit status of application on HH (read-only)")
+    single_app_verify_p.add_argument("target_id", type=str, help="Application ID, Conversation ID, or Vacancy ID")
+
+    single_app_queue_p = single_app_sub.add_parser("queue", help="Show controlled HH application queue")
+    single_app_queue_p.add_argument("--json", dest="as_json", action="store_true", help="Output queue in machine-readable JSON")
+    single_app_queue_p.add_argument("--ready", action="store_true", help="Show only applications ready to submit")
+    single_app_queue_p.add_argument("--human-review", action="store_true", help="Show only applications requiring human review")
+
+    single_app_runner_p = single_app_sub.add_parser("runner", help="Controlled batch application execution runner (Stage 46)")
+    runner_sub = single_app_runner_p.add_subparsers(dest="runner_command")
+    runner_prev_p = runner_sub.add_parser("preview", help="Preview the next READY_TO_SUBMIT application in the queue")
+    runner_prev_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
+    runner_next_p = runner_sub.add_parser("next", help="Execute pre-checks for the next application without submitting (or submit with --confirm-submit)")
+    runner_next_p.add_argument("--confirm-submit", action="store_true", help="Explicit human confirmation to proceed with submit")
+    runner_next_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
+
+    # Stage 51 — Autonomous Job Application Agent
+    auto_parser = subparsers.add_parser("autonomous", help="Fully Autonomous Job Application Agent (Stage 51)")
+    auto_sub = auto_parser.add_subparsers(dest="autonomous_command")
+
+    auto_once_p = auto_sub.add_parser("once", help="Run a single complete autonomous cycle")
+    auto_once_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
+    auto_once_p.add_argument("--limit", type=int, default=5, help="Max applications per cycle")
+
+    auto_start_p = auto_sub.add_parser("start", help="Start recurring autonomous agent daemon")
+    auto_start_p.add_argument("--interval", type=int, default=60, help="Poll interval in seconds (default: 60)")
+
+    auto_status_p = auto_sub.add_parser("status", help="Show autonomous agent operations status and history")
+    auto_status_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
+
+    auto_notif_p = auto_sub.add_parser("notifications", help="List recent high-priority autonomous notifications")
+    auto_notif_p.add_argument("--limit", type=int, default=20, help="Max records")
+    auto_notif_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
+
+    auto_conv_p = auto_sub.add_parser("conversations", help="Show full conversation and auto-reply audit trail (Stage 52)")
+    auto_conv_p.add_argument("--limit", type=int, default=50, help="Max records (default: 50)")
+    auto_conv_p.add_argument("--application-id", type=str, default=None, help="Filter by application ID")
+    auto_conv_p.add_argument("--conversation-id", type=str, default=None, help="Filter by conversation ID")
+    auto_conv_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
+
+    auto_replies_p = auto_sub.add_parser("replies", help="Show autonomous recruiter replies sent (Stage 53)")
+    auto_replies_p.add_argument("--limit", type=int, default=50, help="Max records (default: 50)")
+    auto_replies_p.add_argument("--application-id", type=str, default=None, help="Filter by application ID")
+    auto_replies_p.add_argument("--conversation-id", type=str, default=None, help="Filter by conversation ID")
+    auto_replies_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
+
+    tg_parser = subparsers.add_parser("telegram", help="Production Telegram Bot management (Stage 56)")
+    tg_sub = tg_parser.add_subparsers(dest="telegram_command", help="Telegram subcommands")
+    tg_status_p = tg_sub.add_parser("status", help="Check Telegram Bot configuration and connectivity")
+    tg_status_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
+    tg_test_p = tg_sub.add_parser("test", help="Send a test notification to target chat")
+    tg_test_p.add_argument("--message", type=str, default="Production Telegram Notifier connection test.", help="Test message")
+
+    digest_parser = subparsers.add_parser("export-digest", help="Export validated vacancy digest from state.db (Stage 75, Stage 78)")
+    digest_parser.add_argument("--format", dest="format_type", choices=["telegram", "json", "markdown"], default="telegram", help="Output format (default: telegram)")
+    digest_parser.add_argument("--limit", type=int, default=10, help="Maximum vacancies in digest (default: 10)")
+    digest_parser.add_argument("--min-score", type=float, default=60.0, help="Minimum match score threshold (default: 60.0)")
+    digest_parser.add_argument("--profile", type=str, default=None, help="Path to candidate_profile.json")
+    digest_parser.add_argument("--json", dest="as_json", action="store_true", help="Output machine-readable JSON structure")
+    digest_parser.add_argument("--mark-delivered", dest="mark_delivered", action="store_true", help="Mark exported vacancies as delivered in database")
+    digest_parser.add_argument("--include-legacy", dest="include_legacy", action="store_true", help="Include legacy historical vacancies")
+
+    digest_att_parser = subparsers.add_parser("digest-attempts", help="Inspect and reconcile digest delivery attempts (Stage 80)")
+    digest_att_sub = digest_att_parser.add_subparsers(dest="attempts_action", help="Digest attempts action")
+    digest_att_list_p = digest_att_sub.add_parser("list", help="List digest delivery attempts")
+    digest_att_list_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
+    digest_att_list_p.add_argument("--limit", type=int, default=50, help="Maximum attempts to list")
+    digest_att_rec_p = digest_att_sub.add_parser("recover", help="Reconcile an unresolved digest attempt")
+    digest_att_rec_p.add_argument("--batch", type=str, required=True, help="Batch key to reconcile")
+    digest_att_rec_p.add_argument("--status", choices=["DELIVERED", "FAILED", "AMBIGUOUS"], required=True, help="Target status")
+
+    health_parser = subparsers.add_parser("production-health", help="Inspect production state and evaluate operational health (Stage 83)")
+    health_parser.add_argument("--json", dest="as_json", action="store_true", help="Output machine-readable JSON structure")
+
     args = None
     try:
         args = parser.parse_args()
@@ -3487,6 +4635,146 @@ def main() -> int:
         return system_info()
     elif args.command == "ui":
         return ui_cmd(args.host, args.port)
+    elif args.command == "watch":
+        return watch_cmd(
+            sources=args.sources,
+            interval=args.interval,
+            once=args.once,
+            limit=args.limit,
+            candidate_country=args.country,
+            profile_path=args.profile,
+            output_json=args.json,
+        )
+    elif args.command == "message-watch":
+        return message_watch_cmd(
+            cdp_url=args.cdp_url,
+            url_substring=args.url_substring,
+            interval=args.interval,
+            once=args.once,
+            continuous=args.continuous,
+            limit=args.limit,
+            iterations=args.iterations,
+            profile_path=args.profile,
+            output_json=args.json,
+        )
+    elif args.command == "questionnaire":
+        if args.questionnaire_command == "list":
+            return questionnaire_list_cmd(status=args.status, limit=args.limit)
+        elif args.questionnaire_command == "show":
+            return questionnaire_show_cmd(args.target_id)
+        elif args.questionnaire_command == "answer":
+            return questionnaire_answer_cmd(
+                args.target_id,
+                answers_json=args.answers,
+                single_answers=args.answer,
+            )
+        elif args.questionnaire_command == "suggest":
+            return questionnaire_suggest_cmd(args.target_id, apply_answers=args.apply)
+        elif args.questionnaire_command == "audit":
+            return questionnaire_audit_cmd(args.target_id)
+        elif args.questionnaire_command == "submit":
+            return questionnaire_submit_cmd(
+                args.target_id,
+                confirm_submit=args.confirm_submit,
+                answers_json=args.answers,
+            )
+        else:
+            quest_parser.print_help()
+            return 1
+    elif args.command == "application":
+        if args.single_app_command == "list":
+            return application_list_cmd(state=args.state, limit=args.limit)
+        elif args.single_app_command == "show":
+            return application_show_cmd(args.target_id)
+        elif args.single_app_command == "transitions":
+            return application_transitions_cmd(args.target_id, limit=args.limit)
+        elif args.single_app_command == "status":
+            return application_status_cmd(args.target_id)
+        elif args.single_app_command == "audit":
+            return application_audit_cmd(args.target_id)
+        elif args.single_app_command == "submit":
+            return application_submit_cmd(
+                args.target_id,
+                confirm_submit=args.confirm_submit,
+                answers_json=args.answers,
+            )
+        elif args.single_app_command == "verify-submit":
+            return application_verify_submit_cmd(args.target_id)
+        elif args.single_app_command == "queue":
+            return application_queue_cmd(
+                as_json=getattr(args, "as_json", False),
+                ready_only=getattr(args, "ready", False),
+                human_review_only=getattr(args, "human_review", False),
+            )
+        elif args.single_app_command == "runner":
+            if not getattr(args, "runner_command", None):
+                single_app_runner_p.print_help()
+                return 1
+            return application_runner_cmd(
+                command=args.runner_command,
+                confirm_submit=getattr(args, "confirm_submit", False),
+                as_json=getattr(args, "as_json", False),
+            )
+        else:
+            single_app_parser.print_help()
+            return 1
+    elif args.command == "autonomous":
+        if args.autonomous_command == "once":
+            return autonomous_once_cmd(as_json=getattr(args, "as_json", False), limit=getattr(args, "limit", 5))
+        elif args.autonomous_command == "start":
+            return autonomous_start_cmd(interval=getattr(args, "interval", 60))
+        elif args.autonomous_command == "status":
+            return autonomous_status_cmd(as_json=getattr(args, "as_json", False))
+        elif args.autonomous_command == "notifications":
+            return autonomous_notifications_cmd(limit=getattr(args, "limit", 20), as_json=getattr(args, "as_json", False))
+        elif args.autonomous_command == "conversations":
+            return autonomous_conversations_cmd(
+                limit=getattr(args, "limit", 50),
+                application_id=getattr(args, "application_id", None),
+                conversation_id=getattr(args, "conversation_id", None),
+                as_json=getattr(args, "as_json", False),
+            )
+        elif args.autonomous_command == "replies":
+            return autonomous_replies_cmd(
+                limit=getattr(args, "limit", 50),
+                application_id=getattr(args, "application_id", None),
+                conversation_id=getattr(args, "conversation_id", None),
+                as_json=getattr(args, "as_json", False),
+            )
+        else:
+            auto_parser.print_help()
+            return 1
+    elif args.command == "telegram":
+        if args.telegram_command == "status":
+            return telegram_status_cmd(as_json=getattr(args, "as_json", False))
+        elif args.telegram_command == "test":
+            return telegram_test_cmd(message=getattr(args, "message", "Test"))
+        else:
+            tg_parser.print_help()
+            return 1
+    elif args.command == "export-digest":
+        return export_digest_cmd(
+            format_type=getattr(args, "format_type", "telegram"),
+            limit=getattr(args, "limit", 10),
+            min_score=getattr(args, "min_score", 60.0),
+            profile_path=getattr(args, "profile", None),
+            output_json=getattr(args, "as_json", False),
+            mark_delivered=getattr(args, "mark_delivered", False),
+            include_legacy=getattr(args, "include_legacy", False),
+        )
+    elif args.command == "digest-attempts":
+        action = getattr(args, "attempts_action", "list") or "list"
+        return digest_attempts_cmd(
+            action=action,
+            batch_key=getattr(args, "batch", None),
+            new_status=getattr(args, "status", None),
+            limit=getattr(args, "limit", 50),
+            output_json=getattr(args, "as_json", False),
+        )
+    elif args.command == "production-health":
+        return production_health_cmd(
+            output_json=getattr(args, "as_json", False),
+        )
     else:
         parser.print_help()
         return 1
@@ -3937,5 +5225,285 @@ def queue_duplicates() -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Stage 51 — Autonomous Job Application Agent Commands
+# ---------------------------------------------------------------------------
+
+def autonomous_once_cmd(as_json: bool = False, limit: int = 5) -> int:
+    """Execute a single complete autonomous cycle."""
+    from .hh_autonomous_agent import AutonomousConfig, run_autonomous_cycle
+    import json
+    cfg = AutonomousConfig(max_applications_per_cycle=limit)
+    res = run_autonomous_cycle(config=cfg)
+
+    if as_json:
+        print(json.dumps(res.model_dump(), indent=2, ensure_ascii=False))
+        return 0 if res.status == "SUCCESS" else 1
+
+    print("=" * 60)
+    print("      STAGE 51 FULLY AUTONOMOUS JOB AGENT CYCLE       ")
+    print("=" * 60)
+    print(f"Status:             {res.status}")
+    print(f"Started:            {res.started_at}")
+    print(f"Completed:          {res.completed_at}")
+    print("-" * 60)
+    print(f"Discovered:         {res.discovered_count}")
+    print(f"Matched:            {res.matched_count}")
+    print(f"Applied:            {res.applied_count}")
+    print(f"Verified:           {res.verified_count}")
+    print(f"Messages checked:   {res.messages_checked}")
+    print(f"Auto-replies sent:  {res.auto_replies_count}")
+    print(f"Interviews found:   {res.interviews_detected}")
+    print(f"Rejections:         {res.rejections_count}")
+    print(f"Unanswered (held):  {res.unanswered_questions_count}")
+    print("-" * 60)
+    print(f"Summary:            {res.summary}")
+    print("=" * 60)
+    return 0 if res.status == "SUCCESS" else 1
+
+
+def autonomous_start_cmd(interval: int = 60) -> int:
+    """Start continuous autonomous agent loop."""
+    from .hh_autonomous_agent import AutonomousConfig, start_autonomous_daemon
+    cfg = AutonomousConfig(poll_interval_seconds=interval)
+    start_autonomous_daemon(config=cfg)
+    return 0
+
+
+def autonomous_status_cmd(as_json: bool = False) -> int:
+    """Show autonomous agent status, recent cycles, and interview invites."""
+    import json
+    from . import db
+    init_db()
+    cycles = db.list_autonomous_cycle_runs(limit=5)
+    interviews = db.list_interview_events(limit=10)
+    notifs = db.list_autonomous_notifications(limit=10)
+
+    if as_json:
+        out = {
+            "recent_cycles": cycles,
+            "interview_events": interviews,
+            "notifications": notifs,
+        }
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        return 0
+
+    print("=" * 70)
+    print("             AUTONOMOUS JOB AGENT STATUS & HISTORY            ")
+    print("=" * 70)
+    print(f"Total cycles recorded: {len(cycles)}")
+    print(f"Interview invitations: {len(interviews)}")
+    print(f"Pending notifications: {len(notifs)}")
+    print("-" * 70)
+    
+    if interviews:
+        print("\n📢 DETECTED INTERVIEW INVITATIONS:")
+        for iv in interviews:
+            print(f"  • [{iv['detected_at']}] {iv['company']} — {iv['vacancy_title']}")
+            print(f"    Message: {iv['invitation_text'][:100]}...")
+            if iv['invitation_url']:
+                print(f"    Link: {iv['invitation_url']}")
+            print()
+    else:
+        print("\nNo interview invitations recorded yet.")
+
+    if cycles:
+        print("\n🔄 RECENT AUTONOMOUS RUNS:")
+        for c in cycles:
+            print(f"  • Run #{c['id']} [{c['status']}] {c['started_at']}")
+            print(f"    Discovered: {c['discovered_count']} | Applied: {c['applied_count']} | Verified: {c['verified_count']} | Interviews: {c['interviews_detected']}")
+    print("=" * 70)
+    return 0
+
+
+def autonomous_notifications_cmd(limit: int = 20, as_json: bool = False) -> int:
+    """List recent high-priority notifications."""
+    import json
+    from . import db
+    init_db()
+    notifs = db.list_autonomous_notifications(limit=limit)
+
+    if as_json:
+        print(json.dumps(notifs, indent=2, ensure_ascii=False))
+        return 0
+
+    print("=" * 70)
+    print("                  HIGH-PRIORITY NOTIFICATIONS                 ")
+    print("=" * 70)
+    if not notifs:
+        print("No active notifications.")
+    else:
+        for n in notifs:
+            print(f"[{n['priority']}] {n['title']} ({n['created_at']})")
+            print(f"  Message: {n['message']}")
+            if n.get("action_required"):
+                print(f"  Action:  {n['action_required']}")
+            if n.get("vacancy_url"):
+                print(f"  URL:     {n['vacancy_url']}")
+            print("-" * 70)
+    return 0
+
+
+def autonomous_conversations_cmd(
+    limit: int = 50,
+    application_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    as_json: bool = False,
+) -> int:
+    """Show full conversation and auto-reply audit trail."""
+    import json
+    from . import db
+    init_db()
+    audits = db.list_conversation_audits(
+        application_id=application_id,
+        conversation_id=conversation_id,
+        limit=limit,
+    )
+
+    if as_json:
+        print(json.dumps(audits, indent=2, ensure_ascii=False))
+        return 0
+
+    print("=" * 70)
+    print("                 AUTONOMOUS CONVERSATION AUDIT                ")
+    print("=" * 70)
+    if not audits:
+        print("No conversation audits found matching the criteria.")
+        print("=" * 70)
+        return 0
+
+    for a in audits:
+        print(f"--- AUTONOMOUS CONVERSATION #{a['id']} ---")
+        print(f"Company:        {a['employer']}")
+        if a.get('vacancy_id'):
+            print(f"Vacancy:        {a['vacancy_id']}")
+        if a.get('application_id'):
+            print(f"Application:    {a['application_id']}")
+        print(f"Conversation:   {a['conversation_id']}")
+        print(f"Timestamp:      {a.get('incoming_message_timestamp') or a['created_at']}")
+        print()
+        print("Employer:")
+        print(f"  {a['incoming_message']}")
+        print()
+        print(f"Classification: {a['message_classification']}")
+        if a.get('generated_reply'):
+            print("Agent reply:")
+            for line in a['generated_reply'].splitlines():
+                print(f"  {line}")
+            print()
+        print(f"Status:         {a['status']}")
+        if a.get('decision_reason'):
+            print(f"Reason:         {a['decision_reason']}")
+        if a.get('profile_facts_used'):
+            print(f"Profile Facts:  {a['profile_facts_used']}")
+        if a.get('error'):
+            print(f"Error:          {a['error']}")
+        print("=" * 70)
+    return 0
+
+
+def autonomous_replies_cmd(
+    limit: int = 50,
+    application_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    as_json: bool = False,
+) -> int:
+    """Show autonomous recruiter replies sent with full visibility (Stage 53)."""
+    import json
+    from . import db
+    init_db()
+    audits = db.list_conversation_audits(
+        application_id=application_id,
+        conversation_id=conversation_id,
+        status="SENT",
+        limit=limit,
+    )
+
+    if as_json:
+        print(json.dumps(audits, indent=2, ensure_ascii=False))
+        return 0
+
+    print("=" * 70)
+    print("                 AUTONOMOUS RECRUITER REPLIES SENT                ")
+    print("=" * 70)
+    if not audits:
+        print("No sent recruiter replies found matching the criteria.")
+        print("=" * 70)
+        return 0
+
+    for a in audits:
+        print(f"--- RECRUITER REPLY #{a['id']} ---")
+        print(f"Company:        {a['employer']}")
+        if a.get('vacancy_id'):
+            print(f"Vacancy:        {a['vacancy_id']}")
+        if a.get('application_id'):
+            print(f"Application:    {a['application_id']}")
+        print(f"Conversation:   {a['conversation_id']}")
+        print(f"Sent At:        {a.get('sent_at') or a['created_at']}")
+        print()
+        print("Employer:")
+        print(f"  {a['incoming_message']}")
+        print()
+        print("My reply (SENT):")
+        for line in (a.get('sent_reply') or a.get('generated_reply') or '').splitlines():
+            print(f"  {line}")
+        print()
+        print(f"Status:         {a['status']}")
+        if a.get('decision_reason'):
+            print(f"Reason:         {a['decision_reason']}")
+        if a.get('profile_facts_used'):
+            print(f"Profile Facts:  {a['profile_facts_used']}")
+        print("=" * 70)
+    return 0
+
+
+def telegram_status_cmd(as_json: bool = False) -> int:
+    """Check Telegram Bot configuration and API reachability."""
+    from .telegram_notifier import get_telegram_notifier
+    notifier = get_telegram_notifier()
+    configured = notifier.is_configured()
+
+    status_data = {
+        "configured": configured,
+        "bot_token_present": bool(notifier.bot_token),
+        "chat_id_present": bool(notifier.chat_id),
+        "target_chat_id": notifier.chat_id if notifier.chat_id else None,
+    }
+
+    if as_json:
+        print(json.dumps(status_data, indent=2, ensure_ascii=False))
+        return 0
+
+    print("=" * 60)
+    print("           STAGE 56 TELEGRAM BOT STATUS           ")
+    print("=" * 60)
+    print(f"Configured:          {'YES' if configured else 'NO'}")
+    print(f"Bot Token Present:   {'YES' if notifier.bot_token else 'NO'}")
+    print(f"Target Chat ID:      {notifier.chat_id or 'Not set'}")
+    if not configured:
+        print("\nNote: Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env file to enable.")
+    print("=" * 60)
+    return 0
+
+
+def telegram_test_cmd(message: str) -> int:
+    """Send a test message via TelegramNotifier to verify connectivity."""
+    from .telegram_notifier import get_telegram_notifier
+    notifier = get_telegram_notifier()
+    if not notifier.is_configured():
+        print("Error: Telegram Bot Token or Chat ID not configured in .env file.", file=sys.stderr)
+        return 1
+
+    print(f"Sending test notification to chat {notifier.chat_id}...")
+    res = notifier.send_message(text=f"🤖 *JOB AGENT TEST NOTIFICATION*\n\n{message}")
+    if res.get("ok"):
+        print("✅ Telegram message delivered successfully!")
+        return 0
+    else:
+        print(f"❌ Failed to deliver message: {res.get('error')}", file=sys.stderr)
+        return 1
+
+
 if __name__ == "__main__":
     sys.exit(main())
+

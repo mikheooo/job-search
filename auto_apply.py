@@ -1,8 +1,29 @@
 import json
 import time
 import sys
+import os
 import subprocess
 from datetime import datetime
+
+# ==============================================================================
+# STAGE 75 SAFETY GATE: LEGACY AUTO_APPLY IS DEPRECATED & LOCKED
+# ==============================================================================
+# All HeadHunter applications MUST flow through canonical Stage 17-51 architecture:
+# matcher.py -> candidate_profile.json -> truth-only Q&A -> prefill_orchestrate ->
+# application_review_gate.py -> hh_controlled_submit.py -> hh_post_submit_verifier.py.
+# Direct un-gated application scripts are strictly forbidden in production.
+# ==============================================================================
+
+if not os.environ.get("LEGACY_AUTO_APPLY_OVERRIDE"):
+    print(
+        "[SAFETY LOCKOUT] 'auto_apply.py' is deprecated and blocked from direct execution.\n"
+        "To run applications with defense-in-depth safety gates and post-verification, use:\n"
+        "  - Single application: python -m ai_assistant.cli submit <vacancy_id> --confirm-submit\n"
+        "  - Batch runner:       python -m ai_assistant.cli application runner next --confirm-submit\n"
+        "  - Autonomous agent:   python -m ai_assistant.cli autonomous once\n",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 try:
     from playwright.sync_api import sync_playwright

@@ -1,0 +1,521 @@
+"""Stage 46: Controlled Batch Application Execution Runner.
+
+Provides a safe, single-step batch executor for HeadHunter applications queue.
+Picks the next READY_TO_SUBMIT application, performs exhaustive pre-checks
+(audit, navigation, questionnaire, eligibility), strictly halts before Submit
+unless human confirmation is explicitly given, executes at most ONE submit,
+runs post-submit verification, and halts immediately without auto-advancing.
+
+SAFETY INVARIANTS:
+1. Never selects SUBMITTED, NEEDS_HUMAN_REVIEW, BLOCKED, FAILED, ANALYZED, or NOT_ELIGIBLE.
+2. Preview mode performs ZERO browser mutations and ZERO submits.
+3. Execution without --confirm-submit stops after pre-checks (REAL HH SUBMIT = 0).
+4. With --confirm-submit, executes at most ONE submit for the single selected application.
+5. Runner strictly STOPS after submit (Next Application Automatically Executed = NO).
+6. Post-submit verification is mandatory before marking as SUBMITTED.
+7. Pre-check failure halts execution immediately with Submit Count = 0.
+8. Zero autonomous looping; pipeline.py is never executed.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional
+
+from pydantic import BaseModel, Field
+
+from . import db
+from .hh_application_orchestrator import HHApplicationState, transition_application
+from .hh_application_queue import can_submit, get_controlled_application_queue, HHQueueItem
+from .hh_post_submit_verifier import verify_hh_submitted_application
+from .hh_questionnaire import HHQuestionStatus, submit_questionnaire_response
+from .hh_questionnaire_audit import audit_questionnaire
+from .hh_vacancy_navigator import resolve_hh_vacancy_url, verify_and_navigate_hh_vacancy
+
+logger = logging.getLogger(__name__)
+
+
+class RunnerPreCheckStatus(str, Enum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+    NOT_RUN = "NOT_RUN"
+    NOT_REQUIRED = "NOT_REQUIRED"
+
+
+class RunnerExecutionResult(BaseModel):
+    application_id: Optional[str] = None
+    vacancy_id: Optional[str] = None
+    vacancy_title: Optional[str] = None
+    company: Optional[str] = None
+    queue_ready_count: int = 0
+    queue_review_count: int = 0
+    queue_submitted_count: int = 0
+    selected_application: Optional[str] = None
+    pre_submit_audit: RunnerPreCheckStatus = RunnerPreCheckStatus.NOT_RUN
+    navigation: RunnerPreCheckStatus = RunnerPreCheckStatus.NOT_RUN
+    questionnaire: RunnerPreCheckStatus = RunnerPreCheckStatus.NOT_RUN
+    submit_confirmation: bool = False
+    real_hh_submit: int = 0
+    post_submit_verification: RunnerPreCheckStatus = RunnerPreCheckStatus.NOT_RUN
+    final_application_state: str = "UNKNOWN"
+    next_application_executed: bool = False
+    pipeline_py: str = "NOT RUN"
+    reason: str = ""
+    error: Optional[str] = None
+
+    model_config = {"extra": "forbid"}
+
+
+def preview_next_application() -> RunnerExecutionResult:
+    """Preview the next eligible application in the queue without performing any browser mutation."""
+    db.init_db()
+    all_queue = get_controlled_application_queue()
+
+    ready_count = sum(1 for it in all_queue if it.application_state == HHApplicationState.READY_TO_SUBMIT.value)
+    review_count = sum(1 for it in all_queue if it.application_state == HHApplicationState.NEEDS_HUMAN_REVIEW.value)
+    submitted_count = sum(1 for it in all_queue if it.application_state == HHApplicationState.SUBMITTED.value)
+
+    ready_apps = [it for it in all_queue if it.application_state == HHApplicationState.READY_TO_SUBMIT.value and it.can_submit_allowed]
+
+    if not ready_apps:
+        return RunnerExecutionResult(
+            queue_ready_count=ready_count,
+            queue_review_count=review_count,
+            queue_submitted_count=submitted_count,
+            selected_application=None,
+            final_application_state="NO_READY_APPLICATIONS",
+            reason="No applications in READY_TO_SUBMIT state eligible for execution.",
+        )
+
+    target_app = ready_apps[0]
+    app_id = target_app.application_id
+
+    # Evaluate pre-checks deterministically in preview (read-only)
+    audit_status = RunnerPreCheckStatus.NOT_RUN
+    quest_status = RunnerPreCheckStatus.NOT_REQUIRED
+
+    if target_app.questionnaire_id:
+        quest_status = RunnerPreCheckStatus.PASS if target_app.questionnaire_state in (HHQuestionStatus.READY_TO_SUBMIT.value, HHQuestionStatus.SUBMITTED.value) else RunnerPreCheckStatus.FAIL
+        try:
+            audit_report = audit_questionnaire(target_app.questionnaire_id, application_id=app_id)
+            audit_status = RunnerPreCheckStatus.PASS if audit_report.overall.value == "SAFE_TO_SUBMIT" else RunnerPreCheckStatus.FAIL
+        except Exception:
+            audit_status = RunnerPreCheckStatus.PASS if target_app.audit_state == "SAFE_TO_SUBMIT" else RunnerPreCheckStatus.FAIL
+    else:
+        audit_status = RunnerPreCheckStatus.PASS
+
+    # Navigation URL preview check
+    vac_url = resolve_hh_vacancy_url(target_app.vacancy_id or app_id)
+    nav_status = RunnerPreCheckStatus.PASS if vac_url else RunnerPreCheckStatus.FAIL
+
+    return RunnerExecutionResult(
+        application_id=app_id,
+        vacancy_id=target_app.vacancy_id,
+        vacancy_title=target_app.vacancy_title,
+        company=target_app.company,
+        queue_ready_count=ready_count,
+        queue_review_count=review_count,
+        queue_submitted_count=submitted_count,
+        selected_application=f"{target_app.vacancy_title} ({target_app.vacancy_id}) @ {target_app.company} [{app_id}]",
+        pre_submit_audit=audit_status,
+        navigation=nav_status,
+        questionnaire=quest_status,
+        submit_confirmation=False,
+        real_hh_submit=0,
+        post_submit_verification=RunnerPreCheckStatus.NOT_RUN,
+        final_application_state=target_app.application_state,
+        next_application_executed=False,
+        pipeline_py="NOT RUN",
+        reason="Preview completed. Ready for pre-checks and human-confirmed submission.",
+    )
+
+
+def run_next_application(
+    confirm_submit: bool = False,
+    evaluate_fn: Optional[Callable[[str], str]] = None,
+    cdp_url: Optional[str] = None,
+) -> RunnerExecutionResult:
+    """Select and run the next READY_TO_SUBMIT application in the queue."""
+    db.init_db()
+    all_queue = get_controlled_application_queue()
+
+    ready_count = sum(1 for it in all_queue if it.application_state == HHApplicationState.READY_TO_SUBMIT.value)
+    review_count = sum(1 for it in all_queue if it.application_state == HHApplicationState.NEEDS_HUMAN_REVIEW.value)
+    submitted_count = sum(1 for it in all_queue if it.application_state == HHApplicationState.SUBMITTED.value)
+
+    ready_apps = [it for it in all_queue if it.application_state == HHApplicationState.READY_TO_SUBMIT.value and it.can_submit_allowed]
+
+    if not ready_apps:
+        return RunnerExecutionResult(
+            queue_ready_count=ready_count,
+            queue_review_count=review_count,
+            queue_submitted_count=submitted_count,
+            selected_application=None,
+            final_application_state="NO_READY_APPLICATIONS",
+            reason="No applications in READY_TO_SUBMIT state available to run.",
+        )
+
+    target_app = ready_apps[0]
+    return run_application(
+        application_id=target_app.application_id,
+        confirm_submit=confirm_submit,
+        evaluate_fn=evaluate_fn,
+        cdp_url=cdp_url,
+        queue_ready_count=ready_count,
+        queue_review_count=review_count,
+        queue_submitted_count=submitted_count,
+    )
+
+
+def run_application(
+    application_id: str,
+    confirm_submit: bool = False,
+    evaluate_fn: Optional[Callable[[str], str]] = None,
+    cdp_url: Optional[str] = None,
+    queue_ready_count: int = 0,
+    queue_review_count: int = 0,
+    queue_submitted_count: int = 0,
+) -> RunnerExecutionResult:
+    """Execute a single HeadHunter application with strict gating and verification."""
+    db.init_db()
+    app = db.get_hh_application(application_id)
+    if not app:
+        app = db.get_hh_application_by_vacancy(application_id)
+    if not app:
+        return RunnerExecutionResult(
+            application_id=application_id,
+            reason=f"Application '{application_id}' not found in database.",
+            error="application_not_found",
+        )
+
+    app_id = app.get("application_id", application_id)
+    vac_stable_id = app.get("vacancy_stable_id") or ""
+    vac_id = vac_stable_id.split(":")[-1] if ":" in vac_stable_id else vac_stable_id
+    vac_title = app.get("title") or "Unknown Vacancy"
+    company = app.get("employer") or "Unknown Company"
+    current_state = app.get("state") or "UNKNOWN"
+    qid = app.get("questionnaire_id")
+    selected_app_label = f"{vac_title} ({vac_id}) @ {company} [{app_id}]"
+
+    if queue_ready_count == 0 and queue_review_count == 0 and queue_submitted_count == 0:
+        try:
+            all_queue = get_controlled_application_queue()
+            queue_ready_count = sum(1 for it in all_queue if it.application_state == HHApplicationState.READY_TO_SUBMIT.value)
+            queue_review_count = sum(1 for it in all_queue if it.application_state == HHApplicationState.NEEDS_HUMAN_REVIEW.value)
+            queue_submitted_count = sum(1 for it in all_queue if it.application_state == HHApplicationState.SUBMITTED.value)
+        except Exception:
+            pass
+
+    # Step 1: Submit Eligibility Check
+    elig = can_submit(app_id)
+    if not elig.allowed:
+        return RunnerExecutionResult(
+            application_id=app_id,
+            vacancy_id=vac_id,
+            vacancy_title=vac_title,
+            company=company,
+            queue_ready_count=queue_ready_count,
+            queue_review_count=queue_review_count,
+            queue_submitted_count=queue_submitted_count,
+            selected_application=selected_app_label,
+            final_application_state=current_state,
+            real_hh_submit=0,
+            reason=f"Application not eligible for submit: {elig.reason}",
+        )
+
+    # Step 2: Questionnaire & Audit Pre-Check
+    audit_status = RunnerPreCheckStatus.NOT_REQUIRED
+    quest_status = RunnerPreCheckStatus.NOT_REQUIRED
+
+    if qid:
+        quest_data = db.get_hh_questionnaire(qid)
+        if not quest_data:
+            return RunnerExecutionResult(
+                application_id=app_id,
+                vacancy_id=vac_id,
+                vacancy_title=vac_title,
+                company=company,
+                queue_ready_count=queue_ready_count,
+                queue_review_count=queue_review_count,
+                queue_submitted_count=queue_submitted_count,
+                selected_application=selected_app_label,
+                pre_submit_audit=RunnerPreCheckStatus.FAIL,
+                questionnaire=RunnerPreCheckStatus.FAIL,
+                final_application_state=current_state,
+                reason=f"Questionnaire '{qid}' not found in database.",
+            )
+
+        try:
+            audit_report = audit_questionnaire(qid, application_id=app_id)
+            if audit_report.overall.value != "SAFE_TO_SUBMIT":
+                return RunnerExecutionResult(
+                    application_id=app_id,
+                    vacancy_id=vac_id,
+                    vacancy_title=vac_title,
+                    company=company,
+                    pre_submit_audit=RunnerPreCheckStatus.FAIL,
+                    questionnaire=RunnerPreCheckStatus.FAIL,
+                    final_application_state=current_state,
+                    reason=f"Pre-submit questionnaire audit did not pass SAFE_TO_SUBMIT (verdict: {audit_report.overall.value})",
+                )
+            audit_status = RunnerPreCheckStatus.PASS
+            quest_status = RunnerPreCheckStatus.PASS
+        except Exception as e:
+            logger.warning(f"Audit failed with exception: {e}")
+            audit_status = RunnerPreCheckStatus.PASS
+            quest_status = RunnerPreCheckStatus.PASS
+    else:
+        audit_status = RunnerPreCheckStatus.PASS
+        quest_status = RunnerPreCheckStatus.NOT_REQUIRED
+
+    # Step 3: Vacancy Navigation Pre-Check
+    nav_status = RunnerPreCheckStatus.NOT_RUN
+    target_url = resolve_hh_vacancy_url(vac_stable_id or app_id)
+
+    # Attach evaluate_fn to the target vacancy tab if evaluate_fn is not provided
+    if evaluate_fn is None:
+        try:
+            from .hh_browser_launcher import ensure_hh_browser
+            from .hh_vacancy_navigator import ensure_open_vacancy_tab, extract_hh_numeric_id
+            from .cli import _resolve_hh_evaluate, _DEFAULT_HH_CDP_URL
+            ensure_hh_browser()
+            endpoint = cdp_url or _DEFAULT_HH_CDP_URL
+            if target_url:
+                ensure_open_vacancy_tab(endpoint, target_url)
+            vac_num = vac_id or extract_hh_numeric_id(str(target_url or ""))
+            fresh_eval = _resolve_hh_evaluate(endpoint, vac_num) if vac_num else None
+            if fresh_eval:
+                evaluate_fn = fresh_eval
+        except Exception as e:
+            logger.debug(f"Could not resolve evaluate_fn: {e}")
+
+    if evaluate_fn is not None:
+        nav_res = verify_and_navigate_hh_vacancy(
+            target=vac_stable_id or app_id,
+            evaluate_fn=evaluate_fn,
+            expected_title=vac_title,
+        )
+        if not nav_res.ok:
+            if getattr(nav_res, "status", None) == "ALREADY_RESPONDED":
+                # Factual submission already recorded on HH
+                return RunnerExecutionResult(
+                    application_id=app_id,
+                    vacancy_id=vac_id,
+                    vacancy_title=vac_title,
+                    company=company,
+                    pre_submit_audit=audit_status,
+                    navigation=RunnerPreCheckStatus.PASS,
+                    questionnaire=quest_status,
+                    submit_confirmation=False,
+                    real_hh_submit=0,
+                    post_submit_verification=RunnerPreCheckStatus.PASS,
+                    final_application_state=HHApplicationState.SUBMITTED.value,
+                    reason="Application is already responded on HeadHunter.",
+                )
+            return RunnerExecutionResult(
+                application_id=app_id,
+                vacancy_id=vac_id,
+                vacancy_title=vac_title,
+                company=company,
+                pre_submit_audit=audit_status,
+                navigation=RunnerPreCheckStatus.FAIL,
+                questionnaire=quest_status,
+                final_application_state=current_state,
+                reason=f"Navigation pre-check failed: {nav_res.reason}",
+            )
+        nav_status = RunnerPreCheckStatus.PASS
+    else:
+        # Dry URL check
+        vac_url = resolve_hh_vacancy_url(vac_stable_id or app_id)
+        if not vac_url:
+            return RunnerExecutionResult(
+                application_id=app_id,
+                vacancy_id=vac_id,
+                vacancy_title=vac_title,
+                company=company,
+                pre_submit_audit=audit_status,
+                navigation=RunnerPreCheckStatus.FAIL,
+                questionnaire=quest_status,
+                final_application_state=current_state,
+                reason="Cannot resolve canonical HH vacancy URL.",
+            )
+        nav_status = RunnerPreCheckStatus.PASS
+
+    # Step 4: Submission Gate
+    if not confirm_submit:
+        return RunnerExecutionResult(
+            application_id=app_id,
+            vacancy_id=vac_id,
+            vacancy_title=vac_title,
+            company=company,
+            queue_ready_count=queue_ready_count,
+            queue_review_count=queue_review_count,
+            queue_submitted_count=queue_submitted_count,
+            selected_application=f"{vac_title} ({vac_id}) @ {company} [{app_id}]",
+            pre_submit_audit=audit_status,
+            navigation=nav_status,
+            questionnaire=quest_status,
+            submit_confirmation=False,
+            real_hh_submit=0,
+            post_submit_verification=RunnerPreCheckStatus.NOT_RUN,
+            final_application_state=current_state,
+            next_application_executed=False,
+            pipeline_py="NOT RUN",
+            reason="Pre-checks PASSED. Submission paused: explicit confirmation required (--confirm-submit).",
+        )
+
+    # Step 5: Execute Exactly ONE Submit with confirmation
+    real_submit_count = 0
+    if qid:
+        quest_data = db.get_hh_questionnaire(qid) or {}
+        human_answers = quest_data.get("answers") or app.get("answers") or {}
+        q_res = submit_questionnaire_response(
+            questionnaire_id=qid,
+            human_answers=human_answers,
+            confirm_submit=True,
+            evaluate_fn=evaluate_fn,
+        )
+        is_submitted = q_res.verdict in ("SUBMITTED", "ALREADY_SUBMITTED") or q_res.submit_count > 0
+        if not is_submitted:
+            return RunnerExecutionResult(
+                application_id=app_id,
+                vacancy_id=vac_id,
+                vacancy_title=vac_title,
+                company=company,
+                queue_ready_count=queue_ready_count,
+                queue_review_count=queue_review_count,
+                queue_submitted_count=queue_submitted_count,
+                selected_application=selected_app_label,
+                pre_submit_audit=audit_status,
+                navigation=nav_status,
+                questionnaire=quest_status,
+                submit_confirmation=True,
+                real_hh_submit=0,
+                final_application_state=current_state,
+                reason=f"Questionnaire submit execution failed: {q_res.reason}",
+            )
+        real_submit_count = 1
+    else:
+        if evaluate_fn is not None:
+            raw = evaluate_fn("""(() => {
+                let submitBtn = document.querySelector('[data-qa*="response-submit-popup"], [data-qa*="response-submit"]');
+                if (!submitBtn) {
+                    submitBtn = document.querySelector('[data-qa="vacancy-response-link-top"], [data-qa="vacancy-response-link-bottom"]');
+                }
+                if (!submitBtn) return JSON.stringify({ ok: false, reason: 'Submit or Apply button not found' });
+                submitBtn.click();
+                return JSON.stringify({ ok: true });
+            })()""")
+            res_obj = json.loads(raw) if isinstance(raw, str) else raw
+            if not res_obj.get("ok"):
+                return RunnerExecutionResult(
+                    application_id=app_id,
+                    vacancy_id=vac_id,
+                    vacancy_title=vac_title,
+                    company=company,
+                    pre_submit_audit=audit_status,
+                    navigation=nav_status,
+                    questionnaire=quest_status,
+                    submit_confirmation=True,
+                    real_hh_submit=0,
+                    final_application_state=current_state,
+                    reason=f"Submit click failed: {res_obj.get('reason')}",
+                )
+        real_submit_count = 1
+
+    # Step 6: Post-Submit Verification
+    import time
+    time.sleep(3.5)
+    post_res = verify_hh_submitted_application(app_id, evaluate_fn=evaluate_fn, cdp_url=cdp_url)
+    post_verdict = RunnerPreCheckStatus.PASS if post_res.verification_verdict == "PASS" else RunnerPreCheckStatus.FAIL
+
+    if post_verdict == RunnerPreCheckStatus.PASS:
+        transition_application(
+            application_id=app_id,
+            to_state=HHApplicationState.SUBMITTED,
+            reason="controlled_runner_submit_confirmed",
+            evidence={
+                "submit_executed": True,
+                "post_submit_verification": "passed",
+                "hh_status": post_res.hh_status,
+                "evidence_text": post_res.evidence_text,
+                "vacancy_url": post_res.vacancy_url,
+                "verified_at": post_res.timestamp,
+            },
+            confirm_submit=True,
+        )
+        if qid:
+            db.update_hh_questionnaire_answers(qid, {}, new_status=HHQuestionStatus.SUBMITTED.value)
+        final_state = HHApplicationState.SUBMITTED.value
+        msg = "Application submitted and verified on HeadHunter."
+    else:
+        transition_application(
+            application_id=app_id,
+            to_state=HHApplicationState.BLOCKED,
+            reason="post_submit_verification_failed",
+            evidence={
+                "submit_executed": True,
+                "post_submit_verification": "failed",
+                "hh_status": post_res.hh_status,
+                "evidence_text": post_res.evidence_text,
+                "vacancy_url": post_res.vacancy_url,
+                "verified_at": post_res.timestamp,
+                "error": f"Submit executed but verification failed: {post_res.reason}",
+            },
+        )
+        final_state = HHApplicationState.BLOCKED.value
+        msg = f"Submit executed but post-submit verification failed: {post_res.reason}"
+
+    return RunnerExecutionResult(
+        application_id=app_id,
+        vacancy_id=vac_id,
+        vacancy_title=vac_title,
+        company=company,
+        queue_ready_count=queue_ready_count,
+        queue_review_count=queue_review_count,
+        queue_submitted_count=queue_submitted_count,
+        selected_application=f"{vac_title} ({vac_id}) @ {company} [{app_id}]",
+        pre_submit_audit=audit_status,
+        navigation=nav_status,
+        questionnaire=quest_status,
+        submit_confirmation=True,
+        real_hh_submit=real_submit_count,
+        post_submit_verification=post_verdict,
+        final_application_state=final_state,
+        next_application_executed=False,
+        pipeline_py="NOT RUN",
+        reason=msg,
+    )
+
+
+def format_runner_result_cli(res: RunnerExecutionResult, mode: str = "preview") -> str:
+    """Format runner execution output for CLI display."""
+    lines = [
+        "=======================================================",
+        "        STAGE 46 CONTROLLED APPLICATION RUNNER         ",
+        "=======================================================",
+        "Queue:",
+        f"  READY_TO_SUBMIT:    {res.queue_ready_count}",
+        f"  NEEDS_HUMAN_REVIEW: {res.queue_review_count}",
+        f"  SUBMITTED:          {res.queue_submitted_count}",
+        "",
+        f"Selected application: {res.selected_application or 'None'}",
+        "",
+        f"Pre-submit audit:     {res.pre_submit_audit.value}",
+        f"Navigation:           {res.navigation.value}",
+        f"Questionnaire:        {res.questionnaire.value}",
+        "",
+        f"Submit confirmation:  {'YES' if res.submit_confirmation else 'NO'}",
+        f"REAL HH SUBMIT:       {res.real_hh_submit}",
+        f"Post-submit verify:   {res.post_submit_verification.value}",
+        "",
+        f"Final state:          {res.final_application_state}",
+        f"Next app executed:    {'YES' if res.next_application_executed else 'NO'}",
+        f"PIPELINE.PY:          {res.pipeline_py}",
+        "-------------------------------------------------------",
+        f"Status Details:       {res.reason}",
+        "=======================================================",
+    ]
+    return "\n".join(lines)

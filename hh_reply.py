@@ -1,5 +1,27 @@
+import os
 import sys
 import time
+
+# ==============================================================================
+# STAGE 75 SAFETY GATE: LEGACY HH_REPLY IS DEPRECATED & LOCKED
+# ==============================================================================
+# All HeadHunter recruiter dialogs MUST be handled through canonical Stage 22-53
+# modules (hh_message_watcher.py, hh_message_reply.py, hh_autonomous_agent.py)
+# to guarantee truth-only facts, candidate profile validation, and state.db recording.
+# Raw automated injection is strictly forbidden to prevent dual-reply races.
+# ==============================================================================
+
+if not os.environ.get("LEGACY_HH_REPLY_OVERRIDE"):
+    print(
+        "[SAFETY LOCKOUT] 'hh_reply.py' is deprecated and locked to prevent dual-reply conflicts.\n"
+        "To triage or send recruiter replies with truth-only validation, use:\n"
+        "  - Triage/Preview: python -m ai_assistant.cli hh-message triage\n"
+        "  - Preview draft:  python -m ai_assistant.cli hh-message preview [conversation_id]\n"
+        "  - Send confirmed: python -m ai_assistant.cli hh-message send [conversation_id] --confirm\n",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
 from playwright.sync_api import sync_playwright
 
 def send_reply(url, text):

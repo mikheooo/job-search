@@ -1,10 +1,12 @@
 from __future__ import annotations
 import re
 from datetime import datetime, timezone
+from typing import List, Optional
 
 import feedparser
 
 from ..schema import Vacancy
+from ..vacancy_identity import normalize_url
 
 
 class WeWorkRemotelyAdapter:
@@ -14,11 +16,18 @@ class WeWorkRemotelyAdapter:
     def fetch_vacancies(self) -> List[Vacancy]:
         feed = feedparser.parse(self.feed_url)
         results: List[Vacancy] = []
+        seen_urls = set()
         for entry in feed.entries:
-            job_url = entry.get("link") or entry.get("id") or ""
-            source_job_id = job_url.rsplit("/", 1)[-1] if job_url else entry.get("id", "")
+            raw_url = entry.get("link") or entry.get("id") or ""
+            job_url = normalize_url(raw_url) if raw_url else ""
+            if not job_url or job_url in seen_urls:
+                continue
+            seen_urls.add(job_url)
+
+            source_job_id = job_url.rstrip("/").rsplit("/", 1)[-1] if job_url else str(entry.get("id", ""))
             summary = entry.get("summary") or ""
-            application_url = self._extract_apply_link(summary) or job_url or None
+            raw_apply = self._extract_apply_link(summary) or job_url or None
+            application_url = normalize_url(raw_apply) if raw_apply else None
 
             location = self._join_nonempty(
                 entry.get("region"), entry.get("country"), entry.get("state")
@@ -35,7 +44,7 @@ class WeWorkRemotelyAdapter:
                 Vacancy(
                     source=self.source,
                     source_job_id=source_job_id,
-                    title=entry.get("title", ""),
+                    title=entry.get("title", "").strip(),
                     company="",
                     description=summary,
                     job_url=job_url,

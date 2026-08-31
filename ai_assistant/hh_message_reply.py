@@ -268,6 +268,18 @@ def resolve_vacancy_for_dialog(dialog: HHDialog) -> Optional[Dict[str, Any]]:
             if row:
                 cols = [d[0] for d in cur.description]
                 return dict(zip(cols, row))
+        if dialog.employer and dialog.vacancy_title:
+            cur.execute("SELECT * FROM vacancies WHERE company=? AND title=? ORDER BY last_seen_at DESC LIMIT 1", (dialog.employer, dialog.vacancy_title))
+            row = cur.fetchone()
+            if row:
+                cols = [d[0] for d in cur.description]
+                return dict(zip(cols, row))
+        if dialog.employer:
+            cur.execute("SELECT * FROM vacancies WHERE company=? ORDER BY last_seen_at DESC LIMIT 1", (dialog.employer,))
+            row = cur.fetchone()
+            if row:
+                cols = [d[0] for d in cur.description]
+                return dict(zip(cols, row))
     except Exception:
         pass
     return None
@@ -405,6 +417,9 @@ def classify_hh_conversation_detailed(
         or "?" in (messages[i].text or "")
         or "？" in (messages[i].text or "")
         or "опыт" in (messages[i].text or "").lower()
+        or "вопрос" in (messages[i].text or "").lower()
+        or "ответьте" in (messages[i].text or "").lower()
+        or "уточните" in (messages[i].text or "").lower()
     ]
 
     if question_emp_indices:
@@ -532,31 +547,133 @@ def classify_hh_conversation_detailed(
                 "status": "READ-ONLY",
             }
 
-        # General / technical stack questions
-        required_facts.append("technical stack / role qualifications")
-        roles_str = ", ".join(profile_roles[:2]) if profile_roles else "AI Automation Engineer"
-        if lang == "ru":
-            reply_text = (
-                "Здравствуйте! Спасибо за сообщение. Готов ответить на ваши вопросы и обсудить детали вакансии. "
-                f"Я рассматриваю роли: {roles_str}."
-            )
-        else:
-            reply_text = (
-                "Hello! Thank you for your message. I am happy to answer your questions and discuss the details. "
-                f"I am targeting roles in: {roles_str}."
-            )
+        # Check for verified skills in candidate profile
+        prof_skills_lower = [s.lower().replace("ё", "е") for s in profile_skills]
+        prof_roles_lower = [r.lower().replace("ё", "е") for r in profile_roles]
+        q_text_low = (q_text or last_emp_text or "").lower().replace("ё", "е")
+        
+        # Check for unverified technologies / languages not in candidate profile
+        unverified_techs = [
+            "haskell", "elm", "1c", "1с", "php", "ruby", "c++", "c#", "golang", "go developer",
+            "swift", "kotlin", "rust", "scala", "java ", "java/", "java,", "java.", "bitrix", "битрикс"
+        ]
+        has_unverified_tech = any(u in q_text_low for u in unverified_techs)
+        
+        # Check specific verified skills / keywords
+        is_python_tech_q = any(k in q_text_low for k in [
+            "python", "fastapi", "asyncio", "postgres", "postgresql", "docker",
+            "kubernetes", "k8s", "n8n", "ai agent", "llm", "mcp", "rest api", "grpc", "sql",
+            "rag", "langchain", "llamaindex", "nginx", "микросервис", "стек", "пайплайн"
+        ]) and not has_unverified_tech
+        is_generic_exp_q = ("опыт" in q_text_low or "стаж" in q_text_low) and not has_unverified_tech
+        is_remote_q = any(k in q_text_low for k in ["удален", "remote", "формат работ", "локаци", "находит", "территориаль", "где вы", "город", "страна"])
+        is_availability_q = any(k in q_text_low for k in [
+            "доступност", "приступить", "когда готов", "start date", "availability",
+            "когда вы мож", "когда смож", "по времени", "full time", "full-time",
+            "фултайм", "полный день", "занятост"
+        ])
+        is_interest_q = any(k in q_text_low for k in ["интересн", "заинтересова", "interested", "готов обсудить", "готовы обсудить", "актуальн", "рассматрива"]) and not has_unverified_tech
 
+        if is_interest_q:
+            if lang == "ru":
+                reply_text = "Здравствуйте! Да, предложение мне интересно. Готов обсудить задачи и ответить на вопросы."
+            else:
+                reply_text = "Hello! Yes, I am interested in the position. Glad to discuss the details."
+            return {
+                "conversation_id": dialog.conversation_id,
+                "classification": "NEEDS_REPLY",
+                "confidence": 0.95,
+                "reason": "Employer expressed interest or asked if vacancy is relevant; verified role interest in candidate profile.",
+                "question": q_text,
+                "required_facts": ["role interest"],
+                "available_facts": ["interested in matching roles"],
+                "missing_facts": [],
+                "context": context,
+                "prepared_reply": reply_text,
+                "sources": ["candidate_profile.json: desired_roles"],
+                "status": "READ-ONLY",
+            }
+
+        if is_availability_q:
+            if lang == "ru":
+                reply_text = "Здравствуйте! Готов приступить к работе в ближайшее время (Full-time, 100% Remote)."
+            else:
+                reply_text = "Hello! I am available to start in the near future (Full-time, 100% Remote)."
+            return {
+                "conversation_id": dialog.conversation_id,
+                "classification": "NEEDS_REPLY",
+                "confidence": 0.95,
+                "reason": "Employer asked about candidate availability/start timeline; verified in profile.",
+                "question": q_text,
+                "required_facts": ["availability timeline"],
+                "available_facts": ["ready to start soon"],
+                "missing_facts": [],
+                "context": context,
+                "prepared_reply": reply_text,
+                "sources": ["candidate_profile.json: availability"],
+                "status": "READ-ONLY",
+            }
+
+        if is_remote_q:
+            if lang == "ru":
+                reply_text = "Здравствуйте! Рассматриваю исключительно 100% удалённый формат работы (Full Remote)."
+            else:
+                reply_text = "Hello! I am considering only 100% full remote positions."
+            return {
+                "conversation_id": dialog.conversation_id,
+                "classification": "NEEDS_REPLY",
+                "confidence": 0.95,
+                "reason": "Employer asked about work format/remote availability; verified in profile.",
+                "question": q_text,
+                "required_facts": ["remote requirement"],
+                "available_facts": ["100% remote required"],
+                "missing_facts": [],
+                "context": context,
+                "prepared_reply": reply_text,
+                "sources": ["candidate_profile.json: remote_required"],
+                "status": "READ-ONLY",
+            }
+
+        if is_python_tech_q or is_generic_exp_q:
+            years = prof.get("years_experience", 3)
+            skills_str = ", ".join(profile_skills[:5]) if profile_skills else "Python, FastAPI, PostgreSQL, Docker"
+            if lang == "ru":
+                reply_text = (
+                    f"Здравствуйте! У меня более {years} лет коммерческого опыта разработки на Python. "
+                    f"Основной стек: {skills_str}. Готов обсудить задачи на интервью."
+                )
+            else:
+                reply_text = (
+                    f"Hello! I have over {years} years of commercial Python development experience. "
+                    f"Core stack: {skills_str}. Glad to discuss details."
+                )
+            return {
+                "conversation_id": dialog.conversation_id,
+                "classification": "NEEDS_REPLY",
+                "confidence": 0.90,
+                "reason": "Employer asked about technical stack; drafted response using verified profile skills.",
+                "question": q_text,
+                "required_facts": ["technical stack"],
+                "available_facts": available_facts,
+                "missing_facts": [],
+                "context": context,
+                "prepared_reply": reply_text,
+                "sources": ["candidate_profile.json: skills, years_experience"],
+                "status": "READ-ONLY",
+            }
+
+        # Any unverified/unknown questions -> HUMAN_REVIEW (NO universal fallback)
         return {
             "conversation_id": dialog.conversation_id,
-            "classification": "NEEDS_REPLY",
-            "confidence": 0.90,
-            "reason": "Employer asked a direct question; drafted response using verified profile roles and skills.",
+            "classification": "HUMAN_REVIEW",
+            "confidence": 0.85,
+            "reason": "Employer question contains unverified topics/skills not documented in candidate profile; requires human review.",
             "question": q_text,
-            "required_facts": required_facts,
+            "required_facts": ["unverified topic/skill confirmation"],
             "available_facts": available_facts,
-            "missing_facts": [],
+            "missing_facts": ["candidate confirmation for specific question"],
             "context": context,
-            "prepared_reply": reply_text,
+            "prepared_reply": None,
             "sources": sources,
             "status": "READ-ONLY",
         }
@@ -578,12 +695,12 @@ def classify_hh_conversation_detailed(
             "status": "READ-ONLY",
         }
 
-    # Otherwise ambiguous -> HUMAN_REVIEW
+    # Informational / Acknowledgment incoming employer message without questions -> NO_REPLY_NEEDED
     return {
         "conversation_id": dialog.conversation_id,
-        "classification": "HUMAN_REVIEW",
-        "confidence": 0.70,
-        "reason": "Dialogue context is ambiguous or informational; requires human review.",
+        "classification": "NO_REPLY_NEEDED",
+        "confidence": 0.90,
+        "reason": "Employer sent an informational update / acknowledgment without questions; no reply needed.",
         "question": None,
         "required_facts": [],
         "available_facts": available_facts,
@@ -1035,8 +1152,9 @@ def fetch_hh_dialogs_readonly(
 
 _CONVERSATIONS_LIST_JS = r"""() => {
     const out = [];
-    const chatEls = Array.from(document.querySelectorAll('a[data-qa*="chatik-open-chat-"], a[class*="chat-cell"], a[href*="/chat/"]'));
     
+    // 1. Check dedicated chat cells / chatik links
+    const chatEls = Array.from(document.querySelectorAll('a[data-qa*="chatik-open-chat-"], a[class*="chat-cell"], a[href*="/chat/"], a[data-qa*="chat"]'));
     for (const a of chatEls) {
         const m = (a.href || '').match(/\/chat\/([0-9]+)/);
         const cid = m ? m[1] : null;
@@ -1045,7 +1163,7 @@ _CONVERSATIONS_LIST_JS = r"""() => {
 
         const titleEl = a.querySelector('[data-qa*="title"], [class*="title"]');
         const subtitleEl = a.querySelector('[data-qa*="subtitle"], [class*="subtitle"], [class*="employer"]');
-        const snippetEl = a.querySelector('[data-qa*="message"], [data-qa*="snippet"], [class*="message"], [class*="snippet"], [class*="preview"], [class*="last-message"]');
+        const snippetEl = a.querySelector('[data-qa*="message"], [data-qa*="snippet"], [class*="message"], [class*="snippet"], [class*="preview"], [class*="last-message"], [class*="text"]');
         const isSelected = /selected/.test(a.className || '') || location.pathname.includes('/chat/' + cid);
         
         const rawLines = (a.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
@@ -1053,13 +1171,19 @@ _CONVERSATIONS_LIST_JS = r"""() => {
         let employer = subtitleEl ? (subtitleEl.innerText || '').trim() : null;
         let snippet = snippetEl ? (snippetEl.innerText || '').trim() : null;
         
-        if (!employer && rawLines.length >= 3) {
-            employer = rawLines[2];
+        if (!employer) {
+            for (let i = 1; i < rawLines.length; i++) {
+                if (!/^[0-9:]+$/.test(rawLines[i]) && !/вчера|сегодня|назад/i.test(rawLines[i]) && rawLines[i].length < 60) {
+                    employer = rawLines[i];
+                    break;
+                }
+            }
         }
-        if (!snippet && rawLines.length >= 4) {
-            snippet = rawLines[3];
-        } else if (!snippet && rawLines.length === 3) {
-            snippet = rawLines[2];
+        if (!snippet || snippet === employer || snippet === title) {
+            const candidates = rawLines.filter(l => l !== title && l !== employer && !/^[0-9:]+$/.test(l) && !/^[0-9]+$/.test(l) && !/^(вчера|сегодня|минут|часов)/i.test(l));
+            if (candidates.length > 0) {
+                snippet = candidates[candidates.length - 1];
+            }
         }
 
         out.push({

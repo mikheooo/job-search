@@ -43,43 +43,17 @@ def analyze_vacancy(title: str, description: str, my_resume: str) -> VacancyAnal
     return VacancyAnalysis.model_validate_json(response_text)
 
 def send_to_telegram(vacancy_id: str, title: str, company: str, salary: str, analysis: VacancyAnalysis, url: str):
-    if not config.TG_BOT_TOKEN or not config.TG_CHAT_ID:
-        logging.warning("Telegram credentials not set, skipping notification.")
-        return
+    """Legacy helper: routes vacancy discovery review through Telegram gateway."""
+    from .telegram_notifier import get_telegram_notifier
 
-    text = f"🎯 <b>{title}</b>\n"
-    text += f"🏢 {company}\n"
-    if salary:
-         text += f"💰 {salary}\n"
-    text += f"🔗 <a href='{url}'>Ссылка</a>\n\n"
-    
-    text += f"📊 <b>Score:</b> {analysis.score}/10\n"
-    text += f"🤝 <b>Интервью:</b> {analysis.interview_probability}\n"
-    text += f"💼 <b>Оффер:</b> {analysis.offer_probability}\n\n"
-    
-    if analysis.strengths:
-        text += f"✅ <b>Плюсы:</b>\n- " + "\n- ".join(analysis.strengths) + "\n\n"
-    if analysis.red_flags:
-        text += f"⚠️ <b>Флаги:</b>\n- " + "\n- ".join(analysis.red_flags) + "\n\n"
-        
-    text += f"💡 <b>Вердикт:</b> {analysis.recommendation}"
-
-    reply_markup = {
-        "inline_keyboard": [
-            [
-                {"text": "✅ Подготовить отклик", "callback_data": f"reply_{vacancy_id}"},
-                {"text": "❌ Пропустить", "callback_data": f"skip_{vacancy_id}"}
-            ]
-        ]
+    details = {
+        "vacancy_id": vacancy_id,
+        "title": title,
+        "company": company,
+        "salary": salary,
+        "score": analysis.score,
+        "recommendation": analysis.recommendation,
+        "url": url,
     }
-
-    url_api = f"https://api.telegram.org/bot{config.TG_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": config.TG_CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML",
-        "reply_markup": json.dumps(reply_markup)
-    }
-    
-    response = requests.post(url_api, json=payload)
-    response.raise_for_status()
+    # Vacancy discovery/matching is filtered from Telegram by the gateway (stored in logs/DB only)
+    return get_telegram_notifier().deliver_notification("VACANCY_MATCHED", details, delivery_key=f"match_{vacancy_id}")

@@ -462,7 +462,11 @@ def classify_timezone(
 
     # Check structured tz restrictions
     if timezone_restrictions:
-        tz_str = ", ".join(str(x) for x in timezone_restrictions)
+        if isinstance(timezone_restrictions, (int, float, str)):
+            tz_list = [timezone_restrictions]
+        else:
+            tz_list = list(timezone_restrictions)
+        tz_str = ", ".join(str(x) for x in tz_list)
         return TimezoneRequirement.SPECIFIED, f"Timezone restrictions: {tz_str}"
 
     for p in _TIMEZONE_STRICT_PATTERNS:

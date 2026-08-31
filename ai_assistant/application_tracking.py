@@ -19,6 +19,7 @@ class ApplicationStatus(str, Enum):
     VERIFIED = "VERIFIED"
     APPLIED = "APPLIED"
     REJECTED = "REJECTED"
+    ANALYSIS_FAILED = "ANALYSIS_FAILED"
     INTERVIEW = "INTERVIEW"
     OFFER = "OFFER"
     WITHDRAWN = "WITHDRAWN"
@@ -32,6 +33,7 @@ _ALLOWED: Dict[ApplicationStatus, List[ApplicationStatus]] = {
     ApplicationStatus.VERIFIED: [ApplicationStatus.APPLIED, ApplicationStatus.SUBMITTED],
     ApplicationStatus.APPLIED: [ApplicationStatus.REJECTED, ApplicationStatus.INTERVIEW],
     ApplicationStatus.INTERVIEW: [ApplicationStatus.OFFER, ApplicationStatus.REJECTED],
+    ApplicationStatus.ANALYSIS_FAILED: [ApplicationStatus.ANALYZED, ApplicationStatus.REJECTED],
     # OFFER, REJECTED are terminal except WITHDRAWN via universal rule
     ApplicationStatus.OFFER: [],
     ApplicationStatus.REJECTED: [],
@@ -47,6 +49,7 @@ MANUAL_STATUSES = {
     ApplicationStatus.INTERVIEW,
     ApplicationStatus.OFFER,
     ApplicationStatus.WITHDRAWN,
+    ApplicationStatus.ANALYSIS_FAILED,
 }
 
 def _now_iso() -> str:

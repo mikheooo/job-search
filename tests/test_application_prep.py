@@ -258,7 +258,8 @@ def test_persistence_works():
         db.save_vacancy(vac)
         profile = _profile()
         deep = _deep_apply()
-        pkg = prepare_application(vac, deep, profile, resume_text="python")
+        with patch.object(app_prep, "_call_llm_cover_letter", side_effect=Exception("offline")):
+            pkg = prepare_application(vac, deep, profile, resume_text="python")
         assert pkg is not None
         db.save_application_package(vac.stable_id(), APPLICATION_PREP_VERSION, pkg.model_dump_json())
         row = db.get_application_package(vac.stable_id(), APPLICATION_PREP_VERSION)
@@ -327,14 +328,15 @@ def test_version_invalidates_cache():
         db.init_db()
         vac = _vac(source_job_id="ver1")
         db.save_vacancy(vac)
-        pkg = prepare_application(vac, _deep_apply(), _profile(), resume_text="python")
+        with patch.object(app_prep, "_call_llm_cover_letter", side_effect=Exception("offline")):
+            pkg = prepare_application(vac, _deep_apply(), _profile(), resume_text="python")
         db.save_application_package(vac.stable_id(), "v1", pkg.model_dump_json())
         assert db.get_application_package(vac.stable_id(), "v1") is not None
         assert db.get_application_package(vac.stable_id(), "v2") is None
         assert db.is_application_prepared(vac.stable_id(), "v1") is True
         assert db.is_application_prepared(vac.stable_id(), "v2") is False
         # Simulate version bump
-        with patch.object(app_prep, "APPLICATION_PREP_VERSION", "v2"):
+        with patch.object(app_prep, "APPLICATION_PREP_VERSION", "v2"), patch.object(app_prep, "_call_llm_cover_letter", side_effect=Exception("offline")):
             # should be considered not prepared for v2, need regeneration
             assert not db.is_application_prepared(vac.stable_id(), "v2")
             # generate new
