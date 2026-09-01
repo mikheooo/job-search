@@ -11,63 +11,84 @@
 
 ---
 
-## 2. Core Architecture & Component Map
+## 2. Core Architecture & Scheduled Execution Path
+
+### Scheduled Execution Pipeline
 
 ```
-                     ┌──────────────────────────────────────────┐
-                     │          Vacancy Ingestion               │
-                     │  (HH, Habr, GetMatch, RemoteOK, etc.)    │
-                     └────────────────────┬─────────────────────┘
-                                          │
-                                          ▼
-                     ┌──────────────────────────────────────────┐
-                     │          State Store (state.db)          │
-                     │  vacancies, matches, queue, applications │
-                     └────────────────────┬─────────────────────┘
-                                          │
-                  ┌───────────────────────┴───────────────────────┐
-                  ▼                                               ▼
-   ┌─────────────────────────────┐                 ┌─────────────────────────────┐
-   │     Matching Engine         │                 │   Application & Review      │
-   │  (Stage 86/87 Calibrated)   │                 │  Queue -> Prepare -> Review │
-   │  Role priorities, seniority,│                 │  Manual & CDP browser assist│
-   │  domain years, skill conf   │                 └──────────────┬──────────────┘
-   └──────────────┬──────────────┘                                │
-                  ▼                                               ▼
-   ┌─────────────────────────────┐                 ┌─────────────────────────────┐
-   │   Telegram Digest Delivery  │                 │    Recruiter Messaging      │
-   │  Batched, idempotent,       │                 │  (Stage 30D / 87.1 Triage)  │
-   │  delivery keys, rate limits │                 │  Truth-only, REVIEW default,│
-   │                             │                 │  strict fail-closed gates   │
-   └─────────────────────────────┘                 └─────────────────────────────┘
+Windows Task Scheduler ("JobSearch_Daily_Digest")
+        │
+        ▼
+scripts/run_job_search_production.ps1
+        │
+        ▼
+python -m ai_assistant.cli production-run
+        │
+        ▼
+ai_assistant.runner.run_production_pipeline
+  (Single-instance lock: job_search.lock, log rotation, secret masking)
+        │
+        ▼
+job_search_fetcher.py
+        ├──────────────────────────────────────────┐
+        ▼                                          ▼
+1. Discovery & Ingestion                   2. Validated Digest Export
+ai_assistant.watcher.Watcher                 ai_assistant.cli.export_digest_cmd
+  - Himalayan, RemoteOK, WWR, Habr             - list_undigested_vacancies (state.db)
+  - normalize_vacancy -> vacancy_identity      - Canonical JobMatcher(profile)
+  - Insert / Update -> state.db                - Sort: DecisionClass > RolePriority > Score
+                                               - Diversity filter: max 2/company, 4/family
+                                                   │
+                                                   ▼
+                                           3. Idempotent Telegram Dispatch
+                                             ai_assistant.db.record_digest_attempt (ATTEMPTING)
+                                                   │
+                                                   ▼
+                                             job_search_fetcher.send_to_telegram (@remotejobd)
+                                                   │
+                                                   ▼
+                                             ai_assistant.db.mark_digest_delivered (DELIVERED)
 ```
 
 ---
 
-## 3. Production Entry Points & CLI Commands
+## 3. Canonical Matching & Digest Selection Policy (Stage 86/87/88)
 
-All capabilities are unified under `ai_assistant.cli` (`python -m ai_assistant.cli <command>`):
+### Canonical Matcher
+The sole canonical matcher used across both discovery ingestion (`Watcher`) and digest delivery (`export_digest_cmd`) is `JobMatcher` defined in `ai_assistant/matcher.py`.
 
-### Ingestion & Matching
-- `python -m ai_assistant.cli collect [--sources ...]` — Ingest new vacancies from enabled scrapers/APIs.
-- `python -m ai_assistant.cli analyze [--top N] [--persist]` — Match vacancies against calibrated candidate profile.
-- `python -m ai_assistant.cli analyze-deep [--top N]` — Deep LLM vacancy qualification & nuance analysis.
-- `python -m ai_assistant.cli export-digest [--limit N] [--min-score N]` — Generate prioritized Telegram digest.
+### Matcher Capabilities vs Production Digest Usage
 
-### Application Lifecycle & Queue
-- `python -m ai_assistant.cli queue [--top N] [--status ...]` — View and prioritize applications in queue.
-- `python -m ai_assistant.cli applications list / status / move` — Track and transition application lifecycle states.
-- `python -m ai_assistant.cli audit --tracked --json` — Run application lifecycle integrity audit.
+| Feature | Matcher Supports | Production Digest Uses | Verification Status |
+| :--- | :---: | :---: | :--- |
+| **Role Priorities (P1 / P2 / P3)** | YES | YES | Primary sorting dimension within decision class |
+| **Skill Confidence (0.0 to 1.0)** | YES | YES | Directly influences score & strong match eligibility |
+| **Domain-Specific Seniority** | YES | YES | Decoupled support (11y), sysadmin (9y), python (3.5y) |
+| **STRETCH Decision Class** | YES | YES | Explicitly ranked between MATCH and BORDERLINE (Rank 3) |
+| **Fail-Closed Hard Gates** | YES | YES | Hard requirement failure -> REJECT -> Excluded from digest |
+| **Delivery History Deduplication** | YES | YES | `telegram_delivery_records` prevents re-delivery |
+| **Company & Role Diversity** | YES | YES | Max 2 per company, max 4 per role family |
 
-### Recruiter Messaging & Triage
-- `python -m ai_assistant.cli hh-message diagnose` — Inspect active HH CDP tab, DOM state, and chat frame.
-- `python -m ai_assistant.cli hh-message preview [conversation_id]` — Preview extracted chat history and draft reply.
-- `python -m ai_assistant.cli hh-message classify [conversation_id]` — Perform truth-only classification and fact-check.
-- `python -m ai_assistant.cli hh-message triage [--limit N] [--json]` — Batch triage all active conversations.
-- `python -m ai_assistant.cli hh-message send --conversation-id ID --confirm` — Explicit human-approved reply send.
+### Digest Ordering Key
 
-### Operational Health & Telemetry
-- `python -m ai_assistant.cli production-health --json` — Production health check, alert evaluation, delivery telemetry.
+Candidates are ordered using a strict multi-tier tuple:
+```python
+(
+    decision_class_rank[decision_class],  # STRONG_MATCH(5) > MATCH(4) > STRETCH(3) > BORDERLINE(2) > REJECT(1)
+    role_priority_rank[role_priority],    # P1(3) > P2(2) > P3(1) > NOT_TARGET(0)
+    numeric_score,                        # Descending 100 to 0
+    eligibility_rank[eligibility],        # ELIGIBLE(2) > BORDERLINE(1) > INELIGIBLE(0)
+    recency_timestamp                     # published_at / first_seen_at
+)
+```
+
+### Backlog Semantics (901 Pending Undigested Vacancies)
+The metric `pending_undigested_vacancies_count: 901` in `production-health` represents all non-legacy vacancy records in `state.db` that have not been delivered to Telegram.
+- **Audited Breakdown:**
+  - `REJECT` (96.45% / 869 items): Non-remote, in-office, wrong technical domains (SAP, .NET, Senior SharePoint, Sales/Marketing). Correctly suppressed.
+  - `BORDERLINE` (3.55% / 32 items): Moderate scores (50–70) with missing specific skills or unverified requirements.
+  - `DELIVERED` (11 top items): Already successfully posted to `@remotejobd` with durable delivery keys.
+  - `ELIGIBLE UNSENT`: 0 (All high-confidence matches in DB have been delivered).
 
 ---
 
@@ -82,7 +103,7 @@ SQLite database operating with `journal_mode=WAL` and `synchronous=NORMAL`:
 | `application_queue` | Prioritized pipeline for manual/assisted application | Ordered by priority score & match quality |
 | `applications` | Formal application records and lifecycle tracking | Statuses: `READY`, `SUBMITTED`, `REJECTED`, etc. |
 | `canonical_vacancies` | Cross-source vacancy deduplication clusters | Normalizes company & title |
-| `telegram_delivery_records`| Idempotent digest delivery tracking | Delivery keys prevent duplicate Telegram messages |
+| `telegram_delivery_records`| Idempotent digest delivery tracking | Delivery keys (`digest:<id>`, `digest_batch:<key>`) prevent duplicates |
 | `conversation_audits` | Recruiter message processing & send audit log | Tracks all incoming/outgoing message hashes |
 
 ---
@@ -109,7 +130,20 @@ Validated and calibrated during Stage 87 against Mikhail Kolesnikov's resume:
 
 ---
 
-## 6. Recruiter Messaging Contract (Stage 30D / 87.1)
+## 6. Feedback Capability Audit & Architecture
+
+- **Current Status:** `PARTIAL`
+- **Existing Assets:**
+  - `application_reviews`: Stores human review actions (`APPROVED`, `REJECTED`, `COMPLETED`), reviewer notes, and skipped fields.
+  - `application_tracking`: Tracks state progression (`DISCOVERED`, `ANALYZED`, `READY_TO_APPLY`, `APPLIED`, `REJECTED`, `WITHDRAWN`, `INTERVIEW`, `OFFER`).
+  - `matches`: Stores dimension breakdown, reasons, strengths, and gaps.
+- **Proposed Unified Feedback Loop:**
+  - Expose inline Telegram callback buttons or CLI command `python -m ai_assistant.cli digest-feedback --vacancy-id <id> --action [INTERESTED|NOT_INTERESTED|APPLIED|SKIPPED] [--reason ...]`.
+  - Records feedback directly into `application_reviews` / `matches` to adjust dynamic candidate preferences and exclude skipped vacancies.
+
+---
+
+## 7. Recruiter Messaging Contract (Stage 30D / 87.1)
 
 Recruiter message handling follows strict truth-only and fail-closed rules:
 
@@ -128,7 +162,7 @@ Recruiter message handling follows strict truth-only and fail-closed rules:
 
 ---
 
-## 7. Safety Invariants & Guarantees
+## 8. Safety Invariants & Guarantees
 
 - **No Unauthorized Mutation:** All diagnostic, preview, triage, and audit commands are strictly read-only.
 - **Fail-Closed Auto-Reply:** `AUTO` send mode is strictly opt-in via `HH_AUTO_REPLY_ENABLED=true` environment variable and requires explicit human confirmation flag for CLI dispatch.
@@ -138,21 +172,14 @@ Recruiter message handling follows strict truth-only and fail-closed rules:
 
 ---
 
-## 8. Verified Test Metrics & Production Status
+## 9. Verified Test Metrics & Production Status
 
-- **Stage 30D Diagnostic Suite (`tests/test_stage30d_diagnose.py`):** 80/80 passed
-- **Stage 87 Profile Calibration Suite (`tests/test_stage87_candidate_profile_calibration.py`):** 17/17 passed
-- **Related Recruiter / Application Suites:** 149/149 passed
+- **Full Offline Pytest Regression:** **1251 passed** (0 failed, 0 errors in 580.02s)
+  - `tests/test_stage88_production_match_digest_wiring.py`: 18/18 passed
+  - `tests/test_stage87_candidate_profile_calibration.py`: 17/17 passed
+  - `tests/test_stage30d_diagnose.py`: 80/80 passed
+  - `tests/test_stage83_production_operations.py`: 16/16 passed
+  - Related Recruiter / Application Suites: 149/149 passed
 - **Production Integrity Audit (`ai_assistant.cli audit --tracked`):** 0 errors, healthy = true
 - **Production Operational Health (`ai_assistant.cli production-health`):** Status: HEALTHY, 0 alerts, 0 consecutive failures
-
----
-
-## 9. Recommended Next Scope (Stage 88)
-
-With Stage 86 (Ranking & Explainability), Stage 87 (Candidate Profile Calibration), and Stage 87.1 (Recruiter Message Semantic Reconciliation) fully stabilized, the recommended next focus areas are:
-
-1. **Stage 88 — Automated Digest Scheduling & Dispatch Hardening:**
-   - Integrate the calibrated Stage 86/87 matcher with the daily Windows scheduled task.
-   - Enforce P1 role prioritization and minimum score thresholds in automated Telegram deliveries.
-   - Add digest feedback tracking and candidate rating mechanisms.
+- **Production Database SHA256:** `d5c9a505af6d22850bed5c3fd8ca9e5cf1ac05527ed59edd5996181e82f45777` (Verified 100% immutable)
