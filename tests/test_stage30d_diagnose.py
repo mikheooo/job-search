@@ -1060,7 +1060,10 @@ def test_classify_missing_vacancy_fail_soft():
     det = hh_message_reply.classify_hh_conversation_detailed(dialog)
     assert det["classification"] == "NEEDS_REPLY"
     assert det["prepared_reply"] is not None
-    assert "candidate_profile.json: skills" in det["sources"]
+    # Source label is a combined one ("skills, years_experience"); match the
+    # prefix so the assertion tracks intent (draft grounded in the profile's
+    # skills) instead of breaking whenever the label is refined.
+    assert any(s.startswith("candidate_profile.json: skills") for s in det["sources"])
 
 
 # ---------------------------------------------- Stage 30D.6 Send Tests ---------
@@ -1374,9 +1377,22 @@ def test_send_conversation_id_shift_blocked(capsys, monkeypatch):
     assert any("shifted" in e for e in payload["errors"])
 
 
-def test_send_byte_for_byte_draft_integrity(monkeypatch):
-    """54. Stage 30D.7: Ensure draft passed to send_confirmed_hh_reply exactly matches validated draft."""
+def test_send_byte_for_byte_draft_integrity(monkeypatch, capsys):
+    """54. Stage 30D.7: Ensure draft passed to send_confirmed_hh_reply exactly matches validated draft.
+
+    Hermetic: the profile is injected, so the assertion no longer depends on the
+    contents of the real `candidate_profile.json`. Previously this test asserted a
+    substring taken from the developer's own profile, so it broke every time that
+    file was edited — and it never actually checked the invariant it is named after.
+    """
     sent_drafts = []
+
+    profile = {
+        "skills": ["python", "n8n", "automation"],
+        "desired_roles": ["AI Automation Engineer"],
+        "years_experience": 3,
+        "remote_required": True,
+    }
 
     def _eval(expr):
         return json.dumps({
@@ -1394,9 +1410,17 @@ def test_send_byte_for_byte_draft_integrity(monkeypatch):
 
     monkeypatch.setattr(hh_message_reply, "send_confirmed_hh_reply", fake_send)
 
-    cli.hh_message_send(evaluate_fn=_eval, confirm=True, as_json=True)
+    cli.hh_message_send(evaluate_fn=_eval, confirm=True, as_json=True, profile=profile)
     assert len(sent_drafts) == 1
-    assert "AI Automation Engineer" in sent_drafts[0]
+
+    # The invariant this test is named for: what went out is byte-for-byte the
+    # draft that was validated and reported — not a freshly re-generated one.
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["draft"] == sent_drafts[0]
+    assert sent_drafts[0].strip()
+
+    # Draft must be built from the injected profile, not from ambient state.
+    assert "n8n" in sent_drafts[0]
 
 
 def test_send_forbid_list_comprehensive_audit():
@@ -1786,6 +1810,168 @@ def test_triage_cli_dispatch_options(monkeypatch):
     assert calls[0][0][0] == "5577169431"
     assert calls[0][1]["limit"] == 5
     assert calls[0][1]["as_json"] is True
+
+
+# =============================================================================
+# Stage 87.1 Semantic Reconciliation Tests
+# =============================================================================
+
+def test_stage87_1_clear_recruiter_question_requires_reply():
+    """73. Stage 87.1: Clear recruiter question with verified facts produces NEEDS_REPLY."""
+    profile = {
+        "skills": ["python", "n8n", "automation"],
+        "desired_roles": ["AI Automation Engineer"],
+        "years_experience": 3,
+        "remote_required": True,
+    }
+    dialog = hh_message_reply.HHDialog(
+        conversation_id="conv_87_1",
+        messages=[
+            hh_message_reply.HHMessage(
+                message_id="m1",
+                text="Здравствуйте! Уточните, пожалуйста, есть ли у вас опыт работы с n8n и Python?",
+                sender="employer"
+            ),
+        ],
+    )
+    det = hh_message_reply.classify_hh_conversation_detailed(dialog, profile=profile)
+    assert det["classification"] == "NEEDS_REPLY"
+    assert det["prepared_reply"] is not None
+    assert "n8n" in det["prepared_reply"].lower()
+    assert "python" in det["prepared_reply"].lower()
+
+
+def test_stage87_1_informational_recruiter_message_no_reply():
+    """74. Stage 87.1: Informational recruiter message produces NO_REPLY_NEEDED."""
+    dialog = hh_message_reply.HHDialog(
+        conversation_id="conv_87_2",
+        messages=[
+            hh_message_reply.HHMessage(
+                message_id="m1",
+                text="Ваш отклик на вакансию получен и передан руководителю отдела на рассмотрение.",
+                sender="employer"
+            ),
+        ],
+    )
+    det = hh_message_reply.classify_hh_conversation_detailed(dialog)
+    assert det["classification"] == "NO_REPLY_NEEDED"
+    assert det["prepared_reply"] is None
+
+
+def test_stage87_1_ambiguous_message_requires_human_review():
+    """75. Stage 87.1: Ambiguous or unverified technology stack message requires HUMAN_REVIEW."""
+    dialog = hh_message_reply.HHDialog(
+        conversation_id="conv_87_3",
+        messages=[
+            hh_message_reply.HHMessage(
+                message_id="m1",
+                text="Мы разрабатываем ядро системы на Haskell и Rust, готовы ли вы полностью переучиться?",
+                sender="employer"
+            ),
+        ],
+    )
+    det = hh_message_reply.classify_hh_conversation_detailed(dialog)
+    assert det["classification"] == "HUMAN_REVIEW"
+    assert det["prepared_reply"] is None
+
+
+def test_stage87_1_linked_vacancy_improves_classification(monkeypatch):
+    """76. Stage 87.1: Linked vacancy attaches verified vacancy facts and source reference."""
+    def fake_resolve(d):
+        return {
+            "stable_id": "hh:87100",
+            "title": "Lead AI Automation Specialist",
+            "company": "TechGlobal Solutions",
+        }
+    monkeypatch.setattr(hh_message_reply, "resolve_vacancy_for_dialog", fake_resolve)
+
+    dialog = hh_message_reply.HHDialog(
+        conversation_id="conv_87_4",
+        vacancy_title="AI Specialist",
+        vacancy_stable_id="hh:87100",
+        messages=[
+            hh_message_reply.HHMessage(
+                message_id="m1",
+                text="Готовы ли вы обсудить задачи по автоматизации?",
+                sender="employer"
+            ),
+        ],
+    )
+    det = hh_message_reply.classify_hh_conversation_detailed(dialog)
+    assert det["classification"] == "NEEDS_REPLY"
+    assert any("Lead AI Automation Specialist" in f for f in det["available_facts"])
+    assert any("database: vacancy hh:87100" in s for s in det["sources"])
+
+
+def test_stage87_1_linked_vacancy_does_not_override_ambiguity(monkeypatch):
+    """77. Stage 87.1: Linked vacancy presence must not override fail-closed guard for salary/calendar."""
+    def fake_resolve(d):
+        return {"stable_id": "hh:87100", "title": "Python Developer", "company": "TechCo"}
+    monkeypatch.setattr(hh_message_reply, "resolve_vacancy_for_dialog", fake_resolve)
+
+    dialog = hh_message_reply.HHDialog(
+        conversation_id="conv_87_5",
+        vacancy_stable_id="hh:87100",
+        messages=[
+            hh_message_reply.HHMessage(
+                message_id="m1",
+                text="Какой оклад на руки вы ожидаете в месяц по этой позиции?",
+                sender="employer"
+            ),
+        ],
+    )
+    det = hh_message_reply.classify_hh_conversation_detailed(dialog)
+    assert det["classification"] == "HUMAN_REVIEW"
+    assert "salary" in det["reason"].lower() or "оклад" in det["reason"].lower()
+
+
+def test_stage87_1_missing_vacancy_context_behaves_safely():
+    """78. Stage 87.1: Missing linked vacancy context falls back safely to candidate profile."""
+    dialog = hh_message_reply.HHDialog(
+        conversation_id="conv_87_6",
+        messages=[
+            hh_message_reply.HHMessage(
+                message_id="m1",
+                text="Работаете ли вы полностью удаленно?",
+                sender="employer"
+            ),
+        ],
+    )
+    det = hh_message_reply.classify_hh_conversation_detailed(dialog)
+    assert det["classification"] == "NEEDS_REPLY"
+    assert "remote" in det["prepared_reply"].lower() or "удален" in det["prepared_reply"].lower()
+
+
+def test_stage87_1_closed_or_rejected_application_no_reply():
+    """79. Stage 87.1: Rejection notice from employer produces NO_REPLY_NEEDED."""
+    dialog = hh_message_reply.HHDialog(
+        conversation_id="conv_87_7",
+        messages=[
+            hh_message_reply.HHMessage(
+                message_id="m1",
+                text="Спасибо за отклик. К сожалению, в настоящее время мы остановились на другом кандидате.",
+                sender="employer"
+            ),
+        ],
+    )
+    det = hh_message_reply.classify_hh_conversation_detailed(dialog)
+    assert det["classification"] == "NO_REPLY_NEEDED"
+    assert det["prepared_reply"] is None
+
+
+def test_stage87_1_malformed_context_fails_closed():
+    """80. Stage 87.1: Malformed dialogs (no messages or empty text) fail closed safely."""
+    dialog_empty = hh_message_reply.HHDialog(conversation_id="conv_87_8", messages=[])
+    det_empty = hh_message_reply.classify_hh_conversation_detailed(dialog_empty)
+    assert det_empty["classification"] == "EMPTY_CONVERSATION"
+
+    dialog_blank = hh_message_reply.HHDialog(
+        conversation_id="conv_87_9",
+        messages=[hh_message_reply.HHMessage(message_id="m0", text="", sender="candidate")]
+    )
+    det_blank = hh_message_reply.classify_hh_conversation_detailed(dialog_blank)
+    assert det_blank["classification"] == "NO_REPLY_NEEDED"
+
 
 
 

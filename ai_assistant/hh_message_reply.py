@@ -572,7 +572,21 @@ def classify_hh_conversation_detailed(
             "когда вы мож", "когда смож", "по времени", "full time", "full-time",
             "фултайм", "полный день", "занятост"
         ])
-        is_interest_q = any(k in q_text_low for k in ["интересн", "заинтересова", "interested", "готов обсудить", "готовы обсудить", "актуальн", "рассматрива"]) and not has_unverified_tech
+        # Word forms matter here: "Готовы ли вы обсудить детали вакансии?" was falling
+        # through to HUMAN_REVIEW because the old literal list only matched the exact
+        # substrings "готов обсудить" / "готовы обсудить". Salary and calendar questions
+        # are already routed to HUMAN_REVIEW above, so this cannot swallow "обсудить зарплату".
+        _INTEREST_RE = re.compile(
+            r"готов\w*\s+(?:ли\s+)?(?:вы\s+)?обсуд"
+            r"|мог\w+\s+бы\s+(?:вы\s+)?обсуд"
+            r"|обсуд\w*\s+(?:детали|ваканс|условия|задачи|формат|проект|сотруднич)"
+            r"|обсудим",
+            re.IGNORECASE,
+        )
+        is_interest_q = (
+            any(k in q_text_low for k in ["интересн", "заинтересова", "interested", "готов обсудить", "готовы обсудить", "актуальн", "рассматрива"])
+            or bool(_INTEREST_RE.search(q_text_low))
+        ) and not has_unverified_tech
 
         if is_interest_q:
             if lang == "ru":
@@ -585,12 +599,17 @@ def classify_hh_conversation_detailed(
                 "confidence": 0.95,
                 "reason": "Employer expressed interest or asked if vacancy is relevant; verified role interest in candidate profile.",
                 "question": q_text,
-                "required_facts": ["role interest"],
-                "available_facts": ["interested in matching roles"],
+                # Keep the facts accumulated above (skills, roles, experience, linked
+                # vacancy) instead of discarding them — downstream consumers and the
+                # dashboard rely on that context.
+                "required_facts": required_facts + ["role interest"],
+                "available_facts": available_facts + ["interested in matching roles"],
                 "missing_facts": [],
                 "context": context,
                 "prepared_reply": reply_text,
-                "sources": ["candidate_profile.json: desired_roles"],
+                # `sources` already carries skills + desired_roles and, when the dialog
+                # is linked to a vacancy, the "database: vacancy <id>" entry.
+                "sources": sources,
                 "status": "READ-ONLY",
             }
 
@@ -605,12 +624,12 @@ def classify_hh_conversation_detailed(
                 "confidence": 0.95,
                 "reason": "Employer asked about candidate availability/start timeline; verified in profile.",
                 "question": q_text,
-                "required_facts": ["availability timeline"],
-                "available_facts": ["ready to start soon"],
+                "required_facts": required_facts + ["availability timeline"],
+                "available_facts": available_facts + ["ready to start soon"],
                 "missing_facts": [],
                 "context": context,
                 "prepared_reply": reply_text,
-                "sources": ["candidate_profile.json: availability"],
+                "sources": sources + ["candidate_profile.json: availability"],
                 "status": "READ-ONLY",
             }
 
@@ -625,40 +644,107 @@ def classify_hh_conversation_detailed(
                 "confidence": 0.95,
                 "reason": "Employer asked about work format/remote availability; verified in profile.",
                 "question": q_text,
-                "required_facts": ["remote requirement"],
-                "available_facts": ["100% remote required"],
+                "required_facts": required_facts + ["remote requirement"],
+                "available_facts": available_facts + ["100% remote required"],
                 "missing_facts": [],
                 "context": context,
                 "prepared_reply": reply_text,
-                "sources": ["candidate_profile.json: remote_required"],
+                "sources": sources + ["candidate_profile.json: remote_required"],
                 "status": "READ-ONLY",
             }
 
         if is_python_tech_q or is_generic_exp_q:
             years = prof.get("years_experience", 3)
             skills_str = ", ".join(profile_skills[:5]) if profile_skills else "Python, FastAPI, PostgreSQL, Docker"
-            if lang == "ru":
-                reply_text = (
-                    f"Здравствуйте! У меня более {years} лет коммерческого опыта разработки на Python. "
-                    f"Основной стек: {skills_str}. Готов обсудить задачи на интервью."
+
+            # Which verified skills did the employer actually name? Answer those first
+            # and by name: a bare CV dump reads as dodging the question — asked "есть ли
+            # опыт с n8n?", the candidate must say "да" before reciting the stack.
+            #
+            # Word-boundary match, not substring: otherwise "sql" matches inside
+            # "postgresql". Secondary skills count too — they are declared in the
+            # profile, just not part of the headline list.
+            declared_skills = list(profile_skills) + [
+                str(s) for s in (prof.get("secondary_skills") or [])
+                if str(s) not in profile_skills
+            ]
+            asked_skills: List[str] = []
+            for _s in declared_skills:
+                _s_low = _s.lower().replace("ё", "е")
+                if re.search(rf"(?<![a-zа-я0-9]){re.escape(_s_low)}(?![a-zа-я0-9])", q_text_low):
+                    asked_skills.append(_s)
+                if len(asked_skills) >= 3:
+                    break
+            conf_map = {
+                str(k).lower().replace("ё", "е"): str(v)
+                for k, v in (prof.get("skill_confidence") or {}).items()
+            }
+            # truth-only: levels come straight from candidate_profile.json, never guessed
+            levels_ru = {
+                "PROFESSIONAL": "профессионально",
+                "PROJECT": "в проектах",
+                "BASIC": "базовый уровень",
+                "TRANSFERABLE": "смежный навык",
+            }
+            levels_en = {
+                "PROFESSIONAL": "professional",
+                "PROJECT": "project work",
+                "BASIC": "basic",
+                "TRANSFERABLE": "transferable",
+            }
+
+            if asked_skills:
+                if lang == "ru":
+                    items = []
+                    for s in asked_skills:
+                        lvl = levels_ru.get(conf_map.get(s.lower().replace("ё", "е"), ""))
+                        items.append(f"{s} ({lvl})" if lvl else s)
+                    reply_text = (
+                        f"Здравствуйте! Да, работал с {', '.join(items)}. "
+                        f"Общий коммерческий опыт разработки на Python — более {years} лет; "
+                        f"основной стек: {skills_str}. Готов обсудить задачи на интервью."
+                    )
+                else:
+                    items = []
+                    for s in asked_skills:
+                        lvl = levels_en.get(conf_map.get(s.lower().replace("ё", "е"), ""))
+                        items.append(f"{s} ({lvl})" if lvl else s)
+                    reply_text = (
+                        f"Hello! Yes, I have hands-on experience with {', '.join(items)}. "
+                        f"Overall commercial Python experience is over {years} years; "
+                        f"core stack: {skills_str}. Glad to discuss details."
+                    )
+                reason = (
+                    "Employer named specific technologies; confirmed those verified in the "
+                    "candidate profile (with documented proficiency level) before the general stack."
                 )
+                tech_sources = sources + ["candidate_profile.json: skill_confidence"]
             else:
-                reply_text = (
-                    f"Hello! I have over {years} years of commercial Python development experience. "
-                    f"Core stack: {skills_str}. Glad to discuss details."
-                )
+                if lang == "ru":
+                    reply_text = (
+                        f"Здравствуйте! У меня более {years} лет коммерческого опыта разработки на Python. "
+                        f"Основной стек: {skills_str}. Готов обсудить задачи на интервью."
+                    )
+                else:
+                    reply_text = (
+                        f"Hello! I have over {years} years of commercial Python development experience. "
+                        f"Core stack: {skills_str}. Glad to discuss details."
+                    )
+                reason = "Employer asked about technical stack; drafted response using verified profile skills."
+                tech_sources = sources
+
             return {
                 "conversation_id": dialog.conversation_id,
                 "classification": "NEEDS_REPLY",
                 "confidence": 0.90,
-                "reason": "Employer asked about technical stack; drafted response using verified profile skills.",
+                "reason": reason,
                 "question": q_text,
-                "required_facts": ["technical stack"],
+                "required_facts": required_facts + ["technical stack"],
                 "available_facts": available_facts,
                 "missing_facts": [],
                 "context": context,
                 "prepared_reply": reply_text,
-                "sources": ["candidate_profile.json: skills, years_experience"],
+                "sources": tech_sources,
                 "status": "READ-ONLY",
             }
 
