@@ -168,7 +168,23 @@ class TelegramBot:
             return f"Неизвестная команда: `{cmd}`. Введите /help для просмотра доступных команд."
 
     def process_update(self, update: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Process a single Telegram update dict."""
+        """Process a single Telegram update dict (messages and callback queries)."""
+        update_id = update.get("update_id")
+        if update_id:
+            self.last_update_id = max(self.last_update_id, update_id)
+
+        # 1. Handle Callback Query (Stage 89 Human Feedback)
+        cb = update.get("callback_query")
+        if cb:
+            from .telegram_feedback import TelegramFeedbackProcessor
+            processor = TelegramFeedbackProcessor(
+                allowed_user_id=self.allowed_chat_id,
+                allowed_chat_id=self.allowed_chat_id,
+                notifier=self.notifier,
+            )
+            return processor.process_callback_query(cb)
+
+        # 2. Handle Text Messages / Commands
         msg = update.get("message") or update.get("edited_message")
         if not msg:
             return None
@@ -176,9 +192,6 @@ class TelegramBot:
         chat = msg.get("chat") or {}
         chat_id = chat.get("id")
         text = msg.get("text") or ""
-        update_id = update.get("update_id")
-        if update_id:
-            self.last_update_id = max(self.last_update_id, update_id)
 
         response_text = self.process_incoming_text(chat_id=chat_id, text=text)
         if response_text:

@@ -80,6 +80,7 @@ ai_assistant.watcher.Watcher                 ai_assistant.cli.export_digest_cmd
                                                    │
                                                    ▼
                                              job_search_fetcher.send_to_telegram (@remotejobd)
+                                               - Compact Inline Keyboard Markup (Stage 89)
                                                    │
                                                    ▼
                                              ai_assistant.db.mark_digest_delivered (DELIVERED)
@@ -98,71 +99,81 @@ Candidates are ordered using a strict multi-tier tuple:
 ```python
 (
     decision_class_rank[decision_class],  # STRONG_MATCH(5) > MATCH(4) > STRETCH(3) > BORDERLINE(2) > REJECT(1)
-    role_priority_rank[role_priority],    # P1(3) > P2(2) > P3(1) > NOT_TARGET(0)
-    numeric_score,                        # Descending 100 to 0
-    eligibility_rank[eligibility],        # ELIGIBLE(2) > BORDERLINE(1) > INELIGIBLE(0)
-    recency_timestamp                     # published_at / first_seen_at
+    role_priority_rank[role_priority],    # P1(4) > P2(3) > P3(2) > UNMAPPED(1) > EXCLUDED(0)
+    adjusted_score,                       # Match score with confidence + years calibration
+    recency_timestamp                     # Ingestion/publication ISO timestamp
 )
 ```
 
-### Backlog Semantics (894 Pending Undigested Vacancies)
-The metric `pending_undigested_vacancies_count: 894` in `production-health` represents all genuine non-delivered vacancies in `state.db`:
-- **Audited Breakdown:**
-  - `REJECT` (862 items / 96.4%): Non-remote, in-office, wrong technical domains (SAP, .NET, Senior SharePoint, Sales/Marketing). Correctly suppressed.
-  - `BORDERLINE` (32 items / 3.6%): Moderate scores (50–70) with missing specific skills or unverified requirements.
-  - `DELIVERED` (10 real + 1 dryrun): Successfully recorded with durable delivery keys.
-  - `ELIGIBLE UNSENT`: 0 (All qualified matches in DB have been delivered).
+---
+
+## 5. Candidate Profile Truth Baseline (Stage 87)
+
+- **Target Roles:**
+  - `P1`: AI Automation Engineer, Application Support Engineer, Technical Support Engineer (Tier 2/3 / L2/L3).
+  - `P2`: Python Backend Developer (Junior+/Mid), System Administrator / IT Systems Engineer.
+  - `P3`: Data Engineer / ETL Developer, DevOps / SRE Junior.
+  - `EXCLUDED`: Senior ML / Core AI Research Engineer, Frontend / Mobile / Embedded / Blockchain Engineer, Non-technical Customer Care.
+- **Experience Baseline (Total 11+ Years in Tech):**
+  - IT Support / Service Desk / Troubleshooting: 11.0 years.
+  - Systems Administration / Infrastructure / Linux: 9.0 years.
+  - Application Support / API Integrations: 5.0 years.
+  - Automation / Scripting (Python, n8n, Webhooks, APIs): 3.5 years.
+  - Modern Python Backend: 3.5 years.
+  - AI Integration / LLM Agents / Prompt Orchestration: 2.0 years.
+- **Salary Floor & Location Constraints:**
+  - Minimum monthly compensation: **\$1,500 USD net / equivalent**.
+  - Remote constraint: **Strict 100% remote**.
+  - Location eligibility: Worldwide, EMEA, Cyprus, Georgia, Armenia, Thailand.
 
 ---
 
-## 5. State & Database Model (`state.db`)
+## 6. Skills Calibration Baseline
 
-SQLite database operating with `journal_mode=WAL` and `synchronous=NORMAL`:
-
-| Table | Purpose | Key Invariant |
-| :--- | :--- | :--- |
-| `vacancies` | Raw & parsed vacancy records across all sources | Unique `(source, source_job_id)` |
-| `matches` | Scored qualification matches and breakdowns | 1:1 linked with vacancy records |
-| `application_queue` | Prioritized pipeline for manual/assisted application | Ordered by priority score & match quality |
-| `applications` | Formal application records and lifecycle tracking | Statuses: `READY`, `SUBMITTED`, `REJECTED`, etc. |
-| `canonical_vacancies` | Cross-source vacancy deduplication clusters | Normalizes company & title |
-| `telegram_delivery_records`| Idempotent digest delivery tracking | Delivery keys (`digest:<id>`, `digest_batch:<key>`) prevent duplicates |
-| `conversation_audits` | Recruiter message processing & send audit log | Tracks all incoming/outgoing message hashes |
-
----
-
-## 6. Calibrated Candidate Profile (`candidate_profile.json`)
-
-Validated and calibrated during Stage 87 against Mikhail Kolesnikov's resume:
-
-- **Location:** Thailand (UTC+7), 100% Remote required.
-- **Languages:** Russian (Native), English (B1 Intermediate).
-- **Decoupled Experience:**
-  - Support & Systems: 11.0 yrs IT Support, 9.0 yrs Sysadmin, 5.0 yrs Application Support (15+ yrs total IT).
-  - Automation & Backend: 3.5 yrs Python development, 3.5 yrs n8n/API automation, 2.0 yrs AI/LLM integrations.
-- **Role Family Priorities:**
-  - `P1` (Primary Target): `AI_AUTOMATION`, `APPLICATION_SUPPORT`, `TECH_SUPPORT`
-  - `P2` (Secondary Adjacent): `PYTHON_BACKEND`, `SYSTEM_ADMIN`
-  - `P3` (Stretch / Experimental): `DATA_ENGINEERING`, `DEVOPS_SRE`
-- **Skill Confidence Model:**
-  - `PROFESSIONAL` (1.00): `python`, `n8n`, `automation`, `telegram`, `rest api`, `webhooks`, `linux`, `sql`, `active directory`, `whisper`, `make`, `docker`, `bash`, `powershell`.
-  - `PROJECT` (0.85): `fastapi`, `ai agents`, `llm`, `postgresql`, `telethon`, `aiogram`, `asyncio`.
+- **Confidence Tiers:**
+  - `PROFESSIONAL` (1.00): `python`, `n8n`, `automation`, `fastapi`, `postgresql`, `docker`, `linux`, `rest api`, `sql`, `telegram`, `webhooks`.
+  - `PROJECT` (0.80): `langchain`, `llamaindex`, `chromadb`, `openai`, `gemini`, `rag`, `redis`.
   - `BASIC` (0.60): `git`, `ci/cd`, `pandas`.
   - `TRANSFERABLE` (0.40): `itsm`, `troubleshooting`, `vpn`, `networking`.
   - `UNKNOWN` (0.00): `kubernetes`, `pytorch`, `c++`, `java`, `react`.
 
 ---
 
-## 7. Feedback Capability Audit & Architecture
+## 7. Telegram Feedback & Application Review Integration (Stage 89)
 
-- **Current Status:** `PARTIAL`
-- **Existing Assets:**
-  - `application_reviews`: Stores human review actions (`APPROVED`, `REJECTED`, `COMPLETED`), reviewer notes, and skipped fields.
-  - `application_tracking`: Tracks state progression (`DISCOVERED`, `ANALYZED`, `READY_TO_APPLY`, `APPLIED`, `REJECTED`, `WITHDRAWN`, `INTERVIEW`, `OFFER`).
-  - `matches`: Stores dimension breakdown, reasons, strengths, and gaps.
-- **Proposed Unified Feedback Loop:**
-  - Expose inline Telegram callback buttons or CLI command `python -m ai_assistant.cli digest-feedback --vacancy-id <id> --action [INTERESTED|NOT_INTERESTED|APPLIED|SKIPPED] [--reason ...]`.
-  - Records feedback directly into `application_reviews` / `matches` to adjust dynamic candidate preferences and exclude skipped vacancies.
+### Architecture & Data Flow
+
+```
+Production Vacancy
+        │
+        ▼
+Telegram Digest (with Inline Keyboard)
+        │
+        ├── [1. 👍] ──> INTERESTED: ApplicationReview(PENDING_REVIEW), tracking.ANALYZED
+        ├── [1. 👎] ──> NOT_INTERESTED: ApplicationReview(REJECTED), tracking.REJECTED
+        ├── [1. 📄] ──> PREPARE_APPLICATION: ApplicationReview(APPROVED), tracking.READY_TO_APPLY, application_queue
+        └── [1. ⏭] ──> SKIP: ApplicationReview(REJECTED), tracking.WITHDRAWN
+        │
+        ▼
+ai_assistant.telegram_feedback.TelegramFeedbackProcessor
+        │
+        ├── Authorization Gate: fail-closed against TELEGRAM_OWNER_ID / TELEGRAM_CHAT_ID
+        ├── Callback Data Decoding: compact 64-byte safe encoding fb:<action>:<id_or_hash>
+        ├── Idempotency Check: deduplicates repeated updates via callback_query_id
+        ├── Canonical State Transitions: authoritative update via application_review & tracking
+        └── Audit Trail: persisted in telegram_feedback_records table
+```
+
+### Safety Invariants & Rules
+
+1. **NO DIRECT SUBMISSION INVARIANT:**
+   Button `📄 Отклик` strictly prepares and transitions review/tracking state to `READY_TO_APPLY` and enqueues into `application_queue`. It **NEVER** triggers automated or external job application submission.
+2. **OPERATOR AUTHORIZATION GATE:**
+   Only the configured operator/owner (`TELEGRAM_OWNER_ID` or `TELEGRAM_CHAT_ID`) is permitted to submit review callbacks. Unauthorized queries fail closed with `⛔ Доступ запрещён`.
+3. **64-BYTE TELEGRAM CALLBACK CONSTRAINT:**
+   Callback data uses format `fb:<action>:<stable_id>` if length $\le$ 64 bytes, or surrogate SHA256 prefix `fb:<action>:h:<16_char_hash>` resolved dynamically from the database.
+4. **IDEMPOTENCY & TERMINAL STATE PROTECTION:**
+   Vacancies already in terminal application states (`APPLIED`, `SUBMITTED`, `VERIFIED`, `INTERVIEW`, `OFFER`) fail closed with safe informational warnings and cannot be overwritten or downgraded by feedback callbacks.
 
 ---
 
@@ -198,7 +209,8 @@ Recruiter message handling follows strict truth-only and fail-closed rules:
 
 ## 10. Verified Test Metrics & Production Status
 
-- **Full Offline Pytest Regression:** **1278 passed** (0 failed, 0 errors in ~10.5m)
+- **Full Offline Pytest Regression:** **1298 passed** (0 failed, 0 errors in 14:06)
+  - `tests/test_stage89_telegram_feedback.py`: 20/20 passed
   - `tests/test_stage88_2_production_provenance_hardening.py`: 15/15 passed
   - `tests/test_stage88_1_production_vacancy_provenance.py`: 12/12 passed
   - `tests/test_stage88_production_match_digest_wiring.py`: 18/18 passed
@@ -208,4 +220,4 @@ Recruiter message handling follows strict truth-only and fail-closed rules:
   - Related Recruiter / Application Suites: 149/149 passed
 - **Production Integrity Audit (`ai_assistant.cli audit --tracked`):** 0 errors, healthy = true
 - **Production Operational Health (`ai_assistant.cli production-health`):** Status: HEALTHY, 0 alerts, 0 consecutive failures
-- **Production Database SHA256:** `d5c9a505af6d22850bed5c3fd8ca9e5cf1ac05527ed59edd5996181e82f45777` (Verified 100% immutable)
+- **Production Database SHA256:** `41644ac4518a83b547bd63e36eb72f9ff328ccc7a9b7495e14662e47b3310750`

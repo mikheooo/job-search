@@ -25,6 +25,7 @@ LLM_MODEL = os.getenv("LLM_MODEL", "google/gemini-1.5-pro")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", os.getenv("TG_BOT_TOKEN", ""))
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", os.getenv("TG_CHAT_ID", os.getenv("TELEGRAM_ALLOWED_USERS", os.getenv("TELEGRAM_HOME_CHANNEL", ""))))
+TELEGRAM_OWNER_ID = os.getenv("TELEGRAM_OWNER_ID", os.getenv("TELEGRAM_ADMIN_ID", os.getenv("TELEGRAM_USER_ID", os.getenv("TELEGRAM_CHAT_ID", ""))))
 TG_BOT_TOKEN = TELEGRAM_BOT_TOKEN
 TG_CHAT_ID = TELEGRAM_CHAT_ID
 

@@ -77,6 +77,7 @@ class TelegramNotifier:
         chat_id: Optional[str] = None,
         parse_mode: Optional[str] = None,
         disable_web_page_preview: bool = True,
+        reply_markup: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Send a message via Telegram Bot API with error isolation."""
         target_chat = str(chat_id or self.chat_id or "").strip()
@@ -90,6 +91,8 @@ class TelegramNotifier:
         }
         if parse_mode:
             payload["parse_mode"] = parse_mode
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
 
         # Custom transport hook for testing / mocking
         if self.transport_fn is not None:
@@ -425,6 +428,66 @@ class TelegramNotifier:
             return {"delivered": True, "delivery_key": key, "result": res}
         else:
             return {"delivered": False, "error": res.get("error"), "text": text}
+
+    def answer_callback_query(
+        self,
+        callback_query_id: str,
+        text: Optional[str] = None,
+        show_alert: bool = False,
+    ) -> Dict[str, Any]:
+        """Acknowledge a Telegram callback query with optional text/alert (Stage 89)."""
+        cb_id = str(callback_query_id or "").strip()
+        if not self.bot_token or not cb_id:
+            return {"ok": False, "error": "Telegram Bot Token or callback_query_id not provided"}
+
+        payload: Dict[str, Any] = {
+            "callback_query_id": cb_id,
+            "show_alert": show_alert,
+        }
+        if text:
+            payload["text"] = text
+
+        if self.transport_fn is not None:
+            try:
+                return self.transport_fn(self.bot_token, payload)
+            except Exception as e:
+                return {"ok": False, "error": f"Transport exception: {e}"}
+
+        if os.getenv("PYTEST_CURRENT_TEST") or os.getenv("JOB_SEARCH_TEST_NETWORK_BLOCKED"):
+            return {"ok": True, "result": True, "mocked": True}
+
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/answerCallbackQuery"
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=data,
+                headers={"Content-Type": "application/json", "User-Agent": "JobAgentTelegramBot/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=10.0) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw)
+        except Exception as e:
+            logger.warning(f"Telegram answerCallbackQuery failed: {e}")
+            return {"ok": False, "error": str(e)}
+
+    @staticmethod
+    def build_digest_inline_keyboard(vacancies: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Build compact inline keyboard controls for delivered vacancies (Stage 89)."""
+        from .telegram_feedback import encode_callback_data, TelegramFeedbackAction
+        keyboard = []
+        for idx, vac in enumerate(vacancies, 1):
+            vid = vac.get("id") or vac.get("stable_id") or ""
+            if not vid:
+                continue
+            row = [
+                {"text": f"{idx}. 👍", "callback_data": encode_callback_data(TelegramFeedbackAction.INTERESTED, vid)},
+                {"text": f"{idx}. 👎", "callback_data": encode_callback_data(TelegramFeedbackAction.NOT_INTERESTED, vid)},
+                {"text": f"{idx}. 📄 Отклик", "callback_data": encode_callback_data(TelegramFeedbackAction.PREPARE_APPLICATION, vid)},
+                {"text": f"{idx}. ⏭", "callback_data": encode_callback_data(TelegramFeedbackAction.SKIP, vid)},
+            ]
+            keyboard.append(row)
+        return {"inline_keyboard": keyboard}
 
 
 def cleanup_telegram_test_records(

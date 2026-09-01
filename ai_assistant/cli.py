@@ -3952,11 +3952,15 @@ def export_digest_cmd(
     if mark_delivered and formatted_items:
         mark_digest_delivered([it["id"] for it in formatted_items])
 
+    from .telegram_notifier import TelegramNotifier
+    reply_markup = TelegramNotifier.build_digest_inline_keyboard(formatted_items) if formatted_items else None
+
     if output_json or format_type == "json":
         out = {
             "telegram_post": post_text,
             "new_vacancies_data": formatted_items,
             "count": len(formatted_items),
+            "reply_markup": reply_markup,
         }
         print(json.dumps(out, ensure_ascii=False, indent=2))
     else:
@@ -4061,6 +4065,52 @@ def production_run_cmd(dry_run: bool = False, fetcher_script: str | None = None)
 
     return run_production_pipeline(fetcher_script=fetcher_script, dry_run=dry_run)
 
+
+
+
+def feedback_cmd(
+    action: str = "list",
+    limit: int = 50,
+    vacancy_id: Optional[str] = None,
+    output_json: bool = False,
+) -> int:
+    """Inspect and summarize Telegram human feedback (Stage 89)."""
+    try:
+        init_db()
+    except Exception as e:
+        print(f"Failed to open DB: {e}", file=sys.stderr)
+        return 1
+
+    from .db import list_telegram_feedback, get_telegram_feedback_summary
+
+    if action == "summary":
+        summary = get_telegram_feedback_summary()
+        if output_json:
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+        else:
+            print("📊 Telegram Feedback Summary:")
+            print(f"  Total feedbacks recorded: {summary['total_feedbacks']}")
+            for act, cnt in summary["action_counts"].items():
+                print(f"  - {act}: {cnt}")
+            if summary.get("breakdown"):
+                print("\n  Breakdown:")
+                for b in summary["breakdown"][:10]:
+                    print(f"    • {b['action']} | {b['source']} | {b['company']} | {b['decision']} -> {b['count']}")
+        return 0
+
+    # Default action: list
+    records = list_telegram_feedback(limit=limit, vacancy_stable_id=vacancy_id)
+    if output_json:
+        print(json.dumps({"records": records, "count": len(records)}, ensure_ascii=False, indent=2))
+    else:
+        if not records:
+            print("No feedback records recorded yet.")
+            return 0
+        print(f"📋 Last {len(records)} Telegram Feedback Records:")
+        for r in records:
+            print(f"  [{r['created_at']}] ID: {r['id']} | Action: {r['action']} | Vacancy: {r['vacancy_stable_id']}")
+            print(f"      Transition: {r['previous_status']} -> {r['new_status']} | User: {r['telegram_user_id']} | CB: {r['callback_query_id']}")
+    return 0
 
 def main() -> int:
     # Handle direct `review <id>` as `review show <id>`
@@ -4448,6 +4498,17 @@ def main() -> int:
     health_parser = subparsers.add_parser("production-health", help="Inspect production state and evaluate operational health (Stage 83)")
     health_parser.add_argument("--json", dest="as_json", action="store_true", help="Output machine-readable JSON structure")
 
+    # Stage 89 — Telegram Feedback Inspector
+    fb_parser = subparsers.add_parser("feedback", help="Inspect Telegram human feedback (Stage 89)")
+    fb_sub = fb_parser.add_subparsers(dest="feedback_command", help="Feedback action")
+    fb_list_p = fb_sub.add_parser("list", help="List recorded feedback events")
+    fb_list_p.add_argument("--limit", type=int, default=50, help="Maximum records to list")
+    fb_list_p.add_argument("--vacancy-id", type=str, default=None, help="Filter by vacancy stable_id")
+    fb_list_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
+
+    fb_sum_p = fb_sub.add_parser("summary", help="Show feedback aggregation summary")
+    fb_sum_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
+
     production_run_parser = subparsers.add_parser("production-run", help="Run the fail-closed production wrapper (Stage 83)")
     production_run_parser.add_argument("--dry-run", action="store_true", help="Disable external delivery and live vacancy adapters")
     production_run_parser.add_argument("--fetcher", dest="fetcher_script", default=None, help=argparse.SUPPRESS)
@@ -4795,6 +4856,12 @@ def main() -> int:
         return production_health_cmd(
             output_json=getattr(args, "as_json", False),
         )
+    elif args.command == "feedback":
+        cmd = getattr(args, "feedback_command", "list") or "list"
+        limit = getattr(args, "limit", 50)
+        vac_id = getattr(args, "vacancy_id", None)
+        as_json = getattr(args, "as_json", False)
+        return feedback_cmd(action=cmd, limit=limit, vacancy_id=vac_id, output_json=as_json)
     elif args.command == "production-run":
         return production_run_cmd(
             dry_run=getattr(args, "dry_run", False),

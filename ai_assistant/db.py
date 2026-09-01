@@ -460,6 +460,26 @@ def init_db() -> None:
     ''')
     cursor.execute('''CREATE INDEX IF NOT EXISTS idx_tg_delivery_key ON telegram_delivery_records(delivery_key)''')
     cursor.execute('''CREATE INDEX IF NOT EXISTS idx_tg_delivery_created ON telegram_delivery_records(delivered_at)''')
+
+    # Stage 89 — Telegram Feedback Audit Records
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS telegram_feedback_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vacancy_stable_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            telegram_user_id TEXT,
+            telegram_chat_id TEXT,
+            callback_query_id TEXT UNIQUE,
+            previous_status TEXT,
+            new_status TEXT,
+            created_at TEXT NOT NULL,
+            payload_json TEXT
+        )
+    ''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_tg_feedback_vac ON telegram_feedback_records(vacancy_stable_id)''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_tg_feedback_action ON telegram_feedback_records(action)''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_tg_feedback_cb ON telegram_feedback_records(callback_query_id)''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_tg_feedback_created ON telegram_feedback_records(created_at)''')
     conn.commit()
     conn.close()
 
@@ -2670,3 +2690,144 @@ def get_production_health(now_dt: Optional[Any] = None, storage_dir: Optional[st
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Stage 89: Telegram Feedback Records & Helpers
+# ---------------------------------------------------------------------------
+
+def record_telegram_feedback(
+    vacancy_stable_id: str,
+    action: str,
+    telegram_user_id: Optional[str] = None,
+    telegram_chat_id: Optional[str] = None,
+    callback_query_id: Optional[str] = None,
+    previous_status: Optional[str] = None,
+    new_status: Optional[str] = None,
+    payload_json: Optional[str] = None,
+    created_at: Optional[str] = None,
+) -> int:
+    """Record a Telegram feedback callback event into the audit trail."""
+    if is_dry_run():
+        return 0
+    init_db()
+    conn = get_connection()
+    cur = conn.cursor()
+    now_iso = created_at or datetime.utcnow().isoformat()
+    cur.execute('''
+        INSERT INTO telegram_feedback_records (
+            vacancy_stable_id, action, telegram_user_id, telegram_chat_id,
+            callback_query_id, previous_status, new_status, created_at, payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        vacancy_stable_id,
+        action,
+        str(telegram_user_id) if telegram_user_id is not None else None,
+        str(telegram_chat_id) if telegram_chat_id is not None else None,
+        str(callback_query_id) if callback_query_id is not None else None,
+        previous_status,
+        new_status,
+        now_iso,
+        payload_json,
+    ))
+    rec_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return rec_id
+
+
+def list_telegram_feedback(limit: int = 50, vacancy_stable_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """List recent Telegram feedback records."""
+    init_db()
+    conn = get_connection()
+    cur = conn.cursor()
+    if vacancy_stable_id:
+        cur.execute('''
+            SELECT id, vacancy_stable_id, action, telegram_user_id, telegram_chat_id,
+                   callback_query_id, previous_status, new_status, created_at, payload_json
+            FROM telegram_feedback_records
+            WHERE vacancy_stable_id = ?
+            ORDER BY id DESC LIMIT ?
+        ''', (vacancy_stable_id, limit))
+    else:
+        cur.execute('''
+            SELECT id, vacancy_stable_id, action, telegram_user_id, telegram_chat_id,
+                   callback_query_id, previous_status, new_status, created_at, payload_json
+            FROM telegram_feedback_records
+            ORDER BY id DESC LIMIT ?
+        ''', (limit,))
+    rows = cur.fetchall()
+    conn.close()
+    results = []
+    for r in rows:
+        results.append({
+            "id": r[0],
+            "vacancy_stable_id": r[1],
+            "action": r[2],
+            "telegram_user_id": r[3],
+            "telegram_chat_id": r[4],
+            "callback_query_id": r[5],
+            "previous_status": r[6],
+            "new_status": r[7],
+            "created_at": r[8],
+            "payload_json": r[9],
+        })
+    return results
+
+
+def get_telegram_feedback_summary() -> Dict[str, Any]:
+    """Produce read-only aggregation of recorded Telegram feedback (Stage 89)."""
+    init_db()
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute('''
+        SELECT action, COUNT(*) FROM telegram_feedback_records GROUP BY action
+    ''')
+    action_counts = {r[0]: r[1] for r in cur.fetchall()}
+
+    # Group by role_family / company / source by joining with vacancies
+    cur.execute('''
+        SELECT f.action, v.source, v.company, v.match_decision, COUNT(*)
+        FROM telegram_feedback_records f
+        LEFT JOIN vacancies v ON v.stable_id = f.vacancy_stable_id
+        GROUP BY f.action, v.source, v.company, v.match_decision
+    ''')
+    breakdown_rows = cur.fetchall()
+    conn.close()
+
+    return {
+        "total_feedbacks": sum(action_counts.values()),
+        "action_counts": {
+            "INTERESTED": action_counts.get("INTERESTED", 0),
+            "NOT_INTERESTED": action_counts.get("NOT_INTERESTED", 0),
+            "PREPARE_APPLICATION": action_counts.get("PREPARE_APPLICATION", 0),
+            "SKIP": action_counts.get("SKIP", 0),
+        },
+        "breakdown": [
+            {
+                "action": r[0],
+                "source": r[1] or "UNKNOWN",
+                "company": r[2] or "UNKNOWN",
+                "decision": r[3] or "UNKNOWN",
+                "count": r[4],
+            }
+            for r in breakdown_rows
+        ],
+    }
+
+
+def resolve_vacancy_by_hash_prefix(hash_prefix: str) -> Optional[str]:
+    """Resolve a vacancy stable_id by its SHA256 hash prefix for compact Telegram callbacks."""
+    import hashlib
+    init_db()
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT stable_id FROM vacancies")
+    rows = cur.fetchall()
+    conn.close()
+    for (sid,) in rows:
+        if sid and hashlib.sha256(sid.encode("utf-8")).hexdigest().startswith(hash_prefix):
+            return sid
+    return None
+
+get_vacancy = get_vacancy_by_id
