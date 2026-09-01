@@ -17,6 +17,7 @@ class ReviewStatus(str, Enum):
     PENDING_REVIEW = "PENDING_REVIEW"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+    COMPLETED = "COMPLETED"
 
 class ApplicationReview(BaseModel):
     vacancy_stable_id: str
@@ -258,6 +259,8 @@ def approve_review(vacancy_stable_id: str, note: str | None = None, force: bool 
         return rev  # idempotent
     if rev.status == ReviewStatus.REJECTED:
         raise ValueError(f"Cannot approve: review already REJECTED")
+    if rev.status == ReviewStatus.COMPLETED:
+        raise ValueError(f"Cannot approve: review already COMPLETED")
 
     # Safety: never change tracking to APPLIED, never call browser submit
     rev.status = ReviewStatus.APPROVED
@@ -283,6 +286,32 @@ def is_review_approved(vacancy_stable_id: str) -> bool:
     rev = get_application_review(vacancy_stable_id)
     return rev is not None and rev.status == ReviewStatus.APPROVED
 
+
+def complete_review(vacancy_stable_id: str, note: str | None = None) -> Optional[ApplicationReview]:
+    """Mark an approved review as consumed by a terminal application state."""
+    rev = get_application_review(vacancy_stable_id)
+    if not rev or rev.status == ReviewStatus.COMPLETED:
+        return rev
+    if rev.status != ReviewStatus.APPROVED:
+        return rev
+    rev.status = ReviewStatus.COMPLETED
+    rev.note = note or rev.note or "Review consumed by completed application lifecycle"
+    rev.updated_at = _now()
+    save_application_review(rev)
+    return rev
+
+
+def reopen_review_after_browser_block(vacancy_stable_id: str, note: str | None = None) -> Optional[ApplicationReview]:
+    """Revoke an approval when the latest browser preparation is blocked."""
+    rev = get_application_review(vacancy_stable_id)
+    if not rev or rev.status != ReviewStatus.APPROVED:
+        return rev
+    rev.status = ReviewStatus.PENDING_REVIEW
+    rev.note = note or "Approval reopened because browser preparation is BLOCKED"
+    rev.updated_at = _now()
+    save_application_review(rev)
+    return rev
+
 def reject_review(vacancy_stable_id: str, note: str | None = None) -> ApplicationReview:
     _ensure_table()
     rev = get_application_review(vacancy_stable_id, REVIEW_VERSION)
@@ -301,6 +330,8 @@ def reject_review(vacancy_stable_id: str, note: str | None = None) -> Applicatio
         return rev
     if rev.status == ReviewStatus.APPROVED:
         raise ValueError(f"Cannot reject: already APPROVED")
+    if rev.status == ReviewStatus.COMPLETED:
+        raise ValueError(f"Cannot reject: review already COMPLETED")
     rev.status = ReviewStatus.REJECTED
     rev.note = note
     rev.updated_at = _now()

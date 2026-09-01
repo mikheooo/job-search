@@ -3755,6 +3755,9 @@ def application_runner_cmd(
         print(json.dumps(res.model_dump(), indent=2, ensure_ascii=False))
         return 0
 
+    print(format_runner_result_cli(res))
+    return 0
+
 def export_digest_cmd(
     format_type: str = "telegram",
     limit: int = 10,
@@ -4043,7 +4046,14 @@ def production_health_cmd(output_json: bool = False) -> int:
             print("Active Alerts: None (All systems operational)")
         print("=" * 60)
         
-    return 0 if res["health"] in ("HEALTHY", "DEGRADED") else 1
+    return 0 if res["health"] == "HEALTHY" else (1 if res["health"] == "DEGRADED" else 2)
+
+
+def production_run_cmd(dry_run: bool = False, fetcher_script: str | None = None) -> int:
+    """Run the canonical production wrapper and propagate its exact outcome."""
+    from .runner import run_production_pipeline
+
+    return run_production_pipeline(fetcher_script=fetcher_script, dry_run=dry_run)
 
 
 def main() -> int:
@@ -4432,6 +4442,10 @@ def main() -> int:
     health_parser = subparsers.add_parser("production-health", help="Inspect production state and evaluate operational health (Stage 83)")
     health_parser.add_argument("--json", dest="as_json", action="store_true", help="Output machine-readable JSON structure")
 
+    production_run_parser = subparsers.add_parser("production-run", help="Run the fail-closed production wrapper (Stage 83)")
+    production_run_parser.add_argument("--dry-run", action="store_true", help="Disable external delivery and live vacancy adapters")
+    production_run_parser.add_argument("--fetcher", dest="fetcher_script", default=None, help=argparse.SUPPRESS)
+
     args = None
     try:
         args = parser.parse_args()
@@ -4774,6 +4788,11 @@ def main() -> int:
     elif args.command == "production-health":
         return production_health_cmd(
             output_json=getattr(args, "as_json", False),
+        )
+    elif args.command == "production-run":
+        return production_run_cmd(
+            dry_run=getattr(args, "dry_run", False),
+            fetcher_script=getattr(args, "fetcher_script", None),
         )
     else:
         parser.print_help()
@@ -5506,4 +5525,3 @@ def telegram_test_cmd(message: str) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

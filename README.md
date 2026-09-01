@@ -130,6 +130,8 @@ python -m ai_assistant.cli submissions                 # submissions + verify/re
 python -m ai_assistant.cli dashboard                   # dashboard
 python -m ai_assistant.cli identity / duplicates       # canonical identity
 python -m ai_assistant.cli audit [--tracked] [--json]  # integrity audit (read-only)
+python -m ai_assistant.cli production-run [--dry-run]  # fail-closed scheduled pipeline
+python -m ai_assistant.cli production-health [--json]  # operational health + adapter failures
 ```
 
 Exit codes: `0` healthy, `1` warnings, `2` errors, `3` invalid usage.
@@ -137,13 +139,19 @@ Exit codes: `0` healthy, `1` warnings, `2` errors, `3` invalid usage.
 ## 8. Tests
 
 ```bash
-pytest tests -q          # 606 tests collected (599 functions + parametrized)
+pytest tests -q          # 1,225 tests collected (1,212 functions + 13 parametrized cases)
 ```
 
-The suite covers stages 1–29: core lifecycle (tracked since Stage 15) plus
-Stage 16–29 modules (HH form extraction, prefill, gates, submission,
-messaging, email/Gmail). Tests use fakes/mocks only — no live browser, no
-network, no DB writes outside temp dirs.
+The canonical `tests/` suite contains 96 test files: 23 core/module suites and
+73 staged regression suites covering stages 16–87, including integrity,
+controlled HH flows, messaging, digest crash consistency, production
+operations, ingestion robustness, matching quality, and profile calibration.
+An autouse fixture redirects SQLite, vacancies, and logs to per-test temporary
+paths, blocks all non-loopback sockets and all `urllib` requests;
+known CDP ports are blocked too, while ephemeral loopback remains available to
+in-process ASGI test clients. Transport behavior must use fakes/mocks. Production dry-run also
+skips creation and invocation of Himalayas, RemoteOK, WeWorkRemotely, and Habr
+Career adapters. Disaster-recovery snapshot folders are not part of this count.
 
 The Stage 20D regression fixture `artifacts/hh_manual_form_snapshot.json`
 (real HH application-form DOM structure, no cookies/tokens/personal data;
@@ -156,6 +164,8 @@ unchanged in a clean clone.
 - **Fail-closed**: any uncertainty blocks the action (0 mutations).
 - **REVIEW by default**: AUTO is always an explicit opt-in (kill switches
   `HH_APPLY_MODE`, `HH_AUTO_REPLY_ENABLED`).
+- **Production discovery is review-only**: the scheduled `production-run`
+  entry point does not import or call `auto_apply_modes.run_auto_apply`.
 - **SendGate / EmailSendGate**: REVIEW never sends; email sending is
   physically absent from the codebase.
 - **11 submission gates** (Stage 20I) before the single submit click; no

@@ -957,12 +957,56 @@ def list_submissions(limit: int = 50):
 # --- Submission verifications persistence ---
 def save_verification(vacancy_stable_id: str, submission_id: str, verification_version: str, verification_status: str, verification_json: str, verified_at: str | None = None, created_at: str | None = None, updated_at: str | None = None) -> None:
     import datetime as _dt
+    import json as _json
     if verified_at is None:
         verified_at = _dt.datetime.utcnow().isoformat()
     if created_at is None:
         created_at = _dt.datetime.utcnow().isoformat()
     if updated_at is None:
         updated_at = _dt.datetime.utcnow().isoformat()
+
+    known_statuses = {"VERIFIED", "FAILED", "AMBIGUOUS", "BLOCKED"}
+    # Compatibility with legacy callers that passed status before version.
+    if verification_version in known_statuses and verification_status not in known_statuses:
+        verification_version, verification_status = verification_status, verification_version
+    verification_version = str(verification_version or "v1")
+    verification_status = str(verification_status or "").upper()
+    if verification_status not in known_statuses:
+        raise ValueError(f"Invalid verification status: {verification_status}")
+
+    try:
+        payload = _json.loads(verification_json) if verification_json else {}
+    except Exception:
+        payload = {"legacy_message": str(verification_json or "")}
+    required = {"vacancy_stable_id", "submission_id", "verification_status", "verified_at"}
+    if not isinstance(payload, dict) or not required.issubset(payload):
+        evidence = payload if isinstance(payload, dict) else {"legacy_payload": payload}
+        payload = {
+            "vacancy_stable_id": vacancy_stable_id,
+            "submission_id": submission_id,
+            "verification_status": verification_status,
+            "evidence": evidence,
+            "final_url": None,
+            "page_title": None,
+            "success_signal": None,
+            "screenshot_path": None,
+            "verified_at": verified_at,
+            "warnings": ["Normalized legacy verification payload"],
+            "flow_type": None,
+            "source_url": None,
+            "application_url": None,
+            "application_domain": None,
+            "redirect_chain": [],
+            "is_external_application": False,
+            "verification_strategy": None,
+            "verification_version": verification_version,
+        }
+    else:
+        payload["vacancy_stable_id"] = vacancy_stable_id
+        payload["submission_id"] = submission_id
+        payload["verification_status"] = verification_status
+        payload["verification_version"] = verification_version
+    verification_json = _json.dumps(payload, ensure_ascii=False)
     conn = get_connection()
     cur = conn.cursor()
     cur.execute('''
@@ -1006,7 +1050,8 @@ def is_verified(vacancy_stable_id: str, submission_id: str, verification_version
     row = get_verification(vacancy_stable_id, submission_id, verification_version)
     if not row:
         return False
-    return row[3] == "VERIFIED"
+    status = row.verification_status.value if hasattr(row.verification_status, "value") else str(row.verification_status)
+    return status == "VERIFIED"
 
 
 def list_verifications(limit: int = 50):
@@ -2332,7 +2377,10 @@ def list_digest_attempts(limit: int = 50, now_dt: Optional[Any] = None) -> List[
         vac_list = payload.get("vacancies", [])
         
         # Calculate age
-        attempted_at_str = payload.get("attempted_at") or r[3]
+        # delivered_at is the authoritative start time for the current
+        # persisted attempt. It is refreshed atomically when a failed batch is
+        # retried; payload timestamps are diagnostic and may be stale.
+        attempted_at_str = r[3] or payload.get("attempted_at")
         age_seconds = 0
         try:
             att_dt = datetime.datetime.fromisoformat(attempted_at_str.replace("Z", "+00:00"))
@@ -2469,6 +2517,7 @@ def get_production_health(now_dt: Optional[Any] = None, storage_dir: Optional[st
             "delivered_count": 0,
             "duplicate_delivery_keys_count": 0,
             "consecutive_failures": 0,
+            "last_production_error": None,
             "last_digest_attempt_at": None,
             "last_successful_digest_at": None,
             "pending_undigested_vacancies_count": 0,
@@ -2568,7 +2617,9 @@ def get_production_health(now_dt: Optional[Any] = None, storage_dir: Optional[st
     from .runner import ConsecutiveFailureTracker
     tracker = ConsecutiveFailureTracker(storage_dir=storage_dir)
     consec_fails = tracker.get_consecutive_failures()
+    tracker_status = tracker.get_status()
     health_result["metrics"]["consecutive_failures"] = consec_fails
+    health_result["metrics"]["last_production_error"] = tracker_status.get("last_error")
 
     # 7. Evaluate Health & Alert Rules
     # Rule A: Critical / Unhealthy if AMBIGUOUS, STALE, or Duplicate keys exist
@@ -2601,7 +2652,11 @@ def get_production_health(now_dt: Optional[Any] = None, storage_dir: Optional[st
             health_result["health"] = "DEGRADED"
             health_result["alerts"].append({
                 "severity": "WARNING",
-                "message": f"Isolated digest delivery failure recorded. Automatic retry will occur on next scheduled run.",
+                "message": (
+                    f"Production run failure recorded: {tracker_status.get('last_error')}"
+                    if consec_fails > 0 and tracker_status.get("last_error")
+                    else "Isolated digest delivery failure recorded. Automatic retry will occur on next scheduled run."
+                ),
                 "timestamp": now_iso,
             })
 

@@ -163,6 +163,9 @@ def set_application_status(
             cur.execute("UPDATE application_tracking SET applied_at=COALESCE(applied_at, ?) WHERE vacancy_stable_id=?", (now, vacancy_stable_id))
         conn.commit()
         conn.close()
+        if status == ApplicationStatus.APPLIED:
+            from .application_review import complete_review
+            complete_review(vacancy_stable_id, "Review consumed after tracking reached APPLIED")
         return get_application_status(vacancy_stable_id)  # type: ignore
     else:
         # create
@@ -198,6 +201,9 @@ def set_application_status(
         )
         conn2.commit()
         conn2.close()
+        if status == ApplicationStatus.APPLIED:
+            from .application_review import complete_review
+            complete_review(vacancy_stable_id, "Review consumed after tracking reached APPLIED")
         return get_application_status(vacancy_stable_id)  # type: ignore
 
 def transition_application(
@@ -260,6 +266,9 @@ def transition_application(
     )
     conn.commit()
     conn.close()
+    if new_status == ApplicationStatus.APPLIED:
+        from .application_review import complete_review
+        complete_review(vacancy_stable_id, "Review consumed after tracking reached APPLIED")
     return get_application_status(vacancy_stable_id)  # type: ignore
 
 
@@ -487,4 +496,3 @@ def sync_application_tracking(profile_path: Optional[str] = None) -> Dict[str, i
                     unchanged += 1
 
     return {"Created": created, "Updated": updated, "Unchanged": unchanged}
-

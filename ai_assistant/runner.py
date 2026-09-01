@@ -5,10 +5,22 @@ import os
 import subprocess
 import sys
 import time
+import re
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from . import config
+
+
+ADAPTER_FAILURE_RE = re.compile(r"Adapter\s+([^\r\n:]+)\s+fetch error:\s*([^\r\n]+)", re.IGNORECASE)
+
+
+def extract_adapter_failures(output: str) -> list[str]:
+    """Extract per-adapter failures emitted by the canonical watcher."""
+    failures = []
+    for adapter, reason in ADAPTER_FAILURE_RE.findall(output or ""):
+        failures.append(f"{adapter.strip()}: {reason.strip()}")
+    return failures
 
 
 def is_pid_running(pid: int) -> bool:
@@ -245,6 +257,15 @@ def run_production_pipeline(
         )
         exit_code = proc.returncode
         captured_output = proc.stdout or ""
+        adapter_failures = extract_adapter_failures(captured_output)
+        if adapter_failures and exit_code == 0:
+            exit_code = 4
+            captured_output += (
+                "\n[PRODUCTION FAILURE] One or more vacancy adapters failed; "
+                "overriding dispatcher SUCCESS.\n"
+                + "\n".join(f"  - {failure}" for failure in adapter_failures)
+                + "\n"
+            )
     except Exception as e:
         exit_code = 99
         captured_output = f"[CRITICAL RUNNER ERROR] Failed to spawn process: {e}\n"
@@ -268,7 +289,9 @@ def run_production_pipeline(
     if exit_code == 0:
         tracker.record_success()
     else:
-        tracker.record_failure(error=f"Exit code {exit_code}")
+        failures = extract_adapter_failures(captured_output)
+        detail = "; ".join(failures) if failures else f"Exit code {exit_code}"
+        tracker.record_failure(error=detail)
 
     lock.release()
     print(sanitized_output, end="")

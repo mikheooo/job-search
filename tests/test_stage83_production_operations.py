@@ -319,3 +319,39 @@ def test_scheduler_wrapper_never_sends_second_instance_concurrently(isolated_env
     assert code == 0  # Skipped as safe no-op
 
     lock.release()
+
+
+def test_adapter_failure_overrides_success_and_degrades_health(isolated_env, tmp_path):
+    """A dispatcher cannot mask an individual adapter failure with exit 0."""
+    dummy_script = tmp_path / "dummy_adapter_failure.py"
+    dummy_script.write_text(
+        "print('Adapter himalayas fetch error: upstream unavailable')\n"
+        "print('[SUCCESS] Canonical discovery completed')\n",
+        encoding="utf-8",
+    )
+
+    code = run_production_pipeline(
+        fetcher_script=str(dummy_script),
+        logs_dir=isolated_env["logs_dir"],
+    )
+
+    assert code == 4
+    health = db.get_production_health(storage_dir=isolated_env["logs_dir"])
+    assert health["health"] == "DEGRADED"
+    assert "himalayas" in health["metrics"]["last_production_error"]
+    assert any("himalayas" in alert["message"] for alert in health["alerts"])
+
+
+def test_production_runtime_does_not_wire_auto_apply():
+    """The production entry path must not import or call run_auto_apply."""
+    from pathlib import Path
+    import inspect
+    from ai_assistant import cli as cli_module
+    from ai_assistant import runner as runner_module
+
+    source = inspect.getsource(cli_module.production_run_cmd) + inspect.getsource(runner_module.run_production_pipeline)
+    wrapper = (Path(__file__).parents[1] / "scripts" / "run_job_search_production.ps1").read_text(encoding="utf-8")
+    assert "run_auto_apply" not in source
+    assert "run_auto_apply" not in wrapper
+    assert "auto_apply_modes" not in source
+    assert "auto_apply_modes" not in wrapper

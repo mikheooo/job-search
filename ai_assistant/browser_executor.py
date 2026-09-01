@@ -1551,6 +1551,12 @@ def save_browser_session(session: BrowserApplicationSession) -> None:
     )
     conn.commit()
     conn.close()
+    if session.status == BrowserStatus.BLOCKED:
+        from .application_review import reopen_review_after_browser_block
+        reopen_review_after_browser_block(
+            session.vacancy_stable_id,
+            "Approval reopened because latest browser preparation is BLOCKED",
+        )
 
 def get_browser_session(vacancy_stable_id: str, executor_version: str | None = None) -> Optional[BrowserApplicationSession]:
     init_db()
@@ -2135,6 +2141,19 @@ def submit_application_in_browser(
             executor_version="v1",
         )
 
+    # A concrete persisted browser BLOCKED state takes precedence so a revoked
+    # approval still reports its root cause. If no browser state exists, keep
+    # the human review gate first.
+    sess = get_browser_session(vacancy_stable_id)
+    if sess and sess.status == BrowserStatus.BLOCKED:
+        return SubmitResult(
+            vacancy_stable_id=vacancy_stable_id,
+            submission_id=submission_id,
+            status="BLOCKED",
+            error=f"Browser session BLOCKED and not ready for submit. Status: {sess.status}",
+            executor_version="v1",
+        )
+
     # Get review
     from .application_review import get_application_review, ReviewStatus
     review = get_application_review(vacancy_stable_id)
@@ -2147,6 +2166,15 @@ def submit_application_in_browser(
             executor_version="v1",
         )
 
+    if not sess or sess.status != BrowserStatus.READY_FOR_REVIEW:
+        return SubmitResult(
+            vacancy_stable_id=vacancy_stable_id,
+            submission_id=submission_id,
+            status="BLOCKED",
+            error=f"Browser session not ready for submit. Status: {sess.status if sess else 'None'}",
+            executor_version="v1",
+        )
+
     # Check tracking status
     from .application_tracking import get_application_status, ApplicationStatus
     track = get_application_status(vacancy_stable_id)
@@ -2156,17 +2184,6 @@ def submit_application_in_browser(
             submission_id=submission_id,
             status="BLOCKED",
             error=f"Tracking status {track.status if track else 'None'} is not READY_TO_APPLY",
-            executor_version="v1",
-        )
-
-    # Check browser session
-    sess = get_browser_session(vacancy_stable_id)
-    if not sess or sess.status != BrowserStatus.READY_FOR_REVIEW:
-        return SubmitResult(
-            vacancy_stable_id=vacancy_stable_id,
-            submission_id=submission_id,
-            status="BLOCKED",
-            error=f"Browser session not ready for submit. Status: {sess.status if sess else 'None'}",
             executor_version="v1",
         )
 
@@ -2626,4 +2643,3 @@ def run_apply_flow_audit(
         json.dump(results, f, indent=2, ensure_ascii=False)
 
     return results
-

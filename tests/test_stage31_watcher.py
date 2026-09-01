@@ -536,3 +536,23 @@ def test_cli_watch_once_json_output(clean_db, capsys):
     assert data["new_vacancies_count"] == 1
     assert len(data["items"]) == 1
     assert data["items"][0]["submit_attempted"] is False
+
+
+def test_dry_run_never_calls_real_vacancy_adapters(clean_db):
+    """Dry-run previews local state and never invokes configured live sources."""
+    forbidden = MagicMock(side_effect=AssertionError("live adapter called during dry-run"))
+    adapters = {
+        name: MagicMock(fetch_vacancies=forbidden)
+        for name in ("himalayas", "remoteok", "weworkremotely", "habrcareer")
+    }
+    cfg = WatcherConfig(
+        sources=list(adapters),
+        profile_path=clean_db["profile_path"],
+        batch_limit=5,
+    )
+
+    with patch.dict(cli.SOURCES, adapters, clear=True):
+        result = run_watcher_cycle(cfg, dry_run=True)
+
+    assert result.errors == []
+    assert forbidden.call_count == 0

@@ -109,3 +109,10 @@ def test_stage70_global_conftest_blocks_direct_urlopen_to_telegram():
     import urllib.request
     with pytest.raises(RuntimeError, match="SAFETY VIOLATION"):
         urllib.request.urlopen("https://api.telegram.org/bot12345/sendMessage")
+
+
+def test_global_conftest_blocks_all_direct_socket_connections():
+    """Network isolation is global, not Telegram-specific."""
+    import socket
+    with pytest.raises(RuntimeError, match="SAFETY VIOLATION"):
+        socket.create_connection(("himalayas.app", 443), timeout=1)

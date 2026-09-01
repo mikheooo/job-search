@@ -266,6 +266,36 @@ class IntegrityAuditor:
                     except Exception:
                         pass
 
+    def _check_verification_json_records(self, tracked_sids: Set[str]):
+        """Validate persisted verification JSON independently of model getters."""
+        from .submission_verifier import SubmissionVerification
+
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT vacancy_stable_id, submission_id, verification_version, "
+            "verification_status, verification_json FROM submission_verifications"
+        )
+        rows = cur.fetchall()
+        conn.close()
+        for sid, sub_id, version, status, raw in rows:
+            if self.scope == "tracked" and sid not in tracked_sids:
+                continue
+            try:
+                payload = json.loads(raw) if raw else None
+                parsed = SubmissionVerification.model_validate(payload)
+                parsed_status = parsed.verification_status.value
+                if parsed_status != status or parsed.verification_version != version:
+                    raise ValueError("JSON fields do not match indexed columns")
+            except Exception as exc:
+                self._err(
+                    "INVALID_VERIFICATION_JSON",
+                    sid,
+                    None,
+                    f"Verification {sub_id} has invalid persisted JSON",
+                    {"submission_id": sub_id, "version": version, "status": status, "error": str(exc)},
+                )
+
     def _check_orphan_artifacts(self, cid: str, aliases: List[Tuple[Any, str]]):
         for _, sid in aliases:
             tr = get_application_status(sid)
@@ -399,6 +429,7 @@ class IntegrityAuditor:
             self._check_orphan_artifacts(cid, als)
         if self.scope == "full":
             self._check_global_orphans()
+        self._check_verification_json_records(tracked_sids)
         self.issues.sort()
         err = sum(1 for i in self.issues if i.severity == IntegritySeverity.ERROR)
         warn = sum(1 for i in self.issues if i.severity == IntegritySeverity.WARNING)

@@ -236,6 +236,11 @@ def _run_watcher_cycle_impl(
     adapters = {}
     if config.custom_adapters is not None:
         adapters = config.custom_adapters
+    elif dry_run:
+        # A dry-run is a local state/decision preview, not a live collection
+        # run. Real adapters are intentionally not instantiated or called.
+        # Tests may still provide explicit fake adapters via custom_adapters.
+        logger.info("[DRY RUN] External vacancy adapters are disabled")
     else:
         from . import cli
         for name in config.sources:
@@ -323,7 +328,7 @@ def _run_watcher_cycle_impl(
     # If no new vacancies fetched in this cycle, also check unapplied / discovered vacancies in DB
     # up to batch_limit to ensure backlog can progress
     candidates_to_process: List[Vacancy] = list(fetched_vacancies)
-    if len(candidates_to_process) < config.batch_limit:
+    if not dry_run and len(candidates_to_process) < config.batch_limit:
         db_rows = list_vacancies(limit=config.batch_limit * 2)
         for row in db_rows:
             v = _row_to_vacancy(row)
@@ -685,12 +690,13 @@ def _run_watcher_cycle_impl(
         )
         result.items.append(watcher_item)
 
-    # Sort queue items by rank
-    all_queue = list_queue(limit=100)
-    all_queue.sort(key=lambda x: (-x.priority_score, -(x.deep_score or 0), -(x.match_score or 0), x.vacancy_stable_id))
-    for idx, item in enumerate(all_queue, start=1):
-        item.rank = idx
-        if not is_dry_run():
+    # Sort persisted queue items only for a real local-state run. Dry-run must
+    # not initialize or read a production DB as a hidden side effect.
+    if not dry_run:
+        all_queue = list_queue(limit=100)
+        all_queue.sort(key=lambda x: (-x.priority_score, -(x.deep_score or 0), -(x.match_score or 0), x.vacancy_stable_id))
+        for idx, item in enumerate(all_queue, start=1):
+            item.rank = idx
             save_queue_item(item)
 
     return result
