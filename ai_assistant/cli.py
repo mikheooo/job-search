@@ -3799,6 +3799,12 @@ def export_digest_cmd(
     matched_candidates = []
 
     for v in vacancies:
+        if not include_legacy:
+            from .schema import is_genuine_production_vacancy
+            is_gen, _ = is_genuine_production_vacancy(v)
+            if not is_gen:
+                continue
+
         if matcher is not None:
             m_res = matcher.match(v)
             score = m_res.score

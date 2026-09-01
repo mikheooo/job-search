@@ -501,6 +501,9 @@ def save_vacancy(vacancy) -> str:
         'UNCHANGED'- Existing vacancy is identical; only last_seen_at was refreshed.
         'CONFLICT' - Conflicting identity detected.
     """
+    if is_dry_run():
+        return "UNCHANGED"
+
     from .vacancy_identity import normalize_url
     
     init_db()
@@ -2470,7 +2473,8 @@ def reconcile_digest_attempt(batch_key: str, new_status: str, chat_id: str = "-1
 
 
 def list_undigested_vacancies(limit: int = 5000) -> List[Any]:
-    """List fresh vacancies from state.db excluding legacy vacancies_json baseline and non-retryable items."""
+    """List fresh vacancies from state.db excluding legacy baseline and synthetic/test artifacts."""
+    from .schema import is_genuine_production_vacancy
     init_db()
     conn = get_connection()
     cur = conn.cursor()
@@ -2485,7 +2489,8 @@ def list_undigested_vacancies(limit: int = 5000) -> List[Any]:
     ''', (limit,))
     rows = cur.fetchall()
     conn.close()
-    return [_row_to_vacancy(r) for r in rows if r]
+    vacancies = [_row_to_vacancy(r) for r in rows if r]
+    return [v for v in vacancies if is_genuine_production_vacancy(v)[0]]
 
 
 def get_production_health(now_dt: Optional[Any] = None, storage_dir: Optional[str] = None) -> Dict[str, Any]:

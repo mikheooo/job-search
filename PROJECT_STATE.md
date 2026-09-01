@@ -11,34 +11,37 @@
 
 ---
 
-## 2. Production Source Policy & Provenance (Stage 88.1)
+## 2. Production Source Policy & Provenance (Stage 88.1 / 88.2)
 
-### Active Production Sources vs Isolated Legacy Data
+### Active Production Sources vs Isolated Legacy & Synthetic Artifacts
 
 | Source Key | Adapter / Origin | Classification | Ingestion Type | Unattended Digest Eligible |
 | :--- | :--- | :--- | :--- | :---: |
-| `himalayas` | `HimalayasAdapter` | `ACTIVE_PRODUCTION_SOURCE` | Automated Scraper | **YES** |
-| `weworkremotely`| `WeWorkRemotelyAdapter` | `ACTIVE_PRODUCTION_SOURCE` | Automated Scraper | **YES** |
-| `remoteok` | `RemoteOkAdapter` | `ACTIVE_PRODUCTION_SOURCE` | Automated Scraper | **YES** |
-| `habrcareer` | `HabrCareerAdapter` | `ACTIVE_PRODUCTION_SOURCE` | Automated Scraper | **YES** |
-| `hh` | HeadHunter API / CDP Tab | `ACTIVE_PRODUCTION_SOURCE` | Browser / Assisted | **YES** |
+| `himalayas` | `HimalayasAdapter` | `ACTIVE_PRODUCTION_SOURCE` | Automated Scraper | **YES** (with genuine provenance) |
+| `weworkremotely`| `WeWorkRemotelyAdapter` | `ACTIVE_PRODUCTION_SOURCE` | Automated Scraper | **YES** (with genuine provenance) |
+| `remoteok` | `RemoteOkAdapter` | `ACTIVE_PRODUCTION_SOURCE` | Automated Scraper | **YES** (with genuine provenance) |
+| `habrcareer` | `HabrCareerAdapter` | `ACTIVE_PRODUCTION_SOURCE` | Automated Scraper | **YES** (with genuine provenance) |
+| `hh` | HeadHunter API / CDP Tab | `ACTIVE_PRODUCTION_SOURCE` | Browser / Assisted | **YES** (with genuine provenance) |
 | `vacancies_json`| `vacancies.json` Benchmark | `LEGACY_IMPORT` / `CALIBRATION_DATA` | Historical Bootstrap | **NO (Isolated)** |
 | `x` | Test fixture | `TEST_FIXTURE_SOURCE` | Test artifact | **NO (Isolated)** |
 
-### Production Selector Invariant
+### Production Provenance & Digest Selection Invariant
 ```
 Unattended Production Digest Selection
         │
-        ├── 1. Genuine Active Source Provenance (himalayas, weworkremotely, remoteok, habrcareer, hh)
-        ├── 2. Not Previously Delivered (LEFT JOIN telegram_delivery_records: status != 'DELIVERED')
-        ├── 3. Canonical Matcher Qualified (decision in ('APPLY', 'REVIEW') and score >= min_score)
-        └── 4. Diversity & Dedup Guard (max 2/company, max 4/role family, canonical key dedup)
+        ├── 1. Genuine Active Source: source in ('himalayas', 'weworkremotely', 'remoteok', 'habrcareer', 'hh')
+        ├── 2. Provenance Validation: is_genuine_production_vacancy() -> rejects dryrun/test/mock/fake/ACME/example.com
+        ├── 3. Delivery Idempotency: LEFT JOIN telegram_delivery_records: status != 'DELIVERED'
+        ├── 4. Canonical Matcher Qualified: decision in ('APPLY', 'REVIEW') and score >= min_score (60.0)
+        └── 5. Diversity & Dedup Guard: max 2/company, max 4/role family, canonical key deduplication
 ```
 
 ### Historical Delivery Provenance Audit
 - **Total `job_digest` Delivered Records:** 11 items across 3 batches (`-1004399255305` @remotejobd).
-- **Provenance Breakdown:** `hh`: 7, `weworkremotely`: 3, `himalayas`: 1.
-- **Legacy / Calibration Delivery:** **0 records**. No synthetic or `vacancies_json` record has ever been delivered to Telegram.
+- **`verified_real_delivered`:** 10 items (7 `hh`, 3 `weworkremotely`).
+- **`nonproduction_delivered`:** 1 item (`himalayas:dryrun-test-1` delivered on 2026-09-01T03:01:36Z in batch `1031eacdc719f432`).
+- **`unknown_delivered`:** 0.
+- **Historical Record Preservation:** Preserved byte-for-byte in `telegram_delivery_records` without deletion or retroactive history rewriting.
 
 ---
 
@@ -66,7 +69,7 @@ job_search_fetcher.py
 1. Discovery & Ingestion                   2. Validated Digest Export
 ai_assistant.watcher.Watcher                 ai_assistant.cli.export_digest_cmd
   - Himalayas, RemoteOK, WWR, Habr             - list_undigested_vacancies (state.db)
-  - normalize_vacancy -> vacancy_identity      - Source provenance check (exclude legacy)
+  - normalize_vacancy -> vacancy_identity      - Genuine provenance check (is_genuine_production_vacancy)
   - Insert / Update -> state.db                - Canonical JobMatcher(profile)
                                                - Sort: DecisionClass > RolePriority > Score
                                                - Diversity filter: max 2/company, 4/family
@@ -84,7 +87,7 @@ ai_assistant.watcher.Watcher                 ai_assistant.cli.export_digest_cmd
 
 ---
 
-## 4. Canonical Matching & Digest Selection Policy (Stage 86/87/88/88.1)
+## 4. Canonical Matching & Digest Selection Policy (Stage 86/87/88/88.2)
 
 ### Canonical Matcher
 The sole canonical matcher used across both discovery ingestion (`Watcher`) and digest delivery (`export_digest_cmd`) is `JobMatcher` defined in `ai_assistant/matcher.py`.
@@ -102,12 +105,12 @@ Candidates are ordered using a strict multi-tier tuple:
 )
 ```
 
-### Backlog Semantics (901 Pending Undigested Vacancies)
-The metric `pending_undigested_vacancies_count: 901` in `production-health` represents all non-legacy vacancy records in `state.db` that have not been delivered to Telegram.
+### Backlog Semantics (894 Pending Undigested Vacancies)
+The metric `pending_undigested_vacancies_count: 894` in `production-health` represents all genuine non-delivered vacancies in `state.db`:
 - **Audited Breakdown:**
-  - `REJECT` (96.45% / 869 items): Non-remote, in-office, wrong technical domains (SAP, .NET, Senior SharePoint, Sales/Marketing). Correctly suppressed.
-  - `BORDERLINE` (3.55% / 32 items): Moderate scores (50–70) with missing specific skills or unverified requirements.
-  - `DELIVERED` (11 top items): Already successfully posted to `@remotejobd` with durable delivery keys.
+  - `REJECT` (862 items / 96.4%): Non-remote, in-office, wrong technical domains (SAP, .NET, Senior SharePoint, Sales/Marketing). Correctly suppressed.
+  - `BORDERLINE` (32 items / 3.6%): Moderate scores (50–70) with missing specific skills or unverified requirements.
+  - `DELIVERED` (10 real + 1 dryrun): Successfully recorded with durable delivery keys.
   - `ELIGIBLE UNSENT`: 0 (All qualified matches in DB have been delivered).
 
 ---
@@ -185,6 +188,7 @@ Recruiter message handling follows strict truth-only and fail-closed rules:
 ## 9. Safety Invariants & Guarantees
 
 - **No Unauthorized Mutation:** All diagnostic, preview, triage, and audit commands are strictly read-only.
+- **Dry-Run Zero-Mutation:** `is_dry_run()` guard inside `save_vacancy` guarantees zero database mutation during dry-run cycles.
 - **Fail-Closed Auto-Reply:** `AUTO` send mode is strictly opt-in via `HH_AUTO_REPLY_ENABLED=true` environment variable and requires explicit human confirmation flag for CLI dispatch.
 - **Byte-for-Byte Draft Integrity:** Sent messages must match validated drafts byte-for-byte; no on-the-fly unvalidated regeneration.
 - **Idempotent Telegram Deliveries:** `record_digest_attempt` and unique delivery keys prevent double-posting.
@@ -194,7 +198,8 @@ Recruiter message handling follows strict truth-only and fail-closed rules:
 
 ## 10. Verified Test Metrics & Production Status
 
-- **Full Offline Pytest Regression:** **1263 passed** (0 failed, 0 errors in ~9.5m)
+- **Full Offline Pytest Regression:** **1278 passed** (0 failed, 0 errors in ~10.5m)
+  - `tests/test_stage88_2_production_provenance_hardening.py`: 15/15 passed
   - `tests/test_stage88_1_production_vacancy_provenance.py`: 12/12 passed
   - `tests/test_stage88_production_match_digest_wiring.py`: 18/18 passed
   - `tests/test_stage87_candidate_profile_calibration.py`: 17/17 passed

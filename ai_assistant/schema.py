@@ -104,3 +104,80 @@ def _parse_dt(value: Optional[str]) -> Optional[datetime]:
         except ValueError:
             continue
     return None
+
+
+ACTIVE_PRODUCTION_SOURCES: Set[str] = {"himalayas", "weworkremotely", "remoteok", "habrcareer", "hh"}
+
+SYNTHETIC_ID_PATTERNS = [
+    r"dryrun", r"dry-run", r"dry_run", r"^test[-_]?\d+$", r"^fake", r"^mock",
+    r"^fixture", r"hard-rej", r"llm-fail", r"llm-retry", r"sync-fail"
+]
+SYNTHETIC_COMPANIES = {"acme", "testco", "legacyco", "fakeco", "dummyco", "mockco"}
+SYNTHETIC_DOMAINS = {"example.com", "localhost", "127.0.0.1", "test.com"}
+SYNTHETIC_TITLES = {"dry run job", "dry run", "test job", "fake job", "dummy job", "mock job"}
+
+
+def is_genuine_production_vacancy(vacancy: Any) -> tuple[bool, str]:
+    """Verify that a vacancy originated from an active production source and is not a synthetic/test/dry-run artifact."""
+    import os
+    import re
+    
+    src = (getattr(vacancy, "source", None) or "").strip().lower()
+    sjid = (getattr(vacancy, "source_job_id", None) or "").strip().lower()
+    url = (getattr(vacancy, "job_url", None) or "").strip().lower()
+    comp = (getattr(vacancy, "company", None) or "").strip().lower()
+    tit = (getattr(vacancy, "title", None) or "").strip().lower()
+
+    # 1. Hard-isolated legacy or fixture sources are ALWAYS excluded in all environments
+    if src in ("vacancies_json", "x"):
+        return False, f"Isolated legacy/fixture source: {src}"
+
+    # 2. Strict synthetic dry-run & test-fixture markers are ALWAYS excluded in all environments
+    strict_synthetic_pats = [r"dryrun", r"dry-run", r"dry_run", r"hard-rej", r"llm-fail", r"llm-retry", r"sync-fail"]
+    for pat in strict_synthetic_pats:
+        if re.search(pat, sjid):
+            return False, f"Synthetic ID pattern matched: {pat}"
+
+    if "/dryrun" in url:
+        return False, "Synthetic URL path /dryrun"
+
+    if comp == "acme" or tit in ("dry run job", "dry run"):
+        return False, "Synthetic dry-run job/company"
+
+    is_test_env = bool(os.environ.get("JOB_SEARCH_TEST_NETWORK_BLOCKED"))
+
+    # 3. In production environment (outside pytest), enforce strict production provenance
+    if not is_test_env:
+        if src not in ACTIVE_PRODUCTION_SOURCES:
+            return False, f"Source '{src}' is not an active production source"
+
+        for dom in SYNTHETIC_DOMAINS:
+            if dom in url:
+                return False, f"Synthetic domain: {dom}"
+
+        for pat in (r"^test[-_]?\d+$", r"^fake", r"^mock", r"^fixture"):
+            if re.search(pat, sjid):
+                return False, f"Synthetic test ID pattern: {pat}"
+
+        if comp in SYNTHETIC_COMPANIES:
+            return False, f"Synthetic company: {comp}"
+
+        if tit in SYNTHETIC_TITLES:
+            return False, f"Synthetic title: {tit}"
+
+        if not (url.startswith("http://") or url.startswith("https://")):
+            return False, "Invalid URL scheme"
+
+        return True, "GENUINE_PRODUCTION"
+
+    # 3. Source qualification
+    if src in ACTIVE_PRODUCTION_SOURCES:
+        if not (url.startswith("http://") or url.startswith("https://")):
+            return False, "Invalid URL scheme"
+        return True, "GENUINE_PRODUCTION"
+
+    # 4. In test environment (inside pytest), permit mock fixtures ONLY for explicit test sources ("test", "test_src")
+    if is_test_env and src in ("test", "test_src"):
+        return True, "TEST_ENVIRONMENT_MOCK"
+
+    return False, f"Source '{src}' is not an active production source"
