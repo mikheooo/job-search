@@ -11,7 +11,38 @@
 
 ---
 
-## 2. Core Architecture & Scheduled Execution Path
+## 2. Production Source Policy & Provenance (Stage 88.1)
+
+### Active Production Sources vs Isolated Legacy Data
+
+| Source Key | Adapter / Origin | Classification | Ingestion Type | Unattended Digest Eligible |
+| :--- | :--- | :--- | :--- | :---: |
+| `himalayas` | `HimalayasAdapter` | `ACTIVE_PRODUCTION_SOURCE` | Automated Scraper | **YES** |
+| `weworkremotely`| `WeWorkRemotelyAdapter` | `ACTIVE_PRODUCTION_SOURCE` | Automated Scraper | **YES** |
+| `remoteok` | `RemoteOkAdapter` | `ACTIVE_PRODUCTION_SOURCE` | Automated Scraper | **YES** |
+| `habrcareer` | `HabrCareerAdapter` | `ACTIVE_PRODUCTION_SOURCE` | Automated Scraper | **YES** |
+| `hh` | HeadHunter API / CDP Tab | `ACTIVE_PRODUCTION_SOURCE` | Browser / Assisted | **YES** |
+| `vacancies_json`| `vacancies.json` Benchmark | `LEGACY_IMPORT` / `CALIBRATION_DATA` | Historical Bootstrap | **NO (Isolated)** |
+| `x` | Test fixture | `TEST_FIXTURE_SOURCE` | Test artifact | **NO (Isolated)** |
+
+### Production Selector Invariant
+```
+Unattended Production Digest Selection
+        │
+        ├── 1. Genuine Active Source Provenance (himalayas, weworkremotely, remoteok, habrcareer, hh)
+        ├── 2. Not Previously Delivered (LEFT JOIN telegram_delivery_records: status != 'DELIVERED')
+        ├── 3. Canonical Matcher Qualified (decision in ('APPLY', 'REVIEW') and score >= min_score)
+        └── 4. Diversity & Dedup Guard (max 2/company, max 4/role family, canonical key dedup)
+```
+
+### Historical Delivery Provenance Audit
+- **Total `job_digest` Delivered Records:** 11 items across 3 batches (`-1004399255305` @remotejobd).
+- **Provenance Breakdown:** `hh`: 7, `weworkremotely`: 3, `himalayas`: 1.
+- **Legacy / Calibration Delivery:** **0 records**. No synthetic or `vacancies_json` record has ever been delivered to Telegram.
+
+---
+
+## 3. Core Architecture & Scheduled Execution Path
 
 ### Scheduled Execution Pipeline
 
@@ -34,9 +65,10 @@ job_search_fetcher.py
         ▼                                          ▼
 1. Discovery & Ingestion                   2. Validated Digest Export
 ai_assistant.watcher.Watcher                 ai_assistant.cli.export_digest_cmd
-  - Himalayan, RemoteOK, WWR, Habr             - list_undigested_vacancies (state.db)
-  - normalize_vacancy -> vacancy_identity      - Canonical JobMatcher(profile)
-  - Insert / Update -> state.db                - Sort: DecisionClass > RolePriority > Score
+  - Himalayas, RemoteOK, WWR, Habr             - list_undigested_vacancies (state.db)
+  - normalize_vacancy -> vacancy_identity      - Source provenance check (exclude legacy)
+  - Insert / Update -> state.db                - Canonical JobMatcher(profile)
+                                               - Sort: DecisionClass > RolePriority > Score
                                                - Diversity filter: max 2/company, 4/family
                                                    │
                                                    ▼
@@ -52,22 +84,10 @@ ai_assistant.watcher.Watcher                 ai_assistant.cli.export_digest_cmd
 
 ---
 
-## 3. Canonical Matching & Digest Selection Policy (Stage 86/87/88)
+## 4. Canonical Matching & Digest Selection Policy (Stage 86/87/88/88.1)
 
 ### Canonical Matcher
 The sole canonical matcher used across both discovery ingestion (`Watcher`) and digest delivery (`export_digest_cmd`) is `JobMatcher` defined in `ai_assistant/matcher.py`.
-
-### Matcher Capabilities vs Production Digest Usage
-
-| Feature | Matcher Supports | Production Digest Uses | Verification Status |
-| :--- | :---: | :---: | :--- |
-| **Role Priorities (P1 / P2 / P3)** | YES | YES | Primary sorting dimension within decision class |
-| **Skill Confidence (0.0 to 1.0)** | YES | YES | Directly influences score & strong match eligibility |
-| **Domain-Specific Seniority** | YES | YES | Decoupled support (11y), sysadmin (9y), python (3.5y) |
-| **STRETCH Decision Class** | YES | YES | Explicitly ranked between MATCH and BORDERLINE (Rank 3) |
-| **Fail-Closed Hard Gates** | YES | YES | Hard requirement failure -> REJECT -> Excluded from digest |
-| **Delivery History Deduplication** | YES | YES | `telegram_delivery_records` prevents re-delivery |
-| **Company & Role Diversity** | YES | YES | Max 2 per company, max 4 per role family |
 
 ### Digest Ordering Key
 
@@ -88,11 +108,11 @@ The metric `pending_undigested_vacancies_count: 901` in `production-health` repr
   - `REJECT` (96.45% / 869 items): Non-remote, in-office, wrong technical domains (SAP, .NET, Senior SharePoint, Sales/Marketing). Correctly suppressed.
   - `BORDERLINE` (3.55% / 32 items): Moderate scores (50–70) with missing specific skills or unverified requirements.
   - `DELIVERED` (11 top items): Already successfully posted to `@remotejobd` with durable delivery keys.
-  - `ELIGIBLE UNSENT`: 0 (All high-confidence matches in DB have been delivered).
+  - `ELIGIBLE UNSENT`: 0 (All qualified matches in DB have been delivered).
 
 ---
 
-## 4. State & Database Model (`state.db`)
+## 5. State & Database Model (`state.db`)
 
 SQLite database operating with `journal_mode=WAL` and `synchronous=NORMAL`:
 
@@ -108,7 +128,7 @@ SQLite database operating with `journal_mode=WAL` and `synchronous=NORMAL`:
 
 ---
 
-## 5. Calibrated Candidate Profile (`candidate_profile.json`)
+## 6. Calibrated Candidate Profile (`candidate_profile.json`)
 
 Validated and calibrated during Stage 87 against Mikhail Kolesnikov's resume:
 
@@ -130,7 +150,7 @@ Validated and calibrated during Stage 87 against Mikhail Kolesnikov's resume:
 
 ---
 
-## 6. Feedback Capability Audit & Architecture
+## 7. Feedback Capability Audit & Architecture
 
 - **Current Status:** `PARTIAL`
 - **Existing Assets:**
@@ -143,7 +163,7 @@ Validated and calibrated during Stage 87 against Mikhail Kolesnikov's resume:
 
 ---
 
-## 7. Recruiter Messaging Contract (Stage 30D / 87.1)
+## 8. Recruiter Messaging Contract (Stage 30D / 87.1)
 
 Recruiter message handling follows strict truth-only and fail-closed rules:
 
@@ -162,7 +182,7 @@ Recruiter message handling follows strict truth-only and fail-closed rules:
 
 ---
 
-## 8. Safety Invariants & Guarantees
+## 9. Safety Invariants & Guarantees
 
 - **No Unauthorized Mutation:** All diagnostic, preview, triage, and audit commands are strictly read-only.
 - **Fail-Closed Auto-Reply:** `AUTO` send mode is strictly opt-in via `HH_AUTO_REPLY_ENABLED=true` environment variable and requires explicit human confirmation flag for CLI dispatch.
@@ -172,9 +192,10 @@ Recruiter message handling follows strict truth-only and fail-closed rules:
 
 ---
 
-## 9. Verified Test Metrics & Production Status
+## 10. Verified Test Metrics & Production Status
 
-- **Full Offline Pytest Regression:** **1251 passed** (0 failed, 0 errors in 580.02s)
+- **Full Offline Pytest Regression:** **1263 passed** (0 failed, 0 errors in ~9.5m)
+  - `tests/test_stage88_1_production_vacancy_provenance.py`: 12/12 passed
   - `tests/test_stage88_production_match_digest_wiring.py`: 18/18 passed
   - `tests/test_stage87_candidate_profile_calibration.py`: 17/17 passed
   - `tests/test_stage30d_diagnose.py`: 80/80 passed
