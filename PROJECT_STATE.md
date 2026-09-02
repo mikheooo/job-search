@@ -139,7 +139,7 @@ Candidates are ordered using a strict multi-tier tuple:
 
 ---
 
-## 7. Telegram Feedback & Application Review Integration (Stage 89)
+## 7. Telegram Feedback & External Runtime Integration (Stage 89 / 89.1 / 89.2)
 
 ### Architecture & Data Flow
 
@@ -155,25 +155,43 @@ Telegram Digest (with Inline Keyboard)
         └── [1. ⏭] ──> SKIP: ApplicationReview(REJECTED), tracking.WITHDRAWN
         │
         ▼
+Single Update Consumer (Hermes Gateway / TelegramBot on long-polling)
+        │
+        ▼
 ai_assistant.telegram_feedback.TelegramFeedbackProcessor
         │
-        ├── Authorization Gate: fail-closed against TELEGRAM_OWNER_ID / TELEGRAM_CHAT_ID
-        ├── Callback Data Decoding: compact 64-byte safe encoding fb:<action>:<id_or_hash>
-        ├── Idempotency Check: deduplicates repeated updates via callback_query_id
-        ├── Canonical State Transitions: authoritative update via application_review & tracking
-        └── Audit Trail: persisted in telegram_feedback_records table
+        ├── 1. Owner Authorization Gate: callback_query.from.id == TELEGRAM_OWNER_ID (392046103)
+        ├── 2. Callback Idempotency Check: deduplicates repeated updates via callback_query_id
+        ├── 3. Collision-Safe Hash Decoding: fail-closed if 0 or >1 matches
+        ├── 4. Provenance Verification: is_genuine_production_vacancy() -> rejects synthetic/legacy
+        ├── 5. Delivery Relationship: is_vacancy_delivered_in_digest() -> requires prior delivery
+        ├── 6. Canonical State Transitions: authoritative update via application_review & tracking
+        ├── 7. Audit Trail: persisted in telegram_feedback_records table
+        └── 8. Telegram Acknowledgement: prompt answerCallbackQuery with action toast
 ```
 
-### Safety Invariants & Rules
+### External Runtime Management & Drift Subsystem (Stage 89.2)
 
-1. **NO DIRECT SUBMISSION INVARIANT:**
+1. **CANONICAL REPOSITORY SOURCE:**
+   External runtime integrations are versioned under `integrations/hermes/`:
+   - `integrations/hermes/job_search_fetcher.py`: Canonical fetcher script with keyboard forwarding and attempt locking.
+   - `integrations/hermes/telegram_adapter_hook.py`: Canonical Hermes adapter callback routing hook.
+2. **DRIFT DETECTION & RECOVERABILITY:**
+   - `python -m ai_assistant.cli hermes status`: Audits presence, SHA256 integrity, and capability markers.
+   - `python -m ai_assistant.cli hermes sync`: Idempotently synchronizes canonical files to deployed runtime locations.
+   - `production-health` metric payload exposes real-time `hermes_integration` status (`HEALTHY` / `DRIFTED` / `MISSING`).
+3. **NO DIRECT SUBMISSION INVARIANT:**
    Button `📄 Отклик` strictly prepares and transitions review/tracking state to `READY_TO_APPLY` and enqueues into `application_queue`. It **NEVER** triggers automated or external job application submission.
-2. **OPERATOR AUTHORIZATION GATE:**
-   Only the configured operator/owner (`TELEGRAM_OWNER_ID` or `TELEGRAM_CHAT_ID`) is permitted to submit review callbacks. Unauthorized queries fail closed with `⛔ Доступ запрещён`.
-3. **64-BYTE TELEGRAM CALLBACK CONSTRAINT:**
-   Callback data uses format `fb:<action>:<stable_id>` if length $\le$ 64 bytes, or surrogate SHA256 prefix `fb:<action>:h:<16_char_hash>` resolved dynamically from the database.
-4. **IDEMPOTENCY & TERMINAL STATE PROTECTION:**
-   Vacancies already in terminal application states (`APPLIED`, `SUBMITTED`, `VERIFIED`, `INTERVIEW`, `OFFER`) fail closed with safe informational warnings and cannot be overwritten or downgraded by feedback callbacks.
+4. **STRICT OWNER AUTHORIZATION GATE:**
+   Only the explicit operator user ID (`TELEGRAM_OWNER_ID=392046103`) is permitted to submit review callbacks. Destination channel ID `TELEGRAM_CHAT_ID` cannot authorize mutation. Unauthorized queries fail closed with `⛔ Доступ запрещён`.
+5. **64-BYTE TELEGRAM CALLBACK & COLLISION SAFETY:**
+   Callback data uses format `fb:<action>:<stable_id>` if length $\le$ 64 bytes, or surrogate SHA256 prefix `fb:<action>:h:<16_char_hash>` resolved dynamically from the database. Hash resolution fails closed if 0 or $>1$ matching vacancies exist.
+6. **PROVENANCE & DELIVERY RELATIONSHIP GATE:**
+   Callbacks are accepted only for genuine production vacancies that have a confirmed `DELIVERED` record in `telegram_delivery_records`. Synthetic/test fixtures fail closed with informational warnings.
+7. **IDEMPOTENCY & TERMINAL STATE PROTECTION:**
+   Vacancies already in terminal application states (`APPLIED`, `SUBMITTED`, `VERIFIED`, `INTERVIEW`, `OFFER`) fail closed with safe informational warnings and cannot be overwritten or downgraded by feedback callbacks. Duplicate callback query IDs are idempotent no-ops.
+8. **SINGLE UPDATE CONSUMER ARCHITECTURE:**
+   Hermes Gateway runs as the single active long-polling update consumer on bot token `8217526633:...`. `fb:` feedback callbacks are dispatched to `TelegramFeedbackProcessor` without initiating conflicting second pollers.
 
 ---
 
@@ -205,11 +223,61 @@ Recruiter message handling follows strict truth-only and fail-closed rules:
 - **Idempotent Telegram Deliveries:** `record_digest_attempt` and unique delivery keys prevent double-posting.
 - **Database Immutability in Testing:** Pytest runs operate against isolated temporary fixtures and must not mutate production `state.db`.
 
+- **Fit vs Preference Separation:** Matcher evaluates factual candidate qualification (`match_score`, `decision_class`, `eligibility`). Preference calibration applies a separate, bounded `preference_adjustment` (default max $\pm 8.0$ points) to compute `ranking_score` without altering factual eligibility, resume skills, or turning `REJECT` into `MATCH`.
+- **Factual Profile Immutability:** User feedback on job titles or technologies (e.g. liking Kubernetes roles) never mutates `candidate_profile.json` or promotes skill confidence from `UNKNOWN` to `PROFESSIONAL`.
+- **Minimum Evidence Threshold & Ambiguity:** Single feedback events are recorded as `RECORD_ONLY` with 0 ranking adjustment. Contradictory feedback produces `AMBIGUOUS_PREFERENCE` and suppresses confidence to 0.
+
 ---
 
-## 10. Verified Test Metrics & Production Status
+## 10. Stage 90 / 90.1 / Stage 91 / Stage 91.1: Feedback Analytics, Provenance & Reason UX Architecture
 
-- **Full Offline Pytest Regression:** **1298 passed** (0 failed, 0 errors in 14:06)
+- **Evidence Provenance & Signal Hierarchy (Stage 90.1 / Stage 91 / Stage 91.1):**
+  - `EXPLICIT_HUMAN_FEEDBACK` (1 event): Genuine Telegram client button press by authorized owner (`392046103`) on real production vacancy (`hh:136551280`).
+  - `CONFIRMED_REAL_APPLICATION` (1 event): Human-confirmed controlled runner submission on genuine vacancy (`hh:136704137`).
+  - Excluded Non-Production / Automated Rows (14 rows): Synthetic validation callbacks (`live_val_stage89_1_001`), fixture vacancies (`vacancies_json:*`), unverified reviews, scraped chat states.
+  - Total Raw Evidence Rows = 16; Validated Production Ground Truth = **2 independent human events**; Excluded = 14 rows.
+- **Action Semantics & Negative Signal Distinction (Stage 91):**
+  - `PREPARE_APPLICATION` / `APPLIED`: `VERY_STRONG_POSITIVE` (weight 1.5, raw value +1.0) — explicit intent to apply.
+  - `INTERESTED`: `STRONG_POSITIVE` (weight 1.0, raw value +0.8) — vacancy looks relevant / interesting.
+  - `NOT_INTERESTED`: `STRONG_NEGATIVE` (weight 1.0, raw value -0.8) — vacancy is genuinely undesirable.
+  - `SKIP`: `WEAK_NEGATIVE` (weight 0.5, raw value -0.3) — contextual skip / not pursuing now.
+  - `SKIP` with negative reason: `NEGATIVE` (weight 0.8, raw value -0.5).
+- **Structured Feedback Reasons & Telegram 2-Level Keyboard (Stage 91 / 91.1):**
+  - Supported reason tokens: `ROLE`, `SALARY`, `COMPANY`, `LOCATION`, `TECH_STACK`, `SENIORITY`, `LANGUAGE`, `EMPLOYMENT_TYPE`, `TOO_COMPLEX`, `TOO_JUNIOR`, `TOO_SENIOR`, `REMOTE`, `CAREER_GROWTH`, `OTHER`.
+  - Compact Telegram callback encoding: `fb:RSN:<act_code>:<reason_code>:<target>` with strict 64-byte payload safety.
+  - Optional UX: First tap marks feedback immediately; optional second-level compact keyboard captures structured reason without forcing extra steps. Follow-up reason clicks correlate to the same event.
+- **Feedback Edit & Temporal Supersession Semantics (Stage 91 / 91.1):**
+  - Newer user feedback for the same vacancy supersedes older preference while preserving complete audit history in `telegram_feedback_records`.
+  - Multi-step progression (`INTERESTED` -> `PREPARE_APPLICATION` -> `SUBMITTED`) merges into 1 opportunity with upgraded evidence strength, preventing artificial sample count inflation.
+  - Unanswered digest vacancies (`no_feedback`) are tracked in coverage metrics and **never inferred as negative preference**.
+- **Coverage Semantics Clarification (Stage 91.1):**
+  - `delivered_vacancies`: 11 total unique vacancies delivered via Telegram digest.
+  - `telegram_feedback_vacancies`: 1 vacancy with explicit Telegram button tap (9.1% Telegram feedback rate).
+  - `confirmed_applications`: 1 vacancy with human-confirmed real application.
+  - `canonical_human_evidence_vacancies`: 2 unique vacancies with verified preference ground truth (18.2% human evidence coverage rate).
+- **Reason-Aware Signal Routing & Profile Immutability (Stage 91):**
+  - `COMPANY` dislike reasons stay company-specific and do not penalize role families.
+  - `SALARY` and `LOCATION` reasons do not penalize technical skills or role families.
+  - `TECH_STACK` reasons target skills and do not mutate factual candidate qualifications (`candidate_profile.json` is strictly immutable).
+- **Calibration Readiness Dashboard & CLI (Stage 91 / 91.1):**
+  - `python -m ai_assistant.cli feedback coverage [--json]` — reports separated Telegram feedback and confirmed application coverage rates.
+  - `python -m ai_assistant.cli feedback analytics [--json]` — reports canonical human events (`2 / 5`), events needed before threshold (`3 more required`), dimension-specific readiness, and bias notes.
+  - `python -m ai_assistant.cli feedback provenance [--json]` — inspects raw evidence rows vs validated ground truth.
+  - `python -m ai_assistant.cli feedback simulate [--limit N] [--json]` — read-only ranking comparison.
+  - `python -m ai_assistant.cli hermes status` — verifies Hermes outbound keyboard, callback routing, and attempt locking.
+- **Production Status:** `PREFERENCE_CALIBRATION_ENABLED=False` (default feature flag; ready for activation when evidence scales).
+
+---
+
+## 11. Verified Test Metrics & Production Status
+
+- **Full Offline Pytest Regression:** **1404 passed** (0 failed, 0 errors in 16:59)
+  - `tests/test_stage91_1_feedback_reason_production_wiring.py`: 20/20 passed
+  - `tests/test_stage91_feedback_collection_quality.py`: 20/20 passed
+  - `tests/test_stage90_1_feedback_evidence_provenance.py`: 20/20 passed
+  - `tests/test_stage90_feedback_calibration.py`: 20/20 passed
+  - `tests/test_stage89_2_external_runtime_persistence.py`: 8/8 passed
+  - `tests/test_stage89_1_telegram_feedback_production_wiring.py`: 18/18 passed
   - `tests/test_stage89_telegram_feedback.py`: 20/20 passed
   - `tests/test_stage88_2_production_provenance_hardening.py`: 15/15 passed
   - `tests/test_stage88_1_production_vacancy_provenance.py`: 12/12 passed
@@ -217,7 +285,7 @@ Recruiter message handling follows strict truth-only and fail-closed rules:
   - `tests/test_stage87_candidate_profile_calibration.py`: 17/17 passed
   - `tests/test_stage30d_diagnose.py`: 80/80 passed
   - `tests/test_stage83_production_operations.py`: 16/16 passed
-  - Related Recruiter / Application Suites: 149/149 passed
-- **Production Integrity Audit (`ai_assistant.cli audit --tracked`):** 0 errors, healthy = true
+- **Production Integrity Audit (`ai_assistant.cli audit --tracked`):** 0 errors, healthy = true (446 checked)
 - **Production Operational Health (`ai_assistant.cli production-health`):** Status: HEALTHY, 0 alerts, 0 consecutive failures
-- **Production Database SHA256:** `41644ac4518a83b547bd63e36eb72f9ff328ccc7a9b7495e14662e47b3310750`
+- **Production Database SHA256:** `97827EA51155ECCCD098D790BCADB1B0A833A83886F5581CDC7B976AB80AD841`
+- **PROJECT_STATE.md updated: YES**

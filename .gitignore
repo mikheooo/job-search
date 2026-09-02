@@ -36,6 +36,9 @@ _tmp_*
 *.bak2
 *.backup
 *.new
+graphify-out/
+scratch_*
+
 
 # Disaster-recovery snapshots (local only, contain env/db copies)
 baseline_stage14_snapshot/

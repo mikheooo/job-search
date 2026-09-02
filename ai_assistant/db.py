@@ -2133,6 +2133,8 @@ def is_digest_delivered(vacancy_stable_id: str, canonical_id: Optional[str] = No
     conn.close()
     return bool(row)
 
+is_vacancy_delivered_in_digest = is_digest_delivered
+
 
 def compute_digest_batch_key(vacancy_ids: List[str]) -> str:
     """Compute deterministic batch key from sorted vacancy IDs."""
@@ -2685,6 +2687,30 @@ def get_production_health(now_dt: Optional[Any] = None, storage_dir: Optional[st
                 "timestamp": now_iso,
             })
 
+    # 8. Check Hermes Integration Health (Stage 89.2)
+    try:
+        from .hermes_integration import get_hermes_integration_status
+        h_status = get_hermes_integration_status()
+        health_result["hermes_integration"] = h_status
+        if h_status["status"] == "DRIFTED":
+            if health_result["health"] == "HEALTHY":
+                health_result["health"] = "DEGRADED"
+            health_result["alerts"].append({
+                "severity": "WARNING",
+                "message": "Hermes external integration is DRIFTED. Run 'python -m ai_assistant.cli hermes sync' to reconcile.",
+                "timestamp": now_iso,
+            })
+        elif h_status["status"] == "MISSING":
+            if health_result["health"] == "HEALTHY":
+                health_result["health"] = "DEGRADED"
+            health_result["alerts"].append({
+                "severity": "WARNING",
+                "message": "Hermes external runtime files are MISSING. Run 'python -m ai_assistant.cli hermes sync' to deploy.",
+                "timestamp": now_iso,
+            })
+    except Exception:
+        pass
+
     return health_result
 
 
@@ -2817,7 +2843,15 @@ def get_telegram_feedback_summary() -> Dict[str, Any]:
 
 
 def resolve_vacancy_by_hash_prefix(hash_prefix: str) -> Optional[str]:
-    """Resolve a vacancy stable_id by its SHA256 hash prefix for compact Telegram callbacks."""
+    """Resolve a vacancy stable_id by its SHA256 hash prefix for compact Telegram callbacks.
+    
+    Fail-closed collision safety:
+    - Rejects empty or short prefixes (< 8 hex characters).
+    - Returns stable_id if and only if exactly ONE matching vacancy is found.
+    - If 0 matches or >1 matches (collision) are found, returns None.
+    """
+    if not hash_prefix or len(hash_prefix) < 8:
+        return None
     import hashlib
     init_db()
     conn = get_connection()
@@ -2825,9 +2859,13 @@ def resolve_vacancy_by_hash_prefix(hash_prefix: str) -> Optional[str]:
     cur.execute("SELECT stable_id FROM vacancies")
     rows = cur.fetchall()
     conn.close()
-    for (sid,) in rows:
-        if sid and hashlib.sha256(sid.encode("utf-8")).hexdigest().startswith(hash_prefix):
-            return sid
+    
+    matches = [
+        sid for (sid,) in rows
+        if sid and hashlib.sha256(sid.encode("utf-8")).hexdigest().startswith(hash_prefix)
+    ]
+    if len(matches) == 1:
+        return matches[0]
     return None
 
 get_vacancy = get_vacancy_by_id

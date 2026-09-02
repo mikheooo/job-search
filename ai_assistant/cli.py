@@ -3962,9 +3962,15 @@ def export_digest_cmd(
             "count": len(formatted_items),
             "reply_markup": reply_markup,
         }
-        print(json.dumps(out, ensure_ascii=False, indent=2))
+        try:
+            print(json.dumps(out, ensure_ascii=False, indent=2))
+        except UnicodeEncodeError:
+            print(json.dumps(out, ensure_ascii=True, indent=2))
     else:
-        print(post_text)
+        try:
+            print(post_text)
+        except UnicodeEncodeError:
+            print(post_text.encode("ascii", errors="replace").decode("ascii"))
 
     return 0
 
@@ -4073,14 +4079,16 @@ def feedback_cmd(
     limit: int = 50,
     vacancy_id: Optional[str] = None,
     output_json: bool = False,
+    profile_path: Optional[str] = None,
 ) -> int:
-    """Inspect and summarize Telegram human feedback (Stage 89)."""
+    """Inspect, summarize, and analyze Telegram human feedback & preference calibration (Stage 89/90)."""
     try:
         init_db()
     except Exception as e:
         print(f"Failed to open DB: {e}", file=sys.stderr)
         return 1
 
+    from . import db
     from .db import list_telegram_feedback, get_telegram_feedback_summary
 
     if action == "summary":
@@ -4098,6 +4106,204 @@ def feedback_cmd(
                     print(f"    • {b['action']} | {b['source']} | {b['company']} | {b['decision']} -> {b['count']}")
         return 0
 
+    if action == "analytics":
+        from .feedback_analytics import build_preference_profile
+        prof = build_preference_profile()
+        p_dict = prof.to_dict()
+        if output_json:
+            print(json.dumps(p_dict, ensure_ascii=False, indent=2))
+        else:
+            print("============================================================")
+            print("       STAGE 91: FEEDBACK ANALYTICS & CALIBRATION READINESS  ")
+            print("============================================================")
+            print(f"Generated At:              {prof.generated_at}")
+            print(f"Canonical Human Events:    {prof.total_evidence_events} / 5 ({prof.events_needed_for_threshold} more needed for threshold)")
+            print(f"Unique Vacancies:          {prof.unique_vacancies_evaluated}")
+            print(f"Calibration Readiness:     {prof.calibration_readiness}")
+            print(f"Calibration Status:        {prof.calibration_status}")
+            print("-" * 60)
+            print("ROLE FAMILY PREFERENCES:")
+            if prof.role_families:
+                for k, sig in prof.role_families.items():
+                    print(f"  • {k:25} signal={sig.raw_signal:+.2f} conf={sig.confidence:.2f} (pos={sig.positive_count}, neg={sig.negative_count}, total={sig.total_evidence}) [{sig.status} | {sig.readiness}]")
+            else:
+                print("  No role family signals recorded yet.")
+            print("-" * 60)
+            print("ROLE CONCEPT PREFERENCES:")
+            if prof.role_concepts:
+                for k, sig in prof.role_concepts.items():
+                    print(f"  • {k:28} signal={sig.raw_signal:+.2f} conf={sig.confidence:.2f} (n={sig.total_evidence}) [{sig.status}]")
+            else:
+                print("  No role concept signals recorded yet.")
+            print("-" * 60)
+            print("TOP SKILL / TECHNOLOGY PREFERENCES:")
+            if prof.skills:
+                for k, sig in sorted(prof.skills.items(), key=lambda x: x[1].total_evidence, reverse=True)[:10]:
+                    print(f"  • {k:20} signal={sig.raw_signal:+.2f} conf={sig.confidence:.2f} (n={sig.total_evidence}) [{sig.status}]")
+            else:
+                print("  No skill signals recorded yet.")
+            print("-" * 60)
+            print("COMPANY SIGNALS:")
+            if prof.companies:
+                for k, sig in prof.companies.items():
+                    print(f"  • {k:25} signal={sig.raw_signal:+.2f} (n={sig.total_evidence}) [{sig.status}]")
+            else:
+                print("  No company signals recorded yet.")
+            print("-" * 60)
+            if prof.feedback_reasons:
+                print("FEEDBACK REASONS:")
+                for r, cnt in sorted(prof.feedback_reasons.items()):
+                    print(f"  • {r:25}: {cnt}")
+                print("-" * 60)
+            print("BIAS & CALIBRATION NOTES:")
+            for note in prof.selection_bias_notes:
+                print(f"  ℹ {note}")
+            print("============================================================")
+        return 0
+
+    if action == "coverage":
+        from .feedback_analytics import get_feedback_coverage_metrics
+        metrics = get_feedback_coverage_metrics()
+        if output_json:
+            print(json.dumps(metrics, ensure_ascii=False, indent=2))
+        else:
+            print("============================================================")
+            print("       STAGE 91.1: FEEDBACK & HUMAN EVIDENCE COVERAGE       ")
+            print("============================================================")
+            print(f"Delivered Vacancies:            {metrics['delivered_vacancies']}")
+            print(f"Telegram Feedback Vacancies:    {metrics['telegram_feedback_vacancies']} ({metrics['telegram_feedback_coverage_rate']:.1%})")
+            print(f"Confirmed Real Applications:    {metrics['confirmed_applications']}")
+            print(f"Canonical Human Evidence Total: {metrics['canonical_human_evidence_vacancies']} ({metrics['human_evidence_coverage_rate']:.1%})")
+            print("-" * 60)
+            print("ACTION DISTRIBUTION:")
+            print(f"  • Explicit Positive (👍/📄):  {metrics['explicit_positive']}")
+            print(f"  • Explicit Negative (👎):     {metrics['explicit_negative']}")
+            print(f"  • Contextual Skip (⏭):       {metrics['skip']}")
+            print(f"  • Unanswered Digest Items:   {metrics['no_feedback']} (never treated as dislike)")
+            print("-" * 60)
+            if metrics["reasons_breakdown"]:
+                print("FEEDBACK REASONS BREAKDOWN:")
+                for r, cnt in sorted(metrics["reasons_breakdown"].items()):
+                    print(f"  • {r:25}: {cnt}")
+            else:
+                print("  No structured reasons recorded yet.")
+            print("============================================================")
+        return 0
+
+    if action == "provenance":
+        from .feedback_analytics import extract_all_preference_evidence, build_preference_profile
+        all_raw = extract_all_preference_evidence(include_non_production=True)
+        prof = build_preference_profile()
+        if output_json:
+            print(json.dumps({
+                "raw_evidence_count": len(all_raw),
+                "production_eligible_count": prof.production_eligible_events_count,
+                "excluded_count": prof.excluded_events_count,
+                "calibration_readiness": prof.calibration_readiness,
+                "provenance_summary": prof.provenance_summary,
+                "raw_events": [e.to_dict() for e in all_raw],
+                "eligible_events": [e.to_dict() for e in prof.evidence_events],
+            }, ensure_ascii=False, indent=2))
+        else:
+            print("============================================================")
+            print("       STAGE 90.1: FEEDBACK EVIDENCE PROVENANCE AUDIT        ")
+            print("============================================================")
+            print(f"Total Raw Evidence Rows:       {len(all_raw)}")
+            print(f"Production Eligible Events:    {prof.production_eligible_events_count}")
+            print(f"Excluded Rows:                 {prof.excluded_events_count}")
+            print(f"Calibration Readiness:         {prof.calibration_readiness}")
+            print("-" * 60)
+            print("PROVENANCE BREAKDOWN:")
+            for p_name, cnt in sorted(prof.provenance_summary.items()):
+                print(f"  • {p_name:35} : {cnt}")
+            print("-" * 60)
+            print("VALID PRODUCTION EVIDENCE GROUND TRUTH:")
+            if prof.evidence_events:
+                for ev in prof.evidence_events:
+                    print(f"  [{ev.occurred_at}] {ev.vacancy_stable_id} | {ev.action} ({ev.signal_strength.value})")
+                    print(f"      Title: {ev.title} @ {ev.company} [{ev.source}]")
+                    print(f"      Provenance: {ev.provenance.value} | Human Confirmed: {ev.human_confirmed}")
+                    for n in ev.notes:
+                        print(f"      • {n}")
+            else:
+                print("  No production-eligible evidence events recorded yet.")
+            print("-" * 60)
+            print("EXCLUDED EVIDENCE ROWS:")
+            excluded = [e for e in all_raw if not e.is_production_eligible]
+            for ev in excluded[:10]:
+                print(f"  [{ev.source_table}] {ev.vacancy_stable_id} -> {ev.provenance.value}")
+                for n in ev.notes:
+                    print(f"      • {n}")
+            if len(excluded) > 10:
+                print(f"  ... and {len(excluded) - 10} more excluded rows.")
+            print("============================================================")
+        return 0
+
+    if action == "simulate":
+        from .feedback_analytics import build_preference_profile, calculate_preference_adjustment
+        from .matcher import JobMatcher
+        from .candidate_profile import load_candidate_profile
+        from .db import _row_to_vacancy
+
+        prof = build_preference_profile()
+        cand_prof = load_candidate_profile(path=profile_path)
+        matcher = JobMatcher(cand_prof)
+
+        conn = db.get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM vacancies ORDER BY match_score DESC LIMIT ?", (limit,))
+        rows = cur.fetchall()
+        conn.close()
+
+        simulations = []
+        for r in rows:
+            vac = _row_to_vacancy(r)
+            m_res = matcher.match(vac)
+            adj, reasons = calculate_preference_adjustment(
+                vacancy=vac,
+                profile=prof,
+                base_match_score=m_res.score,
+                decision_class=m_res.decision_class,
+                eligibility=m_res.eligibility,
+                enabled=True,
+            )
+            sid = vac.stable_id() if callable(getattr(vac, "stable_id", None)) else getattr(vac, "stable_id", "")
+            simulations.append({
+                "stable_id": sid,
+                "title": vac.title,
+                "company": vac.company,
+                "role_family": m_res.role_family,
+                "base_match_score": m_res.score,
+                "preference_adjustment": adj,
+                "ranking_score": int(max(0, min(100, round(m_res.score + adj)))),
+                "decision_class": m_res.decision_class,
+                "eligibility": m_res.eligibility,
+                "reasons": reasons,
+            })
+
+        if output_json:
+            print(json.dumps({
+                "calibration_status": prof.calibration_status,
+                "total_evidence_events": prof.total_evidence_events,
+                "simulations": simulations,
+            }, ensure_ascii=False, indent=2))
+        else:
+            print("============================================================")
+            print("       STAGE 90: PREFERENCE CALIBRATION SIMULATION          ")
+            print("============================================================")
+            print(f"Global Evidence Events:    {prof.total_evidence_events}")
+            print(f"Calibration Status:        {prof.calibration_status}")
+            print("-" * 60)
+            for s in simulations:
+                diff = s["ranking_score"] - s["base_match_score"]
+                diff_str = f"({diff:+d})" if diff != 0 else "(no change)"
+                print(f"[{s['stable_id']}] {s['title'][:40]} @ {s['company'][:20]}")
+                print(f"  Base Match: {s['base_match_score']} -> Ranking Score: {s['ranking_score']} {diff_str} | Class: {s['decision_class']}")
+                for reas in s["reasons"][:2]:
+                    print(f"    • {reas}")
+            print("============================================================")
+        return 0
+
     # Default action: list
     records = list_telegram_feedback(limit=limit, vacancy_stable_id=vacancy_id)
     if output_json:
@@ -4111,6 +4317,60 @@ def feedback_cmd(
             print(f"  [{r['created_at']}] ID: {r['id']} | Action: {r['action']} | Vacancy: {r['vacancy_stable_id']}")
             print(f"      Transition: {r['previous_status']} -> {r['new_status']} | User: {r['telegram_user_id']} | CB: {r['callback_query_id']}")
     return 0
+
+
+def hermes_cmd(
+    action: str = "status",
+    dry_run: bool = False,
+    output_json: bool = False,
+) -> int:
+    """Inspect and synchronize external Hermes runtime integration (Stage 89.2)."""
+    from .hermes_integration import get_hermes_integration_status, sync_hermes_integration
+
+    if action == "sync":
+        res = sync_hermes_integration(dry_run=dry_run)
+        if output_json:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+        else:
+            print("=== HERMES INTEGRATION SYNC ===")
+            print(f"Dry Run: {'YES' if dry_run else 'NO'}")
+            print(f"Success: {'YES' if res['success'] else 'NO'}")
+            if res.get("actions_taken"):
+                print("Actions Taken:")
+                for a in res["actions_taken"]:
+                    print(f"  • {a}")
+            else:
+                print("Actions Taken: None (Already in sync)")
+            print(f"Overall Status: {res['status_after']['status']}")
+            print("=" * 60)
+        return 0 if res["success"] else 1
+
+    # Default action: status
+    res = get_hermes_integration_status()
+    if output_json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+    else:
+        print("=== HERMES INTEGRATION STATUS ===")
+        print(f"Overall Status: {res['status']}")
+        print("-" * 60)
+        f = res["fetcher"]
+        print(f"Fetcher Script: {f['status']}")
+        print(f"  Path:               {f['deployed_path']}")
+        print(f"  Exists:             {'YES' if f['exists'] else 'NO'}")
+        print(f"  Keyboard Capable:   {'YES' if f['keyboard_capable'] else 'NO'}")
+        print(f"  Attempt Locking:    {'YES' if f['attempt_locking'] else 'NO'}")
+        print(f"  Deployed SHA256:    {f['deployed_sha256'] or 'N/A'}")
+        print(f"  Canonical SHA256:   {f['canonical_sha256'] or 'N/A'}")
+        print("-" * 60)
+        a = res["adapter"]
+        print(f"Telegram Adapter: {a['status']}")
+        print(f"  Path:               {a['deployed_path']}")
+        print(f"  Exists:             {'YES' if a['exists'] else 'NO'}")
+        print(f"  Routing Capable:    {'YES' if a['routing_capable'] else 'NO'}")
+        print(f"  Deployed SHA256:    {a['deployed_sha256'] or 'N/A'}")
+        print("=" * 60)
+    return 0 if res["status"] == "HEALTHY" else 1
+
 
 def main() -> int:
     # Handle direct `review <id>` as `review show <id>`
@@ -4509,6 +4769,29 @@ def main() -> int:
     fb_sum_p = fb_sub.add_parser("summary", help="Show feedback aggregation summary")
     fb_sum_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
 
+    fb_analytics_p = fb_sub.add_parser("analytics", help="Show feedback preference analytics and derived profile (Stage 90)")
+    fb_analytics_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
+
+    fb_coverage_p = fb_sub.add_parser("coverage", help="Show feedback delivery and coverage metrics (Stage 91)")
+    fb_coverage_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
+
+    fb_prov_p = fb_sub.add_parser("provenance", help="Audit feedback evidence provenance and label quality (Stage 90.1)")
+    fb_prov_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
+
+    fb_sim_p = fb_sub.add_parser("simulate", help="Simulate preference-calibrated ranking comparison (Stage 90)")
+    fb_sim_p.add_argument("--limit", type=int, default=20, help="Number of top vacancies to simulate")
+    fb_sim_p.add_argument("--profile", type=str, default=None, help="Path to candidate profile")
+    fb_sim_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
+
+    # Stage 89.2 — Hermes Integration & Drift Subsystem
+    hermes_parser = subparsers.add_parser("hermes", help="Hermes external runtime persistence & drift detection (Stage 89.2)")
+    hermes_sub = hermes_parser.add_subparsers(dest="hermes_command", help="Hermes integration action")
+    hermes_status_p = hermes_sub.add_parser("status", help="Inspect Hermes integration status and detect drift")
+    hermes_status_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
+    hermes_sync_p = hermes_sub.add_parser("sync", help="Sync canonical integration files to Hermes runtime")
+    hermes_sync_p.add_argument("--dry-run", action="store_true", help="Preview changes without writing")
+    hermes_sync_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
+
     production_run_parser = subparsers.add_parser("production-run", help="Run the fail-closed production wrapper (Stage 83)")
     production_run_parser.add_argument("--dry-run", action="store_true", help="Disable external delivery and live vacancy adapters")
     production_run_parser.add_argument("--fetcher", dest="fetcher_script", default=None, help=argparse.SUPPRESS)
@@ -4861,7 +5144,13 @@ def main() -> int:
         limit = getattr(args, "limit", 50)
         vac_id = getattr(args, "vacancy_id", None)
         as_json = getattr(args, "as_json", False)
-        return feedback_cmd(action=cmd, limit=limit, vacancy_id=vac_id, output_json=as_json)
+        profile_path = getattr(args, "profile", None)
+        return feedback_cmd(action=cmd, limit=limit, vacancy_id=vac_id, output_json=as_json, profile_path=profile_path)
+    elif args.command == "hermes":
+        cmd = getattr(args, "hermes_command", "status") or "status"
+        dry_run = getattr(args, "dry_run", False)
+        as_json = getattr(args, "as_json", False)
+        return hermes_cmd(action=cmd, dry_run=dry_run, output_json=as_json)
     elif args.command == "production-run":
         return production_run_cmd(
             dry_run=getattr(args, "dry_run", False),

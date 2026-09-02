@@ -138,6 +138,9 @@ class MatchResult:
         role_family: str = "OTHER",
         role_priority: str = "P1",
         dimensions: Optional[Dict[str, Any]] = None,
+        preference_adjustment: float = 0.0,
+        ranking_score: Optional[int] = None,
+        preference_reasons: Optional[List[str]] = None,
     ) -> None:
         self.score = int(score)
         self.decision = str(decision)
@@ -149,9 +152,12 @@ class MatchResult:
         self.strengths = strengths
         self.gaps = gaps
         self.dimensions = dimensions or {}
+        self.preference_adjustment = float(preference_adjustment)
+        self.ranking_score = ranking_score if ranking_score is not None else int(max(0, min(100, round(self.score + self.preference_adjustment))))
+        self.preference_reasons = preference_reasons or []
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "score": self.score,
             "decision": self.decision,
             "decision_class": self.decision_class,
@@ -163,6 +169,11 @@ class MatchResult:
             "gaps": self.gaps,
             "dimensions": self.dimensions,
         }
+        if self.preference_adjustment != 0.0 or self.preference_reasons:
+            d["preference_adjustment"] = self.preference_adjustment
+            d["ranking_score"] = self.ranking_score
+            d["preference_reasons"] = self.preference_reasons
+        return d
 
 
 # =============================================================================
@@ -1275,3 +1286,47 @@ class JobMatcher:
             gaps=gaps,
             dimensions=dimensions,
         )
+
+
+def apply_preference_adjustment(
+    match_result: MatchResult,
+    vacancy: Vacancy,
+    preference_profile: Optional[Any] = None,
+    enabled: Optional[bool] = None,
+) -> MatchResult:
+    """Apply safe bounded preference adjustment to an existing MatchResult (Stage 90)."""
+    from ai_assistant.feedback_analytics import (
+        build_preference_profile,
+        calculate_preference_adjustment,
+        PreferenceProfile,
+    )
+
+    if preference_profile is None:
+        preference_profile = build_preference_profile()
+
+    adj, reasons = calculate_preference_adjustment(
+        vacancy=vacancy,
+        profile=preference_profile,
+        base_match_score=match_result.score,
+        decision_class=match_result.decision_class,
+        eligibility=match_result.eligibility,
+        enabled=enabled,
+    )
+
+    ranking_score = int(max(0, min(100, round(match_result.score + adj))))
+
+    return MatchResult(
+        score=match_result.score,
+        decision=match_result.decision,
+        decision_class=match_result.decision_class,
+        eligibility=match_result.eligibility,
+        role_family=match_result.role_family,
+        role_priority=match_result.role_priority,
+        reasons=match_result.reasons,
+        strengths=match_result.strengths,
+        gaps=match_result.gaps,
+        dimensions=match_result.dimensions,
+        preference_adjustment=adj,
+        ranking_score=ranking_score,
+        preference_reasons=reasons,
+    )

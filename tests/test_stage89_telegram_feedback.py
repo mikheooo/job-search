@@ -116,6 +116,7 @@ def sample_vacancy(isolated_db):
         salary_currency="USD",
     )
     db.save_vacancy(v)
+    db.mark_digest_delivered([v.stable_id()])
     return v
 
 
@@ -347,6 +348,7 @@ def test_cross_source_duplicate_handled_safely(isolated_db):
         job_url="https://himalayas.app/jobs/dup1",
     )
     db.save_vacancy(v1)
+    db.mark_digest_delivered([v1.stable_id()])
 
     notifier = TelegramNotifier()
     processor = TelegramFeedbackProcessor(allowed_user_id="123456789", notifier=notifier)

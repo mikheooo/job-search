@@ -247,6 +247,63 @@ _GREETING_ONLY_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Technologies the classifier is able to *name* when answering. This drives the
+# honest-absence branch: if an employer asks about one of these and it is not in
+# candidate_profile.json, the draft says so plainly instead of reciting the
+# stack and letting the recruiter assume the gap is covered.
+#
+# Curated on purpose. Ambiguous English words are excluded: "we need a swift
+# reply" must never become "no experience with Swift", same for rust/spark/lambda.
+# Generic office tools (Jira, Confluence, Salesforce) are excluded too — claiming
+# "no verified experience" with those reads worse than saying nothing.
+_TECH_VOCAB = {
+    # orchestration / infra / ci
+    "kubernetes": "Kubernetes", "k8s": "Kubernetes", "helm": "Helm", "istio": "Istio",
+    "terraform": "Terraform", "ansible": "Ansible", "argocd": "ArgoCD",
+    "jenkins": "Jenkins", "gitlab ci": "GitLab CI", "github actions": "GitHub Actions",
+    "circleci": "CircleCI", "nginx": "Nginx", "zabbix": "Zabbix",
+    # observability
+    "prometheus": "Prometheus", "grafana": "Grafana", "opentelemetry": "OpenTelemetry",
+    "sentry": "Sentry", "kibana": "Kibana", "logstash": "Logstash",
+    # data stores / queues
+    "redis": "Redis", "kafka": "Kafka", "rabbitmq": "RabbitMQ", "celery": "Celery",
+    "mongodb": "MongoDB", "mysql": "MySQL", "sqlite": "SQLite", "mssql": "MS SQL",
+    "oracle": "Oracle", "elasticsearch": "Elasticsearch", "clickhouse": "ClickHouse",
+    # web / backend
+    "graphql": "GraphQL", "grpc": "gRPC", "websocket": "WebSocket",
+    "oauth": "OAuth", "jwt": "JWT", "django": "Django", "flask": "Flask",
+    "aiohttp": "aiohttp", "pydantic": "Pydantic", "sqlalchemy": "SQLAlchemy",
+    "alembic": "Alembic", "golang": "Go",
+    # cloud
+    "aws": "AWS", "gcp": "GCP", "azure": "Azure",
+    # data / etl
+    "airflow": "Airflow", "prefect": "Prefect", "dbt": "dbt", "airbyte": "Airbyte",
+    "nifi": "NiFi", "temporal": "Temporal", "camunda": "Camunda", "hadoop": "Hadoop",
+    # llm / ml
+    "langchain": "LangChain", "llamaindex": "LlamaIndex", "langgraph": "LangGraph",
+    "rag": "RAG", "pinecone": "Pinecone", "qdrant": "Qdrant", "weaviate": "Weaviate",
+    "chroma": "Chroma", "openai": "OpenAI", "gemini": "Gemini", "anthropic": "Anthropic",
+    "huggingface": "Hugging Face", "pytorch": "PyTorch", "tensorflow": "TensorFlow",
+    "scikit-learn": "scikit-learn", "sklearn": "scikit-learn", "numpy": "NumPy",
+    "polars": "Polars",
+    # automation / scraping / bi
+    "selenium": "Selenium", "playwright": "Playwright", "puppeteer": "Puppeteer",
+    "zapier": "Zapier", "amocrm": "AmoCRM", "tableau": "Tableau",
+    "power bi": "Power BI", "metabase": "Metabase", "superset": "Superset",
+    "looker": "Looker", "supabase": "Supabase", "firebase": "Firebase",
+    "stripe": "Stripe",
+}
+
+# Guards the honest-absence branch. A technology merely *mentioned* in passing
+# ("у нас стек на AWS, расскажите о себе") must not produce a "I have no AWS
+# experience" non-sequitur. Only answer about a technology when the employer is
+# actually asking for experience with something.
+_TECH_ASK_CUE_RE = re.compile(
+    r"опыт|работал|знае|приходилос|использовал|стаж|владе|навык|уме|"
+    r"\bexperience\b|\bworked\b|\bused\b|\bfamiliar\b|\bskills?\b|know how",
+    re.IGNORECASE,
+)
+
 
 def resolve_vacancy_for_dialog(dialog: HHDialog) -> Optional[Dict[str, Any]]:
     """Look up linked vacancy in database if available (read-only)."""
@@ -583,10 +640,14 @@ def classify_hh_conversation_detailed(
             r"|обсудим",
             re.IGNORECASE,
         )
+        # "рассматрива" is too greedy to own a question on its own: "Рассматриваете ли
+        # вы удалённую работу?" was landing here and answering "предложение мне
+        # интересно" to a question about work format — a dodge. Format and start-date
+        # questions have their own, more specific branches below, so let them win.
         is_interest_q = (
             any(k in q_text_low for k in ["интересн", "заинтересова", "interested", "готов обсудить", "готовы обсудить", "актуальн", "рассматрива"])
             or bool(_INTEREST_RE.search(q_text_low))
-        ) and not has_unverified_tech
+        ) and not has_unverified_tech and not is_remote_q and not is_availability_q
 
         if is_interest_q:
             if lang == "ru":
@@ -653,28 +714,76 @@ def classify_hh_conversation_detailed(
                 "status": "READ-ONLY",
             }
 
-        if is_python_tech_q or is_generic_exp_q:
-            years = prof.get("years_experience", 3)
-            skills_str = ", ".join(profile_skills[:5]) if profile_skills else "Python, FastAPI, PostgreSQL, Docker"
+        # --- what technologies is the employer actually asking about? --------
+        # Two separate questions to answer, and both must be answered honestly:
+        #   1. Which *declared* skills did they name? -> confirm those by name.
+        #   2. Which known technologies did they name that are NOT declared?
+        #      -> state the gap. Reciting the stack instead of answering "есть ли
+        #         опыт с Kubernetes?" is a dodge, and it lets the recruiter
+        #         assume a gap that the profile does not cover.
+        #
+        # Computed before the branch below because the presence of an
+        # undeclared technology is itself a reason to answer (even when the
+        # message contains none of the usual tech keywords).
+        years = prof.get("years_experience", 3)
+        skills_str = ", ".join(profile_skills[:5]) if profile_skills else "Python, FastAPI, PostgreSQL, Docker"
 
-            # Which verified skills did the employer actually name? Answer those first
-            # and by name: a bare CV dump reads as dodging the question — asked "есть ли
-            # опыт с n8n?", the candidate must say "да" before reciting the stack.
-            #
-            # Word-boundary match, not substring: otherwise "sql" matches inside
-            # "postgresql". Secondary skills count too — they are declared in the
-            # profile, just not part of the headline list.
-            declared_skills = list(profile_skills) + [
-                str(s) for s in (prof.get("secondary_skills") or [])
-                if str(s) not in profile_skills
-            ]
-            asked_skills: List[str] = []
-            for _s in declared_skills:
-                _s_low = _s.lower().replace("ё", "е")
-                if re.search(rf"(?<![a-zа-я0-9]){re.escape(_s_low)}(?![a-zа-я0-9])", q_text_low):
-                    asked_skills.append(_s)
-                if len(asked_skills) >= 3:
-                    break
+        # Which verified skills did the employer actually name? Answer those first
+        # and by name: a bare CV dump reads as dodging the question — asked "есть ли
+        # опыт с n8n?", the candidate must say "да" before reciting the stack.
+        #
+        # Word-boundary match, not substring: otherwise "sql" matches inside
+        # "postgresql". Secondary skills count too — they are declared in the
+        # profile, just not part of the headline list.
+        #
+        # Transferable skills count as declared as well. They are not part of the
+        # headline stack, but they ARE in the profile — without them a question
+        # about git would produce "no verified experience with git", which would
+        # be a lie in the opposite direction.
+        _secondary = [str(s) for s in (prof.get("secondary_skills") or [])]
+        declared_skills = list(profile_skills) + [
+            s for s in _secondary if s not in profile_skills
+        ] + [
+            str(s) for s in (prof.get("transferable_skills") or [])
+            if str(s) not in profile_skills and str(s) not in _secondary
+        ]
+        declared_low = [str(s).lower().replace("ё", "е") for s in declared_skills]
+
+        asked_skills: List[str] = []
+        for _s in declared_skills:
+            _s_low = _s.lower().replace("ё", "е")
+            if re.search(rf"(?<![a-zа-я0-9]){re.escape(_s_low)}(?![a-zа-я0-9])", q_text_low):
+                asked_skills.append(_s)
+            if len(asked_skills) >= 3:
+                break
+
+        # Technologies the employer named that are NOT in the profile. Same
+        # word-boundary rule; a token is skipped when a declared skill already
+        # covers it under the same or a longer name.
+        unknown_techs: List[str] = []
+        for _tok, _disp in _TECH_VOCAB.items():
+            _tok_re = rf"(?<![a-zа-я0-9]){re.escape(_tok)}(?![a-zа-я0-9])"
+            if not re.search(_tok_re, q_text_low):
+                continue
+            if any(re.search(_tok_re, _d) for _d in declared_low):
+                continue
+            if _disp not in unknown_techs:
+                unknown_techs.append(_disp)
+        unknown_techs = unknown_techs[:3]
+
+        # Claim an absence — or confirm a skill — only when the employer is genuinely
+        # asking about experience: a passing mention ("у нас стек на AWS, расскажите
+        # о себе") is not a question about AWS. And never alongside an unverified
+        # tech (php / bitrix / 1c ...) — that case belongs to HUMAN_REVIEW as a
+        # whole, not to a half-answer that quietly drops the dangerous part.
+        _asked_cue = ("?" in (q_text or "")) or bool(_TECH_ASK_CUE_RE.search(q_text_low))
+        asks_about_tech = bool(unknown_techs) and not has_unverified_tech and _asked_cue
+        # A declared-but-non-headline skill named in a question (git, ci/cd, asyncio)
+        # also deserves a straight answer. These used to fall through to
+        # HUMAN_REVIEW because the keyword lists only cover the headline stack.
+        asks_about_skill = bool(asked_skills) and not has_unverified_tech and _asked_cue
+
+        if is_python_tech_q or is_generic_exp_q or asks_about_tech or asks_about_skill:
             conf_map = {
                 str(k).lower().replace("ё", "е"): str(v)
                 for k, v in (prof.get("skill_confidence") or {}).items()
@@ -693,24 +802,56 @@ def classify_hh_conversation_detailed(
                 "TRANSFERABLE": "transferable",
             }
 
-            if asked_skills:
+            def _with_level(skills: List[str], table: Dict[str, str]) -> str:
+                out = []
+                for s in skills:
+                    lvl = table.get(conf_map.get(s.lower().replace("ё", "е"), ""))
+                    out.append(f"{s} ({lvl})" if lvl else s)
+                return _join_native(out)
+
+            def _join_native(items: List[str]) -> str:
+                """'A и B' / 'A and B' — recruiter-facing text, so punctuation matters."""
+                if len(items) <= 1:
+                    return "".join(items)
+                conj = " и " if lang == "ru" else " and "
+                return ", ".join(items[:-1]) + conj + items[-1]
+
+            unknown_str = _join_native(unknown_techs)
+            tech_missing: List[str] = []
+
+            if asked_skills and asks_about_tech:
+                # Both halves: confirm what is verified, disclaim what is not.
                 if lang == "ru":
-                    items = []
-                    for s in asked_skills:
-                        lvl = levels_ru.get(conf_map.get(s.lower().replace("ё", "е"), ""))
-                        items.append(f"{s} ({lvl})" if lvl else s)
                     reply_text = (
-                        f"Здравствуйте! Да, работал с {', '.join(items)}. "
+                        f"Здравствуйте! Да, работал с {_with_level(asked_skills, levels_ru)}. "
+                        f"С {unknown_str} подтверждённого коммерческого опыта в профиле нет — "
+                        f"не хочу приписывать лишнего. Общий коммерческий опыт разработки на Python — "
+                        f"более {years} лет; основной стек: {skills_str}. Готов обсудить задачи на интервью."
+                    )
+                else:
+                    reply_text = (
+                        f"Hello! Yes, I have hands-on experience with {_with_level(asked_skills, levels_en)}. "
+                        f"I do not have direct commercial experience with {unknown_str} in my profile, "
+                        f"so I would not claim it. Overall commercial Python experience is over {years} years; "
+                        f"core stack: {skills_str}. Glad to discuss the tasks."
+                    )
+                reason = (
+                    "Employer named both verified skills and technologies absent from the profile; "
+                    "confirmed the verified ones with their documented level and stated the gap honestly."
+                )
+                tech_sources = sources + ["candidate_profile.json: skill_confidence"]
+                tech_missing = [f"{unknown_str} experience (absent from profile)"]
+                tech_confidence = 0.88
+            elif asked_skills:
+                if lang == "ru":
+                    reply_text = (
+                        f"Здравствуйте! Да, работал с {_with_level(asked_skills, levels_ru)}. "
                         f"Общий коммерческий опыт разработки на Python — более {years} лет; "
                         f"основной стек: {skills_str}. Готов обсудить задачи на интервью."
                     )
                 else:
-                    items = []
-                    for s in asked_skills:
-                        lvl = levels_en.get(conf_map.get(s.lower().replace("ё", "е"), ""))
-                        items.append(f"{s} ({lvl})" if lvl else s)
                     reply_text = (
-                        f"Hello! Yes, I have hands-on experience with {', '.join(items)}. "
+                        f"Hello! Yes, I have hands-on experience with {_with_level(asked_skills, levels_en)}. "
                         f"Overall commercial Python experience is over {years} years; "
                         f"core stack: {skills_str}. Glad to discuss details."
                     )
@@ -719,6 +860,31 @@ def classify_hh_conversation_detailed(
                     "candidate profile (with documented proficiency level) before the general stack."
                 )
                 tech_sources = sources + ["candidate_profile.json: skill_confidence"]
+                tech_confidence = 0.90
+            elif asks_about_tech:
+                # Nothing they asked about is in the profile. Say so, then offer
+                # the adjacent verified stack instead of faking coverage.
+                if lang == "ru":
+                    reply_text = (
+                        f"Здравствуйте! С {unknown_str} подтверждённого коммерческого опыта в профиле нет — "
+                        f"не хочу приписывать лишнего. Мой подтверждённый стек: {skills_str}; "
+                        f"коммерческий опыт разработки на Python — более {years} лет. "
+                        f"Готов обсудить, какие задачи нужно закрывать."
+                    )
+                else:
+                    reply_text = (
+                        f"Hello! I do not have direct commercial experience with {unknown_str} in my profile, "
+                        f"so I would not claim it. My confirmed stack: {skills_str}; "
+                        f"over {years} years of commercial Python development. "
+                        f"Happy to discuss the tasks you need covered."
+                    )
+                reason = (
+                    "Employer asked about a technology absent from the candidate profile; drafted an "
+                    "honest answer naming the verified adjacent stack instead of claiming unverified experience."
+                )
+                tech_sources = sources
+                tech_missing = [f"{unknown_str} experience (absent from profile)"]
+                tech_confidence = 0.85
             else:
                 if lang == "ru":
                     reply_text = (
@@ -732,16 +898,17 @@ def classify_hh_conversation_detailed(
                     )
                 reason = "Employer asked about technical stack; drafted response using verified profile skills."
                 tech_sources = sources
+                tech_confidence = 0.90
 
             return {
                 "conversation_id": dialog.conversation_id,
                 "classification": "NEEDS_REPLY",
-                "confidence": 0.90,
+                "confidence": tech_confidence,
                 "reason": reason,
                 "question": q_text,
                 "required_facts": required_facts + ["technical stack"],
                 "available_facts": available_facts,
-                "missing_facts": [],
+                "missing_facts": tech_missing,
                 "context": context,
                 "prepared_reply": reply_text,
                 "sources": tech_sources,
