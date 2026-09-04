@@ -308,6 +308,8 @@ class SubmitResult(BaseModel):
     verification_strategy: Optional[str] = None
     submit_count: int = 0
     executor_version: str = EXECUTOR_VERSION
+    gate_check_result: Optional[Any] = None
+    live_page_result: Optional[Any] = None
 
     model_config = {"extra": "forbid"}
 
@@ -518,6 +520,75 @@ class MockBrowserAdapter(BrowserAdapter):
         self.submit_attempted = True
         # Mock always returns success for testing
         return {"success": True, "message": "Mock submission successful"}
+
+    def evaluate(self, js: str) -> str:
+        self.calls.append("evaluate")
+        cleaned_js = js.strip()
+        sim = self.simulate
+        target_url = sim.get("final_url") or self.opened_url or "https://hh.ru/vacancy/12345678"
+
+        # 1. Live page inspect marker
+        if cleaned_js.startswith("// hh_live_page_inspect"):
+            inspect = self.inspect_page()
+            return json.dumps({
+                "ok": True,
+                "url": target_url,
+                "title": self.get_title(),
+                "is_404": bool(sim.get("is_404", False)),
+                "is_captcha": bool(inspect.get("captcha", False)),
+                "is_access_denied": bool(sim.get("is_access_denied", False)),
+                "is_login_required": bool(inspect.get("login_required", False)),
+                "already_responded": bool(sim.get("already_responded", False)),
+                "has_submit_btn": bool(inspect.get("apply_button", True)),
+                "submit_btn_disabled": bool(sim.get("submit_btn_disabled", False)),
+                "has_apply_btn": bool(inspect.get("apply_button", True)),
+                "has_response_modal": bool(sim.get("has_response_modal", True)),
+            })
+
+        # 2. Submit click marker
+        if cleaned_js.startswith("// hh_submit_click"):
+            res = self.submit_application()
+            return json.dumps({"ok": res.get("success", True)})
+
+        # 3. Post-submit verify marker
+        if cleaned_js.startswith("// hh_post_submit_verify"):
+            responded = bool(sim.get("has_responded_success", self.submit_attempted))
+            return json.dumps({
+                "ok": True,
+                "url": target_url,
+                "title": self.get_title(),
+                "h1": self.get_title(),
+                "has_responded_success": responded,
+                "hasRespondedSuccess": responded,
+                "has_topic_link": bool(sim.get("has_topic_link", self.submit_attempted)),
+                "hasTopicLink": bool(sim.get("has_topic_link", self.submit_attempted)),
+                "has_cover_letter_btn": False,
+                "hasCoverLetterBtn": False,
+                "has_explicit_rejection": bool(sim.get("has_explicit_rejection", False)),
+                "hasExplicitRejection": bool(sim.get("has_explicit_rejection", False)),
+                "is_chat": False,
+                "isChat": False,
+                "is_vacancy_page": True,
+                "isVacancyPage": True,
+                "has_submit_btn": False,
+                "hasSubmitBtn": False,
+                "has_apply_btn": False,
+                "hasApplyBtn": False,
+                "is_404": False,
+                "is_captcha": False,
+                "is_access_denied": False,
+                "is_login_required": False,
+                "already_responded": False,
+                "bodySnippet": "отклик отправлен" if self.submit_attempted else "",
+                "text": "отклик отправлен" if self.submit_attempted else "",
+                "evidence_snippet": "отклик отправлен" if self.submit_attempted else "",
+                "has_banner": responded,
+            })
+
+        # Generic fallback
+        if "location.href" in cleaned_js:
+            return json.dumps({"url": target_url})
+        return json.dumps({"ok": True, "url": target_url})
 
 
 class CDPBrowserAdapter(BrowserAdapter):
@@ -935,6 +1006,24 @@ class CDPBrowserAdapter(BrowserAdapter):
         except Exception:
             return f"{self._title} {self._final_url}"
 
+    def evaluate(self, js: str) -> str:
+        if not self.ws_url:
+            return json.dumps({"error": "No active tab / ws_url"})
+        async def _eval():
+            import websockets, asyncio, json
+            async with websockets.connect(self.ws_url, open_timeout=15, close_timeout=15) as ws:
+                await ws.send(json.dumps({"id": 10, "method": "Runtime.evaluate", "params": {"expression": js, "returnByValue": True}}))
+                raw = await asyncio.wait_for(ws.recv(), timeout=10)
+                data = json.loads(raw)
+                val = data.get("result", {}).get("result", {}).get("value")
+                if isinstance(val, (dict, list)):
+                    return json.dumps(val)
+                return str(val if val is not None else "")
+        try:
+            return self._sync_run(_eval())
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
 
 # Playwright adapter if available (optional, not required for tests)
 class PlaywrightBrowserAdapter(BrowserAdapter):
@@ -1282,6 +1371,17 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def evaluate(self, js: str) -> str:
+        if not self.page:
+            return json.dumps({"error": "No active page"})
+        try:
+            res = self.page.evaluate(js)
+            if isinstance(res, (dict, list)):
+                return json.dumps(res)
+            return str(res if res is not None else "")
+        except Exception as e:
+            return json.dumps({"error": str(e)})
 
 def _get_validated_package_answer(field: str, package: Any) -> Optional[str]:
     """Stage 17D: validated package answers (truth-only). UNKNOWN /
@@ -2151,39 +2251,32 @@ def submit_application_in_browser(
 
     # Path A: If HeadHunter, route strictly through unified execute_hh_submission (Stage 41 / Remediation Phase 1.5)
     if vacancy_stable_id.startswith("hh:"):
-        use_adapter = adapter or MockBrowserAdapter()
+        from .hh_browser_launcher import is_cdp_reachable, DEFAULT_HH_CDP_URL
+        if adapter is None:
+            if not is_cdp_reachable(DEFAULT_HH_CDP_URL):
+                return SubmitResult(
+                    vacancy_stable_id=vacancy_stable_id,
+                    submission_id=submission_id,
+                    status="BLOCKED",
+                    error="CDP не доступен: запустите Chrome с --remote-debugging-port=9222",
+                    executor_version="v1",
+                    submit_count=0,
+                )
+            use_adapter = CDPBrowserAdapter(DEFAULT_HH_CDP_URL)
+            vac_id = vacancy_stable_id.split(":")[-1]
+            use_adapter.open(f"https://hh.ru/vacancy/{vac_id}")
+        else:
+            use_adapter = adapter
+            vac_id = vacancy_stable_id.split(":")[-1]
+            if hasattr(use_adapter, "opened_url") and not getattr(use_adapter, "opened_url", None):
+                use_adapter.opened_url = f"https://hh.ru/vacancy/{vac_id}"
+
         def _evaluate_wrapper(js: str) -> str:
             if hasattr(use_adapter, "evaluate"):
                 return str(use_adapter.evaluate(js))
             elif hasattr(use_adapter, "execute_script"):
                 return str(use_adapter.execute_script(js))
-            elif isinstance(use_adapter, MockBrowserAdapter):
-                if ".click()" in js:
-                    res = use_adapter.submit_application()
-                    return json.dumps({"ok": res.get("success", True)})
-                if "has_responded_success" in js:
-                    return json.dumps({
-                        "ok": True,
-                        "has_responded_success": use_adapter.submit_attempted,
-                        "has_topic_link": use_adapter.submit_attempted,
-                        "has_banner": use_adapter.submit_attempted,
-                        "text": "отклик отправлен" if use_adapter.submit_attempted else "",
-                        "url": use_adapter.opened_url or (vac.job_url if vac else f"https://hh.ru/vacancy/{vacancy_stable_id.split(':')[-1]}"),
-                    })
-                inspect = use_adapter.inspect_page()
-                target_url = use_adapter.opened_url or (vac.job_url if vac else f"https://hh.ru/vacancy/{vacancy_stable_id.split(':')[-1]}")
-                return json.dumps({
-                    "ok": True,
-                    "url": target_url,
-                    "title": vac.title if vac else "Vacancy",
-                    "has_submit_btn": inspect.get("apply_button", True),
-                    "has_apply_btn": inspect.get("apply_button", True),
-                    "already_responded": False,
-                    "is_404": False,
-                    "is_captcha": inspect.get("captcha", False),
-                    "is_login_required": inspect.get("login_required", False),
-                })
-            return json.dumps({"ok": True, "url": f"https://hh.ru/vacancy/{vacancy_stable_id.split(':')[-1]}"})
+            raise RuntimeError(f"Browser adapter {type(use_adapter).__name__} does not support evaluate()")
 
         from .hh_submission import execute_hh_submission
         exec_res = execute_hh_submission(
@@ -2195,23 +2288,32 @@ def submit_application_in_browser(
             profile_path=profile_path,
             submission_id=submission_id,
         )
+        final_target_url = (
+            getattr(exec_res.live_page_result, "current_url", None)
+            or (use_adapter.get_current_url() if hasattr(use_adapter, "get_current_url") else "")
+            or f"https://hh.ru/vacancy/{vacancy_stable_id.split(':')[-1]}"
+        )
         if exec_res.status == "SUBMITTED":
             return SubmitResult(
                 vacancy_stable_id=vacancy_stable_id,
                 submission_id=exec_res.submission_id or submission_id,
                 status="SUBMITTED",
-                final_url=getattr(exec_res.live_page_result, "current_url", f"https://hh.ru/vacancy/{vacancy_stable_id.split(':')[-1]}"),
+                final_url=final_target_url,
                 executor_version="v1",
                 submit_count=exec_res.submit_count,
+                gate_check_result=exec_res.gate_check_result,
+                live_page_result=exec_res.live_page_result,
             )
         elif exec_res.status == "DRY_RUN_OK":
             return SubmitResult(
                 vacancy_stable_id=vacancy_stable_id,
                 submission_id=exec_res.submission_id or submission_id,
                 status="DRY_RUN_OK",
-                final_url=getattr(exec_res.live_page_result, "current_url", f"https://hh.ru/vacancy/{vacancy_stable_id.split(':')[-1]}"),
+                final_url=final_target_url,
                 executor_version="v1",
                 submit_count=0,
+                gate_check_result=exec_res.gate_check_result,
+                live_page_result=exec_res.live_page_result,
             )
         else:
             return SubmitResult(
@@ -2219,9 +2321,11 @@ def submit_application_in_browser(
                 submission_id=exec_res.submission_id or submission_id,
                 status=exec_res.status,
                 error=exec_res.reason,
-                final_url=getattr(exec_res.live_page_result, "current_url", f"https://hh.ru/vacancy/{vacancy_stable_id.split(':')[-1]}"),
+                final_url=final_target_url,
                 executor_version="v1",
                 submit_count=exec_res.submit_count,
+                gate_check_result=exec_res.gate_check_result,
+                live_page_result=exec_res.live_page_result,
             )
     
     # Check if already submitted
@@ -2250,7 +2354,7 @@ def submit_application_in_browser(
     vac = _row_to_vacancy(row)
 
     # Load profile
-    from .candidate_profile import load_candidate_profile, CandidateProfile
+    from .candidate_profile import load_candidate_profile
     if profile_path:
         profile = load_candidate_profile(profile_path)
     else:

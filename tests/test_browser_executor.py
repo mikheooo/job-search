@@ -13,6 +13,7 @@ from ai_assistant.candidate_profile import CandidateProfile
 from ai_assistant.application_tracking import ApplicationStatus, set_application_status, get_application_status
 from ai_assistant.application_queue import QueueItem, QUEUE_VERSION, save_queue_item
 from ai_assistant import db
+from ai_assistant.submission_state import has_definite_submission
 import ai_assistant.config as config
 import ai_assistant.browser_executor as be
 
@@ -482,7 +483,7 @@ def test_ready_for_review_validation_gate():
 
         res2 = be.prepare_application_in_browser(vac.stable_id(), adapter=mock, force=True)
         assert res2.status == be.BrowserStatus.READY_FOR_REVIEW
-        assert not db.is_submitted(vac.stable_id())
+        assert not has_definite_submission(vac.stable_id())
     finally:
         config.DB_FILE = orig
         shutil.rmtree(tmp, ignore_errors=True)
@@ -510,8 +511,8 @@ def test_ready_for_review_never_auto_submits():
         assert res.status == be.BrowserStatus.READY_FOR_REVIEW
         # Invariant: mock.submit_attempted must be False
         assert mock.submit_attempted is False
-        # Invariant: DB is_submitted must be False
-        assert db.is_submitted(vac.stable_id()) is False
+        # Invariant: DB submission evidence must be False
+        assert has_definite_submission(vac.stable_id()) is False
         # Invariant: application_submissions has 0 entries
         from ai_assistant.db import get_connection
         conn = get_connection()
@@ -695,8 +696,8 @@ def test_stage30t_office_vacancy_submit_blocked_even_if_approved():
         assert "remote_required" in str(sub_res.error).lower() or "hard constraint" in str(sub_res.error).lower()
         # Invariant: mock.submit_attempted must be False (no Submit button click)
         assert mock.submit_attempted is False
-        # Invariant: DB is_submitted must be False
-        assert db.is_submitted(vac.stable_id()) is False
+        # Invariant: DB submission evidence must be False
+        assert has_definite_submission(vac.stable_id()) is False
         # Invariant: tracking status must remain READY_TO_APPLY (never APPLIED)
         assert get_application_status(vac.stable_id()).status == ApplicationStatus.READY_TO_APPLY
     finally:
@@ -717,11 +718,11 @@ def test_stage30t_remote_vacancy_passes_gate():
 
         vac = Vacancy(
             source="hh",
-            source_job_id="remote_clean_1",
+            source_job_id="777001",
             title="AI Builder",
             company="RemotePlace",
             description="Полностью удаленная работа, 100% remote. Full remote work from anywhere worldwide.",
-            job_url="https://hh.ru/vacancy/remote_clean_1",
+            job_url="https://hh.ru/vacancy/777001",
             location="Remote",
             country_restrictions=[],
             timezone_restrictions=[],
@@ -748,7 +749,7 @@ def test_stage30t_remote_vacancy_passes_gate():
 
         sub_res = be.submit_application_in_browser(vac.stable_id(), confirm_submit=True, adapter=mock)
         assert sub_res.status == be.SubmitStatus.SUBMITTED
-        assert db.is_submitted(vac.stable_id()) is True
+        assert has_definite_submission(vac.stable_id()) is True
     finally:
         config.SUBMIT_ALLOWED = orig_sub
         config.DB_FILE = orig
@@ -797,7 +798,7 @@ def test_stage30t_tutorplace_exact_reproduction_blocked():
         assert sub_res.status == be.SubmitStatus.BLOCKED
         assert "гибридный" in str(sub_res.error).lower() or "remote_required" in str(sub_res.error).lower()
         assert mock.submit_attempted is False
-        assert db.is_submitted(vac.stable_id()) is False
+        assert has_definite_submission(vac.stable_id()) is False
     finally:
         config.DB_FILE = orig
         shutil.rmtree(tmp, ignore_errors=True)
@@ -859,7 +860,7 @@ def test_stage30u_real_remote_hh_prepare_e2e():
         session = be.get_browser_session(vac.stable_id())
         assert session is not None
         assert session.status == be.BrowserStatus.READY_FOR_REVIEW
-        assert db.is_submitted(vac.stable_id()) is False
+        assert has_definite_submission(vac.stable_id()) is False
         assert mock.submit_attempted is False
     finally:
         config.DB_FILE = orig
@@ -1055,7 +1056,7 @@ def test_stage30x_three_remote_vacancies_submit_e2e():
             set_application_status(vac.stable_id(), ApplicationStatus.APPLIED)
 
             # Invariant after each step
-            assert db.is_submitted(vac.stable_id()) is True
+            assert has_definite_submission(vac.stable_id()) is True
             assert get_application_status(vac.stable_id()).status == ApplicationStatus.APPLIED
 
         # Total DB delta must be exactly 3

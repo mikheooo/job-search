@@ -192,6 +192,27 @@ def test_gate_vacancy_match(monkeypatch):
     assert not res.passed
     assert res.failed_gate == GateName.GATE_VACANCY_MATCH
 
+    # Regression: hh:remote_clean_1 must strictly fail Gate 5
+    sid_slug = "hh:remote_clean_1"
+    save_application_review(
+        ApplicationReview(
+            vacancy_stable_id=sid_slug,
+            status=ReviewStatus.APPROVED,
+            form_fingerprint="fp_slug",
+            review_id="rev_slug",
+        )
+    )
+    res_slug = HHSubmissionGates.check_all_gates(
+        sid_slug,
+        "https://hh.ru/vacancy/remote_clean_1",
+        {"fingerprint": "fp_slug", "cover_letter": "A good cover letter for testing"},
+        human_confirmed=True,
+        candidate_profile=_make_profile(),
+    )
+    assert not res_slug.passed
+    assert res_slug.failed_gate == GateName.GATE_VACANCY_MATCH
+    assert "not numeric" in res_slug.reason
+
 
 def test_gate_profile_loaded(monkeypatch):
     monkeypatch.setenv("SUBMIT_ALLOWED", "true")

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
 import os
 import re
 from datetime import datetime
@@ -42,6 +43,8 @@ from typing import Any, Callable, Dict, List, Optional, Set
 from urllib.parse import urlparse, parse_qs
 
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger("ai_assistant.hh_submission")
 
 from . import config
 from .application_review import ReviewStatus, get_application_review
@@ -69,7 +72,8 @@ _SUBMIT_BTN_JS = """(() => {
 })()"""
 
 # JS: click that exact button (only the submit mutation in this module).
-_SUBMIT_CLICK_JS = """(() => {
+_SUBMIT_CLICK_JS = """// hh_submit_click
+(() => {
     const el = document.querySelector('[data-qa="vacancy-response-submit-popup"]');
     if (!el) return JSON.stringify({ok: false, reason: 'submit button not found'});
     if (el.disabled) return JSON.stringify({ok: false, reason: 'submit button is disabled'});
@@ -115,11 +119,16 @@ def _parse_vacancy_id(url: str) -> Optional[str]:
         return None
     try:
         parsed = urlparse(url if "://" in url else f"https://{url}")
+        host = (parsed.hostname or "").lower()
+        is_hh = host == "hh.ru" or host.endswith(".hh.ru")
         qs = parse_qs(parsed.query)
         vals = qs.get("vacancyId") or []
         if vals:
-            return vals[0].strip()
-        match = re.search(r"/vacancy/([^/?#]+)", parsed.path)
+            vid = vals[0].strip()
+            if is_hh:
+                return vid if vid.isdigit() else None
+            return vid
+        match = re.search(r"/vacancy/(\d+)" if is_hh else r"/vacancy/([^/?#]+)", parsed.path)
         if match:
             return match.group(1).strip()
     except Exception:
@@ -131,7 +140,11 @@ def _vacancy_from_stable(vacancy_stable_id: str) -> Optional[str]:
     if not vacancy_stable_id or ":" not in vacancy_stable_id:
         return None
     source, part = vacancy_stable_id.split(":", 1)
-    return part.strip()
+    source = source.strip().lower()
+    part = part.strip()
+    if source == "hh":
+        return part if part.isdigit() else None
+    return part
 
 
 def clear_submitted_reviews() -> None:
@@ -393,6 +406,7 @@ class GateCheckResult(BaseModel):
     failed_gate: Optional[GateName] = None
     reason: str = ""
     details: Dict[str, Any] = Field(default_factory=dict)
+    gate_results: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
 
 class HHSubmissionGates:
@@ -529,13 +543,31 @@ class HHSubmissionGates:
                     details={"expected": vacancy_stable_id, "url": cur_url},
                 )
 
+        parsed_host = ""
+        if cur_url:
+            try:
+                parsed_host = (urlparse(cur_url if "://" in cur_url else f"https://{cur_url}").hostname or "").lower()
+            except Exception:
+                pass
+        is_hh = vacancy_stable_id.startswith("hh:") or parsed_host == "hh.ru" or parsed_host.endswith(".hh.ru")
         expected_job_id = _vacancy_from_stable(vacancy_stable_id)
-        if not expected_job_id:
-            return GateCheckResult(
-                passed=False,
-                failed_gate=GateName.GATE_VACANCY_MATCH,
-                reason=f"source_job_id unavailable in vacancy_stable_id: {vacancy_stable_id}",
-            )
+        if is_hh:
+            if not expected_job_id or not expected_job_id.isdigit():
+                return GateCheckResult(
+                    passed=False,
+                    failed_gate=GateName.GATE_VACANCY_MATCH,
+                    reason=f"source_job_id unavailable or not numeric for HH vacancy: {vacancy_stable_id}",
+                    details={"expected_job_id": expected_job_id, "vacancy_stable_id": vacancy_stable_id},
+                )
+        else:
+            if not expected_job_id:
+                return GateCheckResult(
+                    passed=False,
+                    failed_gate=GateName.GATE_VACANCY_MATCH,
+                    reason=f"source_job_id unavailable in vacancy_stable_id: {vacancy_stable_id}",
+                    details={"expected_job_id": expected_job_id, "vacancy_stable_id": vacancy_stable_id},
+                )
+
         url_job_id = _parse_vacancy_id(cur_url)
         if not url_job_id or url_job_id != expected_job_id:
             return GateCheckResult(
@@ -679,60 +711,66 @@ class HHSubmissionGates:
         review_obj: Optional[Any] = None,
         live_page_result: Optional[Any] = None,
     ) -> GateCheckResult:
+        gate_results: Dict[str, Dict[str, Any]] = {}
+
         # Gate 1: GATE_SUBMIT_ALLOWED (kill-switch safety latch)
         submit_allowed = (
             os.getenv("SUBMIT_ALLOWED", "").strip().lower() in ("1", "true", "yes")
             or bool(getattr(config, "SUBMIT_ALLOWED", False))
         )
-        if not submit_allowed and not dry_run:
-            return GateCheckResult(
-                passed=False,
-                failed_gate=GateName.GATE_SUBMIT_ALLOWED,
-                reason="Submission is disabled by SUBMIT_ALLOWED configuration",
-                details={"SUBMIT_ALLOWED": submit_allowed, "dry_run": dry_run},
-            )
+        g1_pass = submit_allowed or dry_run
+        gate_results[GateName.GATE_SUBMIT_ALLOWED.value] = {
+            "passed": g1_pass,
+            "reason": "SUBMIT_ALLOWED enabled" if submit_allowed else ("Bypassed (dry-run mode)" if dry_run else "Submission is disabled by SUBMIT_ALLOWED configuration"),
+        }
 
         # Gate 2: GATE_REVIEW_APPROVED
         rev_err, expected_fp, rev_id = cls._check_review_gate(vacancy_stable_id, review_obj)
-        if rev_err:
-            return rev_err
+        gate_results[GateName.GATE_REVIEW_APPROVED.value] = {
+            "passed": rev_err is None,
+            "reason": "Review approved" if rev_err is None else rev_err.reason,
+        }
 
         # Gate 3: GATE_FINGERPRINT_MATCH
         fp_err = cls._check_fingerprint_gate(vacancy_stable_id, expected_fp, form_snapshot=form_snapshot)
-        if fp_err:
-            return fp_err
+        gate_results[GateName.GATE_FINGERPRINT_MATCH.value] = {
+            "passed": fp_err is None,
+            "reason": "Fingerprint matches" if fp_err is None else fp_err.reason,
+        }
 
         # Gate 4: GATE_URL_DOMAIN
         url_err = cls._check_url_domain_gate(current_url, live_page_result)
-        if url_err:
-            return url_err
+        gate_results[GateName.GATE_URL_DOMAIN.value] = {
+            "passed": url_err is None,
+            "reason": "URL and domain verified" if url_err is None else url_err.reason,
+        }
 
         # Gate 5: GATE_VACANCY_MATCH
         vac_err = cls._check_vacancy_match_gate(vacancy_stable_id, current_url, live_page_result)
-        if vac_err:
-            return vac_err
+        gate_results[GateName.GATE_VACANCY_MATCH.value] = {
+            "passed": vac_err is None,
+            "reason": "Vacancy ID matches" if vac_err is None else vac_err.reason,
+        }
 
         # Gate 6: GATE_PROFILE_LOADED
         from . import candidate_profile as cp_mod
         profile = candidate_profile or (cp_mod.load_candidate_profile(profile_path) if profile_path else cp_mod.load_candidate_profile())
-        if not profile:
-            return GateCheckResult(
-                passed=False,
-                failed_gate=GateName.GATE_PROFILE_LOADED,
-                reason="Candidate profile could not be loaded",
-            )
+        g6_pass = profile is not None
+        gate_results[GateName.GATE_PROFILE_LOADED.value] = {
+            "passed": g6_pass,
+            "reason": "Candidate profile loaded" if g6_pass else "Candidate profile could not be loaded",
+        }
 
         # Gate 7: GATE_COVER_LETTER_READY
         cover_letter = form_snapshot.get("cover_letter")
-        if not cover_letter or len(str(cover_letter).strip()) < 10:
-            return GateCheckResult(
-                passed=False,
-                failed_gate=GateName.GATE_COVER_LETTER_READY,
-                reason="Cover letter is missing or too short (< 10 chars)",
-                details={"length": len(str(cover_letter).strip()) if cover_letter else 0},
-            )
+        g7_pass = bool(cover_letter and len(str(cover_letter).strip()) >= 10)
+        gate_results[GateName.GATE_COVER_LETTER_READY.value] = {
+            "passed": g7_pass,
+            "reason": "Cover letter ready" if g7_pass else "Cover letter is missing or too short (< 10 chars)",
+        }
 
         # Gate 8: GATE_NO_UNKNOWN_QUESTIONS
+        g8_err = None
         fields = form_snapshot.get("fields", [])
         for f in fields:
             f_type = f.get("type", "")
@@ -744,46 +782,75 @@ class HHSubmissionGates:
             if label and (is_req or f_type in ("textarea", "text", "radio", "checkbox", "select")):
                 from .application_qa import QuestionAnswerGenerator
                 from .hh_extractor import ApplicationQuestion, QuestionType, QuestionSource
-                gen = QuestionAnswerGenerator(profile, resume_text="", deep=None, vacancy=None)
-                q = ApplicationQuestion(
-                    id=f.get("id") or "q_check",
-                    label=label,
-                    normalized_type=QuestionType.TEXT if f_type in ("textarea", "text") else QuestionType.UNKNOWN,
-                    required=is_req,
-                    source=QuestionSource.SCREENING,
-                )
-                ans = gen.generate(q)
-                if ans.requires_review or not ans.answer:
-                    return GateCheckResult(
-                        passed=False,
-                        failed_gate=GateName.GATE_NO_UNKNOWN_QUESTIONS,
-                        reason=f"Question requires human review: {label}",
-                        details={
-                            "question": label,
-                            "requires_review": ans.requires_review,
-                            "reason": ans.reason,
-                        },
+                gen = QuestionAnswerGenerator(profile, resume_text="", deep=None, vacancy=None) if profile else None
+                if gen:
+                    q = ApplicationQuestion(
+                        id=f.get("id") or "q_check",
+                        label=label,
+                        normalized_type=QuestionType.TEXT if f_type in ("textarea", "text") else QuestionType.UNKNOWN,
+                        required=is_req,
+                        source=QuestionSource.SCREENING,
                     )
+                    ans = gen.generate(q)
+                    if ans.requires_review or not ans.answer:
+                        g8_err = GateCheckResult(
+                            passed=False,
+                            failed_gate=GateName.GATE_NO_UNKNOWN_QUESTIONS,
+                            reason=f"Question requires human review: {label}",
+                            details={"question": label, "requires_review": ans.requires_review, "reason": ans.reason},
+                        )
+                        break
+        gate_results[GateName.GATE_NO_UNKNOWN_QUESTIONS.value] = {
+            "passed": g8_err is None,
+            "reason": "All questions resolved" if g8_err is None else g8_err.reason,
+        }
 
         # Gate 9: GATE_NOT_ALREADY_APPLIED
         sub_err, evidence = cls._check_submission_evidence_gate(vacancy_stable_id, form_snapshot, live_page_result)
-        if sub_err:
-            return sub_err
+        gate_results[GateName.GATE_NOT_ALREADY_APPLIED.value] = {
+            "passed": sub_err is None,
+            "reason": "No previous application detected" if sub_err is None else sub_err.reason,
+        }
 
         # Gate 10: GATE_NO_PREVIOUS_SUBMISSION_ATTEMPT
         att_err = cls._check_previous_attempt_gate(vacancy_stable_id, rev_id, evidence)
-        if att_err:
-            return att_err
+        gate_results[GateName.GATE_NO_PREVIOUS_SUBMISSION_ATTEMPT.value] = {
+            "passed": att_err is None,
+            "reason": "No previous submission attempt in session" if att_err is None else att_err.reason,
+        }
 
         # Gate 11: GATE_HUMAN_CONFIRMED
-        if not human_confirmed and not dry_run:
-            return GateCheckResult(
-                passed=False,
-                failed_gate=GateName.GATE_HUMAN_CONFIRMED,
-                reason="Explicit human confirmation (--confirm-submit) required",
-            )
+        g11_pass = human_confirmed or dry_run
+        gate_results[GateName.GATE_HUMAN_CONFIRMED.value] = {
+            "passed": g11_pass,
+            "reason": "Human confirmed" if human_confirmed else ("Bypassed (dry-run mode)" if dry_run else "Explicit human confirmation (--confirm-submit) required"),
+        }
 
-        return GateCheckResult(passed=True, reason="All 11 gates passed successfully")
+        # Sequential fail-closed evaluation preserving priority order
+        if not g1_pass:
+            return GateCheckResult(passed=False, failed_gate=GateName.GATE_SUBMIT_ALLOWED, reason="Submission is disabled by SUBMIT_ALLOWED configuration", details={"SUBMIT_ALLOWED": submit_allowed, "dry_run": dry_run}, gate_results=gate_results)
+        if rev_err:
+            return GateCheckResult(passed=False, failed_gate=rev_err.failed_gate, reason=rev_err.reason, details=rev_err.details, gate_results=gate_results)
+        if fp_err:
+            return GateCheckResult(passed=False, failed_gate=fp_err.failed_gate, reason=fp_err.reason, details=fp_err.details, gate_results=gate_results)
+        if url_err:
+            return GateCheckResult(passed=False, failed_gate=url_err.failed_gate, reason=url_err.reason, details=url_err.details, gate_results=gate_results)
+        if vac_err:
+            return GateCheckResult(passed=False, failed_gate=vac_err.failed_gate, reason=vac_err.reason, details=vac_err.details, gate_results=gate_results)
+        if not g6_pass:
+            return GateCheckResult(passed=False, failed_gate=GateName.GATE_PROFILE_LOADED, reason="Candidate profile could not be loaded", gate_results=gate_results)
+        if not g7_pass:
+            return GateCheckResult(passed=False, failed_gate=GateName.GATE_COVER_LETTER_READY, reason="Cover letter is missing or too short (< 10 chars)", details={"length": len(str(cover_letter).strip()) if cover_letter else 0}, gate_results=gate_results)
+        if g8_err:
+            return GateCheckResult(passed=False, failed_gate=g8_err.failed_gate, reason=g8_err.reason, details=g8_err.details, gate_results=gate_results)
+        if sub_err:
+            return GateCheckResult(passed=False, failed_gate=sub_err.failed_gate, reason=sub_err.reason, details=sub_err.details, gate_results=gate_results)
+        if att_err:
+            return GateCheckResult(passed=False, failed_gate=att_err.failed_gate, reason=att_err.reason, details=att_err.details, gate_results=gate_results)
+        if not g11_pass:
+            return GateCheckResult(passed=False, failed_gate=GateName.GATE_HUMAN_CONFIRMED, reason="Explicit human confirmation (--confirm-submit) required", gate_results=gate_results)
+
+        return GateCheckResult(passed=True, reason="All 11 gates passed successfully", gate_results=gate_results)
 
 
 @dataclass
@@ -814,11 +881,27 @@ def execute_hh_submission(
     Enforces:
     1. Live DOM inspection via check_live_page
     2. Short-circuit and DB update if ALREADY_APPLIED
-    3. Full snapshot extraction
+    3. Full snapshot extraction and dynamic package fingerprint computation
     4. Gating via HHSubmissionGates.check_all_gates (all 11 gates)
     5. Safe exit if dry_run (submit_count == 0)
     6. Single physical click if human_confirmed and SUBMIT_ALLOWED
     7. Post-submit verification and synchronized DB state update
+
+    Args:
+        vacancy_stable_id: Stable vacancy identifier (e.g. 'hh:12345678').
+        evaluate_fn: Synchronous JS evaluation function on the active CDP browser session.
+        human_confirmed: Explicit human confirmation to submit.
+        dry_run: Read-only simulation mode (submit_count == 0).
+        candidate_profile: Optional preloaded candidate profile.
+        profile_path: Optional candidate profile JSON path.
+        submission_id: Optional unique submission run ID.
+        sync_hh_application: If True (default for Path A / standalone CLI submit), directly
+            updates the `hh_applications` DB record to SUBMITTED or AMBIGUOUS_POST_SUBMIT.
+            If False (used by Stage 46 Controlled Application Runner / Path B), suppresses
+            direct updates to `hh_applications`. This preserves the runner's state machine
+            invariant: the runner transitions application states strictly via `transition_application()`
+            with complete audit trail, timestamping, and evidence payloads, preventing duplicate or
+            out-of-order state mutations.
     """
     import uuid
     from .db import (
@@ -829,7 +912,7 @@ def execute_hh_submission(
         save_hh_application,
         save_submission,
     )
-    from .application_review import get_application_review
+    from .application_review import get_application_review, compute_review_fingerprint
     from .hh_live_page_checks import check_live_page
     from .application_tracking import set_application_status, ApplicationStatus
 
@@ -881,10 +964,10 @@ def execute_hh_submission(
     pkg_row = get_application_package(vacancy_stable_id)
     pkg_data = json.loads(pkg_row[2]) if (pkg_row and pkg_row[2]) else {}
     cover_letter = pkg_data.get("cover_letter") or (getattr(review, "cover_letter", "") if review else "")
-    expected_fp = getattr(review, "form_fingerprint", None) or getattr(review, "fingerprint", None) if review else None
+    actual_pkg_fp = compute_review_fingerprint(vacancy_stable_id, pkg_data) if pkg_data else None
 
     form_snapshot = {
-        "fingerprint": expected_fp,
+        "fingerprint": actual_pkg_fp,
         "cover_letter": cover_letter,
         "package": pkg_data,
         "already_applied": live_result.already_applied,
@@ -936,7 +1019,8 @@ def execute_hh_submission(
         submission_id=sub_id,
     )
 
-    submit_click_js = """(() => {
+    submit_click_js = """// hh_submit_click
+(() => {
         const submitBtn = document.querySelector('[data-qa*="response-submit-popup"], [data-qa*="response-submit"], button[type="submit"], [data-qa="vacancy-response-link-top"], [data-qa="vacancy-response-link-bottom"]');
         if (!submitBtn) return JSON.stringify({ ok: false, reason: 'Submit or Apply button not found in DOM' });
         if (submitBtn.disabled) return JSON.stringify({ ok: false, reason: 'Submit button is disabled' });
@@ -973,7 +1057,8 @@ def execute_hh_submission(
     url_after = live_result.current_url or ""
     verified = False
     try:
-        post_raw = evaluate_fn("""(() => {
+        post_raw = evaluate_fn("""// hh_post_submit_verify
+(() => {
             const bodyText = (document.body ? document.body.innerText : '').slice(0, 4000).toLowerCase();
             const url = window.location.href || '';
             const respondedSuccessEl = document.querySelector('[data-qa*="responded-success"], [data-qa*="vacancy-response-link-view-topic"]');
@@ -1037,7 +1122,7 @@ def execute_hh_submission(
             save_hh_application(app_dict)
 
     if review and getattr(review, "review_id", None):
-        _submitted_reviews.add(review.review_id)
+        _submitted_reviews.add(str(review.review_id))
     _submitted_reviews.add(vacancy_stable_id)
 
     return SubmissionExecutionResult(

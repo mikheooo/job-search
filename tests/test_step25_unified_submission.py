@@ -62,7 +62,7 @@ def _make_profile() -> CandidateProfile:
 from ai_assistant.schema import Vacancy
 
 
-def _setup_vacancy(vid: str = "777888", fp: str = "fp_test_25"):
+def _setup_vacancy(vid: str = "777888", fp: str | None = None):
     sid = f"hh:{vid}"
     vac = Vacancy(
         source="hh",
@@ -74,20 +74,23 @@ def _setup_vacancy(vid: str = "777888", fp: str = "fp_test_25"):
         location="Remote",
     )
     db.save_vacancy(vac)
+    pkg = {
+        "vacancy_stable_id": sid,
+        "cover_letter": "A comprehensive and tailored cover letter for this role.",
+        "title": "Senior Python Backend Developer",
+        "validation_status": "VALID",
+    }
     db.save_application_package(
         sid,
         "v1",
-        json.dumps({
-            "vacancy_stable_id": sid,
-            "cover_letter": "A comprehensive and tailored cover letter for this role.",
-            "title": "Senior Python Backend Developer",
-            "validation_status": "VALID",
-        }),
+        json.dumps(pkg),
     )
+    from ai_assistant.application_review import compute_review_fingerprint
+    real_fp = fp if fp is not None else compute_review_fingerprint(sid, pkg)
     save_application_review(ApplicationReview(
         vacancy_stable_id=sid,
         status=ReviewStatus.APPROVED,
-        form_fingerprint=fp,
+        form_fingerprint=real_fp,
         review_id=f"rev_{vid}",
     ))
     set_application_status(sid, ApplicationStatus.READY_TO_APPLY)
@@ -97,7 +100,7 @@ def _setup_vacancy(vid: str = "777888", fp: str = "fp_test_25"):
 def test_execute_hh_submission_dry_run(monkeypatch):
     """execute_hh_submission with dry_run=True passes all gates and performs ZERO mutations."""
     monkeypatch.setenv("SUBMIT_ALLOWED", "false")  # dry_run does not require SUBMIT_ALLOWED
-    sid = _setup_vacancy("111222", "fp_dry")
+    sid = _setup_vacancy("111222")
     url = "https://hh.ru/vacancy/111222"
 
     eval_fn = lambda js: json.dumps({
@@ -153,7 +156,7 @@ def test_execute_hh_submission_blocked_without_submit_allowed(monkeypatch):
 def test_execute_hh_submission_success_updates_all_dbs(monkeypatch):
     """execute_hh_submission when fully confirmed and allowed submits and updates state across all databases."""
     monkeypatch.setenv("SUBMIT_ALLOWED", "true")
-    sid = _setup_vacancy("555666", "fp_submit")
+    sid = _setup_vacancy("555666")
     url = "https://hh.ru/vacancy/555666"
 
     # Setup hh_applications record
@@ -215,7 +218,7 @@ def test_execute_hh_submission_success_updates_all_dbs(monkeypatch):
 
 def test_path_a_browser_executor_dry_run():
     """Path A: submit_application_in_browser with dry_run=True returns DRY_RUN_OK with submit_count=0."""
-    sid = _setup_vacancy("777111", "fp_path_a")
+    sid = _setup_vacancy("777111")
 
     class FakeAdapter(MockBrowserAdapter):
         def evaluate(self, js: str) -> str:
@@ -240,7 +243,7 @@ def test_path_a_browser_executor_dry_run():
 
 def test_path_b_runner_dry_run():
     """Path B: run_application with dry_run=True executes pre-checks and returns without submitting."""
-    sid = _setup_vacancy("888222", "fp_path_b")
+    sid = _setup_vacancy("888222")
     app_id = "app_888222"
     db.save_hh_application({
         "application_id": app_id,

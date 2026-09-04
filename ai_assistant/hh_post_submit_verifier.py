@@ -31,7 +31,8 @@ from .hh_vacancy_navigator import (
 logger = logging.getLogger("ai_assistant.hh_post_submit_verifier")
 
 
-_POST_SUBMIT_INSPECT_JS = """(() => {
+_POST_SUBMIT_INSPECT_JS = """// hh_post_submit_verify
+(() => {
     const url = window.location.href;
     const title = document.title;
     const h1El = document.querySelector('h1[data-qa="vacancy-title"], [data-qa="vacancy-title"], h1');

@@ -154,8 +154,8 @@ def run_next_application(
             queue_review_count=review_count,
             queue_submitted_count=submitted_count,
             selected_application=None,
-            final_application_state="NO_READY_APPLICATIONS",
-            reason="No applications in READY_TO_SUBMIT state available to run.",
+            final_application_state="N/A",
+            reason="NO_APPLICATION_SELECTED: No applications in READY_TO_SUBMIT state available to run.",
         )
 
     target_app = ready_apps[0]
@@ -167,6 +167,7 @@ def run_next_application(
         queue_ready_count=ready_count,
         queue_review_count=review_count,
         queue_submitted_count=submitted_count,
+        dry_run=dry_run,
     )
 
 
@@ -310,11 +311,38 @@ def run_application(
         if not nav_res.ok:
             if getattr(nav_res, "status", None) == "ALREADY_RESPONDED":
                 # Factual submission already recorded on HH
+                logger.info(
+                    "Application %s (%s) already responded on HeadHunter; synchronizing state",
+                    app_id,
+                    vac_id,
+                )
+                if not dry_run:
+                    try:
+                        transition_application(
+                            application_id=app_id,
+                            to_state=HHApplicationState.SUBMITTED,
+                            reason="already_responded_on_hh",
+                            evidence={
+                                "submit_executed": False,
+                                "post_submit_verification": "detected_existing_on_hh",
+                                "hh_status": getattr(nav_res, "status", "ALREADY_RESPONDED"),
+                                "reason": getattr(nav_res, "reason", "Already responded on HeadHunter"),
+                            },
+                            confirm_submit=True,
+                        )
+                        from .application_tracking import set_application_status, ApplicationStatus
+                        set_application_status(vac_stable_id or f"hh:{vac_id}", ApplicationStatus.SUBMITTED)
+                    except Exception as te:
+                        logger.warning(f"Could not transition already responded app {app_id}: {te}")
                 return RunnerExecutionResult(
                     application_id=app_id,
                     vacancy_id=vac_id,
                     vacancy_title=vac_title,
                     company=company,
+                    queue_ready_count=queue_ready_count,
+                    queue_review_count=queue_review_count,
+                    queue_submitted_count=queue_submitted_count,
+                    selected_application=f"{vac_title} ({vac_id}) @ {company} [{app_id}]",
                     pre_submit_audit=audit_status,
                     navigation=RunnerPreCheckStatus.PASS,
                     questionnaire=quest_status,
@@ -329,6 +357,10 @@ def run_application(
                 vacancy_id=vac_id,
                 vacancy_title=vac_title,
                 company=company,
+                queue_ready_count=queue_ready_count,
+                queue_review_count=queue_review_count,
+                queue_submitted_count=queue_submitted_count,
+                selected_application=f"{vac_title} ({vac_id}) @ {company} [{app_id}]",
                 pre_submit_audit=audit_status,
                 navigation=RunnerPreCheckStatus.FAIL,
                 questionnaire=quest_status,
@@ -345,6 +377,10 @@ def run_application(
                 vacancy_id=vac_id,
                 vacancy_title=vac_title,
                 company=company,
+                queue_ready_count=queue_ready_count,
+                queue_review_count=queue_review_count,
+                queue_submitted_count=queue_submitted_count,
+                selected_application=f"{vac_title} ({vac_id}) @ {company} [{app_id}]",
                 pre_submit_audit=audit_status,
                 navigation=RunnerPreCheckStatus.FAIL,
                 questionnaire=quest_status,
@@ -524,6 +560,22 @@ def run_application(
 
 def format_runner_result_cli(res: RunnerExecutionResult, mode: str = "preview") -> str:
     """Format runner execution output for CLI display."""
+    if res.selected_application is None:
+        audit_str = "SKIPPED"
+        nav_str = "SKIPPED"
+        quest_str = "SKIPPED"
+        post_str = "SKIPPED"
+        final_state_str = "N/A"
+    else:
+        audit_str = res.pre_submit_audit.value
+        nav_str = res.navigation.value
+        quest_str = res.questionnaire.value
+        post_str = res.post_submit_verification.value
+        if res.real_hh_submit == 0 and "already responded" in (res.reason or "").lower():
+            final_state_str = "ALREADY_SUBMITTED (detected on HH)"
+        else:
+            final_state_str = res.final_application_state
+
     lines = [
         "=======================================================",
         "        STAGE 46 CONTROLLED APPLICATION RUNNER         ",
@@ -535,15 +587,15 @@ def format_runner_result_cli(res: RunnerExecutionResult, mode: str = "preview") 
         "",
         f"Selected application: {res.selected_application or 'None'}",
         "",
-        f"Pre-submit audit:     {res.pre_submit_audit.value}",
-        f"Navigation:           {res.navigation.value}",
-        f"Questionnaire:        {res.questionnaire.value}",
+        f"Pre-submit audit:     {audit_str}",
+        f"Navigation:           {nav_str}",
+        f"Questionnaire:        {quest_str}",
         "",
         f"Submit confirmation:  {'YES' if res.submit_confirmation else 'NO'}",
         f"REAL HH SUBMIT:       {res.real_hh_submit}",
-        f"Post-submit verify:   {res.post_submit_verification.value}",
+        f"Post-submit verify:   {post_str}",
         "",
-        f"Final state:          {res.final_application_state}",
+        f"Final state:          {final_state_str}",
         f"Next app executed:    {'YES' if res.next_application_executed else 'NO'}",
         f"PIPELINE.PY:          {res.pipeline_py}",
         "-------------------------------------------------------",

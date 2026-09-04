@@ -17,7 +17,7 @@ def is_dry_run() -> bool:
     return _DRY_RUN
 
 
-def get_connection() -> None:
+def get_connection() -> sqlite3.Connection:
     return sqlite3.connect(config.DB_FILE)
 
 
@@ -962,16 +962,6 @@ def get_all_submissions(vacancy_stable_id: str, executor_version: str | None = N
     rows = cur.fetchall()
     conn.close()
     return rows
-
-
-def is_submitted(vacancy_stable_id: str, executor_version: str | None = None) -> bool:
-    """Check if a vacancy has an existing submitted/applied state.
-
-    Deprecated: Use ai_assistant.submission_state.get_submission_evidence instead.
-    """
-    from .submission_state import get_submission_evidence
-    ev = get_submission_evidence(vacancy_stable_id)
-    return ev.is_already_applied
 
 
 def list_submissions(limit: int = 50):

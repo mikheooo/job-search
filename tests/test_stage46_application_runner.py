@@ -338,3 +338,33 @@ def test_cli_runner_commands(clean_db, capsys):
     assert "STAGE 46 CONTROLLED APPLICATION RUNNER" in out
     assert "REAL HH SUBMIT:       0" in out
     assert "Next app executed:    NO" in out
+
+
+def test_empty_queue_returns_no_application_selected_and_uncalled_evaluate_fn(clean_db, capsys):
+    """Empty runner queue returns NO_APPLICATION_SELECTED and zero browser/evaluate calls."""
+    eval_calls = []
+
+    def tracking_evaluate(script: str) -> str:
+        eval_calls.append(script)
+        return "{}"
+
+    # 1. Direct runner function call
+    res = run_next_application(confirm_submit=True, evaluate_fn=tracking_evaluate, dry_run=True)
+    assert res.selected_application is None
+    assert res.final_application_state == "N/A"
+    assert "NO_APPLICATION_SELECTED" in res.reason
+    assert len(eval_calls) == 0
+
+    # 2. CLI runner next command
+    ret = cli.application_runner_cmd("next", confirm_submit=True, evaluate_fn=tracking_evaluate, dry_run=True)
+    assert ret == 0
+    assert len(eval_calls) == 0
+
+    out = capsys.readouterr().out
+    assert "Selected application: None" in out
+    assert "Pre-submit audit:     SKIPPED" in out
+    assert "Navigation:           SKIPPED" in out
+    assert "Questionnaire:        SKIPPED" in out
+    assert "Post-submit verify:   SKIPPED" in out
+    assert "Final state:          N/A" in out
+    assert "NO_APPLICATION_SELECTED" in out

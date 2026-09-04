@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 
 _HH_NUMERIC_ID_PATTERN = re.compile(r"(?:hh:|/vacancy/|vacancyId=|^)(\d{6,12})", re.IGNORECASE)
 
-_INSPECT_LIVE_PAGE_JS = """(() => {
+_INSPECT_LIVE_PAGE_JS = """// hh_live_page_inspect
+(() => {
     try {
         const url = window.location.href || "";
         const h1El = document.querySelector('h1[data-qa="vacancy-title"], [data-qa="vacancy-title"], h1');

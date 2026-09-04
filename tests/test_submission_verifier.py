@@ -13,6 +13,7 @@ import ai_assistant.config as config
 from ai_assistant.schema import Vacancy
 from ai_assistant.candidate_profile import CandidateProfile
 from ai_assistant import db
+from ai_assistant.submission_state import has_definite_submission
 from ai_assistant.application_tracking import ApplicationStatus, set_application_status, transition_application, get_application_status, verify_and_apply
 from ai_assistant.submission_verifier import (
     VerificationStatus,
@@ -802,7 +803,7 @@ def test_stage30e_confirmation_gate_and_verification_suite():
         assert res_no_confirm.status == "BLOCKED"
         assert "confirmation required" in res_no_confirm.error.lower()
         assert mock_adapter_no_confirm.submit_attempted is False
-        assert db.is_submitted(vac.stable_id()) is False
+        assert has_definite_submission(vac.stable_id()) is False
         assert get_application_status(vac.stable_id()).status == ApplicationStatus.READY_TO_APPLY
 
         # Test B: confirm_submit=True -> Submit executed
@@ -810,7 +811,7 @@ def test_stage30e_confirmation_gate_and_verification_suite():
         res_confirm = submit_application_in_browser(vac.stable_id(), confirm_submit=True, adapter=mock_adapter_confirm)
         assert res_confirm.status == "SUBMITTED"
         assert mock_adapter_confirm.submit_attempted is True
-        assert db.is_submitted(vac.stable_id()) is True
+        assert has_definite_submission(vac.stable_id()) is True
         assert get_application_status(vac.stable_id()).status == ApplicationStatus.SUBMITTED
 
         # Test D: duplicate submit blocked
@@ -840,7 +841,7 @@ def test_stage30e_confirmation_gate_and_verification_suite():
         db.save_vacancy(vac_e)
         code = submit_vacancy(vac_e.stable_id(), confirm_submit=False)
         assert code == 1
-        assert db.is_submitted(vac_e.stable_id()) is False
+        assert has_definite_submission(vac_e.stable_id()) is False
 
     finally:
         teardown_test_db(tmp_dir)
@@ -889,7 +890,7 @@ def test_stage30f_ambiguous_post_submit_verification_invariants():
         mock_adapter = MockBrowserAdapter(simulate={"fields": ["name", "email"], "apply_button": True})
         submit_res = submit_application_in_browser(vac.stable_id(), confirm_submit=True, adapter=mock_adapter)
         assert submit_res.status == "SUBMITTED"
-        assert db.is_submitted(vac.stable_id()) is True
+        assert has_definite_submission(vac.stable_id()) is True
 
         # Invariant 1: Application tracking is SUBMITTED
         assert get_application_status(vac.stable_id()).status == ApplicationStatus.SUBMITTED
@@ -1221,7 +1222,7 @@ def test_stage30i_read_only_apply_flow_audit_invariants():
         # Check safety invariants: ZERO submits, ZERO DB submissions, ZERO DB verifications
         assert mock_adapter.submit_attempted is False
         assert "submit_application" not in mock_adapter.calls
-        assert db.is_submitted(vac1.stable_id()) is False
+        assert has_definite_submission(vac1.stable_id()) is False
 
         # Verify tracking status unchanged
         assert get_application_status(vac1.stable_id()).status == ApplicationStatus.READY_TO_APPLY
@@ -1917,7 +1918,7 @@ def test_stage30o_queue_to_apply_orchestrator_integration_suite():
         # Submit with explicit confirmation
         sub_ok = submit_application_in_browser(vac_ok.stable_id(), confirm_submit=True, adapter=mock_ok, force=True)
         assert sub_ok.status.value == "SUBMITTED"
-        assert db.is_submitted(vac_ok.stable_id()) is True
+        assert has_definite_submission(vac_ok.stable_id()) is True
 
         # Verify
         ver_ok = verify_submission(vac_ok.stable_id(), sub_ok.submission_id, adapter=mock_ok)
@@ -2113,7 +2114,7 @@ def test_stage30p_authenticated_session_and_account_aware_gate_suite():
         db.save_submission(vac_v80.stable_id(), "sub_v80", "SUBMITTED", "raw")
         db.save_verification(vac_v80.stable_id(), "sub_v80", "AMBIGUOUS", "v1", "post submit ambiguous")
 
-        assert db.is_submitted(vac_v80.stable_id()) is True
+        assert has_definite_submission(vac_v80.stable_id()) is True
         assert get_application_status(vac_v80.stable_id()).status == ApplicationStatus.SUBMITTED
 
     finally:
@@ -2212,7 +2213,7 @@ def test_stage30q_authenticated_hh_apply_preparation_suite():
         no_conf = submit_application_in_browser(vac_hh.stable_id(), confirm_submit=False, adapter=mock_hh)
         assert no_conf.status.value == "BLOCKED"
         assert "confirmation required" in str(no_conf.error).lower()
-        assert db.is_submitted(vac_hh.stable_id()) is False
+        assert has_definite_submission(vac_hh.stable_id()) is False
 
         # 8. DB remains unchanged (0 new submissions, 0 new verifications)
         conn = db.get_connection()
@@ -2231,7 +2232,7 @@ def test_stage30q_authenticated_hh_apply_preparation_suite():
         set_application_status(vac_v76.stable_id(), ApplicationStatus.SUBMITTED)
         db.save_submission(vac_v76.stable_id(), "sub_v76", "SUBMITTED", "raw")
         db.save_verification(vac_v76.stable_id(), "sub_v76", "BLOCKED", "v1", "blocked by cloudflare")
-        assert db.is_submitted(vac_v76.stable_id()) is True
+        assert has_definite_submission(vac_v76.stable_id()) is True
         assert get_application_status(vac_v76.stable_id()).status == ApplicationStatus.SUBMITTED
 
         # 10. vacancies_json:80 remains unchanged
@@ -2240,7 +2241,7 @@ def test_stage30q_authenticated_hh_apply_preparation_suite():
         set_application_status(vac_v80.stable_id(), ApplicationStatus.SUBMITTED)
         db.save_submission(vac_v80.stable_id(), "sub_v80", "SUBMITTED", "raw")
         db.save_verification(vac_v80.stable_id(), "sub_v80", "AMBIGUOUS", "v1", "post submit ambiguous")
-        assert db.is_submitted(vac_v80.stable_id()) is True
+        assert has_definite_submission(vac_v80.stable_id()) is True
         assert get_application_status(vac_v80.stable_id()).status == ApplicationStatus.SUBMITTED
 
     finally:
@@ -2356,8 +2357,8 @@ def test_stage30r_real_single_application_confirm_submit_suite():
         assert sub_blk_res.status == SubmitStatus.BLOCKED
 
         # 5. DB Invariants: exactly expected additions, no duplicates
-        assert db.is_submitted(vac.stable_id()) is True
-        assert db.is_submitted(vac_amb.stable_id()) is True
+        assert has_definite_submission(vac.stable_id()) is True
+        assert has_definite_submission(vac_amb.stable_id()) is True
 
         # 6. vacancies_json:76 and vacancies_json:80 invariants
         vac_v76 = _vac(source_job_id="s30r_v76", job_url="https://remoteok.com/v76")
@@ -2365,7 +2366,7 @@ def test_stage30r_real_single_application_confirm_submit_suite():
         set_application_status(vac_v76.stable_id(), ApplicationStatus.SUBMITTED)
         db.save_submission(vac_v76.stable_id(), "sub_v76", "SUBMITTED", "raw")
         db.save_verification(vac_v76.stable_id(), "sub_v76", "BLOCKED", "v1", "blocked by cloudflare")
-        assert db.is_submitted(vac_v76.stable_id()) is True
+        assert has_definite_submission(vac_v76.stable_id()) is True
         assert get_application_status(vac_v76.stable_id()).status == ApplicationStatus.SUBMITTED
 
         vac_v80 = _vac(source_job_id="s30r_v80", job_url="https://remoteok.com/v80")
@@ -2373,7 +2374,7 @@ def test_stage30r_real_single_application_confirm_submit_suite():
         set_application_status(vac_v80.stable_id(), ApplicationStatus.SUBMITTED)
         db.save_submission(vac_v80.stable_id(), "sub_v80", "SUBMITTED", "raw")
         db.save_verification(vac_v80.stable_id(), "sub_v80", "AMBIGUOUS", "v1", "post submit ambiguous")
-        assert db.is_submitted(vac_v80.stable_id()) is True
+        assert has_definite_submission(vac_v80.stable_id()) is True
         assert get_application_status(vac_v80.stable_id()).status == ApplicationStatus.SUBMITTED
 
     finally:
@@ -2453,7 +2454,7 @@ def test_stage30s_hh_post_submit_questionnaire_handling_suite():
         set_application_status(vac_v80.stable_id(), ApplicationStatus.SUBMITTED)
         db.save_submission(vac_v80.stable_id(), "sub_v80", "SUBMITTED", "raw")
         db.save_verification(vac_v80.stable_id(), "sub_v80", "AMBIGUOUS", "v1", "ambiguous")
-        assert db.is_submitted(vac_v80.stable_id()) is True
+        assert has_definite_submission(vac_v80.stable_id()) is True
         assert get_application_status(vac_v80.stable_id()).status == ApplicationStatus.SUBMITTED
 
         vac_v76 = _vac(source_job_id="s30s_v76", job_url="https://remoteok.com/v76")
@@ -2461,7 +2462,7 @@ def test_stage30s_hh_post_submit_questionnaire_handling_suite():
         set_application_status(vac_v76.stable_id(), ApplicationStatus.SUBMITTED)
         db.save_submission(vac_v76.stable_id(), "sub_v76", "SUBMITTED", "raw")
         db.save_verification(vac_v76.stable_id(), "sub_v76", "BLOCKED", "v1", "blocked")
-        assert db.is_submitted(vac_v76.stable_id()) is True
+        assert has_definite_submission(vac_v76.stable_id()) is True
         assert get_application_status(vac_v76.stable_id()).status == ApplicationStatus.SUBMITTED
 
     finally:

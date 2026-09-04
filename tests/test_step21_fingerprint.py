@@ -200,3 +200,74 @@ def test_gate3_detects_mutation_post_approval(monkeypatch):
     assert not res_fail.passed
     assert res_fail.failed_gate == GateName.GATE_FINGERPRINT_MATCH
     assert "Fingerprint mismatch" in res_fail.reason
+
+
+def test_gate3_tampering_package_answers_after_approval_breaks_gate(monkeypatch):
+    """Tampering with package answers after approval breaks Gate 3 in check_all_gates and execute_hh_submission."""
+    from ai_assistant.hh_submission import execute_hh_submission
+
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
+    sid = "hh:55555"
+    url = "https://hh.ru/vacancy/55555"
+    set_application_status(sid, ApplicationStatus.READY_TO_APPLY)
+
+    # 1. Prepare initial package and approve
+    pkg = {
+        "cover_letter": "Original approved cover letter text",
+        "answers": [{"question_id": "q1", "answer": "Initial safe answer"}],
+    }
+    save_application_package(sid, "v1", json.dumps(pkg))
+
+    rev = ApplicationReview(vacancy_stable_id=sid, status=ReviewStatus.PENDING_REVIEW)
+    save_application_review(rev)
+    approved = approve_review(sid, force=True)
+    approved_fp = approved.form_fingerprint
+    assert approved_fp is not None
+
+    # 2. Tamper with answers in package in DB
+    tampered_pkg = {
+        "cover_letter": "Original approved cover letter text",
+        "answers": [{"question_id": "q1", "answer": "TAMPERED malicious or modified answer"}],
+    }
+    save_application_package(sid, "v1", json.dumps(tampered_pkg))
+
+    # 3. Direct Gate 3 check with tampered form_snapshot answers
+    res = HHSubmissionGates.check_all_gates(
+        sid,
+        url,
+        form_snapshot={
+            "cover_letter": "Original approved cover letter text",
+            "answers": [{"question_id": "q1", "answer": "TAMPERED malicious or modified answer"}],
+        },
+        human_confirmed=True,
+        candidate_profile=_make_profile(),
+    )
+    assert not res.passed
+    assert res.failed_gate == GateName.GATE_FINGERPRINT_MATCH
+    assert "Fingerprint mismatch" in res.reason
+
+    # 4. End-to-end execute_hh_submission check: reads package from DB and MUST fail Gate 3
+    def mock_eval(js: str) -> str:
+        return json.dumps({
+            "ok": True,
+            "url": url,
+            "current_url": url,
+            "title": "HH Vacancy",
+            "is_vacancy_page": True,
+            "has_submit_btn": True,
+            "has_apply_btn": True,
+            "already_responded": False,
+            "page_state": "READY",
+        })
+
+    exec_res = execute_hh_submission(
+        vacancy_stable_id=sid,
+        evaluate_fn=mock_eval,
+        human_confirmed=True,
+        dry_run=True,
+        candidate_profile=_make_profile(),
+    )
+    assert exec_res.status in ("FAIL_CLOSED", "BLOCKED", "GATE_BLOCKED")
+    assert exec_res.gate_check_result is not None
+    assert exec_res.gate_check_result.failed_gate == GateName.GATE_FINGERPRINT_MATCH
+    assert exec_res.submit_count == 0

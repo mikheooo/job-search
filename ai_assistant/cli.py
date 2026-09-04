@@ -820,15 +820,31 @@ def review_show(vacancy_stable_id: str) -> int:
         return 1
 
 def review_list(limit: int = 50, status_filter: str | None = None, missing_fingerprint: bool = False) -> None:
+    from .db import get_application_package
+    from .application_review import compute_review_fingerprint
 
     recs = list_application_reviews(status=status_filter, limit=200 if missing_fingerprint else limit)
-    if missing_fingerprint:
-        recs = [r for r in recs if not r.form_fingerprint][:limit]
-    print(f"{'STATUS':15} | {'FP':7} | {'RANK':4} | {'PRIORITY':8} | {'MATCH':5} | {'DEEP':4} | {'COMPANY':20} | TITLE")
-    print("-" * 120)
+    items = []
     for r in recs:
-        fp_str = "YES" if r.form_fingerprint else "MISSING"
-        print(f"{r.status.value if hasattr(r.status,'value') else r.status:15} | {fp_str:7} | {str(r.rank) if r.rank is not None else '-':4} | {str(int(r.priority_score)) if r.priority_score is not None else '-':8} | {str(int(r.match_score)) if r.match_score is not None else '-':5} | {str(int(r.deep_score)) if r.deep_score is not None else '-':4} | {(r.company or '')[:20]:20} | {(r.title or '')[:40]}")
+        fp_status = "YES"
+        pkg_tuple = get_application_package(r.vacancy_stable_id)
+        if not r.form_fingerprint:
+            fp_status = "MISSING"
+        elif pkg_tuple:
+            actual_fp = compute_review_fingerprint(r.vacancy_stable_id, pkg_tuple)
+            if r.form_fingerprint != actual_fp:
+                fp_status = "MISMATCH"
+        items.append((r, fp_status))
+
+    if missing_fingerprint:
+        items = [it for it in items if it[1] in ("MISSING", "MISMATCH")][:limit]
+    else:
+        items = items[:limit]
+
+    print(f"{'STATUS':15} | {'FP':8} | {'RANK':4} | {'PRIORITY':8} | {'MATCH':5} | {'DEEP':4} | {'COMPANY':20} | TITLE")
+    print("-" * 120)
+    for r, fp_str in items:
+        print(f"{r.status.value if hasattr(r.status,'value') else r.status:15} | {fp_str:8} | {str(r.rank) if r.rank is not None else '-':4} | {str(int(r.priority_score)) if r.priority_score is not None else '-':8} | {str(int(r.match_score)) if r.match_score is not None else '-':5} | {str(int(r.deep_score)) if r.deep_score is not None else '-':4} | {(r.company or '')[:20]:20} | {(r.title or '')[:40]}")
 
 def review_approve(vacancy_stable_id: str) -> int:
 
@@ -856,37 +872,150 @@ def review_reject(vacancy_stable_id: str, note: str | None = None) -> int:
         return 1
 
 
-def submit_vacancy(vacancy_stable_id: str, confirm_submit: bool = False, force: bool = False, profile_path: str | None = None, dry_run: bool = False) -> int:
+def submit_vacancy(
+    vacancy_stable_id: str,
+    confirm_submit: bool = False,
+    force: bool = False,
+    profile_path: str | None = None,
+    dry_run: bool = False,
+    adapter_name: str | None = None,
+) -> int:
     """Submit a single vacancy application."""
     if not confirm_submit and not dry_run:
         print("Submit confirmation required. Use --confirm-submit to proceed (or --dry-run for safety simulation).")
         print("No browser action performed.")
         return 1
-    from .browser_executor import submit_application_in_browser
+    from .browser_executor import (
+        submit_application_in_browser,
+        MockBrowserAdapter,
+        CDPBrowserAdapter,
+        PlaywrightBrowserAdapter,
+    )
+    adapter = None
+    if adapter_name == "mock":
+        adapter = MockBrowserAdapter()
+    elif adapter_name == "cdp":
+        from .hh_browser_launcher import DEFAULT_HH_CDP_URL
+        adapter = CDPBrowserAdapter(DEFAULT_HH_CDP_URL)
+    elif adapter_name == "playwright":
+        adapter = PlaywrightBrowserAdapter()
+
     try:
-        result = submit_application_in_browser(vacancy_stable_id, confirm_submit=confirm_submit, force=force, profile_path=None, dry_run=dry_run)
+        result = submit_application_in_browser(
+            vacancy_stable_id,
+            confirm_submit=confirm_submit,
+            force=force,
+            profile_path=profile_path,
+            dry_run=dry_run,
+            adapter=adapter,
+        )
+
+        gate_res = getattr(result, "gate_check_result", None)
+        live_page = getattr(result, "live_page_result", None)
+
+        if gate_res:
+            print("=======================================================")
+            print("                  GATES BREAKDOWN (1-11)               ")
+            print("=======================================================")
+            if gate_res and getattr(gate_res, "gate_results", None):
+                gate_order = [
+                    ("Gate 1 (GATE_SUBMIT_ALLOWED)", ["submit_allowed", "GATE_SUBMIT_ALLOWED"]),
+                    ("Gate 2 (GATE_REVIEW_APPROVED)", ["review_approved", "GATE_REVIEW_APPROVED"]),
+                    ("Gate 3 (GATE_FINGERPRINT_MATCH)", ["fingerprint_match", "GATE_FINGERPRINT_MATCH"]),
+                    ("Gate 4 (GATE_URL_DOMAIN)", ["url_domain", "GATE_URL_DOMAIN"]),
+                    ("Gate 5 (GATE_VACANCY_MATCH)", ["vacancy_match", "GATE_VACANCY_MATCH"]),
+                    ("Gate 6 (GATE_PROFILE_LOADED)", ["profile_loaded", "GATE_PROFILE_LOADED"]),
+                    ("Gate 7 (GATE_COVER_LETTER_READY)", ["cover_letter_ready", "GATE_COVER_LETTER_READY"]),
+                    ("Gate 8 (GATE_NO_UNKNOWN_QUESTIONS)", ["no_unknown_questions", "GATE_NO_UNKNOWN_QUESTIONS"]),
+                    ("Gate 9 (GATE_NOT_ALREADY_APPLIED)", ["not_already_applied", "GATE_NOT_ALREADY_APPLIED"]),
+                    ("Gate 10 (GATE_NO_PREVIOUS_SUBMISSION_ATTEMPT)", ["no_previous_submission_attempt", "GATE_NO_PREVIOUS_SUBMISSION_ATTEMPT"]),
+                    ("Gate 11 (GATE_HUMAN_CONFIRMED)", ["human_confirmed", "GATE_HUMAN_CONFIRMED"]),
+                ]
+                for label, keys in gate_order:
+                    info = {}
+                    for k in keys:
+                        if k in gate_res.gate_results:
+                            info = gate_res.gate_results[k]
+                            break
+                    p_stat = "PASS" if info.get("passed", False) else "FAIL"
+                    r_text = info.get("reason", "")
+                    print(f"  {label}: {p_stat} — {r_text}")
+            elif gate_res:
+                print(f"  Passed: {gate_res.passed}")
+                if not gate_res.passed:
+                    print(f"  Failed gate: {gate_res.failed_gate} — {gate_res.reason}")
+
+            if live_page:
+                raw_info = getattr(live_page, "raw_info", {}) or {}
+                btn_found = bool(getattr(live_page, "has_submit_btn", False) or getattr(live_page, "has_apply_btn", False))
+                already_applied = bool(getattr(live_page, "already_applied", False) or raw_info.get("already_responded", False))
+                chat_only = bool(raw_info.get("direct_chat_only", False) or raw_info.get("is_chat", False))
+                external_redirect = bool(raw_info.get("external_redirect", False))
+                print("-------------------------------------------------------")
+                print("LIVE PAGE INSPECTION:")
+                print(f"  Current URL:      {getattr(live_page, 'current_url', 'N/A')}")
+                print(f"  Page State:       {getattr(live_page, 'status', 'N/A')}")
+                print(f"  Submit Button:    {'FOUND' if btn_found else 'NOT FOUND'}")
+                print(f"  Already Applied:  {'YES' if already_applied else 'NO'}")
+                print(f"  Chat Only:        {'YES' if chat_only else 'NO'}")
+                print(f"  External Form:    {'YES' if external_redirect else 'NO'}")
+            print("=======================================================")
+
         if getattr(result, "status", "") == "DRY_RUN_OK":
             print("SUBMISSION: DRY_RUN_OK")
             print(f"Vacancy: {result.vacancy_stable_id}")
             print("All safety gates passed in read-only simulation mode.")
             print("Safety:")
-            print("SUBMIT CLICKED: NO")
+            print("SUBMIT CLICKED: NO (dry-run)")
             print("APPLICATION SENT: NO")
             return 0
         if result.status == "SUBMITTED":
-            print(f"SUBMISSION: SUBMITTED")
+            print("SUBMISSION: SUBMITTED")
             print(f"Vacancy: {result.vacancy_stable_id}")
             print(f"Final URL: {result.final_url}")
-            print(f"Application submitted successfully.")
-            print(f"Tracking: APPLIED")
+            print("Application submitted successfully.")
+            print("Tracking: APPLIED")
             print()
             print("Safety:")
             print("SUBMIT CLICKED: YES")
             print("APPLICATION SENT: YES")
             return 0
-        elif result.status == "BLOCKED":
+        elif result.status in ("BLOCKED", "FAIL_CLOSED", "GATE_BLOCKED"):
             print(f"SUBMISSION BLOCKED: {result.error}")
-            print("SUBMIT CLICKED: NO")
+            failed_g = getattr(gate_res, "failed_gate", None)
+            gate_num_map = {
+                "submit_allowed": 1,
+                "GATE_SUBMIT_ALLOWED": 1,
+                "review_approved": 2,
+                "GATE_REVIEW_APPROVED": 2,
+                "fingerprint_match": 3,
+                "GATE_FINGERPRINT_MATCH": 3,
+                "url_domain": 4,
+                "GATE_URL_DOMAIN": 4,
+                "vacancy_match": 5,
+                "GATE_VACANCY_MATCH": 5,
+                "profile_loaded": 6,
+                "GATE_PROFILE_LOADED": 6,
+                "cover_letter_ready": 7,
+                "GATE_COVER_LETTER_READY": 7,
+                "no_unknown_questions": 8,
+                "GATE_NO_UNKNOWN_QUESTIONS": 8,
+                "not_already_applied": 9,
+                "GATE_NOT_ALREADY_APPLIED": 9,
+                "no_previous_submission_attempt": 10,
+                "GATE_NO_PREVIOUS_SUBMISSION_ATTEMPT": 10,
+                "human_confirmed": 11,
+                "GATE_HUMAN_CONFIRMED": 11,
+            }
+            if failed_g:
+                fg_val = failed_g.value if hasattr(failed_g, "value") else str(failed_g)
+                num = gate_num_map.get(fg_val)
+                reason_click = f"gate {num} failed" if num else f"{fg_val} failed"
+                print(f"SUBMIT CLICKED: NO ({reason_click})")
+            elif dry_run:
+                print("SUBMIT CLICKED: NO (dry-run)")
+            else:
+                print("SUBMIT CLICKED: NO")
             print("APPLICATION NOT SENT")
             print("STATUS NOT CHANGED TO APPLIED")
             return 1
@@ -902,12 +1031,6 @@ def submit_vacancy(vacancy_stable_id: str, confirm_submit: bool = False, force: 
             print("APPLICATION SENT: UNKNOWN")
             print("STATUS NOT CHANGED TO APPLIED")
             return 1
-        elif result.status == "BLOCKED":
-            print(f"SUBMISSION BLOCKED: {result.error}")
-            print("SUBMIT CLICKED: NO")
-            print("APPLICATION NOT SENT")
-            print("STATUS NOT CHANGED TO APPLIED")
-            return 1
         else:
             print(f"Submission status: {result.status}")
             print("SUBMIT NOT CLICKED")
@@ -915,12 +1038,11 @@ def submit_vacancy(vacancy_stable_id: str, confirm_submit: bool = False, force: 
             print("STATUS NOT CHANGED TO APPLIED")
             return 1
     except ValueError as e:
-        print(f"Error: {e}", file=__import__('sys').stderr)
+        print(f"Error: {e}", file=sys.stderr)
         return 1
     except Exception as e:
-        print(f"Error: {e}", file=__import__('sys').stderr)
+        print(f"Error: {e}", file=sys.stderr)
         return 1
-
 
 def submissions_list(limit: int = 50) -> None:
     """List all submissions with verification status."""
@@ -3701,15 +3823,20 @@ def application_runner_cmd(
     if command == "preview":
         res = preview_next_application()
     elif command == "next":
-        if evaluate_fn is None:
-            try:
-                from .cli import _resolve_hh_evaluate, _DEFAULT_HH_CDP_URL
-                from .hh_browser_launcher import ensure_hh_browser
-                ensure_hh_browser()
-                evaluate_fn = _resolve_hh_evaluate(_DEFAULT_HH_CDP_URL, "hh.ru")
-            except Exception:
-                evaluate_fn = None
-        res = run_next_application(confirm_submit=confirm_submit, evaluate_fn=evaluate_fn, dry_run=dry_run)
+        from .hh_application_runner import get_controlled_application_queue, HHApplicationState
+        queue_items = get_controlled_application_queue()
+        ready_apps = [it for it in queue_items if it.application_state == HHApplicationState.READY_TO_SUBMIT.value]
+        if not ready_apps:
+            res = run_next_application(confirm_submit=confirm_submit, evaluate_fn=None, dry_run=dry_run)
+        else:
+            if evaluate_fn is None:
+                try:
+                    from .hh_browser_launcher import ensure_hh_browser
+                    ensure_hh_browser()
+                    evaluate_fn = _resolve_hh_evaluate(_DEFAULT_HH_CDP_URL, "hh.ru")
+                except Exception:
+                    evaluate_fn = None
+            res = run_next_application(confirm_submit=confirm_submit, evaluate_fn=evaluate_fn, dry_run=dry_run)
     else:
         print(f"Unknown runner command: {command}", file=sys.stderr)
         return 1
@@ -4476,6 +4603,7 @@ def main() -> int:
     submit_parser.add_argument("vacancy_stable_id", type=str)
     submit_parser.add_argument("--confirm-submit", action="store_true", help="Explicitly confirm submission")
     submit_parser.add_argument("--dry-run", action="store_true", help="Execute gates in read-only mode without submitting")
+    submit_parser.add_argument("--adapter", type=str, default=None, choices=["mock", "cdp", "playwright"], help="Browser adapter to use (mock is only allowed for simulation/testing)")
     submit_parser.add_argument("--profile", type=str, default=None, help="Path to candidate_profile.json")
     submit_parser.add_argument("--force", action="store_true", help="Force re-submit if needed")
 
@@ -4895,8 +5023,14 @@ def main() -> int:
             print("Submit confirmation required. Use --confirm-submit to proceed (or --dry-run for safety simulation).")
             print("No browser action performed.")
             return 1
-        from .browser_executor import submit_application_in_browser
-        return submit_vacancy(args.vacancy_stable_id, confirm_submit=getattr(args, "confirm_submit", False), force=args.force, dry_run=getattr(args, "dry_run", False))
+        return submit_vacancy(
+            args.vacancy_stable_id,
+            confirm_submit=getattr(args, "confirm_submit", False),
+            force=args.force,
+            profile_path=getattr(args, "profile", None),
+            dry_run=getattr(args, "dry_run", False),
+            adapter_name=getattr(args, "adapter", None),
+        )
     elif args.command == "submit-next":
         if not getattr(args, "confirm_submit", False):
             print("Submit confirmation required. Use --confirm-submit to proceed.")

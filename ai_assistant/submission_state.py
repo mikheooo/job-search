@@ -165,3 +165,8 @@ def get_submission_evidence(vacancy_stable_id: str, dom_already_applied: bool = 
         logger.warning("Failed to query hh_applications for %s: %s", vacancy_stable_id, e)
 
     return evidence
+
+
+def has_definite_submission(vacancy_stable_id: str) -> bool:
+    """Return True if any submission evidence indicates this vacancy has already been applied/submitted."""
+    return get_submission_evidence(vacancy_stable_id).is_already_applied
