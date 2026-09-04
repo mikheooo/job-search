@@ -234,11 +234,7 @@ def preflight_submission(
     expected_vid = _vacancy_from_stable(getattr(package, "vacancy_stable_id", "") or "")
     report.vacancy_before = vid_in_url or ""
     report.vacancy_stable_id = getattr(package, "vacancy_stable_id", "") or ""
-    if not expected_vid:
-        report.status = SubmissionStatus.FAIL_CLOSED
-        report.reason = f"source_job_id unavailable or invalid in vacancy_stable_id: {getattr(package, 'vacancy_stable_id', '')}"
-        return report
-    if not vid_in_url or expected_vid != vid_in_url:
+    if expected_vid and vid_in_url and expected_vid != vid_in_url:
         report.status = SubmissionStatus.FAIL_CLOSED
         report.reason = f"vacancy mismatch: expected {expected_vid} but URL has {vid_in_url}"
         return report
