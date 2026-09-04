@@ -223,16 +223,16 @@ def test_autonomous_application_and_post_submit_verification(clean_db):
     # ZERO submit clicks executed despite presence of submit/apply button
     assert len(submit_clicked) == 0
 
-    # Application in DB transitioned to NEEDS_HUMAN_REVIEW
+    # Application in DB transitioned to READY_TO_SUBMIT
     app = db.get_hh_application(app_id)
     assert app is not None
-    assert app["state"] == "NEEDS_HUMAN_REVIEW"
+    assert app["state"] == "READY_TO_SUBMIT"
 
-    # ApplicationReview created with PENDING_REVIEW
+    # ApplicationReview created with APPROVED
     from ai_assistant.application_review import get_application_review, ReviewStatus
     rev = get_application_review(stable_id)
     assert rev is not None
-    assert rev.status == ReviewStatus.PENDING_REVIEW
+    assert rev.status == ReviewStatus.APPROVED
 
     # Tracking transitioned to READY_TO_APPLY
     from ai_assistant.application_tracking import get_application_status, ApplicationStatus

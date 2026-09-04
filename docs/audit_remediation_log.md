@@ -594,3 +594,142 @@
 - **Pytest (полный регрессионный прогон):**
   - **1 465 passed, 0 failed, 0 errors** за 609.13s (10 мин 09 сек).
   - Прирост относительно Фазы 0 (1 408 passed за 659.74s): **+57 новых строгих тестов** безопасности и валидации, при общем ускорении выполнения на ~50 секунд.
+
+---
+
+## Фаза 2: переход к автономной отправке
+
+### Резюме решения владельца
+В ходе Фазы 1.5 система была переведена в режим жесткого удержания человека в контуре (`prepare-only`, обязательное ручное подтверждение `confirm_submit=True`). Однако стратегическая цель проекта — автономный поиск и отклик на релевантные вакансии без необходимости подтверждать каждую заявку вручную.
+По решению владельца:
+- Вместо блокирующего подтверждения человеком внедрена архитектура **автоматических предикативных гейтов политики качества (`HHSubmitPolicyGate`)**.
+- Реализована строгая эскалация: отклики, полностью удовлетворяющие политике (качество письма, совпадение языка, полнота анкеты, лимиты частоты, соответствие fingerprint), отправляются автономно. Заявки с отклонениями или неопределенностью не блокируют пайплайн, а автоматически маршрутизируются в `NEEDS_HUMAN_REVIEW` для ручного разбора.
+- Контроль владельца перенесен на уровень удаленного оперативного мониторинга:
+  - Мгновенные информационные алерты в Telegram по факту успешной отправки (`[Отклик отправлен]`).
+  - Команды удаленного экстренного останова (`/stop`) и возобновления (`/resume`) в Telegram с сохранением состояния в БД (`system_settings`).
+  - Сводный ежедневный отчет активности по команде `/digest`.
+  - Сохранение ручных интерфейсов согласования при необходимости.
+
+---
+
+### Выполненные задачи Фазы 2
+
+#### Задача 1. Архитектура SubmitApproval и единый шлюз в SUBMITTED
+- **Файлы:** `ai_assistant/hh_application_orchestrator.py`, `tests/test_state_machine_invariants.py`.
+- **Изменения:**
+  - Введен датакласс `SubmitApproval`:
+    ```python
+    class ApproverType(str, Enum):
+        HUMAN = "human"
+        POLICY = "policy"
+
+    @dataclass(frozen=True)
+    class SubmitApproval:
+        approved_by: str
+        approver_type: ApproverType
+        policy_audit_id: Optional[str] = None
+    ```
+  - Функция `transition_application` принимает параметр `approval: Optional[SubmitApproval] = None`. Для перехода в состояние `SUBMITTED` (из любого состояния, включая `READY_TO_SUBMIT` и повторный self-transition) наличие валидного объекта `SubmitApproval` строго обязательно. При попытке перехода без `approval` возбуждается `ValueError("MISSING_SUBMIT_APPROVAL")`.
+  - Удалены устаревшие прямые рёбра в стейт-машине:
+    - `READY_FOR_AUTONOMOUS_SUBMIT -> SUBMITTED` (удалено).
+    - `QUESTIONNAIRE_AUTO_FILLED -> SUBMITTED` (удалено).
+    - Легаси-состояния сохранены в перечислении `HHApplicationState` с пометкой `deprecated Stage 35`.
+  - Проверка инварианта `fingerprint`: при переходе в `SUBMITTED` функция проверяет наличие доказательств отклика в БД (`submission_evidence`) и обязательное совпадение `fingerprint`.
+- **Коммит:** `27d93c4` `feat(phase2): replace human confirm with SubmitApproval, single path into SUBMITTED`.
+
+#### Задача 2. Автоматический гейт политик отправки (HHSubmitPolicyGate)
+- **Файлы:** `ai_assistant/hh_submit_policy.py`, `ai_assistant/db.py`, `tests/test_hh_submit_policy.py`.
+- **Изменения:**
+  - Создан модуль `ai_assistant/hh_submit_policy.py` с классом `HHSubmitPolicyGate` и методом `evaluate(context: SubmitPolicyContext) -> SubmitPolicyDecision`.
+  - Реализованы обязательные автоматические проверки:
+    1. `kill_switch`: проверка статуса паузы (`db.is_submit_paused()`). Если активна пауза — `PAUSED_BY_KILL_SWITCH`.
+    2. `fingerprint`: соответствие отпечатка пакета отклика `actual_fp == expected_fp`.
+    3. `cover_letter_length`: длина письма в диапазоне от 300 до 2500 символов.
+    4. `cover_letter_placeholders`: отсутствие незаполненных шаблонов (`[Компания]`, `{company}`, `<...>`, `TODO`, `TBD`, `XXX`).
+    5. `cover_letter_relevance`: обязательное упоминание названия компании или должности в тексте письма.
+    6. `language_match`: детектирование кириллицы/латиницы; язык письма обязан соответствовать языку вакансии.
+    7. `questionnaire_completeness`: все вопросы скрининга обязаны содержать непустые ответы (`unanswered_count == 0`).
+    8. `rate_limits`: ограничение частоты подачи (по умолчанию не более 5 откликов в час и 20 откликов в сутки через `db.count_submissions_since()`).
+  - Все результаты проверок фиксируются в таблице `audit_log` БД (`db.log_policy_audit()`).
+  - Решение `SubmitPolicyDecision` содержит `decision` (`APPROVED` | `REJECTED`), `reason`, `audit_id`, и фабричный метод `to_approval() -> SubmitApproval(approved_by="policy:hh_submit_policy", approver_type=ApproverType.POLICY, policy_audit_id=audit_id)`.
+- **Коммит:** `86870df` `feat(phase2): automated submit policy gate`.
+
+#### Задача 3. Автономный раннер и снятие ограничений prepare-only
+- **Файлы:** `ai_assistant/hh_application_runner.py`, `ai_assistant/hh_autonomous_agent.py`, `ai_assistant/hh_submission.py`, `ai_assistant/cli.py`, `tests/test_stage46_application_runner.py`.
+- **Изменения:**
+  - В `ai_assistant/hh_application_runner.py` добавлен параметр `auto_submit: bool = False` (активируется через CLI-флаг `--auto` или переменную окружения `HH_AUTO_SUBMIT=1`).
+  - В шаге 4 раннера интегрирован `HHSubmitPolicyGate`. При `auto_submit=True` раннер запрашивает оценку политики:
+    - При `decision == APPROVED` формируется `SubmitApproval(approver_type=POLICY)`, и раннер переходит к физической отправке отклика.
+    - При `decision == REJECTED` заявка не падает, а переводится в `HHApplicationState.NEEDS_HUMAN_REVIEW` с сохранением детальной причины отказа политики в заметках (`notes`).
+  - В `ai_assistant/hh_autonomous_agent.py` полностью удален режим `prepare-only`: агент находит вакансии, генерирует пакет отклика, рассчитывает fingerprint и переводит заявку в `READY_TO_SUBMIT`, откуда раннер может автономно произвести отправку.
+  - В `execute_hh_submission()` параметр `confirm_submit` заменен на поддержку `approval: Optional[SubmitApproval] = None`, позволяя производить авторизованную политикой отправку.
+  - Обработка `ALREADY_RESPONDED`: при обнаружении ранее поданного отклика на стороне HH заявка через стейт-машину переводится в `STALE`.
+- **Коммит:** `7db759d` `feat(phase2): autonomous runner with policy-gated submission`.
+
+#### Задача 4. Telegram-уведомления, отчетность и удаленный kill-switch
+- **Файлы:** `ai_assistant/telegram_notifier.py`, `ai_assistant/telegram_bot.py`, `ai_assistant/hh_application_runner.py`, `tests/test_telegram_reporting.py`.
+- **Изменения:**
+  - Реализована функция `send_post_submit_notification()`:
+    - Формат сообщения: `[Отклик отправлен] Компания: {company}, Вакансия: {title}\n\n{letter_preview}...\n\n{url}`.
+    - Идемпотентность доставки: ключ `post_submit_alert:{vacancy_stable_id}` предотвращает дублирование сообщений при повторных вызовах.
+  - Реализована команда `/digest` в Telegram-боте и функция `format_daily_digest()`:
+    - Сводка за последние 24 часа: количество отправленных (`SUBMITTED`), переданных на ручной разбор (`NEEDS_HUMAN_REVIEW`), переведенных в `STALE`, и текущий статус паузы (`submit_paused`).
+  - Реализован удаленный Kill-switch:
+    - Команда `/stop` выставляет параметр `submit_paused=1` в таблице `system_settings` SQLite БД и возвращает статус остановки.
+    - Команда `/resume` снимает флаг паузы (`submit_paused=0`).
+    - Методы `db.is_submit_paused()` и `db.set_submit_paused(bool)` обеспечивают консистентное хранение состояния в базе данных без необходимости перезапуска процессов.
+  - Сохранены кнопки ручного взаимодействия в Telegram (📄 Отклик, 👍, 👎, ⏭ Пропустить) для заявок, эскалированных в `NEEDS_HUMAN_REVIEW`.
+- **Коммит:** `3f2e28a` `feat(phase2): telegram reporting and kill switch`.
+
+---
+
+### Таблица сравнения архитектуры: Фаза 1.5 vs Фаза 2
+
+| Характеристика / Компонент | Было (Фаза 1.5) | Стало (Фаза 2) |
+| :--- | :--- | :--- |
+| **Режим автономного агента** | `prepare-only` (блокировка отправки, создание ревью `PENDING_REVIEW`) | Автономный pipeline: поиск $\to$ подготовка $\to$ перевод в `READY_TO_SUBMIT` $\to$ policy gate $\to$ `SUBMITTED` |
+| **Условие перехода в SUBMITTED** | Обязательный флаг человека `confirm_submit=True` (`GATE_HUMAN_CONFIRMED`) | Строгий объект `SubmitApproval` (поддерживает `approver_type=HUMAN` или `approver_type=POLICY`) |
+| **Входные гейты отправки** | 11 статических гейтов с обязательным участием человека | Автоматизированный предикативный гейт `HHSubmitPolicyGate` (качество письма, плейсхолдеры, релевантность, анкета, язык, rate-limits, kill-switch) |
+| **Обработка отклонений политики** | Ошибка / отказ отправки (`FAIL_CLOSED`, `GATE_BLOCKED`) | Мягкая эскалация: перевод заявки в `NEEDS_HUMAN_REVIEW` с аудиторской записью причины |
+| **Внешний отклик (Already Responded)** | Неоднозначные статусы очереди | Корректный перевод стейт-машины в статус `STALE` |
+| **Управление остановкой (Kill-switch)** | Статический флаг `SUBMIT_ALLOWED` в `.env` (требует правки файла) | Динамический удаленный kill-switch в Telegram: `/stop` и `/resume` с хранением в `system_settings` SQLite |
+| **Оповещения об отправке** | Отсутствовали (человек сам нажимал кнопку) | Автоматические алерты `[Отклик отправлен]` в Telegram с первыми 200 символами письма и URL |
+| **Ежедневная отчетность** | Ручной просмотр очередей в CLI | Команда `/digest` в Telegram-боте со статистикой за 24 часа |
+| **Ручные кнопки одобрения (📄)** | Единственный способ одобрения | Сохранены как резервный канал для заявок из `NEEDS_HUMAN_REVIEW` |
+
+---
+
+### Метрики качества и результаты верификации (Фаза 2 Baseline)
+
+#### 1. Статус полного набора тестов (Pytest)
+- **Результат прогона полного сьюта:**
+  ```
+  ====================== 1498 passed in 622.34s (0:10:22) =======================
+  ```
+- **Динамика тестов:**
+  - Фаза 1.5-R: **1 465 passed**.
+  - Фаза 2: **1 498 passed**.
+  - Чистый прирост: **+33 новых модульных и интеграционных теста** (15 тестов `test_hh_submit_policy.py`, 6 тестов `test_telegram_reporting.py`, 4 теста `test_stage46_application_runner.py`, 8 тестов `test_state_machine_invariants.py`).
+  - Ошибок (`failed`, `errors`): **0**.
+  - Регрессий: **0**.
+
+#### 2. Проверка статического анализатора Ruff
+- **Команда:** `uvx ruff check ai_assistant/ --statistics`
+- **Результат:**
+  - Всего предупреждений: **2 760** (из них 1 968 автоматически исправимы флагом `--fix`).
+  - Синтаксические и критические ошибки:
+    - `F821` (неопределенные имена): **0**.
+    - `F811` (переопределенные функции и импорты): **0**.
+
+#### 3. Проверка статического типизатора Mypy
+- **Команда:** `uvx mypy ai_assistant/ --ignore-missing-imports --follow-imports=skip`
+- **Результат:**
+  - `Found 230 errors in 26 files (checked 69 source files)`.
+  - Новый модуль `ai_assistant/hh_submit_policy.py` проверен: **0 ошибок типизации**.
+  - Общее число ошибок типизации в кодовой базе не изменилось (230 ошибок в легаси-файлах).
+
+#### 4. Контрольная проверка grep на наличие `prepare-only`
+- **Команда:** `git grep -in "prepare[-_]only" -- ai_assistant/`
+- **Результаты проверки:**
+  - **До (Фаза 1.5):** 5 совпадений в `ai_assistant/hh_autonomous_agent.py` (строки 917, 973, 1005, 1038, 1058), блокировавших автономный переход в `READY_TO_SUBMIT`.
+  - **После (Фаза 2):** **0 совпадений**. Режим `prepare-only` полностью удален из автономного агента.

@@ -160,7 +160,7 @@ def test_stage54_full_autonomous_cycle_end_to_end(clean_db):
     # Validate Application in DB
     app = db.get_hh_application(f"app_hh_{new_vac_id}")
     assert app is not None
-    assert app["state"] == "NEEDS_HUMAN_REVIEW"
+    assert app["state"] == "READY_TO_SUBMIT"
 
     # Validate Audit in DB
     audits = db.list_conversation_audits(conversation_id=new_conv_id)

@@ -185,7 +185,7 @@ def test_autonomous_apply_and_post_submit_verification(clean_db):
 
     app = db.get_hh_application(app_id)
     assert app is not None
-    assert app["state"] == "NEEDS_HUMAN_REVIEW"
+    assert app["state"] == "READY_TO_SUBMIT"
 
 
 # ---------------------------------------------------------------------------

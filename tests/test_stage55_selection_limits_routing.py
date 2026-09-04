@@ -123,8 +123,8 @@ def test_stage55_discovery_vs_submit_limits_and_ranking(clean_db):
     app3 = db.get_hh_application("app_hh_139999013")
     app1 = db.get_hh_application("app_hh_139999011")
 
-    assert app2 is not None and app2["state"] == "NEEDS_HUMAN_REVIEW"
-    assert app3 is not None and app3["state"] == "NEEDS_HUMAN_REVIEW"
+    assert app2 is not None and app2["state"] == "READY_TO_SUBMIT"
+    assert app3 is not None and app3["state"] == "READY_TO_SUBMIT"
     # vac1 was not processed because it was ranked 3rd and cap was 2
     assert app1 is None
 
