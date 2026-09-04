@@ -88,6 +88,7 @@ class HHApplicationState(str, Enum):
     BLOCKED = "BLOCKED"
     FAILED = "FAILED"
     STALE = "STALE"
+    AMBIGUOUS = "AMBIGUOUS"  # Phase 2.1: submit attempted but unverified / timeout outcome
 
 
 # Explicit map of legal transitions
@@ -190,9 +191,16 @@ LEGAL_TRANSITIONS: Dict[str, Set[str]] = {
     },
     HHApplicationState.READY_TO_SUBMIT.value: {
         HHApplicationState.SUBMITTED.value,  # ONLY with explicit human confirmation or verified submit
+        HHApplicationState.AMBIGUOUS.value,  # Phase 2.1: submit attempted but verification ambiguous/timeout
         HHApplicationState.READY_FOR_AUTONOMOUS_SUBMIT.value,
         HHApplicationState.QUESTIONNAIRE_REQUIRED.value,
         HHApplicationState.NEEDS_HUMAN_REVIEW.value,
+        HHApplicationState.STALE.value,
+        HHApplicationState.BLOCKED.value,
+        HHApplicationState.FAILED.value,
+    },
+    HHApplicationState.AMBIGUOUS.value: {
+        HHApplicationState.SUBMITTED.value,  # ONLY with explicit human reconciliation
         HHApplicationState.STALE.value,
         HHApplicationState.BLOCKED.value,
         HHApplicationState.FAILED.value,
@@ -454,13 +462,24 @@ def transition_application(
                     transition_id=trans_id,
                 )
 
-            if current_state != HHApplicationState.READY_TO_SUBMIT.value:
+            if current_state == HHApplicationState.AMBIGUOUS.value:
+                # Transition from AMBIGUOUS to SUBMITTED requires explicit human reconciliation
+                if getattr(approval, "source", "") != "human":
+                    return TransitionResult(
+                        ok=False,
+                        application_id=application_id,
+                        from_state=current_state,
+                        to_state=target_state_str,
+                        reason="Transition from AMBIGUOUS to SUBMITTED requires explicit human reconciliation (approval.source == 'human').",
+                        error="AMBIGUOUS_RECONCILIATION_REQUIRES_HUMAN",
+                    )
+            elif current_state != HHApplicationState.READY_TO_SUBMIT.value:
                 return TransitionResult(
                     ok=False,
                     application_id=application_id,
                     from_state=current_state,
                     to_state=target_state_str,
-                    reason=f"Cannot transition to SUBMITTED from '{current_state}'. Must be READY_TO_SUBMIT.",
+                    reason=f"Cannot transition to SUBMITTED from '{current_state}'. Must be READY_TO_SUBMIT or AMBIGUOUS (human-reconciled).",
                     error="SUBMIT_FORBIDDEN_FROM_STATE",
                 )
 

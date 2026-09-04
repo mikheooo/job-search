@@ -129,6 +129,14 @@ def can_submit(application_id: str) -> SubmitEligibilityResult:
             state=current_state,
         )
 
+    if current_state in (HHApplicationState.AMBIGUOUS.value, "AMBIGUOUS", "AMBIGUOUS_POST_SUBMIT"):
+        return SubmitEligibilityResult(
+            allowed=False,
+            reason="application_ambiguous_outcome",
+            application_id=app_id,
+            state=current_state,
+        )
+
     if current_state == "NOT_ELIGIBLE":
         return SubmitEligibilityResult(
             allowed=False,
@@ -136,6 +144,19 @@ def can_submit(application_id: str) -> SubmitEligibilityResult:
             application_id=app_id,
             state=current_state,
         )
+
+    vac_stable = app_data.get("vacancy_stable_id") or ""
+    if vac_stable:
+        claim = db.get_submission_claim(vac_stable)
+        if claim:
+            c_status = claim.get("status")
+            if c_status in ("SUBMITTED", "ATTEMPTING", "AMBIGUOUS", "FAILED_SAFE"):
+                return SubmitEligibilityResult(
+                    allowed=False,
+                    reason=f"submission_claim_{c_status.lower()}",
+                    application_id=app_id,
+                    state=current_state,
+                )
 
     if current_state != HHApplicationState.READY_TO_SUBMIT.value:
         return SubmitEligibilityResult(
