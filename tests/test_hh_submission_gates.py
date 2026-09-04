@@ -289,6 +289,18 @@ def test_gate_not_already_applied_whitelist(monkeypatch):
     assert not res.passed
     assert res.failed_gate == GateName.GATE_NOT_ALREADY_APPLIED
 
+    # 3. Whitelisted non-submitted statuses in DB permit retry (FAILED, GATE_BLOCKED, CANCELLED, DRY_RUN)
+    for idx, retry_status in enumerate(["FAILED", "GATE_BLOCKED", "CANCELLED", "DRY_RUN", "BLOCKED", "FAIL_CLOSED"], 1):
+        num_id = f"1020{idx}"
+        retry_sid = _setup_valid_vacancy(num_id, fp=f"fp_{retry_status}")
+        retry_url = f"https://hh.ru/vacancy/{num_id}"
+        retry_snapshot = {"fingerprint": f"fp_{retry_status}", "cover_letter": "A good cover letter for testing"}
+        save_submission(retry_sid, "{}", retry_status)
+        r_res = HHSubmissionGates.check_all_gates(
+            retry_sid, retry_url, retry_snapshot, human_confirmed=True, candidate_profile=_make_profile()
+        )
+        assert r_res.passed, f"Submission with status {retry_status} must permit retry"
+
 
 def test_gate_no_previous_submission_attempt(monkeypatch):
     monkeypatch.setenv("SUBMIT_ALLOWED", "true")

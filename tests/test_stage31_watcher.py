@@ -432,7 +432,7 @@ def test_human_approval_required_before_submission(clean_db):
 
 def test_approved_vacancy_can_submit_via_existing_stage20k(clean_db):
     """An approved review is successfully submitted using existing controlled_real_submit."""
-    raw = _create_sample_vacancy_dict(sid="submit-flow-1")
+    raw = _create_sample_vacancy_dict(sid="136591579", source="hh")
     adapter = MockAdapter([raw])
 
     cfg = WatcherConfig(
@@ -466,7 +466,7 @@ def test_approved_vacancy_can_submit_via_existing_stage20k(clean_db):
 
     class TestCDP:
         def __init__(self):
-            self.url = "https://hh.ru/applicant/vacancy_response?vacancyId=submit-flow-1"
+            self.url = "https://hh.ru/applicant/vacancy_response?vacancyId=136591579"
             self.clicked = False
 
         def evaluate(self, expression: str) -> str:
