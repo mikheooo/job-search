@@ -191,7 +191,7 @@ ai_assistant.telegram_feedback.TelegramFeedbackProcessor
 7. **IDEMPOTENCY & TERMINAL STATE PROTECTION:**
    Vacancies already in terminal application states (`APPLIED`, `SUBMITTED`, `VERIFIED`, `INTERVIEW`, `OFFER`) fail closed with safe informational warnings and cannot be overwritten or downgraded by feedback callbacks. Duplicate callback query IDs are idempotent no-ops.
 8. **SINGLE UPDATE CONSUMER ARCHITECTURE:**
-   Hermes Gateway runs as the single active long-polling update consumer on bot token `8217526633:...`. `fb:` feedback callbacks are dispatched to `TelegramFeedbackProcessor` without initiating conflicting second pollers.
+   Hermes Gateway runs as the single active long-polling update consumer on bot token `<REDACTED_BOT_ID>:...`. `fb:` feedback callbacks are dispatched to `TelegramFeedbackProcessor` without initiating conflicting second pollers.
 
 ---
 

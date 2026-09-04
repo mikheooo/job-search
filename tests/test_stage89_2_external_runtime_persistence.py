@@ -179,10 +179,12 @@ def test_env_is_git_ignored():
 # ---------------------------------------------------------------------------
 def test_secrets_masked_in_status_and_logs(isolated_hermes_env, monkeypatch):
     monkeypatch.setenv("HERMES_ROOT", str(isolated_hermes_env))
+    fake_token = "000000000:FAKE_TOKEN_FOR_MASKING_TEST_xxxxxxxx"
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", fake_token)
     status = get_hermes_integration_status(base_dir=isolated_hermes_env)
     status_str = json.dumps(status)
-    assert "8217526633" not in status_str
-    assert "AAHqReznT2DYvTg67zzftLR0iWSbowfb3rg" not in status_str
+    assert fake_token not in status_str
+    assert "FAKE_TOKEN_FOR_MASKING_TEST_xxxxxxxx" not in status_str
 
 
 # ---------------------------------------------------------------------------

@@ -384,10 +384,10 @@ job-search/
 1. **УТЕЧКА ТОКЕНА TELEGRAM БОТА В РЕПОЗИТОРИИ:**
    - В коммите `f3a08f1` в файле `tests/test_stage89_2_external_runtime_persistence.py` (строка 127) с целью проверки маскирования токена в логах был буквально захардкожен реальный секретный токен продакшн-бота:
      ```python
-     assert "8217526633" not in status_str
-     assert "AAHqReznT2DYvTg67zzftLR0iWSbowfb3rg" not in status_str
+     assert "<REDACTED>" not in status_str
+     assert "<REDACTED>" not in status_str
      ```
-   - Полный токен `8217526633:AAHqReznT2DYvTg67zzftLR0iWSbowfb3rg` присутствует в истории Git и совпадает с текущим токеном в боевом `.env`.
+   - Полный токен `<REDACTED>` присутствует в истории Git и совпадает с текущим токеном в боевом `.env`.
    - **Рекомендация:** Немедленно отозвать токен через `@BotFather`, выпустить новый и очистить историю git / удалить хардкод из теста.
 2. **Хардкод абсолютных путей:**
    - По всему коду захардкожены абсолютные пути Windows: `C:\Users\Misha\Documents\job-search`, `C:\Users\Misha\AppData\Local\hermes` (встречаются в `hermes_integration.py`, `job_search_fetcher.py`, `telegram_adapter_hook.py`, `setup_scheduled_task.ps1`, `start_silent.vbs`).
@@ -1127,70 +1127,17 @@ def get_hermes_integration_status(base_dir: Optional[Path] = None) -> Dict[str, 
 ### 10.4. Самые проблемные файлы системы
 
 #### 1. `tests/test_stage89_2_external_runtime_persistence.py`
-*Обоснование:* **Критическая уязвимость безопасности.** В коде теста на строке 127 в открытом виде зафиксирован действующий production-токен Telegram-бота (`8217526633:AAHqReznT2DYvTg67zzftLR0iWSbowfb3rg`).
+*Обоснование:* **Критическая уязвимость безопасности.** В коде теста на строке 127 в открытом виде был зафиксирован действующий production-токен Telegram-бота (`<REDACTED>`).
 ```python
 """Stage 89.2: External Runtime Persistence, Health, and Drift Subsystem Tests.
-
-Covers:
-1. Expected Telegram feedback integration detected (HEALTHY)
-2. Missing outbound keyboard wiring detected (DRIFTED)
-3. Missing Hermes callback routing detected (DRIFTED / MISSING)
-4. Drifted integration surfaces warning in production-health
-5. Sync operation is idempotent and restores HEALTHY state
-6. .env is Git ignored and not tracked
-7. Secrets are not committed in git or printed unmasked
-8. No network calls occur in automated test execution
-"""
-
-from __future__ import annotations
-
-import os
-import json
-from pathlib import Path
-import pytest
-
-from ai_assistant import config, db
-from ai_assistant.hermes_integration import (
-    get_hermes_integration_status,
-    sync_hermes_integration,
-)
-from integrations.hermes.telegram_adapter_hook import (
-    HERMES_CALLBACK_HOOK_CODE,
-)
-
-@pytest.fixture
-def isolated_hermes_env(tmp_path):
-    fake_hermes = tmp_path / "fake_hermes"
-    fake_fetcher_dir = fake_hermes / "profiles" / "jobs" / "scripts"
-    fake_adapter_dir = fake_hermes / "hermes-agent" / "plugins" / "platforms" / "telegram"
-    fake_fetcher_dir.mkdir(parents=True, exist_ok=True)
-    fake_adapter_dir.mkdir(parents=True, exist_ok=True)
-
-    canonical_fetcher = Path(r"C:\Users\Misha\Documents\job-search\integrations\hermes\job_search_fetcher.py")
-    fetcher_dest = fake_fetcher_dir / "job_search_fetcher.py"
-    fetcher_dest.write_bytes(canonical_fetcher.read_bytes())
-
-    fake_adapter_content = (
-        "# Fake adapter base\n"
-        "class TelegramAdapter:\n"
-        "    async def _handle_callback_query(self, query):\n"
-        "        data = getattr(query, 'data', '')\n"
-        + HERMES_CALLBACK_HOOK_CODE + "\n"
-        "        # --- Update prompt callbacks ---\n"
-        "        if not data.startswith('update_prompt:'):\n"
-        "            return\n"
-    )
-    adapter_dest = fake_adapter_dir / "adapter.py"
-    adapter_dest.write_text(fake_adapter_content, encoding="utf-8")
-    return fake_hermes
-
+...
 def test_secrets_masked_in_status_and_logs(isolated_hermes_env, monkeypatch):
     monkeypatch.setenv("HERMES_ROOT", str(isolated_hermes_env))
     status = get_hermes_integration_status(base_dir=isolated_hermes_env)
     status_str = json.dumps(status)
-    # [КРИТИЧЕСКАЯ УЯЗВИМОСТЬ] Реальный боевой токен бота зафиксирован в тесте:
-    assert "8217526633" not in status_str
-    assert "AAHqReznT2DYvTg67zzftLR0iWSbowfb3rg" not in status_str
+    # [КРИТИЧЕСКАЯ УЯЗВИМОСТЬ - УСТРАНЕНО] Токен удален и заменен на фейковый:
+    assert "<REDACTED>" not in status_str
+    assert "<REDACTED>" not in status_str
 ```
 
 #### 2. `ai_assistant/application_queue.py` (Фрагмент строк 340–485)
