@@ -114,18 +114,14 @@ def _parse_vacancy_id(url: str) -> Optional[str]:
     if not url:
         return None
     try:
-        parsed = urlparse(url)
+        parsed = urlparse(url if "://" in url else f"https://{url}")
         qs = parse_qs(parsed.query)
         vals = qs.get("vacancyId") or []
         if vals:
-            vid = vals[0].strip()
-            host = (parsed.hostname or "").lower()
-            if host == "hh.ru" or host.endswith(".hh.ru"):
-                return vid if vid.isdigit() else None
-            return vid
-        match = re.search(r"/vacancy/(\d+)", parsed.path)
+            return vals[0].strip()
+        match = re.search(r"/vacancy/([^/?#]+)", parsed.path)
         if match:
-            return match.group(1)
+            return match.group(1).strip()
     except Exception:
         pass
     return None
@@ -135,11 +131,7 @@ def _vacancy_from_stable(vacancy_stable_id: str) -> Optional[str]:
     if not vacancy_stable_id or ":" not in vacancy_stable_id:
         return None
     source, part = vacancy_stable_id.split(":", 1)
-    source = source.strip().lower()
-    part = part.strip()
-    if source == "hh":
-        return part if part.isdigit() else None
-    return part
+    return part.strip()
 
 
 def clear_submitted_reviews() -> None:
@@ -496,7 +488,7 @@ class HHSubmissionGates:
                 reason="Missing or empty current URL",
             )
         try:
-            parsed = urlparse(cur_url)
+            parsed = urlparse(cur_url if "://" in cur_url else f"https://{cur_url}")
             host = (parsed.hostname or "").lower()
             if not host:
                 return GateCheckResult(
@@ -538,21 +530,12 @@ class HHSubmissionGates:
                 )
 
         expected_job_id = _vacancy_from_stable(vacancy_stable_id)
-        is_hh = vacancy_stable_id.startswith("hh:") or (urlparse(cur_url).hostname or "").endswith("hh.ru")
-        if is_hh:
-            if not expected_job_id or not expected_job_id.isdigit():
-                return GateCheckResult(
-                    passed=False,
-                    failed_gate=GateName.GATE_VACANCY_MATCH,
-                    reason=f"source_job_id unavailable or not numeric for HH vacancy: {vacancy_stable_id}",
-                )
-        else:
-            if not expected_job_id:
-                return GateCheckResult(
-                    passed=False,
-                    failed_gate=GateName.GATE_VACANCY_MATCH,
-                    reason=f"source_job_id unavailable in vacancy_stable_id: {vacancy_stable_id}",
-                )
+        if not expected_job_id:
+            return GateCheckResult(
+                passed=False,
+                failed_gate=GateName.GATE_VACANCY_MATCH,
+                reason=f"source_job_id unavailable in vacancy_stable_id: {vacancy_stable_id}",
+            )
         url_job_id = _parse_vacancy_id(cur_url)
         if not url_job_id or url_job_id != expected_job_id:
             return GateCheckResult(
@@ -824,6 +807,7 @@ def execute_hh_submission(
     candidate_profile: Optional[CandidateProfile] = None,
     profile_path: Optional[str] = None,
     submission_id: Optional[str] = None,
+    sync_hh_application: bool = True,
 ) -> SubmissionExecutionResult:
     """Unified entry point for HeadHunter submissions across all execution paths.
 
@@ -1045,11 +1029,12 @@ def execute_hh_submission(
             ApplicationStatus.SUBMITTED,
         )
 
-    app = get_hh_application(vacancy_stable_id) or get_hh_application_by_vacancy(vacancy_stable_id)
-    if app:
-        app_dict = dict(app)
-        app_dict["state"] = "SUBMITTED" if verified else "AMBIGUOUS_POST_SUBMIT"
-        save_hh_application(app_dict)
+    if sync_hh_application:
+        app = get_hh_application(vacancy_stable_id) or get_hh_application_by_vacancy(vacancy_stable_id)
+        if app:
+            app_dict = dict(app)
+            app_dict["state"] = "SUBMITTED" if verified else "AMBIGUOUS_POST_SUBMIT"
+            save_hh_application(app_dict)
 
     if review and getattr(review, "review_id", None):
         _submitted_reviews.add(review.review_id)

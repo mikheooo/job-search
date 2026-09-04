@@ -707,6 +707,8 @@ def test_stage30t_office_vacancy_submit_blocked_even_if_approved():
 def test_stage30t_remote_vacancy_passes_gate():
     """Stage 30T: Confirmed fully remote vacancy passes both prepare and submit gates cleanly."""
     tmp = tempfile.mkdtemp()
+    orig_sub = config.SUBMIT_ALLOWED
+    config.SUBMIT_ALLOWED = True
     try:
         db_file = str(Path(tmp) / "t.db")
         orig = config.DB_FILE
@@ -727,10 +729,18 @@ def test_stage30t_remote_vacancy_passes_gate():
         )
         db.save_vacancy(vac)
         set_application_status(vac.stable_id(), ApplicationStatus.READY_TO_APPLY)
-        from ai_assistant.application_review import ApplicationReview, ReviewStatus, save_application_review
-        save_application_review(ApplicationReview(vacancy_stable_id=vac.stable_id(), status=ReviewStatus.APPROVED))
+        from ai_assistant.application_review import (
+            ApplicationReview,
+            ReviewStatus,
+            compute_review_fingerprint,
+            save_application_review,
+        )
+        cover_letter = "AI application"
+        pkg_data = {"cover_letter": cover_letter, "validation_status": "VALID", "vacancy_stable_id": vac.stable_id()}
+        fp = compute_review_fingerprint(vac.stable_id(), pkg_data)
+        save_application_review(ApplicationReview(vacancy_stable_id=vac.stable_id(), status=ReviewStatus.APPROVED, form_fingerprint=fp))
         save_queue_item(QueueItem(vacancy_stable_id=vac.stable_id(), canonical_id=vac.stable_id(), representative_vacancy_stable_id=vac.stable_id(), priority_score=95, rank=1))
-        db.save_application_package(vac.stable_id(), "v1", json.dumps({"cover_letter": "AI application", "validation_status": "VALID"}))
+        db.save_application_package(vac.stable_id(), "v1", json.dumps(pkg_data))
 
         mock = be.MockBrowserAdapter(simulate={"fields": ["name", "email", "resume", "cover_letter"], "apply_button": True})
         prep_res = be.prepare_application_in_browser(vac.stable_id(), adapter=mock, force=True)
@@ -740,6 +750,7 @@ def test_stage30t_remote_vacancy_passes_gate():
         assert sub_res.status == be.SubmitStatus.SUBMITTED
         assert db.is_submitted(vac.stable_id()) is True
     finally:
+        config.SUBMIT_ALLOWED = orig_sub
         config.DB_FILE = orig
         shutil.rmtree(tmp, ignore_errors=True)
 

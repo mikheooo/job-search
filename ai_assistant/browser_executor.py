@@ -2081,26 +2081,108 @@ def submit_application_in_browser(
     import uuid
     submission_id = f"{vacancy_stable_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
+    # Check if already submitted
+    from .submission_state import get_submission_evidence
+    evidence = get_submission_evidence(vacancy_stable_id)
+    if evidence.is_already_applied:
+        return SubmitResult(
+            vacancy_stable_id=vacancy_stable_id,
+            submission_id=submission_id,
+            status="BLOCKED",
+            error=f"Already submitted. Duplicate submission not allowed: {'; '.join(evidence.blocked_reasons)}",
+            executor_version="v1",
+        )
+
+    # Load vacancy
+    from .db import get_vacancy_by_id, _row_to_vacancy
+    row = get_vacancy_by_id(vacancy_stable_id)
+    vac = _row_to_vacancy(row) if row else None
+
+    # Load profile
+    from .candidate_profile import load_candidate_profile, CandidateProfile
+    if profile_path:
+        profile = load_candidate_profile(profile_path)
+    else:
+        from .config import CANDIDATE_PROFILE_FILE
+        cfg_path = CANDIDATE_PROFILE_FILE if CANDIDATE_PROFILE_FILE and CANDIDATE_PROFILE_FILE.strip() else None
+        if cfg_path:
+            try:
+                profile = load_candidate_profile(cfg_path)
+            except Exception:
+                profile = load_candidate_profile()
+        else:
+            profile = load_candidate_profile()
+
+    # Defense-in-Depth Hard Constraint Gate
+    if vac:
+        from .matcher import _hard_constraints, _coerce_profile
+        from .remote_filter import is_strictly_remote
+
+        if getattr(profile, "remote_required", False):
+            is_rem, rem_reason = is_strictly_remote(vac)
+            if not is_rem:
+                return SubmitResult(
+                    vacancy_stable_id=vacancy_stable_id,
+                    submission_id=submission_id,
+                    status="BLOCKED",
+                    error=f"Submit blocked by remote_required hard constraint: {rem_reason}",
+                    executor_version="v1",
+                )
+
+        hard_reject, hard_reason = _hard_constraints(_coerce_profile(profile), vac)
+        if hard_reject:
+            return SubmitResult(
+                vacancy_stable_id=vacancy_stable_id,
+                submission_id=submission_id,
+                status="BLOCKED",
+                error=f"Submit blocked by hard constraint gate: {hard_reason}",
+                executor_version="v1",
+            )
+
+    sess = get_browser_session(vacancy_stable_id)
+    if sess and sess.status == BrowserStatus.BLOCKED:
+        return SubmitResult(
+            vacancy_stable_id=vacancy_stable_id,
+            submission_id=submission_id,
+            status="BLOCKED",
+            error=f"Browser session BLOCKED and not ready for submit: {sess.error or sess.status}",
+            executor_version="v1",
+        )
+
     # Path A: If HeadHunter, route strictly through unified execute_hh_submission (Stage 41 / Remediation Phase 1.5)
     if vacancy_stable_id.startswith("hh:"):
-        from .candidate_profile import load_candidate_profile
-        from .config import CANDIDATE_PROFILE_FILE
-        if profile_path:
-            prof = load_candidate_profile(profile_path)
-        elif CANDIDATE_PROFILE_FILE and CANDIDATE_PROFILE_FILE.strip():
-            try:
-                prof = load_candidate_profile(CANDIDATE_PROFILE_FILE)
-            except Exception:
-                prof = load_candidate_profile()
-        else:
-            prof = load_candidate_profile()
-
         use_adapter = adapter or MockBrowserAdapter()
         def _evaluate_wrapper(js: str) -> str:
             if hasattr(use_adapter, "evaluate"):
                 return str(use_adapter.evaluate(js))
             elif hasattr(use_adapter, "execute_script"):
                 return str(use_adapter.execute_script(js))
+            elif isinstance(use_adapter, MockBrowserAdapter):
+                if ".click()" in js:
+                    res = use_adapter.submit_application()
+                    return json.dumps({"ok": res.get("success", True)})
+                if "has_responded_success" in js:
+                    return json.dumps({
+                        "ok": True,
+                        "has_responded_success": use_adapter.submit_attempted,
+                        "has_topic_link": use_adapter.submit_attempted,
+                        "has_banner": use_adapter.submit_attempted,
+                        "text": "отклик отправлен" if use_adapter.submit_attempted else "",
+                        "url": use_adapter.opened_url or (vac.job_url if vac else f"https://hh.ru/vacancy/{vacancy_stable_id.split(':')[-1]}"),
+                    })
+                inspect = use_adapter.inspect_page()
+                target_url = use_adapter.opened_url or (vac.job_url if vac else f"https://hh.ru/vacancy/{vacancy_stable_id.split(':')[-1]}")
+                return json.dumps({
+                    "ok": True,
+                    "url": target_url,
+                    "title": vac.title if vac else "Vacancy",
+                    "has_submit_btn": inspect.get("apply_button", True),
+                    "has_apply_btn": inspect.get("apply_button", True),
+                    "already_responded": False,
+                    "is_404": False,
+                    "is_captcha": inspect.get("captcha", False),
+                    "is_login_required": inspect.get("login_required", False),
+                })
             return json.dumps({"ok": True, "url": f"https://hh.ru/vacancy/{vacancy_stable_id.split(':')[-1]}"})
 
         from .hh_submission import execute_hh_submission
@@ -2109,7 +2191,7 @@ def submit_application_in_browser(
             evaluate_fn=_evaluate_wrapper,
             human_confirmed=confirm_submit,
             dry_run=dry_run,
-            candidate_profile=prof,
+            candidate_profile=profile,
             profile_path=profile_path,
             submission_id=submission_id,
         )

@@ -45,14 +45,14 @@ _INSPECT_LIVE_PAGE_JS = """(() => {
         const isLoginRequired = !!loginEl || titleLower.includes("вход в личный кабинет") || titleLower.includes("войдите в личный кабинет") || bodyText.includes("войдите в личный кабинет");
 
         // Already responded banner / elements
-        const alreadyRespondedEl = document.querySelector('[data-qa*="responded-success"], [data-qa*="vacancy-response-link-view-topic"], [data-qa*="vacancy-already-responded"], .vacancy-response-status');
+        const alreadyRespondedEl = document.querySelector('[data-qa*="responded-success"], [data-qa*="response-link-view-topic"], [data-qa*="vacancy-already-responded"], .vacancy-response-status');
         const alreadyResponded = !!alreadyRespondedEl || bodyText.includes("вы уже откликнулись") || bodyText.includes("отклик уже отправлен");
 
         // Submit button inside popup / modal
-        const submitBtn = document.querySelector('[data-qa*="response-submit-popup"], [data-qa*="response-submit"], button[type="submit"]');
+        const submitElement = document.querySelector('[data-qa*="response-submit-popup"], [data-qa*="response-submit"], button[type="submit"]');
         
         // Initial apply button on vacancy page
-        const applyBtn = document.querySelector('[data-qa="vacancy-response-link-top"], [data-qa="vacancy-response-link-bottom"], [data-qa="vacancy-response-link-view"]');
+        const applyElement = document.querySelector('[data-qa="vacancy-response-link-top"], [data-qa="vacancy-response-link-bottom"], [data-qa="vacancy-response-link-view"]');
 
         // Response modal / form
         const responseModal = document.querySelector('[data-qa="vacancy-response-popup"], .bloko-modal, form.vacancy-response');
@@ -66,9 +66,9 @@ _INSPECT_LIVE_PAGE_JS = """(() => {
             is_access_denied: isAccessDenied,
             is_login_required: isLoginRequired,
             already_responded: alreadyResponded,
-            has_submit_btn: !!submitBtn,
-            submit_btn_disabled: submitBtn ? !!submitBtn.disabled : false,
-            has_apply_btn: !!applyBtn,
+            has_submit_btn: !!submitElement,
+            submit_btn_disabled: submitElement ? !!submitElement.disabled : false,
+            has_apply_btn: !!applyElement,
             has_response_modal: !!responseModal,
         });
     } catch (e) {
@@ -84,9 +84,9 @@ def extract_numeric_id(target: str) -> str | None:
     m = _HH_NUMERIC_ID_PATTERN.search(str(target).strip())
     if m:
         return m.group(1)
-    digits = re.findall(r"\d{6,12}", str(target))
+    digits = re.findall(r"\d+", str(target))
     if digits:
-        return digits[0]
+        return digits[-1]
     return None
 
 
@@ -183,7 +183,7 @@ def check_live_page(
 
     # 1. Host verification
     try:
-        parsed = urlparse(current_url)
+        parsed = urlparse(current_url if "://" in current_url else f"https://{current_url}")
         host = (parsed.hostname or "").lower()
         if not host or (host != "hh.ru" and not host.endswith(".hh.ru")):
             res.is_ok = False

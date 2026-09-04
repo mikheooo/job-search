@@ -33,6 +33,12 @@ from ai_assistant.hh_application_runner import (
     run_application,
     RunnerPreCheckStatus,
 )
+from ai_assistant.application_review import (
+    ApplicationReview,
+    ReviewStatus,
+    compute_review_fingerprint,
+    save_application_review,
+)
 from ai_assistant.hh_post_submit_verifier import verify_hh_submitted_application
 
 
@@ -87,12 +93,29 @@ def test_stage50_pre_checks_and_gating(clean_db):
 # Test 2: Execution With Confirmation and Post-Submit Verification
 # ---------------------------------------------------------------------------
 
-def test_stage50_execution_with_confirmation(clean_db):
+def test_stage50_execution_with_confirmation(clean_db, monkeypatch):
     """Application submits and transitions to SUBMITTED upon positive verification."""
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
     app_id = "app_hh_136551280"
+    sid = "hh:136551280"
+    pkg_payload = {
+        "vacancy_stable_id": sid,
+        "cover_letter": "AI application",
+        "resume_version": "v1",
+        "title": "AI-разработчик (Python) Junior / Middle",
+        "validation_status": "VALID",
+    }
+    fp = compute_review_fingerprint(sid, pkg_payload)
+    db.save_application_package(sid, "v1", json.dumps(pkg_payload))
+    save_application_review(ApplicationReview(
+        vacancy_stable_id=sid,
+        status=ReviewStatus.APPROVED,
+        form_fingerprint=fp,
+        review_id="rev_136551280",
+    ))
     db.save_hh_application({
         "application_id": app_id,
-        "vacancy_stable_id": "hh:136551280",
+        "vacancy_stable_id": sid,
         "title": "AI-разработчик (Python) Junior / Middle",
         "employer": "ООО СП Солюшен",
         "state": HHApplicationState.READY_TO_SUBMIT.value,

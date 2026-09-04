@@ -415,6 +415,7 @@ def run_application(
                 evaluate_fn=evaluate_fn,
                 human_confirmed=confirm_submit,
                 dry_run=dry_run,
+                sync_hh_application=False,
             )
             if exec_res.status == "DRY_RUN_OK":
                 return RunnerExecutionResult(
@@ -434,7 +435,7 @@ def run_application(
                     final_application_state=current_state,
                     reason=exec_res.reason,
                 )
-            if not exec_res.ok:
+            if exec_res.submit_count == 0:
                 return RunnerExecutionResult(
                     application_id=app_id,
                     vacancy_id=vac_id,
@@ -448,7 +449,7 @@ def run_application(
                     navigation=nav_status,
                     questionnaire=quest_status,
                     submit_confirmation=confirm_submit,
-                    real_hh_submit=exec_res.submit_count,
+                    real_hh_submit=0,
                     final_application_state=current_state,
                     reason=exec_res.reason,
                 )

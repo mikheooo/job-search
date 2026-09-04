@@ -36,6 +36,13 @@ from ai_assistant.hh_application_runner import (
     preview_next_application,
     RunnerPreCheckStatus,
 )
+from ai_assistant.application_review import (
+    ApplicationReview,
+    ReviewStatus,
+    compute_review_fingerprint,
+    save_application_review,
+)
+from ai_assistant.hh_submission import clear_submitted_reviews
 from ai_assistant.hh_application_queue import can_submit
 
 
@@ -44,11 +51,13 @@ def clean_db(tmp_path):
     orig_db = config.DB_FILE
     db_file = str(tmp_path / "test_stage47_state_machine.db")
     config.DB_FILE = db_file
+    clear_submitted_reviews()
     db.init_db()
 
     yield {"db_file": db_file}
 
     config.DB_FILE = orig_db
+    clear_submitted_reviews()
 
 
 class MockBrowser:
@@ -134,12 +143,29 @@ def test_post_submit_verification_never_creates_ready_to_ready_transition(clean_
 # Test 2: Successful Runner Flow Cleanly Transitions READY_TO_SUBMIT -> SUBMITTED
 # ---------------------------------------------------------------------------
 
-def test_successful_runner_flow_transitions_cleanly_to_submitted(clean_db):
+def test_successful_runner_flow_transitions_cleanly_to_submitted(clean_db, monkeypatch):
     """Controlled runner performs exactly READY_TO_SUBMIT -> SUBMITTED with rich evidence."""
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
     app_id = "app_test_102"
+    sid = "hh:136704137"
+    pkg_payload = {
+        "vacancy_stable_id": sid,
+        "cover_letter": "Python developer application",
+        "resume_version": "v1",
+        "title": "Python developer middle",
+        "validation_status": "VALID",
+    }
+    fp = compute_review_fingerprint(sid, pkg_payload)
+    db.save_application_package(sid, "v1", json.dumps(pkg_payload))
+    save_application_review(ApplicationReview(
+        vacancy_stable_id=sid,
+        status=ReviewStatus.APPROVED,
+        form_fingerprint=fp,
+        review_id="rev_test_102",
+    ))
     db.save_hh_application({
         "application_id": app_id,
-        "vacancy_stable_id": "hh:136704137",
+        "vacancy_stable_id": sid,
         "title": "Python developer middle",
         "employer": "Maxima.tech",
         "state": HHApplicationState.READY_TO_SUBMIT.value,
@@ -270,12 +296,29 @@ def test_submitted_state_cannot_transition_backward(clean_db):
 # Test 6: Verification Failure After Submit Moves Application to BLOCKED
 # ---------------------------------------------------------------------------
 
-def test_verification_failure_after_submit_blocks_application_safely(clean_db):
+def test_verification_failure_after_submit_blocks_application_safely(clean_db, monkeypatch):
     """If submit succeeds in browser but post-submit verification fails, app moves to BLOCKED."""
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
     app_id = "app_test_106"
+    sid = "hh:136704137"
+    pkg_payload = {
+        "vacancy_stable_id": sid,
+        "cover_letter": "Python developer application",
+        "resume_version": "v1",
+        "title": "Python developer middle",
+        "validation_status": "VALID",
+    }
+    fp = compute_review_fingerprint(sid, pkg_payload)
+    db.save_application_package(sid, "v1", json.dumps(pkg_payload))
+    save_application_review(ApplicationReview(
+        vacancy_stable_id=sid,
+        status=ReviewStatus.APPROVED,
+        form_fingerprint=fp,
+        review_id="rev_test_106",
+    ))
     db.save_hh_application({
         "application_id": app_id,
-        "vacancy_stable_id": "hh:136704137",
+        "vacancy_stable_id": sid,
         "title": "Python developer middle",
         "state": HHApplicationState.READY_TO_SUBMIT.value,
         "created_at": "2026-08-30T12:00:00",
