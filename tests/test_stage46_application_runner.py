@@ -509,3 +509,187 @@ def test_stale_external_application_not_picked_on_second_run(clean_db):
     assert res2.selected_application is None
     assert "NO_APPLICATION_SELECTED" in res2.reason
 
+
+# ---------------------------------------------------------------------------
+# Phase 2 Tests: Autonomous Runner With Policy-Gated Submission
+# ---------------------------------------------------------------------------
+
+def test_autonomous_mock_cycle_new_to_submitted_zero_human_confirm(clean_db, monkeypatch):
+    """With --auto (auto=True) and 0 human confirms (confirm_submit=False), full flow reaches SUBMITTED."""
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
+    browser = MockRunnerBrowser()
+
+    sid = "hh:136704137"
+    company = "Maxima.tech"
+    title = "Python developer middle"
+    letter = (
+        f"Здравствуйте! Меня очень заинтересовала позиция {title} в компании {company}. "
+        "Я обладаю глубоким опытом коммерческой разработки на Python, проектирования асинхронных сервисов, "
+        "работы с PostgreSQL, Docker и FastAPI. В своих прошлых проектах я успешно реализовывал "
+        "высоконагруженные распределенные архитектуры и оптимизировал запросы. "
+        "Буду рад обсудить подробности на техническом интервью и внести существенный вклад в команду."
+    )
+    pkg = {
+        "vacancy_stable_id": sid,
+        "cover_letter": letter,
+        "title": title,
+        "employer": company,
+        "validation_status": "VALID",
+    }
+    db.save_application_package(sid, "v1", json.dumps(pkg, ensure_ascii=False))
+    fp = compute_review_fingerprint(sid, pkg)
+    save_application_review(ApplicationReview(
+        vacancy_stable_id=sid,
+        status=ReviewStatus.APPROVED,
+        form_fingerprint=fp,
+        review_id=f"rev_{sid}",
+    ))
+
+    app_id = f"app_hh_136704137"
+    db.save_hh_application({
+        "application_id": app_id,
+        "vacancy_stable_id": sid,
+        "title": title,
+        "employer": company,
+        "state": "READY_TO_SUBMIT",
+        "created_at": "2026-08-30T12:00:00",
+        "updated_at": "2026-08-30T12:00:00",
+    })
+
+    # Run with confirm_submit=False, auto=True
+    res = run_next_application(confirm_submit=False, auto=True, evaluate_fn=browser.evaluate)
+
+    assert res.application_id == app_id
+    assert res.real_hh_submit == 1
+    assert res.submit_confirmation is True
+    assert res.final_application_state == "SUBMITTED"
+    assert browser.submit_attempts == 1
+
+    # Check transition evidence
+    transitions = db.list_hh_application_transitions(app_id)
+    assert len(transitions) == 1
+    assert transitions[0]["state"] == "SUBMITTED"
+    assert transitions[0]["reason"] == "autonomous_policy_submit_confirmed"
+    assert transitions[0]["evidence"]["approval"]["source"] == "policy"
+
+
+def test_autonomous_bad_letter_fails_policy_to_needs_human_review(clean_db, monkeypatch):
+    """When cover letter contains forbidden placeholders, policy gate halts and transitions to NEEDS_HUMAN_REVIEW."""
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
+    browser = MockRunnerBrowser()
+
+    sid = "hh:136704137"
+    company = "Maxima.tech"
+    title = "Python developer middle"
+    bad_letter = (
+        f"Здравствуйте! Меня очень заинтересовала позиция {title} в компании {company}. "
+        "Я обладаю опытом разработки на Python TODO: add more details here. "
+        "В своих прошлых проектах я реализовывал различные сервисы и базы данных."
+    )
+    pkg = {
+        "vacancy_stable_id": sid,
+        "cover_letter": bad_letter,
+        "title": title,
+        "employer": company,
+        "validation_status": "VALID",
+    }
+    db.save_application_package(sid, "v1", json.dumps(pkg, ensure_ascii=False))
+    fp = compute_review_fingerprint(sid, pkg)
+    save_application_review(ApplicationReview(
+        vacancy_stable_id=sid,
+        status=ReviewStatus.APPROVED,
+        form_fingerprint=fp,
+        review_id=f"rev_{sid}",
+    ))
+
+    app_id = f"app_hh_bad_letter"
+    db.save_hh_application({
+        "application_id": app_id,
+        "vacancy_stable_id": sid,
+        "title": title,
+        "employer": company,
+        "state": "READY_TO_SUBMIT",
+        "created_at": "2026-08-30T12:00:00",
+        "updated_at": "2026-08-30T12:00:00",
+    })
+
+    res = run_next_application(confirm_submit=False, auto=True, evaluate_fn=browser.evaluate)
+
+    assert res.application_id == app_id
+    assert res.real_hh_submit == 0
+    assert res.final_application_state == "NEEDS_HUMAN_REVIEW"
+    assert browser.submit_attempts == 0
+    assert "policy rejected" in res.reason.lower()
+
+    app = db.get_hh_application(app_id)
+    assert app["state"] == "NEEDS_HUMAN_REVIEW"
+
+
+def test_autonomous_stop_submits_blocks_submission(clean_db, monkeypatch):
+    """When kill switch is engaged (db submit_paused=1), policy gate immediately stops submit."""
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
+    browser = MockRunnerBrowser()
+
+    db.set_submit_paused(True)
+
+    sid = "hh:136704137"
+    company = "Maxima.tech"
+    title = "Python developer middle"
+    letter = (
+        f"Здравствуйте! Меня очень заинтересовала позиция {title} в компании {company}. "
+        "Я обладаю глубоким опытом коммерческой разработки на Python, проектирования асинхронных сервисов, "
+        "работы с PostgreSQL, Docker и FastAPI. Буду рад обсудить все подробности."
+    )
+    pkg = {
+        "vacancy_stable_id": sid,
+        "cover_letter": letter,
+        "title": title,
+        "employer": company,
+        "validation_status": "VALID",
+    }
+    db.save_application_package(sid, "v1", json.dumps(pkg, ensure_ascii=False))
+    fp = compute_review_fingerprint(sid, pkg)
+    save_application_review(ApplicationReview(
+        vacancy_stable_id=sid,
+        status=ReviewStatus.APPROVED,
+        form_fingerprint=fp,
+        review_id=f"rev_{sid}",
+    ))
+
+    app_id = f"app_hh_stop_submits"
+    db.save_hh_application({
+        "application_id": app_id,
+        "vacancy_stable_id": sid,
+        "title": title,
+        "employer": company,
+        "state": "READY_TO_SUBMIT",
+        "created_at": "2026-08-30T12:00:00",
+        "updated_at": "2026-08-30T12:00:00",
+    })
+
+    res = run_next_application(confirm_submit=False, auto=True, evaluate_fn=browser.evaluate)
+
+    assert res.real_hh_submit == 0
+    assert res.final_application_state == "NEEDS_HUMAN_REVIEW"
+    assert "paused" in res.reason.lower()
+    assert browser.submit_attempts == 0
+
+
+def test_autonomous_second_run_skips_stale(clean_db):
+    """When an application is STALE, autonomous runner skips it and finds no ready applications."""
+    app_id = "app_hh_stale_auto"
+    db.save_hh_application({
+        "application_id": app_id,
+        "vacancy_stable_id": "hh:136704137",
+        "title": "Python developer middle",
+        "employer": "Maxima.tech",
+        "state": "STALE",
+        "created_at": "2026-08-30T12:00:00",
+        "updated_at": "2026-08-30T12:00:00",
+    })
+
+    res = run_next_application(confirm_submit=False, auto=True)
+    assert res.selected_application is None
+    assert "NO_APPLICATION_SELECTED" in res.reason
+
+

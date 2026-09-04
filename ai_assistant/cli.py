@@ -3815,6 +3815,7 @@ def application_queue_cmd(as_json: bool = False, ready_only: bool = False, human
 def application_runner_cmd(
     command: str,
     confirm_submit: bool = False,
+    auto: bool = False,
     as_json: bool = False,
     evaluate_fn: Optional[Callable[[str], str]] = None,
     dry_run: bool = False,
@@ -3833,7 +3834,7 @@ def application_runner_cmd(
         queue_items = get_controlled_application_queue()
         ready_apps = [it for it in queue_items if it.application_state == HHApplicationState.READY_TO_SUBMIT.value]
         if not ready_apps:
-            res = run_next_application(confirm_submit=confirm_submit, evaluate_fn=None, dry_run=dry_run)
+            res = run_next_application(confirm_submit=confirm_submit, auto=auto, evaluate_fn=None, dry_run=dry_run)
         else:
             if evaluate_fn is None:
                 try:
@@ -3842,7 +3843,7 @@ def application_runner_cmd(
                     evaluate_fn = _resolve_hh_evaluate(_DEFAULT_HH_CDP_URL, "hh.ru")
                 except Exception:
                     evaluate_fn = None
-            res = run_next_application(confirm_submit=confirm_submit, evaluate_fn=evaluate_fn, dry_run=dry_run)
+            res = run_next_application(confirm_submit=confirm_submit, auto=auto, evaluate_fn=evaluate_fn, dry_run=dry_run)
     else:
         print(f"Unknown runner command: {command}", file=sys.stderr)
         return 1
@@ -4841,6 +4842,7 @@ def main() -> int:
     runner_prev_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
     runner_next_p = runner_sub.add_parser("next", help="Execute pre-checks for the next application without submitting (or submit with --confirm-submit)")
     runner_next_p.add_argument("--confirm-submit", action="store_true", help="Explicit human confirmation to proceed with submit")
+    runner_next_p.add_argument("--auto", action="store_true", help="Autonomous policy-gated submission")
     runner_next_p.add_argument("--dry-run", action="store_true", help="Execute gates in read-only mode without submitting")
     runner_next_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
 
@@ -5243,6 +5245,7 @@ def main() -> int:
             return application_runner_cmd(
                 command=args.runner_command,
                 confirm_submit=getattr(args, "confirm_submit", False),
+                auto=getattr(args, "auto", False),
                 as_json=getattr(args, "as_json", False),
                 dry_run=getattr(args, "dry_run", False),
             )

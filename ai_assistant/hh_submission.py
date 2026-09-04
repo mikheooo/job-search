@@ -414,7 +414,12 @@ class HHSubmissionGates:
     RETRY_ALLOWED_SUBMISSION_STATUSES = frozenset({"FAILED", "BLOCKED", "FAIL_CLOSED", "GATE_BLOCKED", "CANCELLED", "DRY_RUN"})
 
     @classmethod
-    def _check_review_gate(cls, vacancy_stable_id: str, review_obj: Optional[Any] = None) -> tuple[Optional[GateCheckResult], Optional[str], Optional[str]]:
+    def _check_review_gate(
+        cls,
+        vacancy_stable_id: str,
+        review_obj: Optional[Any] = None,
+        approval: Optional[Any] = None,
+    ) -> tuple[Optional[GateCheckResult], Optional[str], Optional[str]]:
         """Gate 2: GATE_REVIEW_APPROVED."""
         review = review_obj or get_application_review(vacancy_stable_id)
         if not review:
@@ -436,7 +441,11 @@ class HHSubmissionGates:
             expected_fp = getattr(review, "form_fingerprint", None) or getattr(review, "fingerprint", None)
             rev_id = getattr(review, "review_id", "")
 
-        if rev_status not in (ReviewStatus.APPROVED.value, "HUMAN_APPROVED", "APPROVED"):
+        is_approved = rev_status in (ReviewStatus.APPROVED.value, "HUMAN_APPROVED", "APPROVED")
+        if not is_approved and approval and getattr(approval, "source", "") == "policy":
+            is_approved = True
+
+        if not is_approved:
             return (
                 GateCheckResult(
                     passed=False,
@@ -705,6 +714,7 @@ class HHSubmissionGates:
         current_url: str,
         form_snapshot: Dict[str, Any],
         human_confirmed: bool = False,
+        approval: Optional[Any] = None,
         dry_run: bool = False,
         candidate_profile: Optional[CandidateProfile] = None,
         profile_path: Optional[str] = None,
@@ -725,7 +735,7 @@ class HHSubmissionGates:
         }
 
         # Gate 2: GATE_REVIEW_APPROVED
-        rev_err, expected_fp, rev_id = cls._check_review_gate(vacancy_stable_id, review_obj)
+        rev_err, expected_fp, rev_id = cls._check_review_gate(vacancy_stable_id, review_obj, approval=approval)
         gate_results[GateName.GATE_REVIEW_APPROVED.value] = {
             "passed": rev_err is None,
             "reason": "Review approved" if rev_err is None else rev_err.reason,
@@ -820,10 +830,14 @@ class HHSubmissionGates:
         }
 
         # Gate 11: GATE_HUMAN_CONFIRMED
-        g11_pass = human_confirmed or dry_run
+        g11_pass = (approval is not None) or human_confirmed or dry_run
         gate_results[GateName.GATE_HUMAN_CONFIRMED.value] = {
             "passed": g11_pass,
-            "reason": "Human confirmed" if human_confirmed else ("Bypassed (dry-run mode)" if dry_run else "Explicit human confirmation (--confirm-submit) required"),
+            "reason": (
+                "Approved by policy"
+                if (approval and getattr(approval, "source", "") == "policy")
+                else ("Human confirmed" if human_confirmed else ("Bypassed (dry-run mode)" if dry_run else "Explicit approval or human confirmation required"))
+            ),
         }
 
         # Sequential fail-closed evaluation preserving priority order
@@ -870,6 +884,7 @@ def execute_hh_submission(
     vacancy_stable_id: str,
     evaluate_fn: Optional[Callable[[str], str]] = None,
     human_confirmed: bool = False,
+    approval: Optional[Any] = None,
     dry_run: bool = False,
     candidate_profile: Optional[CandidateProfile] = None,
     profile_path: Optional[str] = None,
@@ -980,6 +995,7 @@ def execute_hh_submission(
         current_url=live_result.current_url or "",
         form_snapshot=form_snapshot,
         human_confirmed=human_confirmed,
+        approval=approval,
         dry_run=dry_run,
         candidate_profile=candidate_profile,
         profile_path=profile_path,

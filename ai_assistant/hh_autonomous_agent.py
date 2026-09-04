@@ -914,12 +914,7 @@ class AutonomousJobAgent:
         return fresh
 
     def _process_single_application(self, vac_data: Dict[str, Any], score: float) -> Dict[str, Any]:
-        """Process a single matching vacancy autonomously (prepare-only mode: discovers, scores, prepares review, never submits)."""
-        if self.config.submit_enabled:
-            raise NotImplementedError(
-                "Autonomous submission is disabled by design; use 'application runner next --confirm-submit' after human approval"
-            )
-
+        """Process a single matching vacancy autonomously: discovers, scores, prepares package and transitions to READY_TO_SUBMIT."""
         vac_id = str(vac_data.get("vacancy_id") or "").strip()
         title = vac_data.get("title") or "Python Developer"
         employer = vac_data.get("employer") or "Unknown Employer"
@@ -970,7 +965,7 @@ class AutonomousJobAgent:
                 app_record["reason"] = f"Navigation failed: {nav_res.reason}"
                 return app_record
 
-        # Step 3: Prepare Application Package & Cover Letter (Prepare-Only)
+        # Step 3: Prepare Application Package & Cover Letter
         cover_letter = generate_autonomous_cover_letter(title, employer, self.profile)
         pkg_data = {
             "vacancy_stable_id": stable_id,
@@ -981,16 +976,18 @@ class AutonomousJobAgent:
         }
         db.save_application_package(stable_id, "v1", json.dumps(pkg_data, ensure_ascii=False))
 
-        # Step 4: Create ApplicationReview with PENDING_REVIEW
+        # Step 4: Create ApplicationReview
         from .application_review import (
             ApplicationReview,
             ReviewStatus,
             save_application_review,
             get_application_review,
+            compute_review_fingerprint,
             REVIEW_VERSION,
         )
         rev = get_application_review(stable_id)
         if not rev:
+            fp = compute_review_fingerprint(stable_id, pkg_data)
             rev = ApplicationReview(
                 vacancy_stable_id=stable_id,
                 company=employer,
@@ -1000,9 +997,10 @@ class AutonomousJobAgent:
                 final_url=f"https://hh.ru/vacancy/{vac_id}",
                 match_score=score,
                 cover_letter=cover_letter,
-                status=ReviewStatus.PENDING_REVIEW,
+                status=ReviewStatus.APPROVED,
+                form_fingerprint=fp,
                 review_version=REVIEW_VERSION,
-                note="Prepared autonomously (prepare-only mode)",
+                note="Prepared and approved autonomously",
             )
             save_application_review(rev)
 
@@ -1016,7 +1014,7 @@ class AutonomousJobAgent:
             source="hh",
             vacancy_url=f"https://hh.ru/vacancy/{vac_id}",
             match_score=score,
-            notes="Autonomously discovered and prepared for human review",
+            notes="Autonomously discovered and prepared for submission",
         )
 
         # Step 6: Add to application_queue
@@ -1035,7 +1033,7 @@ class AutonomousJobAgent:
             )
         )
 
-        transition_application(app_id, HHApplicationState.NEEDS_HUMAN_REVIEW, reason="autonomous_prepare_only_ready_for_review")
+        transition_application(app_id, HHApplicationState.READY_TO_SUBMIT, reason="autonomous_prepared_ready_to_submit")
 
         # Step 7: Send Telegram Notification with action buttons
         try:
@@ -1048,14 +1046,13 @@ class AutonomousJobAgent:
                 f"💼 {title}\n"
                 f"⭐ Оценка соответствия: {score:.1f}/100\n"
                 f"🔗 https://hh.ru/vacancy/{vac_id}\n\n"
-                f"Статус: Ожидает одобрения человека (PENDING_REVIEW).\n"
-                f"Для одобрения используйте кнопки ниже или веб-дашборд."
+                f"Статус: Готова к отправке (READY_TO_SUBMIT).\n"
             )
             notifier.send_message(text=msg_text, reply_markup=reply_markup)
         except Exception as e:
             logger.warning(f"Failed to send telegram notification for {stable_id}: {e}")
 
-        app_record["reason"] = "Prepared for human review (prepare-only mode, submit disabled)"
+        app_record["reason"] = "Prepared for autonomous submission (READY_TO_SUBMIT)"
         return app_record
 
     def _process_messages(self) -> Dict[str, Any]:

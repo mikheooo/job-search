@@ -134,6 +134,7 @@ def preview_next_application() -> RunnerExecutionResult:
 
 def run_next_application(
     confirm_submit: bool = False,
+    auto: bool = False,
     evaluate_fn: Optional[Callable[[str], str]] = None,
     cdp_url: Optional[str] = None,
     dry_run: bool = False,
@@ -162,6 +163,7 @@ def run_next_application(
     return run_application(
         application_id=target_app.application_id,
         confirm_submit=confirm_submit,
+        auto=auto,
         evaluate_fn=evaluate_fn,
         cdp_url=cdp_url,
         queue_ready_count=ready_count,
@@ -174,6 +176,7 @@ def run_next_application(
 def run_application(
     application_id: str,
     confirm_submit: bool = False,
+    auto: bool = False,
     evaluate_fn: Optional[Callable[[str], str]] = None,
     cdp_url: Optional[str] = None,
     queue_ready_count: int = 0,
@@ -387,7 +390,38 @@ def run_application(
         nav_status = RunnerPreCheckStatus.PASS
 
     # Step 4: Submission Gate
-    if not confirm_submit:
+    import os
+    auto_mode = auto or os.environ.get("HH_AUTO_SUBMIT") == "1"
+    policy_decision = None
+    submit_approval = None
+
+    if auto_mode:
+        from .hh_submit_policy import evaluate as evaluate_policy, route_policy_rejection
+        policy_decision = evaluate_policy(app)
+        if not policy_decision.approve:
+            route_policy_rejection(app_id, policy_decision)
+            return RunnerExecutionResult(
+                application_id=app_id,
+                vacancy_id=vac_id,
+                vacancy_title=vac_title,
+                company=company,
+                queue_ready_count=queue_ready_count,
+                queue_review_count=queue_review_count,
+                queue_submitted_count=queue_submitted_count,
+                selected_application=selected_app_label,
+                pre_submit_audit=audit_status,
+                navigation=nav_status,
+                questionnaire=quest_status,
+                submit_confirmation=False,
+                real_hh_submit=0,
+                post_submit_verification=RunnerPreCheckStatus.NOT_RUN,
+                final_application_state=HHApplicationState.NEEDS_HUMAN_REVIEW.value,
+                next_application_executed=False,
+                pipeline_py="NOT RUN",
+                reason=f"Submit policy rejected: {', '.join(policy_decision.reasons)}",
+            )
+        submit_approval = policy_decision.approval
+    elif not confirm_submit:
         return RunnerExecutionResult(
             application_id=app_id,
             vacancy_id=vac_id,
@@ -408,6 +442,9 @@ def run_application(
             pipeline_py="NOT RUN",
             reason="Pre-checks PASSED. Submission paused: explicit confirmation required (--confirm-submit).",
         )
+    else:
+        from .hh_application_orchestrator import SubmitApproval
+        submit_approval = SubmitApproval(source="human", policy_version="legacy_confirm")
 
     # Step 5: Execute Exactly ONE Submit with confirmation
     real_submit_count = 0
@@ -434,7 +471,7 @@ def run_application(
                 pre_submit_audit=audit_status,
                 navigation=nav_status,
                 questionnaire=quest_status,
-                submit_confirmation=True,
+                submit_confirmation=bool(confirm_submit or auto_mode),
                 real_hh_submit=0,
                 final_application_state=current_state,
                 reason=f"Questionnaire submit execution failed: {q_res.reason}",
@@ -447,6 +484,7 @@ def run_application(
                 vacancy_stable_id=vac_stable_id or f"hh:{vac_id}",
                 evaluate_fn=evaluate_fn,
                 human_confirmed=confirm_submit,
+                approval=submit_approval,
                 dry_run=dry_run,
                 sync_hh_application=False,
             )
@@ -481,7 +519,7 @@ def run_application(
                     pre_submit_audit=audit_status,
                     navigation=nav_status,
                     questionnaire=quest_status,
-                    submit_confirmation=confirm_submit,
+                    submit_confirmation=bool(confirm_submit or auto_mode),
                     real_hh_submit=0,
                     final_application_state=current_state,
                     reason=exec_res.reason,
@@ -499,21 +537,24 @@ def run_application(
     if post_verdict == RunnerPreCheckStatus.PASS:
         # Extract or compute fingerprint for evidence
         pkg_fp = None
-        from .application_review import get_application_review
-        rev = get_application_review(vac_stable_id) if vac_stable_id else None
-        if rev:
-            pkg_fp = getattr(rev, "form_fingerprint", None) or getattr(rev, "fingerprint", None)
-        if not pkg_fp and 'exec_res' in locals() and exec_res and exec_res.gate_check_result:
-            for gr in getattr(exec_res.gate_check_result, "gate_results", []):
-                if gr.gate == "fingerprint_match" and gr.details:
-                    pkg_fp = gr.details.get("fingerprint")
-        if not pkg_fp:
-            pkg_fp = f"runner_fp_{app_id}"
+        if policy_decision and policy_decision.fingerprint:
+            pkg_fp = policy_decision.fingerprint
+        else:
+            from .application_review import get_application_review
+            rev = get_application_review(vac_stable_id) if vac_stable_id else None
+            if rev:
+                pkg_fp = getattr(rev, "form_fingerprint", None) or getattr(rev, "fingerprint", None)
+            if not pkg_fp and 'exec_res' in locals() and exec_res and exec_res.gate_check_result:
+                for gr in getattr(exec_res.gate_check_result, "gate_results", []):
+                    if gr.gate == "fingerprint_match" and gr.details:
+                        pkg_fp = gr.details.get("fingerprint")
+            if not pkg_fp:
+                pkg_fp = f"runner_fp_{app_id}"
 
         transition_application(
             application_id=app_id,
             to_state=HHApplicationState.SUBMITTED,
-            reason="controlled_runner_submit_confirmed",
+            reason="autonomous_policy_submit_confirmed" if auto_mode else "controlled_runner_submit_confirmed",
             evidence={
                 "fingerprint": pkg_fp,
                 "submit_executed": True,
@@ -522,8 +563,9 @@ def run_application(
                 "evidence_text": post_res.evidence_text,
                 "vacancy_url": post_res.vacancy_url,
                 "verified_at": post_res.timestamp,
+                "approval": submit_approval.to_dict() if submit_approval else None,
             },
-            confirm_submit=True,
+            approval=submit_approval,
         )
         if qid:
             db.update_hh_questionnaire_answers(qid, {}, new_status=HHQuestionStatus.SUBMITTED.value)
@@ -559,7 +601,7 @@ def run_application(
         pre_submit_audit=audit_status,
         navigation=nav_status,
         questionnaire=quest_status,
-        submit_confirmation=True,
+        submit_confirmation=bool(confirm_submit or auto_mode),
         real_hh_submit=real_submit_count,
         post_submit_verification=post_verdict,
         final_application_state=final_state,
@@ -582,7 +624,7 @@ def format_runner_result_cli(res: RunnerExecutionResult, mode: str = "preview") 
         nav_str = res.navigation.value
         quest_str = res.questionnaire.value
         post_str = res.post_submit_verification.value
-        if res.real_hh_submit == 0 and "already responded" in (res.reason or "").lower():
+        if res.real_hh_submit == 0 and ("already responded" in (res.reason or "").lower() or res.final_application_state == "STALE"):
             final_state_str = "STALE (external response detected on HH)"
         else:
             final_state_str = res.final_application_state
