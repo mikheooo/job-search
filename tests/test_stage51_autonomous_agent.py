@@ -182,9 +182,12 @@ def test_questionnaire_unknown_personal_questions_isolated(clean_db):
 # ---------------------------------------------------------------------------
 
 def test_autonomous_application_and_post_submit_verification(clean_db):
-    """Agent autonomously creates, submits, and verifies an application without confirm-submit."""
+    """Safety: Agent is prepare-only: discovers, scores, prepares review, never clicks submit."""
     vac_id = "139999001"
     app_id = f"app_hh_{vac_id}"
+    stable_id = f"hh:{vac_id}"
+
+    submit_clicked = []
 
     # Mock CDP evaluate responses
     def mock_cdp_eval(script: str) -> str:
@@ -196,23 +199,13 @@ def test_autonomous_application_and_post_submit_verification(clean_db):
                 "url": f"https://hh.ru/vacancy/{vac_id}",
                 "already_responded": False,
             }])
-        if "submitBtn" in script:
+        if "submitBtn.click()" in script:
+            submit_clicked.append(script)
             return json.dumps({"ok": True})
-        if "vacancy-response-link-view-topic" in script or "has_responded_success" in script:
-            return json.dumps({
-                "url": f"https://hh.ru/vacancy/{vac_id}",
-                "has_topic_link": True,
-                "has_responded_success": True,
-                "has_cover_letter_btn": True,
-                "has_explicit_rejection": False,
-                "has_apply_btn": False,
-                "has_submit_btn": False,
-                "evidence_snippet": "Отклик отправлен",
-            })
         return json.dumps({
             "url": f"https://hh.ru/vacancy/{vac_id}",
             "title": "Backend Python Developer (FastAPI)",
-            "has_submit_btn": False,
+            "has_submit_btn": True,
             "has_apply_btn": True,
             "already_responded": False,
             "is_chat": False,
@@ -224,13 +217,39 @@ def test_autonomous_application_and_post_submit_verification(clean_db):
 
     assert res.status == "SUCCESS"
     assert res.discovered_count == 1
-    assert res.applied_count == 1
-    assert res.verified_count == 1
+    # Prepare-only: zero applications submitted or verified autonomously
+    assert res.applied_count == 0
+    assert res.verified_count == 0
+    # ZERO submit clicks executed despite presence of submit/apply button
+    assert len(submit_clicked) == 0
 
+    # Application in DB transitioned to NEEDS_HUMAN_REVIEW
     app = db.get_hh_application(app_id)
     assert app is not None
-    assert app["state"] == "SUBMITTED"
-    assert app["last_transition_reason"] == "autonomous_submit_verified"
+    assert app["state"] == "NEEDS_HUMAN_REVIEW"
+
+    # ApplicationReview created with PENDING_REVIEW
+    from ai_assistant.application_review import get_application_review, ReviewStatus
+    rev = get_application_review(stable_id)
+    assert rev is not None
+    assert rev.status == ReviewStatus.PENDING_REVIEW
+
+    # Tracking transitioned to READY_TO_APPLY
+    from ai_assistant.application_tracking import get_application_status, ApplicationStatus
+    track = get_application_status(stable_id)
+    assert track is not None
+    assert track.status == ApplicationStatus.READY_TO_APPLY
+
+    # Queue item created
+    from ai_assistant.application_queue import get_queue_item
+    q_item = get_queue_item(stable_id)
+    assert q_item is not None
+
+    # Safety: submit_enabled=True raises NotImplementedError
+    cfg_enabled = AutonomousConfig(evaluate_fn=mock_cdp_eval, submit_enabled=True)
+    with pytest.raises(NotImplementedError) as exc_info:
+        run_autonomous_cycle(config=cfg_enabled)
+    assert "Autonomous submission is disabled by design" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------

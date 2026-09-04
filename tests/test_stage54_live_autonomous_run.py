@@ -152,15 +152,15 @@ def test_stage54_full_autonomous_cycle_end_to_end(clean_db):
     assert result.status == "SUCCESS"
     assert result.discovered_count == 1
     assert result.matched_count == 1
-    assert result.applied_count == 1
-    assert result.verified_count == 1
+    assert result.applied_count == 0
+    assert result.verified_count == 0
     assert result.auto_replies_count == 1
     assert len(result.notifications_sent) == 1
 
     # Validate Application in DB
     app = db.get_hh_application(f"app_hh_{new_vac_id}")
     assert app is not None
-    assert app["state"] == "SUBMITTED"
+    assert app["state"] == "NEEDS_HUMAN_REVIEW"
 
     # Validate Audit in DB
     audits = db.list_conversation_audits(conversation_id=new_conv_id)
@@ -227,9 +227,9 @@ def test_stage54_idempotent_repeat_cycle_protection(clean_db):
 
     cfg = AutonomousConfig(evaluate_fn=mock_cdp, max_applications_per_cycle=1, max_auto_replies_per_cycle=1)
 
-    # Run 1: Applies and replies
+    # Run 1: Discovers, prepares and replies
     res1 = run_autonomous_cycle(config=cfg)
-    assert res1.applied_count == 1
+    assert res1.applied_count == 0
     assert res1.auto_replies_count == 1
     assert len(res1.notifications_sent) == 1
 

@@ -104,6 +104,7 @@ class AutonomousConfig(BaseModel):
     min_match_score: float = 70.0
     auto_start_browser: bool = True
     evaluate_fn: Optional[Any] = None
+    submit_enabled: bool = False
 
     model_config = {"extra": "forbid"}
 
@@ -739,6 +740,11 @@ class AutonomousJobAgent:
 
         result = AutonomousCycleResult(started_at=started_at, completed_at="")
 
+        if self.config.submit_enabled:
+            raise NotImplementedError(
+                "Autonomous submission is disabled by design; use 'application runner next --confirm-submit' after human approval"
+            )
+
         try:
             if self.config.auto_start_browser and self.config.evaluate_fn is None:
                 try:
@@ -908,7 +914,12 @@ class AutonomousJobAgent:
         return fresh
 
     def _process_single_application(self, vac_data: Dict[str, Any], score: float) -> Dict[str, Any]:
-        """Process a single matching vacancy autonomously through the full lifecycle."""
+        """Process a single matching vacancy autonomously (prepare-only mode: discovers, scores, prepares review, never submits)."""
+        if self.config.submit_enabled:
+            raise NotImplementedError(
+                "Autonomous submission is disabled by design; use 'application runner next --confirm-submit' after human approval"
+            )
+
         vac_id = str(vac_data.get("vacancy_id") or "").strip()
         title = vac_data.get("title") or "Python Developer"
         employer = vac_data.get("employer") or "Unknown Employer"
@@ -959,58 +970,92 @@ class AutonomousJobAgent:
                 app_record["reason"] = f"Navigation failed: {nav_res.reason}"
                 return app_record
 
-        # Step 3: Handle Questionnaire if present
-        # In autonomous mode, resolve questions from CandidateProfile
-        transition_application(app_id, HHApplicationState.READY_FOR_AUTONOMOUS_SUBMIT, reason="preconditions_verified_ready_for_submit")
+        # Step 3: Prepare Application Package & Cover Letter (Prepare-Only)
+        cover_letter = generate_autonomous_cover_letter(title, employer, self.profile)
+        pkg_data = {
+            "vacancy_stable_id": stable_id,
+            "cover_letter": cover_letter,
+            "resume_summary": getattr(self.profile, "summary", "") or "",
+            "tailored_skills": getattr(self.profile, "skills", []) or [],
+            "validation_status": "VALID",
+        }
+        db.save_application_package(stable_id, "v1", json.dumps(pkg_data, ensure_ascii=False))
 
-        # Step 4: Autonomous Submit Click
-        if eval_fn:
-            raw_click = eval_fn("""(() => {
-                let submitBtn = document.querySelector('[data-qa*="response-submit-popup"], [data-qa*="response-submit"]');
-                if (!submitBtn) {
-                    submitBtn = document.querySelector('[data-qa="vacancy-response-link-top"], [data-qa="vacancy-response-link-bottom"]');
-                }
-                if (!submitBtn) return JSON.stringify({ ok: false, reason: 'Submit button not found' });
-                submitBtn.click();
-                return JSON.stringify({ ok: true });
-            })()""")
-            res_obj = json.loads(raw_click) if isinstance(raw_click, str) else raw_click
-            if not res_obj.get("ok"):
-                transition_application(app_id, HHApplicationState.BLOCKED, reason=f"submit_click_failed: {res_obj.get('reason')}")
-                app_record["reason"] = f"Submit click failed: {res_obj.get('reason')}"
-                return app_record
+        # Step 4: Create ApplicationReview with PENDING_REVIEW
+        from .application_review import (
+            ApplicationReview,
+            ReviewStatus,
+            save_application_review,
+            get_application_review,
+            REVIEW_VERSION,
+        )
+        rev = get_application_review(stable_id)
+        if not rev:
+            rev = ApplicationReview(
+                vacancy_stable_id=stable_id,
+                company=employer,
+                title=title,
+                source="hh",
+                vacancy_url=f"https://hh.ru/vacancy/{vac_id}",
+                final_url=f"https://hh.ru/vacancy/{vac_id}",
+                match_score=score,
+                cover_letter=cover_letter,
+                status=ReviewStatus.PENDING_REVIEW,
+                review_version=REVIEW_VERSION,
+                note="Prepared autonomously (prepare-only mode)",
+            )
+            save_application_review(rev)
 
-            app_record["submitted"] = True
-            time.sleep(3.0)
+        # Step 5: Transition tracking to READY_TO_APPLY
+        from .application_tracking import set_application_status, ApplicationStatus
+        set_application_status(
+            vacancy_stable_id=stable_id,
+            status=ApplicationStatus.READY_TO_APPLY,
+            company=employer,
+            title=title,
+            source="hh",
+            vacancy_url=f"https://hh.ru/vacancy/{vac_id}",
+            match_score=score,
+            notes="Autonomously discovered and prepared for human review",
+        )
 
-            # Step 5: Post-Submit Verification
-            post_res = verify_hh_submitted_application(app_id, evaluate_fn=eval_fn, cdp_url=self.config.cdp_url)
-            if post_res.verification_verdict == "PASS":
-                transition_application(
-                    application_id=app_id,
-                    to_state=HHApplicationState.SUBMITTED,
-                    reason="autonomous_submit_verified",
-                    evidence={
-                        "submit_executed": True,
-                        "post_submit_verification": "passed",
-                        "hh_status": post_res.hh_status,
-                        "evidence_text": post_res.evidence_text,
-                        "vacancy_url": post_res.vacancy_url,
-                        "verified_at": post_res.timestamp,
-                    },
-                    confirm_submit=True,
-                )
-                app_record["verified"] = True
-                app_record["reason"] = "Submitted and verified on HeadHunter."
-            else:
-                transition_application(
-                    application_id=app_id,
-                    to_state=HHApplicationState.BLOCKED,
-                    reason=f"post_submit_verification_failed: {post_res.reason}",
-                    evidence={"post_submit_verification": "failed", "hh_status": post_res.hh_status},
-                )
-                app_record["reason"] = f"Verification failed: {post_res.reason}"
+        # Step 6: Add to application_queue
+        from .application_queue import QueueItem, save_queue_item
+        save_queue_item(
+            QueueItem(
+                vacancy_stable_id=stable_id,
+                canonical_id=f"can_{stable_id.replace(':', '_')}",
+                representative_vacancy_stable_id=stable_id,
+                company=employer,
+                title=title,
+                source="hh",
+                vacancy_url=f"https://hh.ru/vacancy/{vac_id}",
+                priority_score=int(score),
+                rank=1,
+            )
+        )
 
+        transition_application(app_id, HHApplicationState.NEEDS_HUMAN_REVIEW, reason="autonomous_prepare_only_ready_for_review")
+
+        # Step 7: Send Telegram Notification with action buttons
+        try:
+            from .telegram_notifier import TelegramNotifier
+            notifier = TelegramNotifier()
+            reply_markup = TelegramNotifier.build_digest_inline_keyboard([{"stable_id": stable_id}])
+            msg_text = (
+                f"🎯 Новая вакансия подготовлена автономным агентом:\n\n"
+                f"🏢 {employer}\n"
+                f"💼 {title}\n"
+                f"⭐ Оценка соответствия: {score:.1f}/100\n"
+                f"🔗 https://hh.ru/vacancy/{vac_id}\n\n"
+                f"Статус: Ожидает одобрения человека (PENDING_REVIEW).\n"
+                f"Для одобрения используйте кнопки ниже или веб-дашборд."
+            )
+            notifier.send_message(text=msg_text, reply_markup=reply_markup)
+        except Exception as e:
+            logger.warning(f"Failed to send telegram notification for {stable_id}: {e}")
+
+        app_record["reason"] = "Prepared for human review (prepare-only mode, submit disabled)"
         return app_record
 
     def _process_messages(self) -> Dict[str, Any]:

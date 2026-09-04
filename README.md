@@ -78,7 +78,7 @@ collectors (adapters/*, linkedin, wellfound_scraper)
 
 ## 4. HH Submission Safety Gates (11 Strict Multi-Layer Gates)
 
-HH form submission is protected by 11 fail-closed gates implemented in `HHSubmissionGates` (`ai_assistant/hh_submission.py`):
+HH form submission is protected by 11 fail-closed gates (реализованы в `HHSubmissionGates` в `ai_assistant/hh_submission.py`; подключение к боевым путям — в процессе, см. `docs/audit_remediation_log.md`):
 
 1. `GATE_SUBMIT_ALLOWED`: Environment / config kill-switch `SUBMIT_ALLOWED` must be explicitly enabled (`true`/`1`/`yes`) unless in dry_run mode.
 2. `GATE_REVIEW_APPROVED`: Application review in DB must exist and have status `ReviewStatus.APPROVED`.
@@ -188,8 +188,7 @@ unchanged in a clean clone.
 
 - **Truth-only**: never invent facts; missing data → HUMAN_REVIEW.
 - **Fail-closed**: any uncertainty blocks the action (0 mutations).
-- **REVIEW by default**: AUTO is always an explicit opt-in (kill switches
-  `HH_APPLY_MODE`, `HH_AUTO_REPLY_ENABLED`).
+- **REVIEW by default**: Автономный режим — prepare-only с 2.0; до этого отправлял без подтверждения. Любая отправка требует одобрения человека и запуска через `application runner next --confirm-submit`.
 - **Production discovery is review-only**: the scheduled `production-run`
   entry point does not import or call `auto_apply_modes.run_auto_apply`.
 - **SendGate / EmailSendGate**: REVIEW never sends; email sending is
@@ -209,9 +208,7 @@ unchanged in a clean clone.
 
 ## 10. What the system NEVER does without an explicit gate
 
-- Never submits an HH application without: review gate approval +
-  fingerprint match + 11 pre-submit gates (or explicit AUTO policy approval
-  with all purity gates).
+- Never submits an HH application autonomously: автономный режим — prepare-only с 2.0; до этого отправлял без подтверждения. Отправка требует явного подтверждения человека (`--confirm-submit`).
 - Never sends an HH message in REVIEW mode; AUTO requires kill switch +
   allowlist + composer + unchanged fingerprint + explicit live confirmation.
 - Never sends an email (physically impossible in the current MVP).

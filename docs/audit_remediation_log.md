@@ -208,8 +208,118 @@
   - Зафиксированы в `docs/audit_followup.md`:
     1. `ai_assistant/application_tracking.py:167-168`: при переводе статуса в `APPLIED` вызывается сайд-эффект `complete_review()`, меняющий статус ревью на `COMPLETED`.
     2. `tests/test_stage31_watcher.py:435`: синтетический нечисловой ID `submit-flow-1` заменен на реалистичный числовой HH ID `136591579`, устраняя искусственное расхождение мока с боевым HH.
-    3. `ai_assistant/vacancy_identity.py:27-33`: параметр `from` / `hhtmfrom` не вырезается в `normalize_url`, что создаёт риск дублирования вакансий в БД.
 
 
+---
 
+## Фаза 1.5. Ревизия и консолидация защитных гейтов отправки (HHSubmissionGates)
 
+### Фиксация происхождения класса HHSubmissionGates
+> **ВАЖНОЕ АРХИТЕКТУРНОЕ УТОЧНЕНИЕ:**  
+> Класс `HHSubmissionGates` добавлен в репозиторий в коммите `c38f9e1` (`fix(safety): harden hh submission gates and add comprehensive gate test suite`).  
+> До этого коммита в кодовой базе репозитория его **не существовало** (`git log -S "class HHSubmissionGates"` до `c38f9e1` пуст, `git show 2de52c8:ai_assistant/hh_submission.py` не содержал класса `HHSubmissionGates`).  
+> Раздел 10.3 исходного документа `AUDIT_BRIEF.md` описывал несуществующий в коде класс и **не должен считаться источником истины о реальной модели безопасности**.
+
+---
+
+### Шаг 1. Инвентаризация реальных проверок в боевых путях отправки (Read-only аудит)
+
+Исследованы 3 боевых пути от команды CLI до физического клика по отправке:
+- **Путь A:** `cli submit <id> --confirm-submit` → `submit_application_in_browser` (`ai_assistant/browser_executor.py:2044–2477`).
+- **Путь B:** `cli application runner next --confirm-submit` → `run_application` (`ai_assistant/hh_application_runner.py:161–490`), включая `can_submit`, `audit_questionnaire`, `verify_and_navigate_hh_vacancy`.
+- **Путь C:** `cli autonomous once` → `_process_single_application` (`ai_assistant/hh_autonomous_agent.py:910–995`).
+
+#### Сводная таблица проверок
+
+| Условие / Проверка | Путь A (`submit_application_in_browser`) | Путь B (`run_application`) | Путь C (`autonomous once`) |
+| :--- | :--- | :--- | :--- |
+| **1. `GATE_SUBMIT_ALLOWED`** (kill-switch latch) | **нет** | **нет** | **нет** |
+| **2. `GATE_REVIEW_APPROVED`** (ревью в БД со статусом `APPROVED`) | **есть** (`browser_executor.py:2161–2170`) | **частично** (`hh_application_runner.py:212`, `hh_application_queue.py:100–106, 140–146` — проверяет статус заявки `READY_TO_SUBMIT` в `hh_applications`, но не читает `application_reviews`) | **нет** (полный байпас ревью человека, переход сразу в `READY_FOR_AUTONOMOUS_SUBMIT`) |
+| **3. `GATE_FINGERPRINT_MATCH`** (сверка хэша формы с ревью) | **нет** | **нет** | **нет** |
+| **4. `GATE_URL_DOMAIN`** (строгий хост `hh.ru` / `*.hh.ru`) | **частично** (`browser_executor.py:2241–2242` — вызов `_detect_site(url)` для классификации, без строгой блокировки) | **частично** (`hh_application_runner.py:275, 331`, `hh_vacancy_navigator.py:217` — формирование канонического префикса, но без строгой валидации через `urlparse`) | **частично** (`hh_autonomous_agent.py:945` — хардкод `f"https://hh.ru/vacancy/{vac_id}"`) |
+| **5. `GATE_VACANCY_MATCH`** (числовой ID в URL совпадает с целевым) | **нет** (открывает URL из базы, но не сверяет URL открывшейся вкладки с числовым ID) | **есть** (`hh_application_runner.py:295–328`, `hh_vacancy_navigator.py:225–226, 264, 307–315` — проверка `current_id == target_id`) | **есть** (`hh_autonomous_agent.py:952–960`, `hh_vacancy_navigator.py:225–226, 264, 307–315`) |
+| **6. `GATE_PROFILE_LOADED`** (профиль кандидата загружен) | **есть** (`browser_executor.py:2106–2118`) | **частично** (`hh_questionnaire_audit.py:114` — только если у вакансии есть анкета `qid`; если `qid is None` — не проверяется) | **частично** (`hh_autonomous_agent.py:729` — загружается в конструкторе агента для скоринга, но не проверяется внутри гейта) |
+| **7. `GATE_COVER_LETTER_READY`** (письмо готово и $\ge 10$ симв.) | **частично** (`browser_executor.py:2210–2227` — читает `pkg.cover_letter`, но не валидирует длину) | **нет** | **нет** (есть генератор в файле, но в `_process_single_application` даже не вызывается) |
+| **8. `GATE_NO_UNKNOWN_QUESTIONS`** (скрининг-вопросы разрешены) | **нет** (рассчитывает на предзаполненную сессию `BrowserApplicationSession`) | **частично** (`hh_application_runner.py:232–268`, `hh_questionnaire_audit.py:98–267` — проверяет анкету `qid`, но при исключении проглатывает ошибку `audit_status = PASS` L267) | **нет** (комментарий L962 без логики проверки) |
+| **9. `GATE_NOT_ALREADY_APPLIED`** (белый список статусов + отсутствие откликов) | **частично** (`browser_executor.py:2082–2090, 2182–2191` — вызывает `is_submitted` и проверяет `track.status == READY_TO_APPLY`, но не проверяет `AMBIGUOUS_POST_SUBMIT` / `VERIFIED` в верификациях) | **частично** (`hh_application_queue.py:92–98`, `hh_vacancy_navigator.py:331–338` — проверяет `state != SUBMITTED` в `hh_applications` и баннер в DOM, но не смотрит в `application_submissions`) | **частично** (`hh_autonomous_agent.py:848–863, 902`, `hh_vacancy_navigator.py:331–338` — дедуп ID при дискавери и баннер в DOM, без проверки `application_submissions`) |
+| **10. `GATE_NO_PREVIOUS_SUBMISSION_ATTEMPT`** (нет попытки в сессии и нет `SUBMITTING`) | **частично** (`browser_executor.py:2083` — блокирует по `is_submitted()`, но нет проверки in-memory `_submitted_reviews` и статуса `SUBMITTING`) | **нет** | **нет** |
+| **11. `GATE_HUMAN_CONFIRMED`** (флаг `--confirm-submit`) | **есть** (`cli.py:858–861`, `browser_executor.py:2066–2073`) | **есть** (`hh_application_runner.py:347–367`) | **нет** (в автономном режиме подтверждение человека отсутствует by design) |
+| **Доп. 1: Hard Constraints & Remote Filter** | **есть** (`browser_executor.py:2123–2145`) | **нет** | **частично** (`hh_autonomous_agent.py:756–764` — фильтрация по скорингу матчера) |
+| **Доп. 2: Browser Session State** | **есть** (`browser_executor.py:2150–2158, 2172–2179` — статус `READY_FOR_REVIEW`, не `BLOCKED`) | **нет** | **нет** |
+| **Доп. 3: Queue Item Exists** | **есть** (`browser_executor.py:2194–2207`) | **нет** | **нет** |
+| **Доп. 4: Application Package Exists** | **есть** (`browser_executor.py:2210–2227`) | **нет** | **нет** |
+| **Доп. 5: Ошибки страницы (404, CAPTCHA, Cloudflare, Access Denied)** | **есть** (`browser_executor.py:2271–2291, 2320–2328, 2358–2388`) | **нет** (напрямую не проверяет) | **нет** (напрямую не проверяет) |
+| **Доп. 6: Проверка авторизации (Login State)** | **есть** (`browser_executor.py:2294–2316`) | **нет** | **нет** |
+| **Доп. 7: Наличие кнопки отправки в DOM** | **есть** (`browser_executor.py:2331–2355`) | **есть** (`hh_application_runner.py:402–409`) | **есть** (`hh_autonomous_agent.py:968–975`) |
+| **Доп. 8: Совпадение заголовка вакансии (Title Match)** | **нет** | **есть** (`hh_vacancy_navigator.py:318–329`) | **есть** (`hh_vacancy_navigator.py:318–329`) |
+| **Доп. 9: Баннер на странице «Вы уже откликались» (Live DOM)** | **нет** | **есть** (`hh_vacancy_navigator.py:331–338`) | **есть** (`hh_vacancy_navigator.py:331–338`) |
+| **Доп. 10: Предварительный аудит анкеты (Questionnaire Audit)** | **нет** | **есть** (`hh_application_runner.py:251`, `hh_questionnaire_audit.py:98–267`) | **нет** |
+| **Доп. 11: Пост-проверка после клика (Post-Submit Verification)** | **есть** (вызывается отдельно через `verify_submission_in_browser`) | **есть** (`hh_application_runner.py:431–470`) | **есть** (`hh_autonomous_agent.py:987–1000`) |
+
+---
+
+#### Ответы на 4 обязательных вопроса аудита:
+
+1. **Какой из путей проверяет, что по вакансии нет записи в `application_submissions` со статусом `AMBIGUOUS_POST_SUBMIT` / `SUBMITTED` / `VERIFIED`?**
+   - **Путь A:** Вызывает `is_submitted(vacancy_stable_id)` (`browser_executor.py:2083`), которая проверяет `get_submission(vacancy_stable_id) is not None` (`db.py:967`). Это проверяет факт наличия **любой** записи в `application_submissions` (включая `FAILED` и `BLOCKED`), но **НЕ** фильтрует по статусам `AMBIGUOUS_POST_SUBMIT` или `SUBMITTED`, и **НЕ** проверяет таблицу `submission_verifications` (где хранится статус `VERIFIED`).
+   - **Путь B:** **Не проверяет** таблицу `application_submissions`. Проверяет только `current_state == SUBMITTED` в таблице `hh_applications` (`hh_application_queue.py:92`).
+   - **Путь C:** **Не проверяет** таблицу `application_submissions`. Проверяет только наличие идентификатора в списках `db.list_vacancies()` и `db.list_hh_applications()`.
+   - *Итог:* Точную проверку указанных статусов в `application_submissions` не производит **ни один** из путей.
+
+2. **Какой из путей сверяет fingerprint формы с одобренным ревью? Откуда берётся fingerprint в этих путях?**
+   - **Путь A:** **Не сверяет**.
+   - **Путь B:** **Не сверяет**.
+   - **Путь C:** **Не сверяет**.
+   - *Откуда берётся fingerprint в кодовой базе:*
+     1. В модуле `application_review_gate.py:88–89` функция `_fingerprint(payload)` вычисляет sha256 от `{"vacancy", "cover_letter", "answers"}` модели `HumanReviewGate` (используется только в `auto_apply_modes.py` и юнит-тестах Stage 20i/j/k).
+     2. В `hh_submission.py:238` подставлялась искусственная строка в заглушку `form_snapshot={"fingerprint": fingerprint, "cover_letter": "A" * 20}`.
+     3. В `db.py` хранится `message_fingerprint` (для сообщений чата HeadHunter).
+     В реальных веб-формах DOM HeadHunter в путях A, B, C вычисление и сверка `form_fingerprint` на данный момент **не реализованы**.
+
+3. **Что сегодня мешает пути C (autonomous) подать отклик без участия человека? Если это конфиг AutonomousConfig — покажи поле и дефолт. Если ничего — так и напиши.**
+   - Поля конфигурации `AutonomousConfig` (`hh_autonomous_agent.py:96–108`):
+     ```python
+     class AutonomousConfig(BaseModel):
+         cdp_url: str = "http://127.0.0.1:9222"
+         search_queries: List[str] = Field(default_factory=lambda: list(DEFAULT_SEARCH_QUERIES))
+         poll_interval_seconds: int = 60
+         max_applications_per_cycle: int = 5
+         max_auto_replies_per_cycle: int = 3
+         remote_required: bool = True
+         min_match_score: float = 70.0
+         auto_start_browser: bool = True
+         evaluate_fn: Optional[Any] = None
+     ```
+   - **Ответ: В логике приложения подаче отклика не мешает НИЧЕГО.**
+     В `AutonomousConfig` отсутствуют флаги подтверждения человеком, `dry_run` или ссылки на `SUBMIT_ALLOWED`. В коде `_process_single_application` (строки 967–976) после навигации на страницу вакансии скрипт выполняет прямой JS-клик по кнопке отклика (`submitBtn.click()`), если Chrome CDP (`127.0.0.1:9222`) доступен.
+
+4. **Записывают ли fingerprint в ревью потоки одобрения: `POST /api/review/{id}` в `ui/app.py`, кнопка 📄 в `telegram_feedback.py`, `cli review approve`?**
+   - **`POST /api/review/{vacancy_stable_id}` в `ui/app.py`:** **НЕТ** (строки 305–369; создает `ApplicationReview` без поля `form_fingerprint` и вызывает `approve_review(..., force=True)`).
+   - **Кнопка 📄 (`PREPARE_APPLICATION`) в `telegram_feedback.py`:** **НЕТ** (строки 408–419; инстанциирует `ApplicationReview` только с базовыми метаданными вакансии, без `form_fingerprint`).
+   - **`cli review approve` в `cli.py`:** **НЕТ** (строки 830–837; вызывает `approve_review()`, которая только переключает статус `rev.status = ReviewStatus.APPROVED` в `application_reviews`).
+   - *Критическое следствие:* Если подключить гейт `GATE_FINGERPRINT_MATCH` к этим путям прямо сейчас, он будет **блокировать 100% вакансий**, поскольку ни один интерфейс согласования человеком пока не заполняет `form_fingerprint` в `ApplicationReview`.
+
+---
+
+### Шаг 2.0. Аварийная остановка автономного режима (prepare-only)
+- **Устранение критической уязвимости в Пути C:**
+  - В `ai_assistant/hh_autonomous_agent.py` полностью удален код отправки отклика (`submitBtn.click()`, строки 967–976 и блок ожидания/пост-верификации отправки).
+  - Автономный режим переведен в строгий режим `prepare-only`:
+    1. Генерирует сопроводительное письмо на основе профиля кандидата и сохраняет пакет отклика в `application_packages`.
+    2. Создает `ApplicationReview` со статусом `ReviewStatus.PENDING_REVIEW`.
+    3. Переводит трекинг вакансии в `ApplicationStatus.READY_TO_APPLY`.
+    4. Ставит вакансию в очередь `application_queue` (`QueueItem`).
+    5. Переводит состояние заявки в `HHApplicationState.NEEDS_HUMAN_REVIEW`.
+    6. Отправляет уведомление владельцу в Telegram с кнопками быстрого решения (👍, 👎, 📄 Отклик, ⏭ Пропустить) через `TelegramNotifier.build_digest_inline_keyboard`.
+  - В `AutonomousConfig` добавлено защитное поле `submit_enabled: bool = False`.
+  - В методах `run_cycle` и `_process_single_application` добавлен fail-closed предохранитель:
+    ```python
+    if self.config.submit_enabled:
+        raise NotImplementedError(
+            "Autonomous submission is disabled by design; use 'application runner next --confirm-submit' after human approval"
+        )
+    ```
+- **Тесты и документация:**
+  - Обновлены тесты автономного агента (`test_stage51_autonomous_agent.py`, `test_stage52_real_autonomous_agent.py`, `test_stage54_live_autonomous_run.py`, `test_stage55_selection_limits_routing.py`): подтверждено, что при наличии кнопки отклика на странице клик НЕ выполняется, отклики автономно НЕ отправляются (`applied_count == 0`), создается ревью `PENDING_REVIEW`, трекинг `READY_TO_APPLY`, а попытка выставить `submit_enabled=True` приводит к `NotImplementedError`.
+  - Обновлены `README.md` и `PROJECT_STATE.md`: удалены вводящие в заблуждение формулировки об изоляции AUTO kill-switch'ами, явно зафиксировано: «автономный режим — prepare-only с 2.0; до этого отправлял без подтверждения».
+- **Коммит:** `fix(safety): autonomous mode is prepare-only, never submits`

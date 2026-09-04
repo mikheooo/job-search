@@ -180,12 +180,12 @@ def test_autonomous_apply_and_post_submit_verification(clean_db):
     res = run_autonomous_cycle(config=AutonomousConfig(evaluate_fn=mock_cdp, max_applications_per_cycle=1))
 
     assert res.status == "SUCCESS"
-    assert res.applied_count == 1
-    assert res.verified_count == 1
+    assert res.applied_count == 0
+    assert res.verified_count == 0
 
     app = db.get_hh_application(app_id)
     assert app is not None
-    assert app["state"] == "SUBMITTED"
+    assert app["state"] == "NEEDS_HUMAN_REVIEW"
 
 
 # ---------------------------------------------------------------------------

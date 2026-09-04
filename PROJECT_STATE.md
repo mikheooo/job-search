@@ -223,11 +223,12 @@ Recruiter message handling follows strict truth-only and fail-closed rules:
 - **Idempotent Telegram Deliveries:** `record_digest_attempt` and unique delivery keys prevent double-posting.
 - **Database Immutability in Testing:** Pytest runs operate against isolated temporary fixtures and must not mutate production `state.db`.
 
+- **Autonomous Mode Status:** Автономный режим — prepare-only с 2.0; до этого отправлял без подтверждения. Прямая отправка заблокирована на уровне кода (`submit_enabled: bool = False`, попытка включения выбрасывает `NotImplementedError`), задачи переводятся в `PENDING_REVIEW` и `READY_TO_APPLY` для одобрения человеком.
 - **Fit vs Preference Separation:** Matcher evaluates factual candidate qualification (`match_score`, `decision_class`, `eligibility`). Preference calibration applies a separate, bounded `preference_adjustment` (default max $\pm 8.0$ points) to compute `ranking_score` without altering factual eligibility, resume skills, or turning `REJECT` into `MATCH`.
 - **Factual Profile Immutability:** User feedback on job titles or technologies (e.g. liking Kubernetes roles) never mutates `candidate_profile.json` or promotes skill confidence from `UNKNOWN` to `PROFESSIONAL`.
 - **Minimum Evidence Threshold & Ambiguity:** Single feedback events are recorded as `RECORD_ONLY` with 0 ranking adjustment. Contradictory feedback produces `AMBIGUOUS_PREFERENCE` and suppresses confidence to 0.
 
-- **HH Submission Safety Gates (11 Strict Multi-Layer Gates in `HHSubmissionGates`):**
+- **HH Submission Safety Gates (11 Strict Multi-Layer Gates — реализованы в `HHSubmissionGates`; подключение к боевым путям — в процессе, см. `docs/audit_remediation_log.md`):**
   1. `GATE_SUBMIT_ALLOWED`: Environment / config kill-switch `SUBMIT_ALLOWED` must be explicitly enabled (`true`/`1`/`yes`) unless in dry_run mode.
   2. `GATE_REVIEW_APPROVED`: Vacancy review in DB must exist and have status `ReviewStatus.APPROVED`.
   3. `GATE_FINGERPRINT_MATCH`: Form fingerprint from live browser DOM snapshot must match approved review fingerprint.

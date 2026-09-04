@@ -114,18 +114,18 @@ def test_stage55_discovery_vs_submit_limits_and_ranking(clean_db):
     assert result.status == "SUCCESS"
     assert result.discovered_count == 3
     assert result.matched_count == 3
-    # Only top 2 are applied due to protective cap
-    assert result.applied_count == 2
-    assert result.verified_count == 2
+    # Only top 2 are prepared due to protective cap
+    assert result.applied_count == 0
+    assert result.verified_count == 0
 
-    # Check that highest score vacancies (vac2 = Tech Giant AI, vac3 = Fintech Pro) were submitted
+    # Check that highest score vacancies (vac2 = Tech Giant AI, vac3 = Fintech Pro) were prepared for review
     app2 = db.get_hh_application("app_hh_139999012")
     app3 = db.get_hh_application("app_hh_139999013")
     app1 = db.get_hh_application("app_hh_139999011")
 
-    assert app2 is not None and app2["state"] == "SUBMITTED"
-    assert app3 is not None and app3["state"] == "SUBMITTED"
-    # vac1 was not submitted because it was ranked 3rd and cap was 2
+    assert app2 is not None and app2["state"] == "NEEDS_HUMAN_REVIEW"
+    assert app3 is not None and app3["state"] == "NEEDS_HUMAN_REVIEW"
+    # vac1 was not processed because it was ranked 3rd and cap was 2
     assert app1 is None
 
 
