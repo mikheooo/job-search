@@ -449,6 +449,55 @@ def run_application(
     # Step 5: Execute Exactly ONE Submit with confirmation
     real_submit_count = 0
     if qid:
+        # Acquire exclusive submission claim for questionnaire submit
+        acquired, claim_reason, claim_info = db.acquire_submission_claim(
+            vacancy_stable_id=vac_stable_id or f"hh:{vac_id}",
+            application_id=app_id,
+            worker_id="runner_questionnaire_executor",
+        )
+        if not acquired:
+            return RunnerExecutionResult(
+                application_id=app_id,
+                vacancy_id=vac_id,
+                vacancy_title=vac_title,
+                company=company,
+                queue_ready_count=queue_ready_count,
+                queue_review_count=queue_review_count,
+                queue_submitted_count=queue_submitted_count,
+                selected_application=selected_app_label,
+                pre_submit_audit=audit_status,
+                navigation=nav_status,
+                questionnaire=quest_status,
+                submit_confirmation=bool(confirm_submit or auto_mode),
+                real_hh_submit=0,
+                final_application_state=current_state,
+                reason=f"Submission claim rejected: {claim_reason}",
+            )
+
+        if db.is_submit_paused():
+            db.update_submission_claim(
+                vac_stable_id or f"hh:{vac_id}",
+                status="FAILED_SAFE",
+                details={"reason": "kill_switch_activated_before_questionnaire_click"},
+            )
+            return RunnerExecutionResult(
+                application_id=app_id,
+                vacancy_id=vac_id,
+                vacancy_title=vac_title,
+                company=company,
+                queue_ready_count=queue_ready_count,
+                queue_review_count=queue_review_count,
+                queue_submitted_count=queue_submitted_count,
+                selected_application=selected_app_label,
+                pre_submit_audit=audit_status,
+                navigation=nav_status,
+                questionnaire=quest_status,
+                submit_confirmation=False,
+                real_hh_submit=0,
+                final_application_state=current_state,
+                reason="Submission blocked by kill switch immediately before click",
+            )
+
         quest_data = db.get_hh_questionnaire(qid) or {}
         human_answers = quest_data.get("answers") or app.get("answers") or {}
         q_res = submit_questionnaire_response(
@@ -459,6 +508,11 @@ def run_application(
         )
         is_submitted = q_res.verdict in ("SUBMITTED", "ALREADY_SUBMITTED") or q_res.submit_count > 0
         if not is_submitted:
+            db.update_submission_claim(
+                vac_stable_id or f"hh:{vac_id}",
+                status="FAILED_SAFE",
+                details={"reason": q_res.reason},
+            )
             return RunnerExecutionResult(
                 application_id=app_id,
                 vacancy_id=vac_id,
@@ -551,6 +605,11 @@ def run_application(
             if not pkg_fp:
                 pkg_fp = f"runner_fp_{app_id}"
 
+        db.update_submission_claim(
+            vac_stable_id or f"hh:{vac_id}",
+            status="SUBMITTED",
+            details={"verified": True, "evidence_text": post_res.evidence_text},
+        )
         transition_application(
             application_id=app_id,
             to_state=HHApplicationState.SUBMITTED,
@@ -572,7 +631,7 @@ def run_application(
         final_state = HHApplicationState.SUBMITTED.value
         msg = "Application submitted and verified on HeadHunter."
 
-        # Dispatch Telegram notification for submitted application
+        # Dispatch Telegram notification for submitted application (observability only, failures never rollback)
         try:
             from .telegram_notifier import send_post_submit_notification
             pkg_data = {}
@@ -591,24 +650,29 @@ def run_application(
                 vacancy_url=v_url,
             )
         except Exception as te:
-            logger.debug(f"Failed to dispatch post-submit telegram notification: {te}")
+            logger.warning(f"Failed to dispatch post-submit telegram notification (submission unchanged): {te}")
     else:
+        db.update_submission_claim(
+            vac_stable_id or f"hh:{vac_id}",
+            status="AMBIGUOUS",
+            details={"error": post_res.reason, "point": "post_submit_verification_ambiguous"},
+        )
         transition_application(
             application_id=app_id,
-            to_state=HHApplicationState.BLOCKED,
-            reason="post_submit_verification_failed",
+            to_state=HHApplicationState.AMBIGUOUS,
+            reason="post_submit_verification_ambiguous",
             evidence={
                 "submit_executed": True,
-                "post_submit_verification": "failed",
+                "post_submit_verification": "ambiguous",
                 "hh_status": post_res.hh_status,
                 "evidence_text": post_res.evidence_text,
                 "vacancy_url": post_res.vacancy_url,
                 "verified_at": post_res.timestamp,
-                "error": f"Submit executed but verification failed: {post_res.reason}",
+                "error": f"Submit executed but verification ambiguous: {post_res.reason}",
             },
         )
-        final_state = HHApplicationState.BLOCKED.value
-        msg = f"Submit executed but post-submit verification failed: {post_res.reason}"
+        final_state = HHApplicationState.AMBIGUOUS.value
+        msg = f"Submit executed but post-submit verification ambiguous: {post_res.reason}"
 
     return RunnerExecutionResult(
         application_id=app_id,

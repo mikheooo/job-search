@@ -728,10 +728,23 @@ class HHSubmissionGates:
             os.getenv("SUBMIT_ALLOWED", "").strip().lower() in ("1", "true", "yes")
             or bool(getattr(config, "SUBMIT_ALLOWED", False))
         )
-        g1_pass = submit_allowed or dry_run
+        is_paused = False
+        try:
+            from . import db
+            is_paused = db.is_submit_paused()
+        except Exception:
+            pass
+
+        if is_paused:
+            g1_pass = False
+            g1_reason = "Submission paused by kill switch (system_settings.submit_paused=1)"
+        else:
+            g1_pass = submit_allowed or dry_run
+            g1_reason = "SUBMIT_ALLOWED enabled" if submit_allowed else ("Bypassed (dry-run mode)" if dry_run else "Submission is disabled by SUBMIT_ALLOWED configuration")
+
         gate_results[GateName.GATE_SUBMIT_ALLOWED.value] = {
             "passed": g1_pass,
-            "reason": "SUBMIT_ALLOWED enabled" if submit_allowed else ("Bypassed (dry-run mode)" if dry_run else "Submission is disabled by SUBMIT_ALLOWED configuration"),
+            "reason": g1_reason,
         }
 
         # Gate 2: GATE_REVIEW_APPROVED
@@ -919,6 +932,7 @@ def execute_hh_submission(
             out-of-order state mutations.
     """
     import uuid
+    from . import db
     from .db import (
         init_db,
         get_application_package,
@@ -932,6 +946,9 @@ def execute_hh_submission(
     from .application_tracking import set_application_status, ApplicationStatus
 
     init_db()
+    if approval is None and human_confirmed:
+        from .hh_application_orchestrator import SubmitApproval
+        approval = SubmitApproval(source="human", policy_version="legacy_confirm")
     sub_id = submission_id or f"{vacancy_stable_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
     if evaluate_fn is None:
@@ -1027,7 +1044,53 @@ def execute_hh_submission(
             submission_id=sub_id,
         )
 
-    # 5. Execute real submit click
+    # 5. Acquire exclusive submission claim
+    hh_app = get_hh_application(vacancy_stable_id) or get_hh_application_by_vacancy(vacancy_stable_id)
+    target_app_id = hh_app.get("application_id") if hh_app else vacancy_stable_id
+    acquired, claim_reason, claim_info = db.acquire_submission_claim(
+        vacancy_stable_id=vacancy_stable_id,
+        application_id=target_app_id,
+        worker_id="execute_hh_submission",
+        claim_id=sub_id,
+    )
+    if not acquired:
+        is_paused = "PAUSED" in claim_reason
+        return SubmissionExecutionResult(
+            ok=False,
+            status="BLOCKED" if is_paused else ("AMBIGUOUS" if "AMBIGUOUS" in claim_reason else "ALREADY_SUBMITTED"),
+            reason=f"Submission claim could not be acquired: {claim_reason}",
+            vacancy_stable_id=vacancy_stable_id,
+            submit_count=0,
+            gate_check_result=gate_result,
+            live_page_result=live_result,
+            submission_id=sub_id,
+        )
+
+    # 5.1 Final pre-click check: kill switch check immediately before irreversible browser action
+    if db.is_submit_paused():
+        db.update_submission_claim(
+            vacancy_stable_id,
+            status="FAILED_SAFE",
+            claim_id=sub_id,
+            details={"reason": "kill_switch_activated_before_click"},
+        )
+        save_submission(
+            vacancy_stable_id,
+            json.dumps({"error": "Submission paused by kill switch before click", "submission_id": sub_id}),
+            status="BLOCKED",
+            submission_id=sub_id,
+        )
+        return SubmissionExecutionResult(
+            ok=False,
+            status="BLOCKED",
+            reason="Submission blocked by kill switch immediately before click",
+            vacancy_stable_id=vacancy_stable_id,
+            submit_count=0,
+            gate_check_result=gate_result,
+            live_page_result=live_result,
+            submission_id=sub_id,
+        )
+
     save_submission(
         vacancy_stable_id,
         json.dumps({"status": "SUBMITTING", "submission_id": sub_id}),
@@ -1048,21 +1111,78 @@ def execute_hh_submission(
         raw_click = evaluate_fn(submit_click_js)
         click_res = json.loads(raw_click) if isinstance(raw_click, str) else raw_click
     except Exception as e:
-        click_res = {"ok": False, "reason": str(e)}
-
-    if not click_res.get("ok"):
+        logger.error("Evaluate exception during submit click for %s: %s", vacancy_stable_id, e)
+        # AMBIGUOUS OUTCOME SAFETY: The browser may have executed the click before connection drop or timeout.
+        # DO NOT AUTO-RETRY! Transition attempt and claim to AMBIGUOUS.
+        db.update_submission_claim(
+            vacancy_stable_id,
+            status="AMBIGUOUS",
+            claim_id=sub_id,
+            details={"error": str(e), "point": "evaluate_click_exception"},
+        )
         save_submission(
             vacancy_stable_id,
-            json.dumps({"error": click_res.get("reason"), "submission_id": sub_id}),
-            status="FAILED",
+            json.dumps({"error": str(e), "submission_id": sub_id, "status": "AMBIGUOUS"}),
+            status="AMBIGUOUS",
+            submission_id=sub_id,
+        )
+        from .submission_verifier import save_verification, SubmissionVerification, VerificationStatus
+        verif = SubmissionVerification(
+            vacancy_stable_id=vacancy_stable_id,
+            submission_id=sub_id,
+            verification_status=VerificationStatus.AMBIGUOUS,
+            evidence={"error": str(e)},
+            verified_at=datetime.utcnow().isoformat(),
+        )
+        try:
+            save_verification(verif)
+        except Exception:
+            pass
+        if sync_hh_application and hh_app and hh_app.get("application_id"):
+            try:
+                from .hh_application_orchestrator import transition_application, HHApplicationState
+                transition_application(
+                    application_id=hh_app["application_id"],
+                    to_state=HHApplicationState.AMBIGUOUS,
+                    reason=f"submit_click_exception_ambiguous: {e}",
+                    evidence={"exception": str(e), "submit_executed": "unknown"},
+                )
+            except Exception:
+                pass
+        return SubmissionExecutionResult(
+            ok=False,
+            status="AMBIGUOUS",
+            reason=f"Submit click encountered exception (ambiguous outcome, auto-retry forbidden): {e}",
+            vacancy_stable_id=vacancy_stable_id,
+            submit_count=1,
+            gate_check_result=gate_result,
+            live_page_result=live_result,
+            verification_status="AMBIGUOUS",
+            submission_id=sub_id,
+        )
+
+    if not click_res.get("ok"):
+        reason_str = click_res.get("reason", "unknown")
+        is_pre_click = "not found in DOM" in reason_str or "disabled" in reason_str
+        new_status = "FAILED_SAFE" if is_pre_click else "AMBIGUOUS"
+        db.update_submission_claim(
+            vacancy_stable_id,
+            status=new_status,
+            claim_id=sub_id,
+            details={"error": reason_str, "is_pre_click": is_pre_click},
+        )
+        save_submission(
+            vacancy_stable_id,
+            json.dumps({"error": reason_str, "submission_id": sub_id, "status": new_status}),
+            status=new_status,
             submission_id=sub_id,
         )
         return SubmissionExecutionResult(
             ok=False,
-            status="FAILED",
-            reason=f"Submit click failed: {click_res.get('reason')}",
+            status=new_status,
+            reason=f"Submit click failed: {reason_str}",
             vacancy_stable_id=vacancy_stable_id,
-            submit_count=1,
+            submit_count=0 if is_pre_click else 1,
             gate_check_result=gate_result,
             live_page_result=live_result,
             submission_id=sub_id,
@@ -1103,6 +1223,12 @@ def execute_hh_submission(
         "verified": verified,
         "url_after": url_after,
     }
+    db.update_submission_claim(
+        vacancy_stable_id,
+        status=final_status,
+        claim_id=sub_id,
+        details={"verified": verified, "url_after": url_after},
+    )
     save_submission(
         vacancy_stable_id,
         json.dumps(sub_payload),
@@ -1146,12 +1272,20 @@ def execute_hh_submission(
                         "post_submit_verification": "verified",
                         "url_after": url_after,
                     },
-                    confirm_submit=True,
+                    approval=approval,
                 )
-            else:
-                app_dict = dict(app)
-                app_dict["state"] = "SUBMITTED" if verified else "AMBIGUOUS_POST_SUBMIT"
-                save_hh_application(app_dict)
+            elif app_id:
+                from .hh_application_orchestrator import transition_application, HHApplicationState
+                transition_application(
+                    application_id=app_id,
+                    to_state=HHApplicationState.AMBIGUOUS,
+                    reason="post_submit_verification_ambiguous",
+                    evidence={
+                        "submit_executed": True,
+                        "post_submit_verification": "ambiguous",
+                        "url_after": url_after,
+                    },
+                )
 
     if review and getattr(review, "review_id", None):
         _submitted_reviews.add(str(review.review_id))
