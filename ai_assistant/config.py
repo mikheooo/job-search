@@ -60,6 +60,7 @@ except Exception:
 
 LOGS_DIR = os.getenv("LOGS_DIR") or os.path.join(PROJECT_ROOT, "logs", "job_search")
 SUBMIT_ALLOWED = os.getenv("SUBMIT_ALLOWED", "false").strip().lower() in ("1", "true", "yes")
+DASHBOARD_TOKEN = os.getenv("DASHBOARD_TOKEN", "").strip()
 
 
 

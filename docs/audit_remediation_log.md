@@ -131,6 +131,34 @@
   - `pytest tests/test_hh_submission_gates.py` -> 11 passed (100%).
   - `pytest tests/test_stage20i_submission.py` -> 20 passed (100%).
   - `pytest tests/test_submission_recovery.py tests/test_submission_verifier.py` -> 60 passed (100%).
+- Коммит: `fix(safety): harden hh submission gates and add comprehensive gate test suite` (`c38f9e1`).
+
+### 1.6. Сетевой периметр Web UI и авторизация
+- **Сетевой периметр:**
+  - Проверено и зафиксировано: в `ai_assistant/cli.py` (`ui_cmd` и парсер аргументов `ui`) дефолтный хост установлен в безопасный локальный адрес `127.0.0.1` (порт 8000), доступна перегрузка через флаг `--host`.
+- **Авторизация мутирующих эндпоинтов:**
+  - `ai_assistant/config.py`: добавлена конфигурационная переменная `DASHBOARD_TOKEN = os.getenv("DASHBOARD_TOKEN", "").strip()`.
+  - `ai_assistant/ui/app.py`: добавлено middleware `require_dashboard_token_on_mutation`:
+    - Перехватывает все мутирующие HTTP-методы (`POST`, `PUT`, `PATCH`, `DELETE`).
+    - Если `DASHBOARD_TOKEN` не задан в окружении / конфигурации -> возвращает `503 Service Unavailable` с телом `{"detail": "DASHBOARD_TOKEN not configured"}`.
+    - Если `DASHBOARD_TOKEN` задан: извлекает токен из заголовка `Authorization: Bearer <token>` либо `X-API-Key: <token>`.
+    - Сравнение токена выполняется через `secrets.compare_digest` для защиты от атак по времени (timing attacks). При неверном или отсутствующем токене возвращает `401 Unauthorized` с телом `{"detail": "Unauthorized: invalid or missing dashboard token"}`.
+    - Все read-only эндпоинты (`GET /api/stats`, `GET /api/vacancies`, `GET /api/queue`, `GET /api/package/{id}`, `GET /`) работают свободно без авторизации.
+  - `ai_assistant/ui/static/index.html`:
+    - В верхний заголовок добавлен компактный инпут для токена (`🔑 DASHBOARD_TOKEN`).
+    - Токен автоматически сохраняется в `localStorage.dashboard_token` и восстанавливается при загрузке страницы.
+    - Функция `getAuthHeaders()` автоматически проставляет заголовок `Authorization: Bearer <token>` во все мутирующие запросы (`/api/review/...`, `/api/collect`).
+    - Реализована понятная обработка ответов 401 и 503 с информативными подсказками пользователю.
+- **Тесты (`tests/test_ui.py`):**
+  - `test_ui_get_endpoints_accessible_without_token`: GET-эндпоинты открыты без авторизации даже при заданном `DASHBOARD_TOKEN`;
+  - `test_ui_mutating_endpoints_without_dashboard_token_returns_503`: мутирующие вызовы без настроенного токена отдают 503;
+  - `test_ui_mutating_endpoints_with_dashboard_token_missing_auth_returns_401`: мутирующие вызовы без заголовка авторизации отдают 401;
+  - `test_ui_mutating_endpoints_with_wrong_token_returns_401`: неверный токен (как Bearer, так и X-API-Key) отдает 401;
+  - `test_ui_mutating_endpoints_with_valid_token_succeeds`: валидный токен успешно проходит авторизацию;
+  - `test_ui_default_host_is_localhost`: дефолтный хост при запуске — `127.0.0.1`.
+- **Проверки:**
+  - `pytest tests/test_ui.py` -> 14 passed (100%).
+  - `ruff check tests/test_ui.py` -> All checks passed (0 errors).
 
 
 

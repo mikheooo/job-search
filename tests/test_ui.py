@@ -1,15 +1,13 @@
-import tempfile
 import os
 import shutil
-import pytest
+import tempfile
 
+import pytest
 from fastapi.testclient import TestClient
 
-from ai_assistant.ui.app import app
+from ai_assistant import config, db
 from ai_assistant.schema import Vacancy
-from ai_assistant import cli
-from ai_assistant import db
-import ai_assistant.config as config
+from ai_assistant.ui.app import app
 
 
 @pytest.fixture(autouse=True)
@@ -55,9 +53,14 @@ def test_ui_queue_endpoint():
     assert isinstance(response.json(), list)
 
 
-def test_ui_review_validation():
+def test_ui_review_validation(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_TOKEN", "test-token-val")
     # Invalid action should return 400
-    response = client.post("/api/review/nonexistent_123", json={"action": "invalid_action"})
+    response = client.post(
+        "/api/review/nonexistent_123",
+        json={"action": "invalid_action"},
+        headers={"Authorization": "Bearer test-token-val"},
+    )
     assert response.status_code == 400
 
 
@@ -151,4 +154,108 @@ def test_ui_package_detail_with_mocked_sqlite_tuple(monkeypatch):
     assert data["deep_analysis"]["cons"] == []
     assert data["deep_analysis"]["summary"] == "Perfect technical fit"
 
+
+def test_ui_get_endpoints_accessible_without_token(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_TOKEN", "production-token-123")
+    endpoints = ["/api/stats", "/api/vacancies?limit=5", "/api/queue", "/"]
+    for ep in endpoints:
+        resp = client.get(ep)
+        assert resp.status_code == 200, f"GET {ep} failed with {resp.status_code}"
+
+
+def test_ui_mutating_endpoints_without_dashboard_token_returns_503(monkeypatch):
+    monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.setattr(config, "DASHBOARD_TOKEN", "")
+
+    # POST to review
+    r1 = client.post("/api/review/nonexistent_123", json={"action": "approve"})
+    assert r1.status_code == 503
+    assert r1.json()["detail"] == "DASHBOARD_TOKEN not configured"
+
+    # POST to move
+    r2 = client.post("/api/applications/move", json={"vacancy_stable_id": "v1", "new_status": "APPLIED"})
+    assert r2.status_code == 503
+    assert r2.json()["detail"] == "DASHBOARD_TOKEN not configured"
+
+    # POST to collect
+    r3 = client.post("/api/collect", json={})
+    assert r3.status_code == 503
+    assert r3.json()["detail"] == "DASHBOARD_TOKEN not configured"
+
+
+def test_ui_mutating_endpoints_with_dashboard_token_missing_auth_returns_401(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_TOKEN", "secure-dash-token")
+
+    r1 = client.post("/api/review/nonexistent_123", json={"action": "approve"})
+    assert r1.status_code == 401
+    assert "Unauthorized" in r1.json()["detail"]
+
+    r2 = client.post("/api/collect", json={})
+    assert r2.status_code == 401
+    assert "Unauthorized" in r2.json()["detail"]
+
+
+def test_ui_mutating_endpoints_with_wrong_token_returns_401(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_TOKEN", "secure-dash-token")
+
+    # Wrong Bearer token
+    r1 = client.post(
+        "/api/review/nonexistent_123",
+        json={"action": "approve"},
+        headers={"Authorization": "Bearer wrong-token"},
+    )
+    assert r1.status_code == 401
+    assert "Unauthorized" in r1.json()["detail"]
+
+    # Wrong X-API-Key
+    r2 = client.post(
+        "/api/collect",
+        json={},
+        headers={"X-API-Key": "wrong-token"},
+    )
+    assert r2.status_code == 401
+    assert "Unauthorized" in r2.json()["detail"]
+
+
+def test_ui_mutating_endpoints_with_valid_token_succeeds(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_TOKEN", "secure-dash-token")
+
+    # Bearer token passes auth (action invalid -> 400, not 401/503)
+    r1 = client.post(
+        "/api/review/nonexistent_123",
+        json={"action": "invalid_action"},
+        headers={"Authorization": "Bearer secure-dash-token"},
+    )
+    assert r1.status_code == 400
+    assert "Invalid action" in r1.json()["detail"]
+
+    # X-API-Key passes auth (action invalid -> 400, not 401/503)
+    r2 = client.post(
+        "/api/review/nonexistent_123",
+        json={"action": "invalid_action"},
+        headers={"X-API-Key": "secure-dash-token"},
+    )
+    assert r2.status_code == 400
+    assert "Invalid action" in r2.json()["detail"]
+
+
+def test_ui_default_host_is_localhost():
+    import inspect
+
+    from ai_assistant.cli import ui_cmd
+
+    # Check function default
+    sig = inspect.signature(ui_cmd)
+    assert sig.parameters["host"].default == "127.0.0.1"
+
+    # Check CLI parser argument default
+    import argparse
+    # Parse --help or simulate parser
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    ui_parser = subparsers.add_parser("ui")
+    ui_parser.add_argument("--host", default="127.0.0.1")
+    ui_parser.add_argument("--port", type=int, default=8000)
+    parsed = parser.parse_args(["ui"])
+    assert parsed.host == "127.0.0.1"
 

@@ -47,6 +47,10 @@
 
     <!-- Actions -->
     <div class="flex items-center gap-3">
+      <div class="flex items-center gap-2 bg-slate-800/90 px-3 py-1.5 rounded-lg border border-slate-700">
+        <span class="text-xs text-slate-400" title="DASHBOARD_TOKEN">🔑</span>
+        <input type="password" id="dashboard-token-input" placeholder="DASHBOARD_TOKEN" class="bg-transparent text-xs text-slate-200 placeholder-slate-500 focus:outline-none w-36" onchange="saveDashboardToken(this.value)" />
+      </div>
       <button onclick="triggerCollect()" id="collect-btn" class="px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-slate-950 font-semibold text-sm transition flex items-center gap-2 shadow-md shadow-brand-600/30">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
         Собрать вакансии
@@ -231,6 +235,30 @@
   <!-- JAVASCRIPT LOGIC -->
   <script>
     let currentVacancyId = null;
+
+    function getDashboardToken() {
+      return localStorage.getItem('dashboard_token') || '';
+    }
+
+    function saveDashboardToken(token) {
+      localStorage.setItem('dashboard_token', (token || '').trim());
+    }
+
+    function getAuthHeaders(extraHeaders = {}) {
+      const token = getDashboardToken();
+      const headers = { ...extraHeaders };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      return headers;
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      const input = document.getElementById('dashboard-token-input');
+      if (input) {
+        input.value = getDashboardToken();
+      }
+    });
 
     async function loadAllData() {
       await Promise.all([loadStats(), loadVacancies(), loadQueue()]);
@@ -450,12 +478,18 @@
       try {
         const res = await fetch(`/api/review/${currentVacancyId}`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ action })
         });
         const d = await res.json().catch(() => ({ detail: 'Ошибка ответа сервера' }));
         if (!res.ok) {
-          alert('Внимание: ' + (d.detail || d.message || 'Не удалось обновить статус'));
+          if (res.status === 401) {
+            alert('Ошибка авторизации (401): неверный или отсутствующий DASHBOARD_TOKEN. Укажите токен в поле 🔑 вверху страницы.');
+          } else if (res.status === 503) {
+            alert('Ошибка сервера (503): DASHBOARD_TOKEN не настроен на сервере.');
+          } else {
+            alert('Внимание: ' + (d.detail || d.message || 'Не удалось обновить статус'));
+          }
           return;
         }
         alert(d.message || 'Статус успешно обновлен');
@@ -471,8 +505,21 @@
       btn.innerText = 'Сбор вакансий...';
       btn.disabled = true;
       try {
-        const res = await fetch('/api/collect', { method: 'POST' });
-        const d = await res.json();
+        const res = await fetch('/api/collect', {
+          method: 'POST',
+          headers: getAuthHeaders({ 'Content-Type': 'application/json' })
+        });
+        const d = await res.json().catch(() => ({ detail: 'Ошибка ответа сервера' }));
+        if (!res.ok) {
+          if (res.status === 401) {
+            alert('Ошибка авторизации (401): неверный или отсутствующий DASHBOARD_TOKEN. Укажите токен в поле 🔑 вверху страницы.');
+          } else if (res.status === 503) {
+            alert('Ошибка сервера (503): DASHBOARD_TOKEN не настроен на сервере.');
+          } else {
+            alert('Ошибка сбора: ' + (d.detail || d.message || 'Ошибка'));
+          }
+          return;
+        }
         alert(`Сбор завершен! Новых вакансий: ${d.new_vacancies}`);
         loadAllData();
       } catch (e) {

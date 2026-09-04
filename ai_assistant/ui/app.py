@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import secrets
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
+from .. import config
 from ..db import (
     init_db,
     get_connection,
@@ -54,6 +57,33 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def require_dashboard_token_on_mutation(request: Request, call_next):
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        configured_token = os.getenv("DASHBOARD_TOKEN", "").strip() or getattr(config, "DASHBOARD_TOKEN", "").strip()
+        if not configured_token:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "DASHBOARD_TOKEN not configured"},
+            )
+        auth_header = request.headers.get("Authorization", "")
+        api_key_header = request.headers.get("X-API-Key", "")
+        token = ""
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+        elif api_key_header:
+            token = api_key_header.strip()
+
+        if not token or not secrets.compare_digest(token, configured_token):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Unauthorized: invalid or missing dashboard token"},
+            )
+
+    return await call_next(request)
+
 
 STATIC_DIR = Path(__file__).parent / "static"
 
