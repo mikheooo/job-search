@@ -263,9 +263,17 @@ def run_application(
             audit_status = RunnerPreCheckStatus.PASS
             quest_status = RunnerPreCheckStatus.PASS
         except Exception as e:
-            logger.warning(f"Audit failed with exception: {e}")
-            audit_status = RunnerPreCheckStatus.PASS
-            quest_status = RunnerPreCheckStatus.PASS
+            logger.error(f"Audit failed with exception: {e}")
+            return RunnerExecutionResult(
+                application_id=app_id,
+                vacancy_id=vac_id,
+                vacancy_title=vac_title,
+                company=company,
+                pre_submit_audit=RunnerPreCheckStatus.FAIL,
+                questionnaire=RunnerPreCheckStatus.FAIL,
+                final_application_state=current_state,
+                reason=f"Pre-submit questionnaire audit failed with exception: {e}",
+            )
     else:
         audit_status = RunnerPreCheckStatus.PASS
         quest_status = RunnerPreCheckStatus.NOT_REQUIRED
