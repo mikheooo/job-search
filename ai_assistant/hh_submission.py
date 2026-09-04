@@ -1046,7 +1046,7 @@ def execute_hh_submission(
 
     # 5. Acquire exclusive submission claim
     hh_app = get_hh_application(vacancy_stable_id) or get_hh_application_by_vacancy(vacancy_stable_id)
-    target_app_id = hh_app.get("application_id") if hh_app else vacancy_stable_id
+    target_app_id = str((hh_app.get("application_id") if hh_app else vacancy_stable_id) or "")
     acquired, claim_reason, claim_info = db.acquire_submission_claim(
         vacancy_stable_id=vacancy_stable_id,
         application_id=target_app_id,

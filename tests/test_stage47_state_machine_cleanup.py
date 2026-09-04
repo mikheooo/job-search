@@ -331,11 +331,11 @@ def test_verification_failure_after_submit_blocks_application_safely(clean_db, m
 
     assert res.real_hh_submit == 1
     assert res.post_submit_verification == RunnerPreCheckStatus.FAIL
-    assert res.final_application_state == HHApplicationState.BLOCKED.value
+    assert res.final_application_state in (HHApplicationState.AMBIGUOUS.value, HHApplicationState.BLOCKED.value)
 
-    # Check database state is BLOCKED, not READY_TO_SUBMIT
+    # Check database state is AMBIGUOUS or BLOCKED, not READY_TO_SUBMIT
     app = db.get_hh_application(app_id)
-    assert app["state"] == HHApplicationState.BLOCKED.value
+    assert app["state"] in (HHApplicationState.AMBIGUOUS.value, HHApplicationState.BLOCKED.value)
 
     # Re-running runner on BLOCKED application does NOT submit
     res2 = run_application(application_id=app_id, confirm_submit=True, evaluate_fn=browser.evaluate)

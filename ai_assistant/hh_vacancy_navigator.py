@@ -146,8 +146,12 @@ def resolve_hh_vacancy_url(target: str | Dict[str, Any]) -> Optional[str]:
     # Check vacancy table
     vac = db.get_vacancy_by_id(target_str)
     if vac:
-        if vac.get("job_url"):
-            return vac["job_url"]
+        if isinstance(vac, dict) and vac.get("job_url"):
+            return str(vac["job_url"])
+        elif hasattr(vac, "job_url") and getattr(vac, "job_url"):
+            return str(getattr(vac, "job_url"))
+        elif isinstance(vac, (list, tuple)) and len(vac) > 13 and vac[13]:
+            return str(vac[13])
 
     return None
 
