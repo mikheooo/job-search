@@ -133,6 +133,21 @@ class TelegramBot:
             lines.append(f"{i}. `{app_id}` | *{state}*\n   {comp} — {title}")
         return "\n".join(lines)
 
+    def handle_stop(self) -> str:
+        """Handle /stop command (kill switch)."""
+        db.set_submit_paused(True)
+        return "🛑 Автоматическая отправка откликов ПРИОСТАНОВЛЕНА (submit_paused=1)."
+
+    def handle_resume(self) -> str:
+        """Handle /resume command (kill switch resume)."""
+        db.set_submit_paused(False)
+        return "▶️ Автоматическая отправка откликов ВОЗОБНОВЛЕНА (submit_paused=0)."
+
+    def handle_digest(self) -> str:
+        """Handle /digest command."""
+        from .telegram_notifier import format_daily_digest
+        return format_daily_digest()
+
     def handle_help(self) -> str:
         """Handle /help command."""
         return (
@@ -141,6 +156,9 @@ class TelegramBot:
             "/interviews — Приглашения на собеседования\n"
             "/replies — Последние отправленные автоответы работодателям\n"
             "/applications — Последние обработанные заявки\n"
+            "/digest — Ежедневный дайджест откликов\n"
+            "/stop — Приостановить автоматическую отправку откликов (kill switch)\n"
+            "/resume — Возобновить автоматическую отправку откликов\n"
             "/help — Список доступных команд"
         )
 
@@ -162,6 +180,12 @@ class TelegramBot:
             return self.handle_replies()
         elif cmd in ("/applications", "applications"):
             return self.handle_applications()
+        elif cmd in ("/stop", "stop"):
+            return self.handle_stop()
+        elif cmd in ("/resume", "resume"):
+            return self.handle_resume()
+        elif cmd in ("/digest", "digest"):
+            return self.handle_digest()
         elif cmd in ("/help", "help", "/start", "start"):
             return self.handle_help()
         else:

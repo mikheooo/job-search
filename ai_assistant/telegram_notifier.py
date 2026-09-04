@@ -303,6 +303,18 @@ class TelegramNotifier:
             f"Link:\n{url_str}"
         )
 
+    @staticmethod
+    def format_post_submit_message(
+        company: str,
+        title: str,
+        cover_letter: str,
+        vacancy_url: str,
+    ) -> str:
+        """Format post-submit reporting message."""
+        letter = (cover_letter or "").strip()
+        letter_snippet = f"{letter[:200]}..." if len(letter) > 200 else letter
+        return f"[Отклик отправлен] Компания: {company}, Вакансия: {title}\n{letter_snippet}\n{vacancy_url}"
+
     # ---------------------------------------------------------------------------
     # Main Dispatcher Integration & Idempotency
     # ---------------------------------------------------------------------------
@@ -322,6 +334,7 @@ class TelegramNotifier:
             "FATAL_ERROR",
             "EXTERNAL_QUESTIONNAIRE",
             "TEST_TASK",
+            "APPLICATION_SUBMITTED",
         }
         if notif_type not in allowed_types:
             return {"delivered": False, "reason": f"Event type '{notif_type}' is routine and not routed to Telegram"}
@@ -397,6 +410,17 @@ class TelegramNotifier:
             )
         elif notif_type == "FATAL_ERROR":
             text = f"🚨 FATAL ERROR IN AGENT CYCLE\n\nError:\n{details.get('error') or 'Unknown error'}"
+        elif notif_type == "APPLICATION_SUBMITTED":
+            comp = details.get("company") or details.get("employer") or "HeadHunter Employer"
+            ttl = details.get("title") or details.get("vacancy_title") or "Python Developer"
+            cov = details.get("cover_letter") or ""
+            v_url = details.get("vacancy_url") or ""
+            text = self.format_post_submit_message(
+                company=comp,
+                title=ttl,
+                cover_letter=cov,
+                vacancy_url=v_url,
+            )
 
         if not text:
             return {"delivered": False, "reason": "No text generated for notification"}
@@ -564,3 +588,42 @@ def get_telegram_notifier() -> TelegramNotifier:
 
 TelegramGateway = TelegramNotifier
 get_telegram_gateway = get_telegram_notifier
+
+
+def send_post_submit_notification(
+    company: str,
+    title: str,
+    cover_letter: str,
+    vacancy_url: str,
+    notifier: Optional[TelegramNotifier] = None,
+) -> Dict[str, Any]:
+    """Send post-submit notification to Telegram with strict formatting and idempotency."""
+    notif = notifier or get_telegram_notifier()
+    return notif.deliver_notification(
+        "APPLICATION_SUBMITTED",
+        {
+            "company": company,
+            "title": title,
+            "cover_letter": cover_letter,
+            "vacancy_url": vacancy_url,
+        },
+        delivery_key=f"submit_{company}_{title}_{vacancy_url}",
+    )
+
+
+def format_daily_digest() -> str:
+    """Format daily digest summarizing submitted, needs_human_review, and stale applications."""
+    db.init_db()
+    apps = db.list_hh_applications(limit=500)
+    submitted_count = sum(1 for a in apps if a.get("state") == "SUBMITTED")
+    review_count = sum(1 for a in apps if a.get("state") == "NEEDS_HUMAN_REVIEW")
+    stale_count = sum(1 for a in apps if a.get("state") == "STALE")
+
+    lines = [
+        "📊 *ЕЖЕДНЕВНЫЙ ДАЙДЖЕСТ ОТКЛИКОВ*",
+        "",
+        f"✅ Отправлено (SUBMITTED): {submitted_count}",
+        f"⚠️ Требуют внимания (NEEDS_HUMAN_REVIEW): {review_count}",
+        f"💤 Устаревшие (STALE): {stale_count}",
+    ]
+    return "\n".join(lines)

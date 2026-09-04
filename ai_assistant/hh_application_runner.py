@@ -571,6 +571,27 @@ def run_application(
             db.update_hh_questionnaire_answers(qid, {}, new_status=HHQuestionStatus.SUBMITTED.value)
         final_state = HHApplicationState.SUBMITTED.value
         msg = "Application submitted and verified on HeadHunter."
+
+        # Dispatch Telegram notification for submitted application
+        try:
+            from .telegram_notifier import send_post_submit_notification
+            pkg_data = {}
+            pkg_row = db.get_application_package(vac_stable_id)
+            if pkg_row and pkg_row[2]:
+                try:
+                    pkg_data = json.loads(pkg_row[2])
+                except Exception:
+                    pass
+            c_letter = pkg_data.get("cover_letter") or app.get("draft") or ""
+            v_url = resolve_hh_vacancy_url(vac_stable_id or app_id) or f"https://hh.ru/vacancy/{vac_id}"
+            send_post_submit_notification(
+                company=company,
+                title=vac_title,
+                cover_letter=c_letter,
+                vacancy_url=v_url,
+            )
+        except Exception as te:
+            logger.debug(f"Failed to dispatch post-submit telegram notification: {te}")
     else:
         transition_application(
             application_id=app_id,
