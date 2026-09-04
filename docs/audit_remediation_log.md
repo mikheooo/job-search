@@ -733,3 +733,95 @@
 - **Результаты проверки:**
   - **До (Фаза 1.5):** 5 совпадений в `ai_assistant/hh_autonomous_agent.py` (строки 917, 973, 1005, 1038, 1058), блокировавших автономный переход в `READY_TO_SUBMIT`.
   - **После (Фаза 2):** **0 совпадений**. Режим `prepare-only` полностью удален из автономного агента.
+
+
+---
+
+## Фаза 2.1: Crash Safety и идемпотентность автономной отправки
+
+### Цель и контекст
+Фаза 2 перевела систему на автоматическую отправку откликов с предикативным контролем политик (`HHSubmitPolicyGate`). В Фазе 2.1 реализована математически и транзакционно строгая защита от сбоев процессов, разрывов CDP/сети, конкурирующих воркеров и неопределенных исходов отправки.
+
+**Главный инвариант:**
+Для одной application/vacancy система ни при каких обстоятельствах не выполняет повторный внешний submit из-за того, что предыдущий процесс завершился в неопределенном или аварийном состоянии.
+
+---
+
+### Архитектурные изменения и механика эксклюзивных клеймов
+
+1. **Таблица эксклюзивных клеймов (`submission_claims`)**:
+   - Первичный ключ: `vacancy_stable_id TEXT PRIMARY KEY`.
+   - Поля: `application_id`, `claim_id`, `status`, `worker_id`, `claimed_at`, `updated_at`, `details_json`.
+   - Статусы клейма:
+     - `ATTEMPTING`: клейм выдан воркеру, процесс отправки начат.
+     - `SUBMITTED`: отклик успешно отправлен и подтвержден на HeadHunter.
+     - `AMBIGUOUS`: результат внешней отправки неопределен (таймаут CDP, обрыв соединения, нераспознанный DOM). Автоматический перезапуск строго заблокирован.
+     - `FAILED_SAFE`: прерывание до отправки (сработал kill switch, отказ пре-чеков).
+     - `RELEASED`: освобожденный клейм.
+
+2. **Атомарный захват клейма (`db.acquire_submission_claim`)**:
+   - Выполняется в транзакции SQLite `BEGIN IMMEDIATE`, гарантируя эксклюзивность при конкурентных процессах.
+   - Проверяет:
+     - Kill switch (`is_submit_paused()`): отказ `SUBMISSION_PAUSED`.
+     - Существующий клейм: если активен (`ATTEMPTING`, `SUBMITTED`, `AMBIGUOUS`, `FAILED_SAFE`), повторный захват отклоняется с `CONCURRENT_ATTEMPT_IN_PROGRESS` или `ACTIVE_CLAIM_EXISTS`.
+     - Таблицу `application_submissions`: если есть запись в `SUBMITTED`/`AMBIGUOUS`/`SUCCESS`, захват отклоняется.
+   - Защита от stale-клеймов: таймаут аренды (lease timeout = 300с).
+
+3. **Состояние `AMBIGUOUS` в стейт-машине (`HHApplicationState.AMBIGUOUS`)**:
+   - Зафиксировано как первое лицо стейт-машины в `ai_assistant/hh_application_orchestrator.py`.
+   - Допустимые переходы:
+     - `READY_TO_SUBMIT -> AMBIGUOUS` (при сбое во время или после клика).
+     - `AMBIGUOUS -> SUBMITTED` (только при явной ручной верификации человеком с `approval.source == 'human'`).
+     - `AMBIGUOUS -> STALE`, `AMBIGUOUS -> BLOCKED`, `AMBIGUOUS -> FAILED`.
+   - Запрещен переход `AMBIGUOUS -> SUBMITTED` через автономную политику (`approval.source == 'policy'`). Ошибка: `AMBIGUOUS_RECONCILIATION_REQUIRES_HUMAN`.
+   - Добавлен метод `db.reconcile_submission_claim()` с сохранением истории аудита (`reconciliation_history`).
+
+4. **Защита от окон сбоев (Crash Windows)**:
+   - **Окно 1 (Crash before submit)**: Клейм получен (`ATTEMPTING`), процесс упал до вызова CDP `submitBtn.click()`. При перезапуске раннер видит активный клейм и не выполняет submit (0 кликов).
+   - **Окно 2 (Crash after submit before persistence)**: Клик выполнен (1 вызов), процесс аварийно завершился до сохранения в `hh_applications`. Клейм остается в `ATTEMPTING`. Второй раннер блокируется клеймом, внешних кликов на втором прогоне 0, суммарно по вакансии 1 клик.
+   - **Окно 3 (Ambiguous timeout on click)**: `evaluate_fn` выбросил timeout/disconnect во время клика. Исключение перехватывается, клейм и заявка переводятся в `AMBIGUOUS`, автоматический retry запрещен.
+   - **Окно 4 (Post-submit verification unverified)**: Клик выполнен, но проверка страницы не подтвердила отправку. Перевод в `AMBIGUOUS`.
+   - **Окно 5 (Kill-switch race)**: `/stop` получен после прохождения политик, но перед физическим кликом. Непосредственно перед `submitBtn.click()` выполняется контрольная проверка `db.is_submit_paused()`. Выполнение прерывается, 0 кликов, клейм в `FAILED_SAFE`.
+   - **Окно 6 (Telegram notification failure)**: Сбой отправки алерта в Telegram изолирован блоком `try/except`. Ошибка логируется, но статус `SUBMITTED` в БД не откатывается.
+
+---
+
+### Аудит путей в `SUBMITTED` (Backdoor Audit)
+Проведен аудит всех переходов в состояние `SUBMITTED` по кодовой базе.
+Обнаружено ровно 4 контролируемых пути:
+1. `ai_assistant/hh_submission.py` (строка 1266): требует валидный `SubmitApproval` (human или policy) и post-submit verification.
+2. `ai_assistant/hh_application_runner.py` (строка 613): требует `SubmitApproval` и успешный вердикт post-submit verifier.
+3. `ai_assistant/cli.py` (строка 3594): легаси интерактивный submit с явным подтверждением человека.
+4. `ai_assistant/hh_application_orchestrator.py` (строка 894): централизованный метод `transition_application()` со строгим гейтом `SubmitApproval`.
+
+Прямые обходы стейт-машины отсутствуют.
+
+---
+
+### Спецификация тестового набора `tests/test_phase2_1_submission_crash_safety.py`
+
+Реализовано 10 детерминированных оффлайн-сценариев:
+1. `test_crash_before_submit`: Клейм получен, процесс упал -> второй запуск видит клейм `ATTEMPTING`, 0 кликов.
+2. `test_crash_after_submit_before_persistence`: Клик выполнен, падение до сохранения -> второй прогон блокируется клеймом, total submit clicks == 1.
+3. `test_ambiguous_timeout_on_click`: Таймаут CDP на клике -> `AMBIGUOUS` в клейме и заявке, авто-ретрай запрещен.
+4. `test_duplicate_autonomous_run_on_already_submitted_vacancy`: Повторный прогон на отправленной вакансии блокируется, 0 кликов.
+5. `test_concurrent_claim`: Два параллельных потока/воркера борются за вакансию -> ровно один успешен, второй отклонен, ровно 1 submit click.
+6. `test_already_submitted_application_in_db`: Заявка в `SUBMITTED` в БД -> отклонение до любых вызовов браузера, 0 кликов.
+7. `test_kill_switch_race`: Активация kill switch сразу после гейтов перед кликом -> аборт выполнения, клейм `FAILED_SAFE`, 0 кликов.
+8. `test_telegram_notification_failure_after_submit`: Падение Telegram API после успешного submit -> заявка остается `SUBMITTED` (без отката).
+9. `test_policy_reapproval_cannot_resubmit`: Повторное одобрение политикой уже отправленной вакансии отклоняется на уровне клейма/стейта.
+10. `test_recovery_runner_does_not_blindly_retry_ambiguous`: Заявка `AMBIGUOUS` не выбирается раннером, переход в `SUBMITTED` разрешен только через `reconcile_submission_claim` с `source="human"`.
+
+---
+
+### Результаты валидации Фазы 2.1
+
+- **Все 10 тестов Фазы 2.1:** `10 passed in 5.45s`.
+- **Связанные сьюты (Фаза 1.5, 2, 2.1):** `75 passed in 44.71s`.
+- **Полный регрессионный сьют репозитория:** `1508 passed, 0 failed, 0 errors in 655.43s`.
+- **Статический анализ Ruff:** `0 errors` по `F821, F811` по всему `ai_assistant/`. Модуль тестов Фазы 2.1 чист (`0 errors`).
+- **Коммиты Фазы 2.1:**
+  - `5cee208` `feat(phase2.1): database submission claims table and atomic claim operations`
+  - `c448ee8` `feat(phase2.1): orchestrator AMBIGUOUS state and state machine invariants`
+  - `7785c75` `feat(phase2.1): enforce exclusive claim, ambiguous crash safety, and kill switch check in submission path`
+  - `2309553` `test(phase2.1): comprehensive crash safety, idempotency, and state machine suite`
