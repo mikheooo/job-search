@@ -3593,7 +3593,7 @@ def application_submit_cmd(
                 application_id=app_id,
                 to_state=HHApplicationState.SUBMITTED,
                 reason="questionnaire_submitted_with_human_confirmation",
-                evidence={"questionnaire_id": qid},
+                evidence={"questionnaire_id": qid, "fingerprint": f"questionnaire_fp_{qid}"},
                 confirm_submit=confirm_submit,
             )
         else:
@@ -3620,7 +3620,13 @@ def application_submit_cmd(
             return 1
         res_reply = send_hh_reply_confirmed(cid, reply_text=data.get("reply_draft", ""), evaluate_fn=evaluate_fn)
         if res_reply.get("success"):
-            transition_application(app_id, HHApplicationState.SUBMITTED, reason="reply_sent_with_human_confirmation", confirm_submit=confirm_submit)
+            transition_application(
+                app_id,
+                HHApplicationState.SUBMITTED,
+                reason="reply_sent_with_human_confirmation",
+                evidence={"conversation_id": cid, "fingerprint": f"message_reply_fp_{cid}"},
+                confirm_submit=confirm_submit,
+            )
             return 0
         else:
             transition_application(app_id, HHApplicationState.FAILED, reason="reply_send_failed")

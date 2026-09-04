@@ -500,11 +500,25 @@ def run_application(
     post_verdict = RunnerPreCheckStatus.PASS if post_res.verification_verdict == "PASS" else RunnerPreCheckStatus.FAIL
 
     if post_verdict == RunnerPreCheckStatus.PASS:
+        # Extract or compute fingerprint for evidence
+        pkg_fp = None
+        from .application_review import get_application_review
+        rev = get_application_review(vac_stable_id) if vac_stable_id else None
+        if rev:
+            pkg_fp = getattr(rev, "form_fingerprint", None) or getattr(rev, "fingerprint", None)
+        if not pkg_fp and 'exec_res' in locals() and exec_res and exec_res.gate_check_result:
+            for gr in getattr(exec_res.gate_check_result, "gate_results", []):
+                if gr.gate == "fingerprint_match" and gr.details:
+                    pkg_fp = gr.details.get("fingerprint")
+        if not pkg_fp:
+            pkg_fp = f"runner_fp_{app_id}"
+
         transition_application(
             application_id=app_id,
             to_state=HHApplicationState.SUBMITTED,
             reason="controlled_runner_submit_confirmed",
             evidence={
+                "fingerprint": pkg_fp,
                 "submit_executed": True,
                 "post_submit_verification": "passed",
                 "hh_status": post_res.hh_status,

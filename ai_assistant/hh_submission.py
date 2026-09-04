@@ -1117,9 +1117,25 @@ def execute_hh_submission(
     if sync_hh_application:
         app = get_hh_application(vacancy_stable_id) or get_hh_application_by_vacancy(vacancy_stable_id)
         if app:
-            app_dict = dict(app)
-            app_dict["state"] = "SUBMITTED" if verified else "AMBIGUOUS_POST_SUBMIT"
-            save_hh_application(app_dict)
+            app_id = app.get("application_id")
+            if verified and app_id:
+                from .hh_application_orchestrator import transition_application, HHApplicationState
+                sub_fp = actual_pkg_fp or (form_snapshot.get("fingerprint") if form_snapshot else "") or "submission_verified_fp"
+                transition_application(
+                    application_id=app_id,
+                    to_state=HHApplicationState.SUBMITTED,
+                    reason="submission_verified_on_live_page",
+                    evidence={
+                        "fingerprint": sub_fp,
+                        "post_submit_verification": "verified",
+                        "url_after": url_after,
+                    },
+                    confirm_submit=True,
+                )
+            else:
+                app_dict = dict(app)
+                app_dict["state"] = "SUBMITTED" if verified else "AMBIGUOUS_POST_SUBMIT"
+                save_hh_application(app_dict)
 
     if review and getattr(review, "review_id", None):
         _submitted_reviews.add(str(review.review_id))

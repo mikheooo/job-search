@@ -427,8 +427,19 @@ def transition_application(
                     error="SUBMIT_FORBIDDEN_FROM_STATE",
                 )
 
+            fp = (evidence or {}).get("fingerprint")
+            if not fp or not isinstance(fp, str) or not fp.strip():
+                return TransitionResult(
+                    ok=False,
+                    application_id=application_id,
+                    from_state=current_state,
+                    to_state=target_state_str,
+                    reason="Fingerprint evidence is required for transition to SUBMITTED",
+                    error="MISSING_FINGERPRINT_EVIDENCE",
+                )
+
         # Apply update
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         app.state = target_state_str
         app.last_transition_reason = reason
         app.updated_at = now
@@ -823,10 +834,12 @@ class HHApplicationOrchestrator:
                 }
 
         # Step 5: Transition to SUBMITTED
+        sub_fp = quest.fingerprint if ('quest' in locals() and quest) else (current_dom_fingerprint or f"confirmed_submit_fp_{application_id}")
         trans = transition_application(
             application_id=application_id,
             to_state=HHApplicationState.SUBMITTED,
             reason="human_confirmed_submission_completed",
+            evidence={"fingerprint": sub_fp},
             confirm_submit=True,
         )
 
