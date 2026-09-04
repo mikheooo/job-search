@@ -24,6 +24,7 @@ EXTERNAL_FORM_DOMAINS = [
     "yandex.ru/forms",
     "typeform.com",
     "airtable.com",
+    "kakdela.hh.ru",
 ]
 
 
@@ -61,8 +62,8 @@ def solve_google_form_js(profile: Optional[CandidateProfile] = None) -> str:
     if profile is None:
         profile = load_candidate_profile()
 
-    name = profile.name or "Михаил Кириллович"
-    age = str(profile.age or 42)
+    name = profile.name or "Михаил Колесников"
+    age = str(getattr(profile, "age", None) or 42)
     github = profile.github or "https://github.com/mikheooo"
     years = profile.years_experience or 3
 

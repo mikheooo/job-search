@@ -1171,7 +1171,7 @@ class AutonomousJobAgent:
             form_url = ""
             for u in url_matches:
                 u_low = u.lower()
-                if any(domain in u_low for domain in ["forms.gle", "docs.google.com/forms", "forms.yandex.ru", "typeform.com", "t.me/"]):
+                if any(domain in u_low for domain in ["forms.gle", "docs.google.com/forms", "forms.yandex.ru", "typeform.com", "kakdela.hh.ru", "t.me/"]):
                     if "t.me/" in u_low and not any(k in msg_low for k in ["анкет", "опрос", "form", "тест"]):
                         continue  # direct telegram contact without form context is handled under interview/contact
                     is_ext_form = True

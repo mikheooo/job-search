@@ -13,6 +13,19 @@ from . import config
 
 
 ADAPTER_FAILURE_RE = re.compile(r"Adapter\s+([^\r\n:]+)\s+fetch error:\s*([^\r\n]+)", re.IGNORECASE)
+PRODUCTION_CIRCUIT_OPEN_EXIT_CODE = 5
+
+
+def _tracker_defaults() -> Dict[str, Any]:
+    """Return the backward-compatible persistent production tracker schema."""
+    return {
+        "consecutive_failures": 0,
+        "last_success_at": None,
+        "last_failure_at": None,
+        "last_error": None,
+        "circuit_opened_at": None,
+        "last_operator_resume_at": None,
+    }
 
 
 def extract_adapter_failures(output: str) -> list[str]:
@@ -135,20 +148,23 @@ class SingleInstanceLock:
 
 
 class ConsecutiveFailureTracker:
-    """Tracks consecutive production execution failures for operational alert escalation."""
+    """Track production failures and persist the fail-closed circuit state."""
 
     def __init__(self, storage_dir: Optional[str] = None):
         self.storage_dir = storage_dir or config.LOGS_DIR
         self.file_path = os.path.join(self.storage_dir, "failure_tracker.json")
 
     def _read_data(self) -> Dict[str, Any]:
+        data = _tracker_defaults()
         if os.path.exists(self.file_path):
             try:
                 with open(self.file_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    stored = json.load(f)
+                if isinstance(stored, dict):
+                    data.update(stored)
             except Exception:
                 pass
-        return {"consecutive_failures": 0, "last_success_at": None, "last_failure_at": None, "last_error": None}
+        return data
 
     def _write_data(self, data: Dict[str, Any]) -> None:
         os.makedirs(self.storage_dir, exist_ok=True)
@@ -162,7 +178,16 @@ class ConsecutiveFailureTracker:
         return self._read_data().get("consecutive_failures", 0)
 
     def get_status(self) -> Dict[str, Any]:
-        return self._read_data()
+        data = self._read_data()
+        data["circuit_open"] = self.is_circuit_open()
+        data["circuit_threshold"] = config.PRODUCTION_FAILURE_ALERT_THRESHOLD
+        return data
+
+    def is_circuit_open(self, threshold: Optional[int] = None) -> bool:
+        """Return True once tripped; only an explicit operator resume unlatches it."""
+        limit = threshold or config.PRODUCTION_FAILURE_ALERT_THRESHOLD
+        data = self._read_data()
+        return bool(data.get("circuit_opened_at")) or data.get("consecutive_failures", 0) >= max(1, int(limit))
 
     def record_success(self) -> None:
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -170,16 +195,30 @@ class ConsecutiveFailureTracker:
         data["consecutive_failures"] = 0
         data["last_success_at"] = now_iso
         data["last_error"] = None
+        data["circuit_opened_at"] = None
         self._write_data(data)
 
-    def record_failure(self, error: str = "") -> int:
+    def record_failure(self, error: str = "", threshold: Optional[int] = None) -> int:
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         data = self._read_data()
         data["consecutive_failures"] = data.get("consecutive_failures", 0) + 1
         data["last_failure_at"] = now_iso
         data["last_error"] = error
+        limit = threshold or config.PRODUCTION_FAILURE_ALERT_THRESHOLD
+        if data["consecutive_failures"] >= max(1, int(limit)) and not data.get("circuit_opened_at"):
+            data["circuit_opened_at"] = now_iso
         self._write_data(data)
         return data["consecutive_failures"]
+
+    def resume_after_operator_review(self) -> Dict[str, Any]:
+        """Close the circuit explicitly while preserving the last failure evidence."""
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        data = self._read_data()
+        data["consecutive_failures"] = 0
+        data["circuit_opened_at"] = None
+        data["last_operator_resume_at"] = now_iso
+        self._write_data(data)
+        return self.get_status()
 
 
 def rotate_log_if_needed(log_path: str, max_size_bytes: int = 5 * 1024 * 1024, max_backups: int = 5) -> None:
@@ -238,6 +277,29 @@ def run_production_pipeline(
     with open(log_file, "a", encoding="utf-8") as f:
         f.write(header)
 
+    if not dry_run and tracker.is_circuit_open():
+        threshold = config.PRODUCTION_FAILURE_ALERT_THRESHOLD
+        failures = tracker.get_consecutive_failures()
+        message = (
+            "[SAFETY] PRODUCTION_CIRCUIT_OPEN: "
+            f"circuit remains latched after {failures} consecutive failures "
+            f"(configured threshold: {threshold}). "
+            "Live production execution is blocked. Review production-health, "
+            "run an offline --dry-run probe, then explicitly run "
+            "'production-control resume'.\n"
+        )
+        end_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(
+                message
+                + "---------------------------------------------------\n"
+                + f"RUN END: {end_iso} | exit_code: {PRODUCTION_CIRCUIT_OPEN_EXIT_CODE} | duration: 0.0s\n"
+                + "===================================================\n"
+            )
+        lock.release()
+        print(message, end="")
+        return PRODUCTION_CIRCUIT_OPEN_EXIT_CODE
+
     env = os.environ.copy()
     if dry_run:
         env["JOB_SEARCH_DRY_RUN"] = "1"
@@ -285,13 +347,14 @@ def run_production_pipeline(
     with open(log_file, "a", encoding="utf-8") as f:
         f.write(footer)
 
-    # Update failure tracker
-    if exit_code == 0:
-        tracker.record_success()
-    else:
-        failures = extract_adapter_failures(captured_output)
-        detail = "; ".join(failures) if failures else f"Exit code {exit_code}"
-        tracker.record_failure(error=detail)
+    # A dry-run is an offline probe, not evidence that live production recovered.
+    if not dry_run:
+        if exit_code == 0:
+            tracker.record_success()
+        else:
+            failures = extract_adapter_failures(captured_output)
+            detail = "; ".join(failures) if failures else f"Exit code {exit_code}"
+            tracker.record_failure(error=detail)
 
     lock.release()
     print(sanitized_output, end="")

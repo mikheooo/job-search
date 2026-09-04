@@ -15,6 +15,10 @@ Covers:
 12. test_success_resets_consecutive_failure_counter
 13. test_health_command_is_read_only
 14. test_scheduler_wrapper_never_sends_second_instance_concurrently
+15. test_failure_threshold_opens_circuit_and_blocks_live_run
+16. test_dry_run_probe_never_resets_live_failure_evidence
+17. test_operator_resume_closes_circuit_and_preserves_failure_evidence
+18. test_production_control_resume_json_is_machine_readable
 """
 import datetime
 import io
@@ -37,6 +41,8 @@ from ai_assistant.runner import (
 @pytest.fixture
 def isolated_env(tmp_path, monkeypatch):
     """Provides an isolated database and logs directory."""
+    from ai_assistant import hermes_integration
+
     db_file = str(tmp_path / "test_stage83.db")
     logs_dir = str(tmp_path / "logs")
     os.makedirs(logs_dir, exist_ok=True)
@@ -44,6 +50,11 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_FILE", db_file)
     monkeypatch.setattr(config, "LOGS_DIR", logs_dir)
     monkeypatch.setattr(config, "PRODUCTION_FAILURE_ALERT_THRESHOLD", 3)
+    monkeypatch.setattr(
+        hermes_integration,
+        "get_hermes_integration_status",
+        lambda: {"status": "HEALTHY"},
+    )
     
     db.init_db()
     return {"db_file": db_file, "logs_dir": logs_dir, "tmp_path": tmp_path}
@@ -355,3 +366,93 @@ def test_production_runtime_does_not_wire_auto_apply():
     assert "run_auto_apply" not in wrapper
     assert "auto_apply_modes" not in source
     assert "auto_apply_modes" not in wrapper
+
+
+def test_failure_threshold_opens_circuit_and_blocks_live_run(isolated_env, tmp_path):
+    """A fourth live run is fail-closed after three consecutive failures."""
+    failing_script = tmp_path / "always_fail.py"
+    failing_script.write_text("import sys; sys.exit(2)", encoding="utf-8")
+
+    for _ in range(3):
+        assert run_production_pipeline(
+            fetcher_script=str(failing_script),
+            logs_dir=isolated_env["logs_dir"],
+        ) == 2
+
+    marker = tmp_path / "must_not_run.txt"
+    success_script = tmp_path / "would_succeed.py"
+    success_script.write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    code = run_production_pipeline(
+        fetcher_script=str(success_script),
+        logs_dir=isolated_env["logs_dir"],
+    )
+
+    assert code == 5
+    assert not marker.exists()
+    health = db.get_production_health(storage_dir=isolated_env["logs_dir"])
+    assert health["metrics"]["production_circuit_open"] is True
+    assert any("circuit is OPEN" in alert["message"] for alert in health["alerts"])
+
+
+def test_dry_run_probe_never_resets_live_failure_evidence(isolated_env, tmp_path):
+    """An offline success may diagnose recovery but cannot close a live circuit."""
+    tracker = ConsecutiveFailureTracker(storage_dir=isolated_env["logs_dir"])
+    for index in range(3):
+        tracker.record_failure(f"live failure {index}")
+
+    probe_script = tmp_path / "offline_probe.py"
+    probe_script.write_text("print('offline probe ok')", encoding="utf-8")
+    code = run_production_pipeline(
+        fetcher_script=str(probe_script),
+        dry_run=True,
+        logs_dir=isolated_env["logs_dir"],
+    )
+
+    assert code == 0
+    assert tracker.get_consecutive_failures() == 3
+    assert tracker.is_circuit_open() is True
+
+
+def test_operator_resume_closes_circuit_and_preserves_failure_evidence(isolated_env):
+    """Resume is explicit, audited, and does not erase the last failure details."""
+    tracker = ConsecutiveFailureTracker(storage_dir=isolated_env["logs_dir"])
+    for _ in range(3):
+        tracker.record_failure("upstream structure changed")
+
+    status = tracker.resume_after_operator_review()
+
+    assert status["circuit_open"] is False
+    assert status["consecutive_failures"] == 0
+    assert status["last_error"] == "upstream structure changed"
+    assert status["last_failure_at"] is not None
+    assert status["last_operator_resume_at"] is not None
+
+
+def test_production_control_resume_json_is_machine_readable(isolated_env):
+    """The operator action has a stable machine-readable CLI payload."""
+    tracker = ConsecutiveFailureTracker(storage_dir=isolated_env["logs_dir"])
+    for _ in range(3):
+        tracker.record_failure("provider unavailable")
+
+    out_buf = io.StringIO()
+    old_stdout = sys.stdout
+    try:
+        sys.stdout = out_buf
+        code = cli.production_control_cmd(
+            action="resume",
+            output_json=True,
+            storage_dir=isolated_env["logs_dir"],
+        )
+    finally:
+        sys.stdout = old_stdout
+
+    payload = json.loads(out_buf.getvalue())
+    assert code == 0
+    assert payload["action"] == "resume"
+    assert payload["circuit_open"] is False
+    assert payload["consecutive_failures"] == 0
+    assert payload["last_error"] == "provider unavailable"
+    assert payload["last_operator_resume_at"] is not None

@@ -4050,6 +4050,11 @@ def production_health_cmd(output_json: bool = False) -> int:
         print(f"Attempt States: Delivered={m['delivered_count']}, Attempting={m['attempting_count']}, Stale={m['stale_count']}, Ambiguous={m['ambiguous_count']}, Failed={m['failed_count']}")
         print(f"Duplicate Delivery Keys: {m['duplicate_delivery_keys_count']}")
         print(f"Consecutive Failures: {m['consecutive_failures']}")
+        print(
+            "Production Circuit: "
+            f"{'OPEN' if m['production_circuit_open'] else 'CLOSED'} "
+            f"(threshold: {m['production_circuit_threshold']})"
+        )
         print(f"Last Attempt: {m['last_digest_attempt_at'] or 'Never'}")
         print(f"Last Successful Delivery: {m['last_successful_digest_at'] or 'Never'}")
         print(f"Pending Undigested Vacancies: {m['pending_undigested_vacancies_count']}")
@@ -4070,6 +4075,45 @@ def production_run_cmd(dry_run: bool = False, fetcher_script: str | None = None)
     from .runner import run_production_pipeline
 
     return run_production_pipeline(fetcher_script=fetcher_script, dry_run=dry_run)
+
+
+def production_control_cmd(
+    action: str = "status",
+    output_json: bool = False,
+    storage_dir: str | None = None,
+) -> int:
+    """Inspect or explicitly resume the persistent production circuit breaker."""
+    from .runner import ConsecutiveFailureTracker
+
+    tracker = ConsecutiveFailureTracker(storage_dir=storage_dir)
+    if action == "resume":
+        status = tracker.resume_after_operator_review()
+    elif action == "status":
+        status = tracker.get_status()
+    else:
+        print(f"Unknown production-control action: {action}", file=sys.stderr)
+        return 3
+
+    payload = {
+        "action": action,
+        "circuit_open": status["circuit_open"],
+        "circuit_threshold": status["circuit_threshold"],
+        "consecutive_failures": status["consecutive_failures"],
+        "circuit_opened_at": status.get("circuit_opened_at"),
+        "last_failure_at": status.get("last_failure_at"),
+        "last_error": status.get("last_error"),
+        "last_operator_resume_at": status.get("last_operator_resume_at"),
+    }
+    if output_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Production circuit: {'OPEN' if payload['circuit_open'] else 'CLOSED'}")
+        print(f"Consecutive failures: {payload['consecutive_failures']} / {payload['circuit_threshold']}")
+        if action == "resume":
+            print("Operator resume recorded. The next scheduled live run is allowed.")
+        elif payload["circuit_open"]:
+            print("Review production-health and logs; use an offline production-run --dry-run probe before resuming.")
+    return 0
 
 
 
@@ -4758,6 +4802,22 @@ def main() -> int:
     health_parser = subparsers.add_parser("production-health", help="Inspect production state and evaluate operational health (Stage 83)")
     health_parser.add_argument("--json", dest="as_json", action="store_true", help="Output machine-readable JSON structure")
 
+    production_control_parser = subparsers.add_parser(
+        "production-control",
+        help="Inspect or explicitly resume the fail-closed production circuit",
+    )
+    production_control_sub = production_control_parser.add_subparsers(
+        dest="production_control_action",
+        help="Circuit action",
+    )
+    production_control_status = production_control_sub.add_parser("status", help="Show circuit state")
+    production_control_status.add_argument("--json", dest="as_json", action="store_true", help="Output machine-readable JSON structure")
+    production_control_resume = production_control_sub.add_parser(
+        "resume",
+        help="Allow live runs after the operator has reviewed the failure",
+    )
+    production_control_resume.add_argument("--json", dest="as_json", action="store_true", help="Output machine-readable JSON structure")
+
     # Stage 89 — Telegram Feedback Inspector
     fb_parser = subparsers.add_parser("feedback", help="Inspect Telegram human feedback (Stage 89)")
     fb_sub = fb_parser.add_subparsers(dest="feedback_command", help="Feedback action")
@@ -5137,6 +5197,11 @@ def main() -> int:
         )
     elif args.command == "production-health":
         return production_health_cmd(
+            output_json=getattr(args, "as_json", False),
+        )
+    elif args.command == "production-control":
+        return production_control_cmd(
+            action=getattr(args, "production_control_action", "status") or "status",
             output_json=getattr(args, "as_json", False),
         )
     elif args.command == "feedback":

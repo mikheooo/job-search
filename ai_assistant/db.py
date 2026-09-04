@@ -2545,6 +2545,10 @@ def get_production_health(now_dt: Optional[Any] = None, storage_dir: Optional[st
             "duplicate_delivery_keys_count": 0,
             "consecutive_failures": 0,
             "last_production_error": None,
+            "production_circuit_open": False,
+            "production_circuit_threshold": PRODUCTION_FAILURE_ALERT_THRESHOLD,
+            "production_circuit_opened_at": None,
+            "last_operator_resume_at": None,
             "last_digest_attempt_at": None,
             "last_successful_digest_at": None,
             "pending_undigested_vacancies_count": 0,
@@ -2647,6 +2651,9 @@ def get_production_health(now_dt: Optional[Any] = None, storage_dir: Optional[st
     tracker_status = tracker.get_status()
     health_result["metrics"]["consecutive_failures"] = consec_fails
     health_result["metrics"]["last_production_error"] = tracker_status.get("last_error")
+    health_result["metrics"]["production_circuit_open"] = tracker_status.get("circuit_open", False)
+    health_result["metrics"]["production_circuit_opened_at"] = tracker_status.get("circuit_opened_at")
+    health_result["metrics"]["last_operator_resume_at"] = tracker_status.get("last_operator_resume_at")
 
     # 7. Evaluate Health & Alert Rules
     # Rule A: Critical / Unhealthy if AMBIGUOUS, STALE, or Duplicate keys exist
@@ -2666,11 +2673,15 @@ def get_production_health(now_dt: Optional[Any] = None, storage_dir: Optional[st
         })
 
     # Rule B: Repeated failures threshold
-    if consec_fails >= PRODUCTION_FAILURE_ALERT_THRESHOLD:
+    if tracker_status.get("circuit_open", False):
         health_result["health"] = "UNHEALTHY"
         health_result["alerts"].append({
             "severity": "CRITICAL",
-            "message": f"Consecutive production run failures ({consec_fails}) reached alert threshold ({PRODUCTION_FAILURE_ALERT_THRESHOLD}).",
+            "message": (
+                f"Production circuit is OPEN after {consec_fails} consecutive failures "
+                f"(configured threshold: {PRODUCTION_FAILURE_ALERT_THRESHOLD}). Live runs are blocked until "
+                "operator review and `production-control resume`."
+            ),
             "timestamp": now_iso,
         })
     elif consec_fails > 0 or failed_cnt > 0:

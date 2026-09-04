@@ -271,7 +271,17 @@ Recruiter message handling follows strict truth-only and fail-closed rules:
 
 ## 11. Verified Test Metrics & Production Status
 
-- **Full Offline Pytest Regression:** **1404 passed** (0 failed, 0 errors in 16:59)
+- **Stage 92 — competitor implementation audit and fail-closed circuit:**
+  - Point-in-time audit: `docs/competitor_implementation_audit_2026-09-03.md`.
+  - Public product claims and inspectable repository behavior are separated; no vendor effectiveness metric is treated as verified performance.
+  - Repository license boundary: MIT implementation was used only as design evidence; PolyForm Noncommercial and unlicensed repositories were inspected but no code was copied.
+  - Adopted independently: a persistent production circuit opens after `PRODUCTION_FAILURE_ALERT_THRESHOLD` consecutive live failures, blocks later live runs before the fetcher starts (exit `5`), permits an offline dry-run probe without clearing live evidence, and requires explicit `production-control resume` after review.
+  - Deferred: evidence-mapped fit summaries, reviewed resume-variant routing, bounded LLM provider failover, and offline onboarding diagnostics.
+  - Rejected in the current safety posture: unattended mass auto-apply, recruiter email outreach, and private/mobile API fallback.
+- **Full Offline Pytest Regression:** **1408 passed** (0 failed, 0 errors in 12:26)
+  - This run covered the completed Stage 92 implementation. A separate concurrent edit to `ai_assistant/external_form_solver.py` appeared afterwards; validation of that unrelated edit is **UNKNOWN** and it was not modified by Stage 92.
+  - `tests/test_stage83_production_operations.py`: 20/20 passed
+  - Focused production safety/provenance/Hermes regression: 43/43 passed
   - `tests/test_stage91_1_feedback_reason_production_wiring.py`: 20/20 passed
   - `tests/test_stage91_feedback_collection_quality.py`: 20/20 passed
   - `tests/test_stage90_1_feedback_evidence_provenance.py`: 20/20 passed
@@ -284,8 +294,10 @@ Recruiter message handling follows strict truth-only and fail-closed rules:
   - `tests/test_stage88_production_match_digest_wiring.py`: 18/18 passed
   - `tests/test_stage87_candidate_profile_calibration.py`: 17/17 passed
   - `tests/test_stage30d_diagnose.py`: 80/80 passed
-  - `tests/test_stage83_production_operations.py`: 16/16 passed
-- **Production Integrity Audit (`ai_assistant.cli audit --tracked`):** 0 errors, healthy = true (446 checked)
-- **Production Operational Health (`ai_assistant.cli production-health`):** Status: HEALTHY, 0 alerts, 0 consecutive failures
-- **Production Database SHA256:** `97827EA51155ECCCD098D790BCADB1B0A833A83886F5581CDC7B976AB80AD841`
+- **Production Integrity Audit (`ai_assistant.cli audit --tracked`):** healthy = false, 1 error, 0 warnings (652 checked)
+  - Current error: `REVIEW_BROWSER_MISMATCH` for legacy `vacancies_json:71` (`review=APPROVED`, `browser=BLOCKED`). It appeared after an earlier clean Stage 92 audit and was not reconciled because production-data mutation was outside this task.
+- **Production Operational Health (`ai_assistant.cli production-health`):** Status: HEALTHY, 0 alerts, 0 consecutive failures, production circuit CLOSED
+  - The first Stage 92 snapshot found the deployed Hermes Telegram adapter DRIFTED; `hermes sync --dry-run --json` proposed `INJECTED_ADAPTER_HOOK`, and Stage 92 did not apply it.
+  - A later concurrent external change made the adapter HEALTHY and callback-capable. The actor/process is **UNKNOWN**; the canonical fetcher remained HEALTHY and hash-matched.
+- **Production Database SHA256:** **UNKNOWN at final handoff** because another process held `state.db`; earlier Stage 92 snapshot was `0B57699086F5616D1CAFFB0FBFE3F5E9C339660A172BC49398AC0B8EFC6F56F1`, but it may now be stale.
 - **PROJECT_STATE.md updated: YES**

@@ -132,18 +132,27 @@ python -m ai_assistant.cli identity / duplicates       # canonical identity
 python -m ai_assistant.cli audit [--tracked] [--json]  # integrity audit (read-only)
 python -m ai_assistant.cli production-run [--dry-run]  # fail-closed scheduled pipeline
 python -m ai_assistant.cli production-health [--json]  # operational health + adapter failures
+python -m ai_assistant.cli production-control status [--json]  # persistent circuit state
+python -m ai_assistant.cli production-control resume [--json]  # explicit operator resume after review
 ```
 
-Exit codes: `0` healthy, `1` warnings, `2` errors, `3` invalid usage.
+`production-run` opens a persistent circuit after
+`PRODUCTION_FAILURE_ALERT_THRESHOLD` consecutive live failures (default: 3).
+While open, later live runs stop before discovery or delivery with exit code `5`.
+An offline `production-run --dry-run` probe remains available and never clears
+live failure evidence; only the explicit `production-control resume` action does.
+
+Exit codes: `0` healthy, `1` warnings, `2` errors, `3` invalid usage; a blocked
+`production-run` uses `5` (`PRODUCTION_CIRCUIT_OPEN`).
 
 ## 8. Tests
 
 ```bash
-pytest tests -q          # 1,225 tests collected (1,212 functions + 13 parametrized cases)
+pytest tests -q          # 1,408 tests passed in the latest full offline run
 ```
 
-The canonical `tests/` suite contains 96 test files: 23 core/module suites and
-73 staged regression suites covering stages 16–87, including integrity,
+The canonical `tests/` suite contains 106 test files covering core modules and
+staged regressions through Stage 92, including integrity,
 controlled HH flows, messaging, digest crash consistency, production
 operations, ingestion robustness, matching quality, and profile calibration.
 An autouse fixture redirects SQLite, vacancies, and logs to per-test temporary
