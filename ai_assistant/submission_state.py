@@ -22,13 +22,14 @@ logger = logging.getLogger(__name__)
 BLOCKED_SUBMISSION_STATUSES: Set[str] = {
     "SUBMITTED",
     "CONFIRMED",
+    "AMBIGUOUS",
     "AMBIGUOUS_POST_SUBMIT",
     "VERIFIED",
     "SUCCESS",
     "AUTO_SUBMITTED",
 }
 
-# Submission statuses that explicitly allow a retry
+# Submission statuses that explicitly allow a retry (pre-click failures only)
 RETRY_ALLOWED_SUBMISSION_STATUSES: Set[str] = {
     "FAILED",
     "BLOCKED",
@@ -36,6 +37,7 @@ RETRY_ALLOWED_SUBMISSION_STATUSES: Set[str] = {
     "GATE_BLOCKED",
     "CANCELLED",
     "DRY_RUN",
+    "FAILED_SAFE",
 }
 
 # Verification statuses that block submission
@@ -52,6 +54,7 @@ BLOCKED_HH_APPLICATION_STATES: Set[str] = {
     "VERIFIED",
     "COMPLETED",
     "APPLIED",
+    "AMBIGUOUS",
 }
 
 # Application tracking statuses that are allowed before submission (whitelist)
@@ -70,6 +73,7 @@ class SubmissionEvidence:
     submissions: List[Dict[str, Any]] = field(default_factory=list)
     latest_verification_status: Optional[str] = None
     dom_already_applied: bool = False
+    claim_status: Optional[str] = None
 
     @property
     def blocked_reasons(self) -> List[str]:
@@ -84,6 +88,9 @@ class SubmissionEvidence:
 
         if self.hh_application_state and self.hh_application_state in BLOCKED_HH_APPLICATION_STATES:
             reasons.append(f"HH application state is '{self.hh_application_state}' (blocks submission)")
+
+        if self.claim_status and self.claim_status in ("SUBMITTED", "ATTEMPTING", "AMBIGUOUS", "FAILED_SAFE"):
+            reasons.append(f"Submission claim is active with status '{self.claim_status}'")
 
         for sub in self.submissions:
             st = sub.get("status")
@@ -104,9 +111,11 @@ class SubmissionEvidence:
 
     @property
     def has_active_submitting_attempt(self) -> bool:
-        """True if there is an attempt currently marked SUBMITTING in application_submissions."""
+        """True if there is an attempt currently marked SUBMITTING or ATTEMPTING."""
+        if self.claim_status == "ATTEMPTING":
+            return True
         for sub in self.submissions:
-            if sub.get("status") == "SUBMITTING":
+            if sub.get("status") in ("SUBMITTING", "ATTEMPTING"):
                 return True
         return False
 
@@ -163,6 +172,14 @@ def get_submission_evidence(vacancy_stable_id: str, dom_already_applied: bool = 
             evidence.hh_application_state = str(hh_app.get("state"))
     except Exception as e:
         logger.warning("Failed to query hh_applications for %s: %s", vacancy_stable_id, e)
+
+    # 5. submission_claims
+    try:
+        claim = db.get_submission_claim(vacancy_stable_id)
+        if claim and claim.get("status"):
+            evidence.claim_status = str(claim.get("status"))
+    except Exception as e:
+        logger.warning("Failed to query submission_claims for %s: %s", vacancy_stable_id, e)
 
     return evidence
 

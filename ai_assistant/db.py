@@ -1,9 +1,13 @@
 import json
+import logging
 import sqlite3
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Set
 from . import config
 from .schema import Vacancy
+
+logger = logging.getLogger(__name__)
 
 _DRY_RUN = False
 
@@ -364,6 +368,22 @@ def init_db() -> None:
             updated_at TEXT NOT NULL
         )
     ''')
+
+    # Phase 2.1 — Exclusive Submission Claims Table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS submission_claims (
+            vacancy_stable_id TEXT PRIMARY KEY,
+            application_id TEXT NOT NULL,
+            claim_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            worker_id TEXT,
+            claimed_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            details_json TEXT
+        )
+    ''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_sub_claim_app ON submission_claims(application_id)''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_sub_claim_status ON submission_claims(status)''')
 
     # Stage 51 — Autonomous Notifications
     cursor.execute('''
@@ -2929,3 +2949,277 @@ def count_submitted_transitions_since(since_iso: str) -> int:
     count = cursor.fetchone()[0]
     conn.close()
     return count
+
+
+# --- Phase 2.1: Exclusive Submission Claims ---
+
+class SubmissionClaimStatus(str, Enum):
+    NOT_STARTED = "NOT_STARTED"
+    ATTEMPTING = "ATTEMPTING"
+    SUBMITTED = "SUBMITTED"
+    FAILED_SAFE = "FAILED_SAFE"
+    AMBIGUOUS = "AMBIGUOUS"
+
+
+def acquire_submission_claim(
+    vacancy_stable_id: str,
+    application_id: str,
+    worker_id: str = "default_worker",
+    claim_id: Optional[str] = None,
+    details: Optional[Dict[str, Any]] = None,
+    allow_reclaim_failed_safe: bool = False,
+) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+    """Atomically acquire an exclusive claim to submit a vacancy.
+
+    Guarantees:
+    - Strict concurrency exclusion via SQLite transaction and PRIMARY KEY on vacancy_stable_id.
+    - Rejection if kill switch (submit_paused) is active.
+    - Rejection if vacancy is already submitted or in an ambiguous outcome state.
+    - Rejection if another worker is currently in ATTEMPTING state.
+    - Ordinary exceptions do not auto-reopen claims.
+    """
+    import uuid as _uuid
+    init_db()
+    now = datetime.now(timezone.utc).isoformat()
+    cid = claim_id or f"claim_{_uuid.uuid4().hex[:12]}"
+    d_json = json.dumps(details or {"worker_id": worker_id, "acquired_at": now})
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("BEGIN IMMEDIATE")
+
+        # 1. Kill-switch check
+        cur.execute("SELECT value FROM system_settings WHERE key = 'submit_paused'")
+        row = cur.fetchone()
+        if row and str(row[0]).strip() in ("1", "true", "True"):
+            conn.rollback()
+            return False, "PAUSED_BY_KILL_SWITCH", None
+
+        # 2. Check existing claim
+        cur.execute(
+            "SELECT vacancy_stable_id, application_id, claim_id, status, worker_id, claimed_at, updated_at, details_json "
+            "FROM submission_claims WHERE vacancy_stable_id = ?",
+            (vacancy_stable_id,),
+        )
+        existing = cur.fetchone()
+        if existing:
+            ex_data = {
+                "vacancy_stable_id": existing[0],
+                "application_id": existing[1],
+                "claim_id": existing[2],
+                "status": existing[3],
+                "worker_id": existing[4],
+                "claimed_at": existing[5],
+                "updated_at": existing[6],
+                "details": json.loads(existing[7]) if existing[7] else {},
+            }
+            ex_status = existing[3]
+            if ex_status == SubmissionClaimStatus.SUBMITTED.value:
+                conn.rollback()
+                return False, "ALREADY_SUBMITTED", ex_data
+            elif ex_status == SubmissionClaimStatus.ATTEMPTING.value:
+                conn.rollback()
+                return False, "CONCURRENT_ATTEMPT_IN_PROGRESS", ex_data
+            elif ex_status == SubmissionClaimStatus.AMBIGUOUS.value:
+                conn.rollback()
+                return False, "AMBIGUOUS_OUTCOME_BLOCKED", ex_data
+            elif ex_status == SubmissionClaimStatus.FAILED_SAFE.value:
+                if not allow_reclaim_failed_safe:
+                    conn.rollback()
+                    return False, "PREVIOUS_ATTEMPT_FAILED_SAFE", ex_data
+                cur.execute(
+                    "UPDATE submission_claims SET claim_id = ?, status = ?, worker_id = ?, updated_at = ?, details_json = ? "
+                    "WHERE vacancy_stable_id = ?",
+                    (cid, SubmissionClaimStatus.ATTEMPTING.value, worker_id, now, d_json, vacancy_stable_id),
+                )
+                conn.commit()
+                ex_data.update({
+                    "claim_id": cid,
+                    "status": SubmissionClaimStatus.ATTEMPTING.value,
+                    "worker_id": worker_id,
+                    "updated_at": now,
+                })
+                return True, "CLAIM_REACQUIRED", ex_data
+            else:
+                conn.rollback()
+                return False, f"CLAIM_BLOCKED_{ex_status}", ex_data
+
+        # 3. Check submission evidence in application_submissions
+        cur.execute(
+            "SELECT status FROM application_submissions WHERE vacancy_stable_id = ? "
+            "AND status IN ('SUBMITTED', 'CONFIRMED', 'AMBIGUOUS', 'AMBIGUOUS_POST_SUBMIT', 'VERIFIED', 'SUCCESS')",
+            (vacancy_stable_id,),
+        )
+        if cur.fetchone():
+            conn.rollback()
+            return False, "ALREADY_APPLIED_SUBMISSIONS", None
+
+        # 4. Insert new claim
+        cur.execute(
+            "INSERT INTO submission_claims (vacancy_stable_id, application_id, claim_id, status, worker_id, claimed_at, updated_at, details_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (vacancy_stable_id, application_id, cid, SubmissionClaimStatus.ATTEMPTING.value, worker_id, now, now, d_json),
+        )
+        conn.commit()
+        return True, "CLAIM_ACQUIRED", {
+            "vacancy_stable_id": vacancy_stable_id,
+            "application_id": application_id,
+            "claim_id": cid,
+            "status": SubmissionClaimStatus.ATTEMPTING.value,
+            "worker_id": worker_id,
+            "claimed_at": now,
+            "updated_at": now,
+        }
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return False, "CONCURRENT_CLAIM_CONFLICT", None
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to acquire submission claim: {e}")
+        return False, f"CLAIM_ERROR: {e}", None
+    finally:
+        conn.close()
+
+
+def get_submission_claim(vacancy_stable_id: str) -> Optional[Dict[str, Any]]:
+    init_db()
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT vacancy_stable_id, application_id, claim_id, status, worker_id, claimed_at, updated_at, details_json "
+        "FROM submission_claims WHERE vacancy_stable_id = ?",
+        (vacancy_stable_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "vacancy_stable_id": row[0],
+        "application_id": row[1],
+        "claim_id": row[2],
+        "status": row[3],
+        "worker_id": row[4],
+        "claimed_at": row[5],
+        "updated_at": row[6],
+        "details": json.loads(row[7]) if row[7] else {},
+    }
+
+
+def update_submission_claim(
+    vacancy_stable_id: str,
+    status: str,
+    claim_id: Optional[str] = None,
+    details: Optional[Dict[str, Any]] = None,
+) -> bool:
+    init_db()
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("BEGIN IMMEDIATE")
+        if claim_id:
+            cur.execute(
+                "SELECT details_json FROM submission_claims WHERE vacancy_stable_id = ? AND claim_id = ?",
+                (vacancy_stable_id, claim_id),
+            )
+        else:
+            cur.execute(
+                "SELECT details_json FROM submission_claims WHERE vacancy_stable_id = ?",
+                (vacancy_stable_id,),
+            )
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            return False
+
+        merged_details = json.loads(row[0]) if row[0] else {}
+        if details:
+            merged_details.update(details)
+        merged_details["last_status_change"] = now
+        d_json = json.dumps(merged_details)
+
+        if claim_id:
+            cur.execute(
+                "UPDATE submission_claims SET status = ?, updated_at = ?, details_json = ? "
+                "WHERE vacancy_stable_id = ? AND claim_id = ?",
+                (status, now, d_json, vacancy_stable_id, claim_id),
+            )
+        else:
+            cur.execute(
+                "UPDATE submission_claims SET status = ?, updated_at = ?, details_json = ? "
+                "WHERE vacancy_stable_id = ?",
+                (status, now, d_json, vacancy_stable_id),
+            )
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to update submission claim for {vacancy_stable_id}: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def list_submission_claims(status: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+    init_db()
+    conn = get_connection()
+    cur = conn.cursor()
+    if status:
+        cur.execute(
+            "SELECT vacancy_stable_id, application_id, claim_id, status, worker_id, claimed_at, updated_at, details_json "
+            "FROM submission_claims WHERE status = ? ORDER BY updated_at DESC LIMIT ?",
+            (status, limit),
+        )
+    else:
+        cur.execute(
+            "SELECT vacancy_stable_id, application_id, claim_id, status, worker_id, claimed_at, updated_at, details_json "
+            "FROM submission_claims ORDER BY updated_at DESC LIMIT ?",
+            (limit,),
+        )
+    rows = cur.fetchall()
+    conn.close()
+    results = []
+    for r in rows:
+        results.append({
+            "vacancy_stable_id": r[0],
+            "application_id": r[1],
+            "claim_id": r[2],
+            "status": r[3],
+            "worker_id": r[4],
+            "claimed_at": r[5],
+            "updated_at": r[6],
+            "details": json.loads(r[7]) if r[7] else {},
+        })
+    return results
+
+
+def reconcile_submission_claim(
+    vacancy_stable_id: str,
+    new_status: str,
+    reason: str,
+    actor: str = "human_admin",
+) -> bool:
+    """Explicit administrative reconciliation of a submission claim."""
+    claim = get_submission_claim(vacancy_stable_id)
+    if not claim:
+        return False
+    details = claim.get("details", {})
+    reconcile_entry = {
+        "reconciled_by": actor,
+        "reason": reason,
+        "from_status": claim["status"],
+        "to_status": new_status,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    history = details.get("reconciliation_history", [])
+    history.append(reconcile_entry)
+    details["reconciliation_history"] = history
+    return update_submission_claim(
+        vacancy_stable_id=vacancy_stable_id,
+        claim_id=claim["claim_id"],
+        status=new_status,
+        details=details,
+    )
+
