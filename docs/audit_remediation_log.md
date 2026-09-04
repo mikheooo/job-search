@@ -50,3 +50,16 @@
   - `PROJECT_STATE.md`: префикс ID заменен на `<REDACTED_BOT_ID>:...`.
 - Выполнен поиск по шаблонам секретов (`TELEGRAM_BOT_TOKEN`, `sk-`, `Bearer `): реальных активных секретов в кодовой базе `*.py` не обнаружено.
 - **ВНИМАНИЕ (Требует решения человека):** Реальный токен присутствует в истории Git начиная с коммита `f3a08f1`. Владельцу необходимо отозвать и перевыпустить токен в `@BotFather`, после чего при необходимости очистить историю Git (например, через `git-filter-repo` / BFG). Сама git-история в рамках данной работы не переписывалась для сохранения целостности веток.
+- Коммит: `fix(security): remove exposed telegram bot token from tests and audit brief` (`ea81c7c`).
+
+### 1.2. Восстановление продакшна (Hermes + целостность БД)
+- Выполнена команда `python -m ai_assistant.cli hermes sync`:
+  - Восстановлен хук маршрутизации колбэков Hermes (`HERMES_CALLBACK_HOOK_MARKER`) в локальном адаптере Hermes (`%LOCALAPPDATA%\hermes\hermes-agent\plugins\platforms\telegram\adapter.py`).
+  - Статус интеграции Hermes перешел в `HEALTHY`.
+- Устранено расхождение целостности для синтетической тестовой записи `vacancies_json:71` (`canonical_2c8a3d5c095eecbb`):
+  - Применен скрипт `scripts/reconcile_production_state.py --apply`.
+  - Статус ревью вакансии с заблокированной браузерной подготовкой переведен из `APPROVED` в `PENDING_REVIEW` с созданием резервной копии базы.
+- Проверки:
+  - `python -m ai_assistant.cli audit --tracked` -> `HEALTH: PASS` (0 ошибок, 0 предупреждений).
+  - `python -m ai_assistant.cli production-health --json` -> `health: HEALTHY`, 0 алертов, 0 сбоев подряд.
+
