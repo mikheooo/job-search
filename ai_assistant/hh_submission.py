@@ -33,11 +33,20 @@ No DB writes, no cookies/storage access.
 from __future__ import annotations
 
 import json
+import os
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set
+from urllib.parse import urlparse, parse_qs
 
 from pydantic import BaseModel, Field
+
+from . import config
+from .application_review import ReviewStatus, get_application_review
+from .application_tracking import get_application_status
+from .candidate_profile import CandidateProfile, load_candidate_profile
+from .db import get_all_submissions
 
 # In-memory set of review_ids that have already had a submit attempt.
 _submitted_reviews: Set[str] = set()
@@ -104,11 +113,14 @@ def _parse_vacancy_id(url: str) -> Optional[str]:
     if not url:
         return None
     try:
-        from urllib.parse import urlparse, parse_qs
-        qs = parse_qs(urlparse(url).query)
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
         vals = qs.get("vacancyId") or []
         if vals and vals[0].strip().isdigit():
             return vals[0].strip()
+        match = re.search(r"/vacancy/(\d+)", parsed.path)
+        if match:
+            return match.group(1)
     except Exception:
         pass
     return None
@@ -201,6 +213,18 @@ def preflight_submission(
         report.reason = f"cannot read URL: {e}"
         return report
     report.url_before = url_before
+    try:
+        parsed_url = urlparse(url_before)
+        host = (parsed_url.hostname or "").lower()
+        if host != "hh.ru" and not host.endswith(".hh.ru"):
+            report.status = SubmissionStatus.FAIL_CLOSED
+            report.reason = f"URL host '{host}' does not belong to hh.ru"
+            return report
+    except Exception as e:
+        report.status = SubmissionStatus.FAIL_CLOSED
+        report.reason = f"Invalid URL structure: {e}"
+        return report
+
     missing = [m for m in expected_url_markers if m.lower() not in url_before.lower()]
     if missing:
         report.status = SubmissionStatus.FAIL_CLOSED
@@ -210,7 +234,11 @@ def preflight_submission(
     expected_vid = _vacancy_from_stable(getattr(package, "vacancy_stable_id", "") or "")
     report.vacancy_before = vid_in_url or ""
     report.vacancy_stable_id = getattr(package, "vacancy_stable_id", "") or ""
-    if expected_vid and vid_in_url and expected_vid != vid_in_url:
+    if not expected_vid:
+        report.status = SubmissionStatus.FAIL_CLOSED
+        report.reason = f"source_job_id unavailable or invalid in vacancy_stable_id: {getattr(package, 'vacancy_stable_id', '')}"
+        return report
+    if not vid_in_url or expected_vid != vid_in_url:
         report.status = SubmissionStatus.FAIL_CLOSED
         report.reason = f"vacancy mismatch: expected {expected_vid} but URL has {vid_in_url}"
         return report
@@ -325,8 +353,8 @@ def submit_application(
     # If URL changed (common after HH submit: redirect to negotiations/vacancy),
     # record it but do not treat as success by itself.
     # Try to prove success via read-only DOM markers.
-    success_markers = ("Вы откликнулись", "ваш отклик", "отклик отправлен",
-                       "negotiations", "отклики и приглашения")
+    success_markers = ("Р’С‹ РѕС‚РєР»РёРєРЅСѓР»РёСЃСЊ", "РІР°С€ РѕС‚РєР»РёРє", "РѕС‚РєР»РёРє РѕС‚РїСЂР°РІР»РµРЅ",
+                       "negotiations", "РѕС‚РєР»РёРєРё Рё РїСЂРёРіР»Р°С€РµРЅРёСЏ")
     try:
         # Generic body-text check (read-only).
         probe = json.loads(evaluate_fn(
@@ -347,3 +375,232 @@ def submit_application(
                          "read-only DOM/URL - treating as SUBMISSION_UNKNOWN")
 
     return report
+
+
+class GateName(str, Enum):
+    GATE_SUBMIT_ALLOWED = "submit_allowed"
+    GATE_REVIEW_APPROVED = "review_approved"
+    GATE_FINGERPRINT_MATCH = "fingerprint_match"
+    GATE_URL_DOMAIN = "url_domain"
+    GATE_VACANCY_MATCH = "vacancy_match"
+    GATE_PROFILE_LOADED = "profile_loaded"
+    GATE_COVER_LETTER_READY = "cover_letter_ready"
+    GATE_NO_UNKNOWN_QUESTIONS = "no_unknown_questions"
+    GATE_NOT_ALREADY_APPLIED = "not_already_applied"
+    GATE_NO_PREVIOUS_SUBMISSION_ATTEMPT = "no_previous_submission_attempt"
+    GATE_HUMAN_CONFIRMED = "human_confirmed"
+
+
+class GateCheckResult(BaseModel):
+    passed: bool
+    failed_gate: Optional[GateName] = None
+    reason: str = ""
+    details: Dict[str, Any] = Field(default_factory=dict)
+
+
+class HHSubmissionGates:
+    ALLOWED_UNSUBMITTED_STATUSES = frozenset({"DISCOVERED", "ANALYZED", "READY_TO_APPLY"})
+
+    @staticmethod
+    def check_all_gates(
+        vacancy_stable_id: str,
+        current_url: str,
+        form_snapshot: Dict[str, Any],
+        human_confirmed: bool = False,
+        dry_run: bool = False,
+        candidate_profile: Optional[CandidateProfile] = None,
+        profile_path: Optional[str] = None,
+    ) -> GateCheckResult:
+        # Gate 1: GATE_SUBMIT_ALLOWED (kill-switch safety latch)
+        submit_allowed = (
+            os.getenv("SUBMIT_ALLOWED", "").strip().lower() in ("1", "true", "yes")
+            or bool(getattr(config, "SUBMIT_ALLOWED", False))
+        )
+        if not submit_allowed and not dry_run:
+            return GateCheckResult(
+                passed=False,
+                failed_gate=GateName.GATE_SUBMIT_ALLOWED,
+                reason="Submission is disabled by SUBMIT_ALLOWED configuration",
+                details={"SUBMIT_ALLOWED": submit_allowed, "dry_run": dry_run},
+            )
+
+        # Gate 2: GATE_REVIEW_APPROVED
+        review = get_application_review(vacancy_stable_id)
+        if not review:
+            return GateCheckResult(
+                passed=False,
+                failed_gate=GateName.GATE_REVIEW_APPROVED,
+                reason=f"No review found for vacancy: {vacancy_stable_id}",
+            )
+        rev_status = review.status.value if hasattr(review.status, "value") else str(review.status)
+        if rev_status != ReviewStatus.APPROVED.value:
+            return GateCheckResult(
+                passed=False,
+                failed_gate=GateName.GATE_REVIEW_APPROVED,
+                reason=f"Review status is {rev_status}, expected APPROVED",
+                details={"status": rev_status},
+            )
+
+        # Gate 3: GATE_FINGERPRINT_MATCH
+        expected_fp = getattr(review, "form_fingerprint", None) or getattr(review, "fingerprint", None)
+        actual_fp = form_snapshot.get("fingerprint")
+        if not expected_fp or not actual_fp or expected_fp != actual_fp:
+            return GateCheckResult(
+                passed=False,
+                failed_gate=GateName.GATE_FINGERPRINT_MATCH,
+                reason=f"Fingerprint mismatch: review={expected_fp}, page={actual_fp}",
+                details={"expected": expected_fp, "actual": actual_fp},
+            )
+
+        # Gate 4: GATE_URL_DOMAIN
+        if not current_url:
+            return GateCheckResult(
+                passed=False,
+                failed_gate=GateName.GATE_URL_DOMAIN,
+                reason="Missing or empty current URL",
+            )
+        try:
+            parsed = urlparse(current_url)
+            host = (parsed.hostname or "").lower()
+            if not host:
+                return GateCheckResult(
+                    passed=False,
+                    failed_gate=GateName.GATE_URL_DOMAIN,
+                    reason=f"Cannot parse hostname from URL: {current_url}",
+                )
+            if host != "hh.ru" and not host.endswith(".hh.ru"):
+                return GateCheckResult(
+                    passed=False,
+                    failed_gate=GateName.GATE_URL_DOMAIN,
+                    reason=f"URL host '{host}' does not belong to hh.ru or *.hh.ru",
+                    details={"hostname": host, "url": current_url},
+                )
+        except Exception as e:
+            return GateCheckResult(
+                passed=False,
+                failed_gate=GateName.GATE_URL_DOMAIN,
+                reason=f"Invalid URL structure: {e}",
+            )
+
+        # Gate 5: GATE_VACANCY_MATCH
+        expected_job_id = _vacancy_from_stable(vacancy_stable_id)
+        if not expected_job_id:
+            return GateCheckResult(
+                passed=False,
+                failed_gate=GateName.GATE_VACANCY_MATCH,
+                reason=f"source_job_id unavailable or invalid in vacancy_stable_id: {vacancy_stable_id}",
+            )
+        url_job_id = _parse_vacancy_id(current_url)
+        if not url_job_id or url_job_id != expected_job_id:
+            return GateCheckResult(
+                passed=False,
+                failed_gate=GateName.GATE_VACANCY_MATCH,
+                reason=f"URL {current_url} does not match expected vacancy id {expected_job_id} (got {url_job_id})",
+                details={"expected_job_id": expected_job_id, "url_job_id": url_job_id},
+            )
+
+        # Gate 6: GATE_PROFILE_LOADED
+        from . import candidate_profile as cp_mod
+        profile = candidate_profile or (cp_mod.load_candidate_profile(profile_path) if profile_path else cp_mod.load_candidate_profile())
+        if not profile:
+            return GateCheckResult(
+                passed=False,
+                failed_gate=GateName.GATE_PROFILE_LOADED,
+                reason="Candidate profile could not be loaded",
+            )
+
+        # Gate 7: GATE_COVER_LETTER_READY
+        cover_letter = form_snapshot.get("cover_letter")
+        if not cover_letter or len(cover_letter.strip()) < 10:
+            return GateCheckResult(
+                passed=False,
+                failed_gate=GateName.GATE_COVER_LETTER_READY,
+                reason="Cover letter is missing or too short (< 10 chars)",
+                details={"length": len(cover_letter.strip()) if cover_letter else 0},
+            )
+
+        # Gate 8: GATE_NO_UNKNOWN_QUESTIONS
+        fields = form_snapshot.get("fields", [])
+        for f in fields:
+            f_type = f.get("type", "")
+            label = f.get("label", "")
+            is_req = f.get("required", False)
+            val = f.get("value")
+            if val:
+                continue
+            if label and (is_req or f_type in ("textarea", "text", "radio", "checkbox", "select")):
+                from .application_qa import QuestionAnswerGenerator
+                from .hh_extractor import ApplicationQuestion, QuestionType, QuestionSource
+                gen = QuestionAnswerGenerator(profile, resume_text="", deep=None, vacancy=None)
+                q = ApplicationQuestion(
+                    id=f.get("id") or "q_check",
+                    label=label,
+                    normalized_type=QuestionType.TEXT if f_type in ("textarea", "text") else QuestionType.UNKNOWN,
+                    required=is_req,
+                    source=QuestionSource.SCREENING,
+                )
+                ans = gen.generate(q)
+                if ans.requires_review or not ans.answer:
+                    return GateCheckResult(
+                        passed=False,
+                        failed_gate=GateName.GATE_NO_UNKNOWN_QUESTIONS,
+                        reason=f"Question requires human review: {label}",
+                        details={
+                            "question": label,
+                            "requires_review": ans.requires_review,
+                            "reason": ans.reason,
+                        },
+                    )
+
+        # Gate 9: GATE_NOT_ALREADY_APPLIED
+        track = get_application_status(vacancy_stable_id)
+        if track:
+            t_status = track.status.value if hasattr(track.status, "value") else str(track.status)
+            if t_status not in HHSubmissionGates.ALLOWED_UNSUBMITTED_STATUSES:
+                return GateCheckResult(
+                    passed=False,
+                    failed_gate=GateName.GATE_NOT_ALREADY_APPLIED,
+                    reason=f"Vacancy tracking status is '{t_status}', which is not in the allowed unsubmitted whitelist",
+                    details={
+                        "tracking_status": t_status,
+                        "allowed": sorted(HHSubmissionGates.ALLOWED_UNSUBMITTED_STATUSES),
+                    },
+                )
+        existing_subs = get_all_submissions(vacancy_stable_id)
+        for sub in existing_subs:
+            sub_st = sub[4] if len(sub) > 4 else None
+            if sub_st in ("SUBMITTED", "CONFIRMED", "SUCCESS", "AMBIGUOUS_POST_SUBMIT", "VERIFIED", "FAILED"):
+                return GateCheckResult(
+                    passed=False,
+                    failed_gate=GateName.GATE_NOT_ALREADY_APPLIED,
+                    reason=f"Vacancy was already submitted (submission status: {sub_st})",
+                    details={"submission_status": sub_st},
+                )
+
+        # Gate 10: GATE_NO_PREVIOUS_SUBMISSION_ATTEMPT
+        if vacancy_stable_id in _submitted_reviews or getattr(review, "review_id", "") in _submitted_reviews:
+            return GateCheckResult(
+                passed=False,
+                failed_gate=GateName.GATE_NO_PREVIOUS_SUBMISSION_ATTEMPT,
+                reason="Review or vacancy was already attempted in this session",
+            )
+        for sub in existing_subs:
+            sub_st = sub[4] if len(sub) > 4 else None
+            if sub_st == "SUBMITTING":
+                return GateCheckResult(
+                    passed=False,
+                    failed_gate=GateName.GATE_NO_PREVIOUS_SUBMISSION_ATTEMPT,
+                    reason="Previous submission attempt is currently in progress",
+                    details={"submission_status": sub_st},
+                )
+
+        # Gate 11: GATE_HUMAN_CONFIRMED
+        if not human_confirmed and not dry_run:
+            return GateCheckResult(
+                passed=False,
+                failed_gate=GateName.GATE_HUMAN_CONFIRMED,
+                reason="Explicit human confirmation (--confirm-submit) required",
+            )
+
+        return GateCheckResult(passed=True, reason="All 11 gates passed successfully")
+

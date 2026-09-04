@@ -44,6 +44,9 @@ class ApplicationReview(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     review_version: str = REVIEW_VERSION
+    form_fingerprint: Optional[str] = None
+    fingerprint: Optional[str] = None
+    review_id: Optional[str] = None
 
     model_config = {"use_enum_values": False}
 

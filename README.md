@@ -76,6 +76,22 @@ collectors (adapters/*, linkedin, wellfound_scraper)
 | 27 | Email reply MVP | `email_message_reply.py` (REVIEW-only, `EmailSendGate` always blocks) |
 | 28-29 | Gmail read-only | `gmail_readonly_connector.py` (ADC, `gmail.readonly`), `gmail_provider_status` diagnostics |
 
+## 4. HH Submission Safety Gates (11 Strict Multi-Layer Gates)
+
+HH form submission is protected by 11 fail-closed gates implemented in `HHSubmissionGates` (`ai_assistant/hh_submission.py`):
+
+1. `GATE_SUBMIT_ALLOWED`: Environment / config kill-switch `SUBMIT_ALLOWED` must be explicitly enabled (`true`/`1`/`yes`) unless in dry_run mode.
+2. `GATE_REVIEW_APPROVED`: Application review in DB must exist and have status `ReviewStatus.APPROVED`.
+3. `GATE_FINGERPRINT_MATCH`: Form fingerprint from live browser DOM snapshot must match approved review fingerprint.
+4. `GATE_URL_DOMAIN`: Current URL hostname must strictly match `hh.ru` or `*.hh.ru` (verified via `urllib.parse`).
+5. `GATE_VACANCY_MATCH`: Numeric vacancy ID in URL must match expected `source_job_id` extracted from `vacancy_stable_id`. Missing or non-numeric IDs fail closed.
+6. `GATE_PROFILE_LOADED`: CandidateProfile must be loaded and non-empty.
+7. `GATE_COVER_LETTER_READY`: Cover letter text must be present and at least 10 characters long.
+8. `GATE_NO_UNKNOWN_QUESTIONS`: Form fields must not contain unfillable or review-requiring questions (`requires_review=True`).
+9. `GATE_NOT_ALREADY_APPLIED`: Application tracking status must be in whitelist (`DISCOVERED`, `ANALYZED`, `READY_TO_APPLY`); no prior completed/ambiguous submission records in DB (`SUBMITTED`, `AMBIGUOUS_POST_SUBMIT`, `CONFIRMED`, `VERIFIED`, `FAILED`).
+10. `GATE_NO_PREVIOUS_SUBMISSION_ATTEMPT`: No concurrent `SUBMITTING` status in DB; vacancy/review must not be present in current in-memory submission session set.
+11. `GATE_HUMAN_CONFIRMED`: Explicit human confirmation flag (`--confirm-submit`) required unless in dry_run mode.
+
 ## 5. Setup
 
 ```bash
@@ -96,6 +112,7 @@ Configuration lives in `ai_assistant/.env` (or environment):
 | `HH_CDP_URL` | CDP endpoint for manual capture (`http://127.0.0.1:<port>`) |
 | `HH_APPLY_MODE` | `AUTO` enables auto-apply mode (default REVIEW) |
 | `HH_AUTO_REPLY_ENABLED` | `true` enables limited HH auto-reply (default off) |
+| `SUBMIT_ALLOWED` | Master kill-switch latch for submitting HH applications (default: false) |
 | `STOP_WORDS`, `REQUIRED_WORDS`, `MIN_SALARY`, `BATCH_LIMIT` | prefilter tuning |
 
 ## 6. Candidate profile configuration

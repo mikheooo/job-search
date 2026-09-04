@@ -94,6 +94,43 @@
 - Проверки:
   - `ruff check ai_assistant/ integrations/ scripts/ tools/ --select F811` -> 0 ошибок (All checks passed).
   - `pytest tests/test_application_queue.py` -> 17 passed.
+- Коммит: `fix(cleanup): remove redefined functions and duplicate imports (F811)` (`ea64534`).
+
+### 1.5. Ревизия submission gates (безопасность отправки откликов)
+- **Ответы на 4 доменных вопроса аудита:**
+  1. *Должен ли `GATE_SUBMIT_ALLOWED` проверять флаг конфигурации `SUBMIT_ALLOWED`?*  
+     **Да.** `SUBMIT_ALLOWED` (`os.getenv("SUBMIT_ALLOWED", "false")` / `config.SUBMIT_ALLOWED`) является главным аппаратным предохранителем (kill-switch). При `SUBMIT_ALLOWED=false` отправка физически блокируется, если не передан флаг `dry_run=True`.
+  2. *Почему `GATE_NOT_ALREADY_APPLIED` должен проверять белый список статусов, а не просто `status != 'APPLIED'`?*  
+     **Отказ от черного списка.** Проверка только `!= 'APPLIED'` критически небезопасна, так как пропускает вакансии со статусами `SUBMITTED`, `AMBIGUOUS_POST_SUBMIT`, `VERIFIED`, `INTERVIEW`, `REJECTED`, `WITHDRAWN`. Реализован строгий белый список разрешенных предварительных статусов: `ALLOWED_UNSUBMITTED_STATUSES = {"DISCOVERED", "ANALYZED", "READY_TO_APPLY"}`. Дополнительно проверяется отсутствие успешных или неоднозначных записей в таблице `submissions` (`SUBMITTED`, `CONFIRMED`, `AMBIGUOUS_POST_SUBMIT`, `VERIFIED`, `FAILED`).
+  3. *Почему `GATE_URL_DOMAIN` недопустимо реализовывать через подстроку `hh.ru in url`?*  
+     **Защита от SSRF / фишинга.** Поиск подстроки пропускает вредоносные домены вроде `https://evil-hh.ru`, `https://hh.ru.attacker.com` или `https://google.com/?hh.ru`. Реализована строгая валидация через `urllib.parse.urlparse`, гарантирующая `host == "hh.ru"` или `host.endswith(".hh.ru")`.
+  4. *Почему `GATE_VACANCY_MATCH` обязан падать, если `source_job_id` отсутствует или не числовой?*  
+     **Принцип fail-closed.** Пропуск проверки при отсутствии ID создает риск отправки данных в случайно открытую вкладку браузера. Если `source_job_id` отсутствует или не содержит цифр, гейт немедленно возвращает `passed=False` с ошибкой `GATE_VACANCY_MATCH`.
+
+- **Реализованные изменения:**
+  - `ai_assistant/config.py`: добавлен предохранитель `SUBMIT_ALLOWED = os.getenv("SUBMIT_ALLOWED", "false").strip().lower() in ("1", "true", "yes")`.
+  - `ai_assistant/hh_submission.py`:
+    - `_parse_vacancy_id`: расширен парсинг как query-параметра `?vacancyId=...`, так и пути `/vacancy/(\d+)`.
+    - `preflight_submission`: добавлена строгая проверка хоста через `urlparse` и fail-closed при невалидном `expected_vid`.
+    - Добавлены `GateName`, `GateCheckResult`, класс `HHSubmissionGates` с методом `check_all_gates`, реализующим все 11 строгих гейтов:
+      1. `GATE_SUBMIT_ALLOWED` (kill-switch);
+      2. `GATE_REVIEW_APPROVED` (ревью в БД строго в статусе `APPROVED`);
+      3. `GATE_FINGERPRINT_MATCH` (совпадение хэша DOM-формы с ревью);
+      4. `GATE_URL_DOMAIN` (строгий домен `hh.ru` / `*.hh.ru`);
+      5. `GATE_VACANCY_MATCH` (числовой ID вакансии из URL совпадает с целевой вакансией);
+      6. `GATE_PROFILE_LOADED` (профиль кандидата загружен и не пуст);
+      7. `GATE_COVER_LETTER_READY` (сопроводительное письмо не пустое и $\ge 10$ символов);
+      8. `GATE_NO_UNKNOWN_QUESTIONS` (отсутствуют вопросы скрининга, требующие ручного ответа);
+      9. `GATE_NOT_ALREADY_APPLIED` (белый список статусов трекинга + отсутствие записей в `submissions`);
+      10. `GATE_NO_PREVIOUS_SUBMISSION_ATTEMPT` (отсутствие попытки в текущей сессии и статуса `SUBMITTING` в БД);
+      11. `GATE_HUMAN_CONFIRMED` (явное подтверждение человеком `--confirm-submit` вне dry-run).
+  - `ai_assistant/application_review.py`: в модель `ApplicationReview` добавлены поля `form_fingerprint`, `fingerprint`, `review_id`.
+  - `tests/test_hh_submission_gates.py`: написан полный набор из 11 изолированных модульных тестов для каждого гейта и сценариев блокировки.
+  - Обновлена документация: `README.md` (раздел 4 и таблица переменных окружения) и `PROJECT_STATE.md` (раздел 9).
+- **Проверки:**
+  - `pytest tests/test_hh_submission_gates.py` -> 11 passed (100%).
+  - `pytest tests/test_stage20i_submission.py` -> 20 passed (100%).
+  - `pytest tests/test_submission_recovery.py tests/test_submission_verifier.py` -> 60 passed (100%).
 
 
 

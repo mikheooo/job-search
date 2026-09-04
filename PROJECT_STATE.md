@@ -227,6 +227,19 @@ Recruiter message handling follows strict truth-only and fail-closed rules:
 - **Factual Profile Immutability:** User feedback on job titles or technologies (e.g. liking Kubernetes roles) never mutates `candidate_profile.json` or promotes skill confidence from `UNKNOWN` to `PROFESSIONAL`.
 - **Minimum Evidence Threshold & Ambiguity:** Single feedback events are recorded as `RECORD_ONLY` with 0 ranking adjustment. Contradictory feedback produces `AMBIGUOUS_PREFERENCE` and suppresses confidence to 0.
 
+- **HH Submission Safety Gates (11 Strict Multi-Layer Gates in `HHSubmissionGates`):**
+  1. `GATE_SUBMIT_ALLOWED`: Environment / config kill-switch `SUBMIT_ALLOWED` must be explicitly enabled (`true`/`1`/`yes`) unless in dry_run mode.
+  2. `GATE_REVIEW_APPROVED`: Vacancy review in DB must exist and have status `ReviewStatus.APPROVED`.
+  3. `GATE_FINGERPRINT_MATCH`: Form fingerprint from live browser DOM snapshot must match approved review fingerprint.
+  4. `GATE_URL_DOMAIN`: Current URL hostname must strictly match `hh.ru` or `*.hh.ru` (verified via `urllib.parse`).
+  5. `GATE_VACANCY_MATCH`: Numeric vacancy ID in URL must match expected `source_job_id` extracted from `vacancy_stable_id`. Missing or non-numeric IDs fail closed.
+  6. `GATE_PROFILE_LOADED`: CandidateProfile must be loaded and non-empty.
+  7. `GATE_COVER_LETTER_READY`: Cover letter text must be present and at least 10 characters long.
+  8. `GATE_NO_UNKNOWN_QUESTIONS`: Form fields must not contain unfillable or review-requiring questions (`requires_review=True`).
+  9. `GATE_NOT_ALREADY_APPLIED`: Application tracking status must be in whitelist (`DISCOVERED`, `ANALYZED`, `READY_TO_APPLY`); no prior completed/ambiguous submission records in DB (`SUBMITTED`, `AMBIGUOUS_POST_SUBMIT`, `CONFIRMED`, `VERIFIED`, `FAILED`).
+  10. `GATE_NO_PREVIOUS_SUBMISSION_ATTEMPT`: No concurrent `SUBMITTING` status in DB; vacancy/review must not be present in current in-memory submission session set.
+  11. `GATE_HUMAN_CONFIRMED`: Explicit human confirmation flag (`--confirm-submit`) required unless in dry_run mode.
+
 ---
 
 ## 10. Stage 90 / 90.1 / Stage 91 / Stage 91.1: Feedback Analytics, Provenance & Reason UX Architecture
