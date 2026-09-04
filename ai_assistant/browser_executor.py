@@ -8,7 +8,10 @@ import sqlite3
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .submission_verifier import SubmissionVerification
 
 from pydantic import BaseModel, Field
 

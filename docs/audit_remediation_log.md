@@ -62,4 +62,19 @@
 - Проверки:
   - `python -m ai_assistant.cli audit --tracked` -> `HEALTH: PASS` (0 ошибок, 0 предупреждений).
   - `python -m ai_assistant.cli production-health --json` -> `health: HEALTHY`, 0 алертов, 0 сбоев подряд.
+- Коммит: `fix(production): sync hermes integration and reconcile legacy audit mismatch` (`cc5979a`).
+
+### 1.3. Ошибки неопределённых имён (F821)
+- Выполнен запуск `ruff check ... --select F821`: найдена 31 ошибка в 3 файлах (`ai_assistant/schema.py`, `ai_assistant/browser_executor.py`, `ai_assistant/cli.py`).
+- Устранены причины:
+  - `ai_assistant/schema.py`: добавлен импорт `Set` из `typing`.
+  - `ai_assistant/browser_executor.py`: добавлен импорт `TYPE_CHECKING` и условный импорт `SubmissionVerification` для аннотации возвращаемого типа `verify_submission_in_browser`.
+  - `ai_assistant/cli.py`:
+    - Добавлен импорт `Callable` из `typing`.
+    - Добавлен отсутствовавший логгер модуля `logger = logging.getLogger(__name__)`.
+    - Удален недостижимый мертвый блок кода в `submit_vacancy` после `return 1` (ссылался на необъявленные `top`, `generate_queue`, `get_browser_session`, `BrowserStatus`).
+    - Удален недостижимый мертвый блок кода в `dashboard_show_canonical` после `return 0` (ссылался на необъявленный `row`).
+- Проверки:
+  - `ruff check ai_assistant/ integrations/ scripts/ tools/ --select F821` -> 0 ошибок (All checks passed).
+
 

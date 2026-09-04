@@ -6,7 +6,9 @@ import logging
 import os
 import re
 import sys
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+ 
+logger = logging.getLogger(__name__)
 
 from .adapters.himalayas import HimalayasAdapter
 from .adapters.weworkremotely import WeWorkRemotelyAdapter
@@ -917,26 +919,6 @@ def submit_vacancy(vacancy_stable_id: str, confirm_submit: bool = False, force: 
     except Exception as e:
         print(f"Error: {e}", file=__import__('sys').stderr)
         return 1
-    """Run full integrity audit."""
-    init_db()
-    items = generate_queue(top_n=top)
-    for item in items:
-        sid = item.vacancy_stable_id
-        # Check if already blocked/completed? Skip if already has browser session with BLOCKED and not force?
-        # For now, try each in rank order
-        try:
-            # Check if already prepared and not blocked? If blocked, try next
-            existing = get_browser_session(sid, "v1")
-            if existing and existing.status in (BrowserStatus.READY_FOR_REVIEW, BrowserStatus.COMPLETED):
-                continue
-            if existing and existing.status == BrowserStatus.BLOCKED:
-                continue
-            return submit_vacancy(sid, confirm_submit=True, force=False, profile_path=None)
-        except Exception as e:
-            logging.warning(f"submit_next failed for {sid}: {e}")
-            continue
-    print("No READY_TO_APPLY vacancy found for browser preparation", file=__import__('sys').stderr)
-    return 1
 
 
 def submissions_list(limit: int = 50) -> None:
@@ -1523,27 +1505,6 @@ def dashboard_show_canonical(canonical_id: str) -> int:
             break
     
     return 0
-    from .schema import Vacancy
-    return Vacancy(
-        source=row[1],
-        source_job_id=row[2],
-        title=row[3],
-        company=row[4] or "",
-        description=row[5] or "",
-        job_url=row[13],
-        application_url=row[14],
-        location=row[6],
-        country_restrictions=[x.strip() for x in (row[7] or "").split(",") if x.strip()],
-        timezone_restrictions=[x.strip() for x in (row[8] or "").split(",") if x.strip()],
-        salary_min=row[9],
-        salary_max=row[10],
-        salary_currency=row[11],
-        employment_type=row[12],
-        published_at=row[15],
-        first_seen_at=row[16],
-        last_seen_at=row[17],
-        raw_data=row[19] or {},
-    )
 
 
 # ---------------------------------------------------------------------------
