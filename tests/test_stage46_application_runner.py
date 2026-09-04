@@ -27,6 +27,7 @@ from ai_assistant.hh_application_runner import (
     preview_next_application,
     run_next_application,
     run_application,
+    format_runner_result_cli,
     RunnerPreCheckStatus,
     RunnerExecutionResult,
 )
@@ -368,3 +369,143 @@ def test_empty_queue_returns_no_application_selected_and_uncalled_evaluate_fn(cl
     assert "Post-submit verify:   SKIPPED" in out
     assert "Final state:          N/A" in out
     assert "NO_APPLICATION_SELECTED" in out
+
+
+# ---------------------------------------------------------------------------
+# Test 13: ALREADY_RESPONDED in dry-run mode leaves DB completely untouched
+# ---------------------------------------------------------------------------
+
+def test_already_responded_in_dry_run_leaves_db_completely_untouched(clean_db):
+    """When HH indicates already responded, dry-run performs 0 submits and leaves DB untouched."""
+    def already_responded_eval(script: str) -> str:
+        return json.dumps({
+            "url": "https://hh.ru/vacancy/136704137",
+            "title": "Python developer middle",
+            "h1": "Python developer middle",
+            "has_submit_btn": False,
+            "has_apply_btn": False,
+            "already_responded": True,
+            "is_vacancy_page": True,
+        })
+
+    app_id = "app_hh_dry_already"
+    db.save_hh_application({
+        "application_id": app_id,
+        "vacancy_stable_id": "hh:136704137",
+        "title": "Python developer middle",
+        "employer": "Maxima.tech",
+        "state": "READY_TO_SUBMIT",
+        "created_at": "2026-08-30T12:00:00",
+        "updated_at": "2026-08-30T12:00:00",
+    })
+
+    res = run_application(app_id, confirm_submit=True, evaluate_fn=already_responded_eval, dry_run=True)
+
+    assert res.real_hh_submit == 0
+    assert res.submit_confirmation is False
+    assert res.final_application_state == "READY_TO_SUBMIT"
+    assert "Application is already responded on HeadHunter" in res.reason
+
+    # Database must remain untouched: state unchanged, zero transitions
+    stored_app = db.get_hh_application(app_id)
+    assert stored_app["state"] == "READY_TO_SUBMIT"
+    transitions = db.list_hh_application_transitions(app_id)
+    assert len(transitions) == 0
+
+    # CLI formatting shows STALE (external response detected on HH)
+    cli_out = format_runner_result_cli(res)
+    assert "Final state:          STALE (external response detected on HH)" in cli_out
+    assert "REAL HH SUBMIT:       0" in cli_out
+
+
+# ---------------------------------------------------------------------------
+# Test 14: ALREADY_RESPONDED in live mode transitions to STALE via state machine
+# ---------------------------------------------------------------------------
+
+def test_already_responded_in_live_mode_transitions_to_stale_via_state_machine(clean_db):
+    """In live mode, already responded transitions app to STALE via state machine with evidence."""
+    def already_responded_eval(script: str) -> str:
+        return json.dumps({
+            "url": "https://hh.ru/vacancy/136704137",
+            "title": "Python developer middle",
+            "h1": "Python developer middle",
+            "has_submit_btn": False,
+            "has_apply_btn": False,
+            "already_responded": True,
+            "is_vacancy_page": True,
+        })
+
+    app_id = "app_hh_live_already"
+    db.save_hh_application({
+        "application_id": app_id,
+        "vacancy_stable_id": "hh:136704137",
+        "title": "Python developer middle",
+        "employer": "Maxima.tech",
+        "state": "READY_TO_SUBMIT",
+        "created_at": "2026-08-30T12:00:00",
+        "updated_at": "2026-08-30T12:00:00",
+    })
+
+    res = run_application(app_id, confirm_submit=True, evaluate_fn=already_responded_eval, dry_run=False)
+
+    assert res.real_hh_submit == 0
+    assert res.submit_confirmation is False
+    assert res.final_application_state == "STALE"
+    assert "Application is already responded on HeadHunter" in res.reason
+
+    # Application state in DB is cleanly moved to STALE
+    stored_app = db.get_hh_application(app_id)
+    assert stored_app["state"] == "STALE"
+
+    # Audit trail records external_response_detected via transition_application
+    transitions = db.list_hh_application_transitions(app_id)
+    assert len(transitions) == 1
+    assert transitions[0]["state"] == "STALE"
+    assert transitions[0]["previous_state"] == "READY_TO_SUBMIT"
+    assert transitions[0]["reason"] == "external_response_detected"
+    ev = transitions[0]["evidence"]
+    assert ev.get("detected_external") is True
+    assert ev.get("submit_executed") is False
+
+    # CLI formatting shows STALE (external response detected on HH)
+    cli_out = format_runner_result_cli(res)
+    assert "Final state:          STALE (external response detected on HH)" in cli_out
+
+
+# ---------------------------------------------------------------------------
+# Test 15: Stale external application is not picked on second run
+# ---------------------------------------------------------------------------
+
+def test_stale_external_application_not_picked_on_second_run(clean_db):
+    """When an application becomes STALE due to external response, next run skips it."""
+    def already_responded_eval(script: str) -> str:
+        return json.dumps({
+            "url": "https://hh.ru/vacancy/136704137",
+            "title": "Python developer middle",
+            "h1": "Python developer middle",
+            "has_submit_btn": False,
+            "has_apply_btn": False,
+            "already_responded": True,
+            "is_vacancy_page": True,
+        })
+
+    app_id = "app_hh_stale_seq"
+    db.save_hh_application({
+        "application_id": app_id,
+        "vacancy_stable_id": "hh:136704137",
+        "title": "Python developer middle",
+        "employer": "Maxima.tech",
+        "state": "READY_TO_SUBMIT",
+        "created_at": "2026-08-30T12:00:00",
+        "updated_at": "2026-08-30T12:00:00",
+    })
+
+    # First run moves app to STALE
+    res1 = run_application(app_id, confirm_submit=True, evaluate_fn=already_responded_eval, dry_run=False)
+    assert res1.final_application_state == "STALE"
+
+    # Second run attempts next application from queue: app is STALE, so queue is empty
+    res2 = run_next_application(confirm_submit=True, evaluate_fn=already_responded_eval, dry_run=False)
+    assert res2.selected_application is None
+    assert "NO_APPLICATION_SELECTED" in res2.reason
+

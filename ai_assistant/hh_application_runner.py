@@ -320,20 +320,17 @@ def run_application(
                     try:
                         transition_application(
                             application_id=app_id,
-                            to_state=HHApplicationState.SUBMITTED,
-                            reason="already_responded_on_hh",
+                            to_state=HHApplicationState.STALE,
+                            reason="external_response_detected",
                             evidence={
-                                "submit_executed": False,
-                                "post_submit_verification": "detected_existing_on_hh",
+                                "detected_external": True,
                                 "hh_status": getattr(nav_res, "status", "ALREADY_RESPONDED"),
+                                "submit_executed": False,
                                 "reason": getattr(nav_res, "reason", "Already responded on HeadHunter"),
                             },
-                            confirm_submit=True,
                         )
-                        from .application_tracking import set_application_status, ApplicationStatus
-                        set_application_status(vac_stable_id or f"hh:{vac_id}", ApplicationStatus.SUBMITTED)
                     except Exception as te:
-                        logger.warning(f"Could not transition already responded app {app_id}: {te}")
+                        logger.warning(f"Could not transition already responded app {app_id} to STALE: {te}")
                 return RunnerExecutionResult(
                     application_id=app_id,
                     vacancy_id=vac_id,
@@ -349,7 +346,7 @@ def run_application(
                     submit_confirmation=False,
                     real_hh_submit=0,
                     post_submit_verification=RunnerPreCheckStatus.PASS,
-                    final_application_state=HHApplicationState.SUBMITTED.value,
+                    final_application_state=HHApplicationState.STALE.value if not dry_run else current_state,
                     reason="Application is already responded on HeadHunter.",
                 )
             return RunnerExecutionResult(
@@ -586,7 +583,7 @@ def format_runner_result_cli(res: RunnerExecutionResult, mode: str = "preview") 
         quest_str = res.questionnaire.value
         post_str = res.post_submit_verification.value
         if res.real_hh_submit == 0 and "already responded" in (res.reason or "").lower():
-            final_state_str = "ALREADY_SUBMITTED (detected on HH)"
+            final_state_str = "STALE (external response detected on HH)"
         else:
             final_state_str = res.final_application_state
 
