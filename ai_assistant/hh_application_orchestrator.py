@@ -24,7 +24,7 @@ import hashlib
 import json
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set
 
@@ -50,8 +50,8 @@ class HHApplicationState(str, Enum):
     DISCOVERED = "DISCOVERED"
     MATCHED = "MATCHED"
     APPLICATION_IN_PROGRESS = "APPLICATION_IN_PROGRESS"
-    QUESTIONNAIRE_AUTO_FILLED = "QUESTIONNAIRE_AUTO_FILLED"
-    READY_FOR_AUTONOMOUS_SUBMIT = "READY_FOR_AUTONOMOUS_SUBMIT"
+    QUESTIONNAIRE_AUTO_FILLED = "QUESTIONNAIRE_AUTO_FILLED"  # legacy Stage 35, deprecated
+    READY_FOR_AUTONOMOUS_SUBMIT = "READY_FOR_AUTONOMOUS_SUBMIT"  # legacy Stage 35, deprecated
     MESSAGE_DETECTED = "MESSAGE_DETECTED"
     ANALYZED = "ANALYZED"
     DRAFT_READY = "DRAFT_READY"
@@ -110,13 +110,11 @@ LEGAL_TRANSITIONS: Dict[str, Set[str]] = {
     HHApplicationState.QUESTIONNAIRE_AUTO_FILLED.value: {
         HHApplicationState.READY_TO_SUBMIT.value,
         HHApplicationState.READY_FOR_AUTONOMOUS_SUBMIT.value,
-        HHApplicationState.SUBMITTED.value,
         HHApplicationState.NEEDS_HUMAN_REVIEW.value,
         HHApplicationState.BLOCKED.value,
         HHApplicationState.FAILED.value,
     },
     HHApplicationState.READY_FOR_AUTONOMOUS_SUBMIT.value: {
-        HHApplicationState.SUBMITTED.value,
         HHApplicationState.NEEDS_HUMAN_REVIEW.value,
         HHApplicationState.BLOCKED.value,
         HHApplicationState.FAILED.value,
@@ -188,18 +186,15 @@ LEGAL_TRANSITIONS: Dict[str, Set[str]] = {
         HHApplicationState.MESSAGE_AUTO_REPLIED.value,
         HHApplicationState.INTERVIEW_INVITED.value,
         HHApplicationState.REJECTED.value,
-        HHApplicationState.SUBMITTED.value,
         HHApplicationState.BLOCKED.value,
     },
     HHApplicationState.MESSAGE_AUTO_REPLIED.value: {
         HHApplicationState.MESSAGE_RECEIVED.value,
         HHApplicationState.INTERVIEW_INVITED.value,
         HHApplicationState.REJECTED.value,
-        HHApplicationState.SUBMITTED.value,
     },
     HHApplicationState.INTERVIEW_INVITED.value: {
         HHApplicationState.INTERVIEW_INVITED.value,
-        HHApplicationState.SUBMITTED.value,
     },
     HHApplicationState.REJECTED.value: {
         HHApplicationState.REJECTED.value,
@@ -382,9 +377,19 @@ def transition_application(
 
         # Invariant: Human Confirmation Gate for SUBMITTED
         if target_state_str == HHApplicationState.SUBMITTED.value:
+            if not confirm_submit:
+                return TransitionResult(
+                    ok=False,
+                    application_id=application_id,
+                    from_state=current_state,
+                    to_state=target_state_str,
+                    reason="Explicit human confirmation (--confirm-submit / confirm_submit=True) required to enter SUBMITTED state.",
+                    error="MISSING_HUMAN_CONFIRMATION",
+                )
+
             if current_state == HHApplicationState.SUBMITTED.value:
                 # Read-only audit/verification update on an already SUBMITTED application
-                now = datetime.utcnow().isoformat()
+                now = datetime.now(timezone.utc).isoformat()
                 app.last_transition_reason = reason
                 app.updated_at = now
                 if evidence:
@@ -412,27 +417,14 @@ def transition_application(
                     transition_id=trans_id,
                 )
 
-            if current_state not in (
-                HHApplicationState.READY_TO_SUBMIT.value,
-                HHApplicationState.READY_FOR_AUTONOMOUS_SUBMIT.value,
-                HHApplicationState.QUESTIONNAIRE_AUTO_FILLED.value,
-            ):
+            if current_state != HHApplicationState.READY_TO_SUBMIT.value:
                 return TransitionResult(
                     ok=False,
                     application_id=application_id,
                     from_state=current_state,
                     to_state=target_state_str,
-                    reason=f"Cannot transition to SUBMITTED from '{current_state}'. Must be READY_TO_SUBMIT or READY_FOR_AUTONOMOUS_SUBMIT.",
+                    reason=f"Cannot transition to SUBMITTED from '{current_state}'. Must be READY_TO_SUBMIT.",
                     error="SUBMIT_FORBIDDEN_FROM_STATE",
-                )
-            if not confirm_submit and current_state == HHApplicationState.READY_TO_SUBMIT.value:
-                return TransitionResult(
-                    ok=False,
-                    application_id=application_id,
-                    from_state=current_state,
-                    to_state=target_state_str,
-                    reason="Explicit human confirmation (--confirm-submit / confirm_submit=True) required to enter SUBMITTED state.",
-                    error="MISSING_HUMAN_CONFIRMATION",
                 )
 
         # Apply update
