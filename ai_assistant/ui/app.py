@@ -277,14 +277,11 @@ def review_package(vacancy_stable_id: str, req: ReviewRequest) -> Dict[str, Any]
     init_db()
     from ..application_review import (
         get_application_review,
-        approve_review,
-        reject_review,
         ApplicationReview,
         ReviewStatus,
         save_application_review,
         REVIEW_VERSION,
     )
-    from ..application_tracking import get_application_status
     from ..db import get_vacancy_by_id, get_application_package, _row_to_vacancy
     from datetime import datetime
 

@@ -1165,7 +1165,6 @@ class AutonomousJobAgent:
 
             # Check External Questionnaire / Google Form / Survey Link
             ext_form_urls = []
-            import re
             url_matches = re.findall(r'https?://[^\s<>"]+', msg_text)
             is_ext_form = False
             form_url = ""

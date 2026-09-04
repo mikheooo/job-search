@@ -185,7 +185,6 @@ def run_message_watcher_cycle(
         except Exception:
             profile_dict = {}
 
-    from . import db
     db.init_db()
 
     # 2. Resolve CDP evaluate function

@@ -76,5 +76,24 @@
     - Удален недостижимый мертвый блок кода в `dashboard_show_canonical` после `return 0` (ссылался на необъявленный `row`).
 - Проверки:
   - `ruff check ai_assistant/ integrations/ scripts/ tools/ --select F821` -> 0 ошибок (All checks passed).
+- Коммит: `fix(syntax): resolve all undefined names (F821)` (`0c81d65`).
+
+### 1.4. Переопределённые функции и импорты (F811)
+- В `ai_assistant/application_queue.py`:
+  - Удалена дублирующая устаревшая функция `build_queue_items` (~L472), перетиравшая каноническую дедупликацию.
+  - Исправлен баг в канонической версии `build_queue_items` (~L344): точные дубликаты (EXACT, одинаковый нормализованный URL) схлопываются в один элемент очереди, а вероятные дубликаты (PROBABLE) остаются отдельными элементами очереди и не объединяются ошибочно.
+  - Очищены повторяющиеся тройные импорты в `_select_representative`.
+  - Добавлены 3 новых модульных теста в `tests/test_application_queue.py`:
+    - `test_exact_duplicates_collapse_in_queue`: точные дубликаты схлопываются в один QueueItem;
+    - `test_probable_duplicates_stay_separate_in_queue`: вероятные дубликаты остаются отдельными элементами;
+    - `test_unmapped_canonical_passes_through_in_queue`: новая немаппированная вакансия генерирует канонический ID и проходит в очередь.
+- В `ai_assistant/cli.py`:
+  - Удален дубликат `review_reject` (сохранен вариант с обработкой `Exception`).
+  - Удален полный дубликат `queue_duplicates`.
+- Очищены повторные импорты в файлах `application_dashboard.py`, `application_queue.py`, `cli.py`, `hh_autonomous_agent.py`, `hh_message_watcher.py`, `ui/app.py`.
+- Проверки:
+  - `ruff check ai_assistant/ integrations/ scripts/ tools/ --select F811` -> 0 ошибок (All checks passed).
+  - `pytest tests/test_application_queue.py` -> 17 passed.
+
 
 

@@ -28,7 +28,6 @@ from .vacancy_identity import (
     CanonicalVacancy,
 )
 from .db import (
-    get_connection, init_db,
     list_vacancies, get_deep_analysis, get_application_package,
     get_submission, get_all_submissions,
     get_verification, list_verifications,
@@ -243,7 +242,6 @@ def _get_canonical_status(canonical_id: str, aliases: List[Tuple[Any, str]]) -> 
 
 def _get_canonical_alias_count(canonical_id: str) -> int:
     """Get number of aliases for a canonical vacancy."""
-    from .vacancy_identity import get_aliases_for_canonical
     aliases = get_aliases_for_canonical(canonical_id)
     return len(aliases)
 
@@ -292,7 +290,6 @@ def build_dashboard() -> ApplicationDashboard:
     probable_duplicate_canonicals = 0
     
     # First, we need to get canonical vacancies and their aliases to determine match types
-    from .vacancy_identity import get_all_canonical_vacancies, get_aliases_for_canonical, MatchType
     
     all_canonical = get_all_canonical_vacancies()
     canonical_alias_counts: Dict[str, int] = {}
@@ -571,13 +568,11 @@ def get_dashboard_show(vacancy_stable_id: str) -> Optional[Dict[str, Any]]:
     
     # Resolve canonical identity first
     from .db import get_vacancy_by_id
-    from .db import _row_to_vacancy
-    from .vacancy_identity import resolve_vacancy_identity, get_aliases_for_canonical
+    from .vacancy_identity import get_aliases_for_canonical
     
     row = get_vacancy_by_id(vacancy_stable_id)
     if not row:
         return None
-    from .db import _row_to_vacancy
     vac = _row_to_vacancy(row)
     
     # Resolve canonical identity
@@ -602,7 +597,6 @@ def get_dashboard_show(vacancy_stable_id: str) -> Optional[Dict[str, Any]]:
     }
     
     # Get canonical vacancy info
-    from .vacancy_identity import get_canonical_by_id
     canon = get_canonical_by_id(canonical_id)
     if canon:
         detail["canonical"] = {
@@ -630,7 +624,6 @@ def get_dashboard_show(vacancy_stable_id: str) -> Optional[Dict[str, Any]]:
     
     # Tracking (effective status)
     from .vacancy_identity import get_aliases_for_canonical
-    from .application_tracking import get_application_status, ApplicationStatus
     
     canonical_groups = _get_all_canonical_groups()
     canonical_id = result.canonical_id
