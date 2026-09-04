@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Set
 from . import config
 from .schema import Vacancy
@@ -357,6 +357,13 @@ def init_db() -> None:
     cursor.execute('''CREATE INDEX IF NOT EXISTS idx_hh_trans_app ON hh_application_transitions(application_id)''')
     cursor.execute('''CREATE INDEX IF NOT EXISTS idx_hh_trans_state ON hh_application_transitions(state)''')
     cursor.execute('''CREATE INDEX IF NOT EXISTS idx_hh_trans_created ON hh_application_transitions(created_at)''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS system_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    ''')
 
     # Stage 51 — Autonomous Notifications
     cursor.execute('''
@@ -2876,3 +2883,49 @@ def resolve_vacancy_by_hash_prefix(hash_prefix: str) -> Optional[str]:
     return None
 
 get_vacancy = get_vacancy_by_id
+
+
+def get_system_setting(key: str, default: Optional[str] = None) -> Optional[str]:
+    init_db()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM system_settings WHERE key = ?", (key,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return row[0]
+    return default
+
+
+def set_system_setting(key: str, value: str) -> None:
+    init_db()
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)",
+        (key, value, now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def is_submit_paused() -> bool:
+    return get_system_setting("submit_paused") == "1"
+
+
+def set_submit_paused(paused: bool) -> None:
+    set_system_setting("submit_paused", "1" if paused else "0")
+
+
+def count_submitted_transitions_since(since_iso: str) -> int:
+    init_db()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT COUNT(*) FROM hh_application_transitions WHERE state = 'SUBMITTED' AND created_at >= ?",
+        (since_iso,),
+    )
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
