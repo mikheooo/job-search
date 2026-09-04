@@ -136,6 +136,7 @@ def run_next_application(
     confirm_submit: bool = False,
     evaluate_fn: Optional[Callable[[str], str]] = None,
     cdp_url: Optional[str] = None,
+    dry_run: bool = False,
 ) -> RunnerExecutionResult:
     """Select and run the next READY_TO_SUBMIT application in the queue."""
     db.init_db()
@@ -177,6 +178,7 @@ def run_application(
     queue_ready_count: int = 0,
     queue_review_count: int = 0,
     queue_submitted_count: int = 0,
+    dry_run: bool = False,
 ) -> RunnerExecutionResult:
     """Execute a single HeadHunter application with strict gating and verification."""
     db.init_db()
@@ -407,31 +409,52 @@ def run_application(
         real_submit_count = 1
     else:
         if evaluate_fn is not None:
-            raw = evaluate_fn("""(() => {
-                let submitBtn = document.querySelector('[data-qa*="response-submit-popup"], [data-qa*="response-submit"]');
-                if (!submitBtn) {
-                    submitBtn = document.querySelector('[data-qa="vacancy-response-link-top"], [data-qa="vacancy-response-link-bottom"]');
-                }
-                if (!submitBtn) return JSON.stringify({ ok: false, reason: 'Submit or Apply button not found' });
-                submitBtn.click();
-                return JSON.stringify({ ok: true });
-            })()""")
-            res_obj = json.loads(raw) if isinstance(raw, str) else raw
-            if not res_obj.get("ok"):
+            from .hh_submission import execute_hh_submission
+            exec_res = execute_hh_submission(
+                vacancy_stable_id=vac_stable_id or f"hh:{vac_id}",
+                evaluate_fn=evaluate_fn,
+                human_confirmed=confirm_submit,
+                dry_run=dry_run,
+            )
+            if exec_res.status == "DRY_RUN_OK":
                 return RunnerExecutionResult(
                     application_id=app_id,
                     vacancy_id=vac_id,
                     vacancy_title=vac_title,
                     company=company,
+                    queue_ready_count=queue_ready_count,
+                    queue_review_count=queue_review_count,
+                    queue_submitted_count=queue_submitted_count,
+                    selected_application=selected_app_label,
                     pre_submit_audit=audit_status,
                     navigation=nav_status,
                     questionnaire=quest_status,
-                    submit_confirmation=True,
+                    submit_confirmation=False,
                     real_hh_submit=0,
                     final_application_state=current_state,
-                    reason=f"Submit click failed: {res_obj.get('reason')}",
+                    reason=exec_res.reason,
                 )
-        real_submit_count = 1
+            if not exec_res.ok:
+                return RunnerExecutionResult(
+                    application_id=app_id,
+                    vacancy_id=vac_id,
+                    vacancy_title=vac_title,
+                    company=company,
+                    queue_ready_count=queue_ready_count,
+                    queue_review_count=queue_review_count,
+                    queue_submitted_count=queue_submitted_count,
+                    selected_application=selected_app_label,
+                    pre_submit_audit=audit_status,
+                    navigation=nav_status,
+                    questionnaire=quest_status,
+                    submit_confirmation=confirm_submit,
+                    real_hh_submit=exec_res.submit_count,
+                    final_application_state=current_state,
+                    reason=exec_res.reason,
+                )
+            real_submit_count = exec_res.submit_count
+        else:
+            real_submit_count = 1
 
     # Step 6: Post-Submit Verification
     import time

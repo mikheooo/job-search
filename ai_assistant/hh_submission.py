@@ -32,6 +32,7 @@ No DB writes, no cookies/storage access.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import os
 import re
@@ -800,3 +801,268 @@ class HHSubmissionGates:
             )
 
         return GateCheckResult(passed=True, reason="All 11 gates passed successfully")
+
+
+@dataclass
+class SubmissionExecutionResult:
+    ok: bool = False
+    status: str = "BLOCKED"  # SUBMITTED, DRY_RUN_OK, ALREADY_APPLIED, BLOCKED, FAIL_CLOSED, FAILED
+    reason: str = ""
+    vacancy_stable_id: str = ""
+    submit_count: int = 0
+    gate_check_result: Optional[GateCheckResult] = None
+    live_page_result: Optional[Any] = None
+    verification_status: Optional[str] = None
+    submission_id: Optional[str] = None
+
+
+def execute_hh_submission(
+    vacancy_stable_id: str,
+    evaluate_fn: Optional[Callable[[str], str]] = None,
+    human_confirmed: bool = False,
+    dry_run: bool = False,
+    candidate_profile: Optional[CandidateProfile] = None,
+    profile_path: Optional[str] = None,
+    submission_id: Optional[str] = None,
+) -> SubmissionExecutionResult:
+    """Unified entry point for HeadHunter submissions across all execution paths.
+
+    Enforces:
+    1. Live DOM inspection via check_live_page
+    2. Short-circuit and DB update if ALREADY_APPLIED
+    3. Full snapshot extraction
+    4. Gating via HHSubmissionGates.check_all_gates (all 11 gates)
+    5. Safe exit if dry_run (submit_count == 0)
+    6. Single physical click if human_confirmed and SUBMIT_ALLOWED
+    7. Post-submit verification and synchronized DB state update
+    """
+    import uuid
+    from .db import (
+        init_db,
+        get_application_package,
+        get_hh_application,
+        get_hh_application_by_vacancy,
+        save_hh_application,
+        save_submission,
+    )
+    from .application_review import get_application_review
+    from .hh_live_page_checks import check_live_page
+    from .application_tracking import set_application_status, ApplicationStatus
+
+    init_db()
+    sub_id = submission_id or f"{vacancy_stable_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
+    if evaluate_fn is None:
+        return SubmissionExecutionResult(
+            ok=False,
+            status="BLOCKED",
+            reason="No browser evaluation function (evaluate_fn) provided for CDP session",
+            vacancy_stable_id=vacancy_stable_id,
+            submit_count=0,
+            submission_id=sub_id,
+        )
+
+    # 1. Live page inspection
+    live_result = check_live_page(evaluate_fn, expected_vacancy_id=vacancy_stable_id)
+    if not live_result.is_ok:
+        if live_result.already_applied or live_result.error_reason == "ALREADY_APPLIED":
+            # Synchronize state: already applied on HH
+            set_application_status(vacancy_stable_id, ApplicationStatus.SUBMITTED)
+            app = get_hh_application(vacancy_stable_id) or get_hh_application_by_vacancy(vacancy_stable_id)
+            if app:
+                app_dict = dict(app)
+                app_dict["state"] = "SUBMITTED"
+                save_hh_application(app_dict)
+            return SubmissionExecutionResult(
+                ok=False,
+                status="ALREADY_APPLIED",
+                reason=live_result.reason,
+                vacancy_stable_id=vacancy_stable_id,
+                submit_count=0,
+                live_page_result=live_result,
+                submission_id=sub_id,
+            )
+        return SubmissionExecutionResult(
+            ok=False,
+            status="BLOCKED",
+            reason=live_result.reason,
+            vacancy_stable_id=vacancy_stable_id,
+            submit_count=0,
+            live_page_result=live_result,
+            submission_id=sub_id,
+        )
+
+    # 2. Form snapshot preparation
+    review = get_application_review(vacancy_stable_id)
+    pkg_row = get_application_package(vacancy_stable_id)
+    pkg_data = json.loads(pkg_row[2]) if (pkg_row and pkg_row[2]) else {}
+    cover_letter = pkg_data.get("cover_letter") or (getattr(review, "cover_letter", "") if review else "")
+    expected_fp = getattr(review, "form_fingerprint", None) or getattr(review, "fingerprint", None) if review else None
+
+    form_snapshot = {
+        "fingerprint": expected_fp,
+        "cover_letter": cover_letter,
+        "package": pkg_data,
+        "already_applied": live_result.already_applied,
+        "fields": pkg_data.get("questions") or [],
+    }
+
+    # 3. Full gates check (all 11 gates)
+    gate_result = HHSubmissionGates.check_all_gates(
+        vacancy_stable_id=vacancy_stable_id,
+        current_url=live_result.current_url or "",
+        form_snapshot=form_snapshot,
+        human_confirmed=human_confirmed,
+        dry_run=dry_run,
+        candidate_profile=candidate_profile,
+        profile_path=profile_path,
+        review_obj=review,
+        live_page_result=live_result,
+    )
+    if not gate_result.passed:
+        return SubmissionExecutionResult(
+            ok=False,
+            status="BLOCKED",
+            reason=gate_result.reason,
+            vacancy_stable_id=vacancy_stable_id,
+            submit_count=0,
+            gate_check_result=gate_result,
+            live_page_result=live_result,
+            submission_id=sub_id,
+        )
+
+    # 4. Dry-run early exit
+    if dry_run:
+        return SubmissionExecutionResult(
+            ok=True,
+            status="DRY_RUN_OK",
+            reason=f"All safety gates passed in dry-run mode ({gate_result.reason}). Zero browser mutations performed.",
+            vacancy_stable_id=vacancy_stable_id,
+            submit_count=0,
+            gate_check_result=gate_result,
+            live_page_result=live_result,
+            submission_id=sub_id,
+        )
+
+    # 5. Execute real submit click
+    save_submission(
+        vacancy_stable_id,
+        json.dumps({"status": "SUBMITTING", "submission_id": sub_id}),
+        status="SUBMITTING",
+        submission_id=sub_id,
+    )
+
+    submit_click_js = """(() => {
+        const submitBtn = document.querySelector('[data-qa*="response-submit-popup"], [data-qa*="response-submit"], button[type="submit"], [data-qa="vacancy-response-link-top"], [data-qa="vacancy-response-link-bottom"]');
+        if (!submitBtn) return JSON.stringify({ ok: false, reason: 'Submit or Apply button not found in DOM' });
+        if (submitBtn.disabled) return JSON.stringify({ ok: false, reason: 'Submit button is disabled' });
+        submitBtn.click();
+        return JSON.stringify({ ok: true });
+    })()"""
+
+    try:
+        raw_click = evaluate_fn(submit_click_js)
+        click_res = json.loads(raw_click) if isinstance(raw_click, str) else raw_click
+    except Exception as e:
+        click_res = {"ok": False, "reason": str(e)}
+
+    if not click_res.get("ok"):
+        save_submission(
+            vacancy_stable_id,
+            json.dumps({"error": click_res.get("reason"), "submission_id": sub_id}),
+            status="FAILED",
+            submission_id=sub_id,
+        )
+        return SubmissionExecutionResult(
+            ok=False,
+            status="FAILED",
+            reason=f"Submit click failed: {click_res.get('reason')}",
+            vacancy_stable_id=vacancy_stable_id,
+            submit_count=1,
+            gate_check_result=gate_result,
+            live_page_result=live_result,
+            submission_id=sub_id,
+        )
+
+    # 6. Post-submit verification
+    success_markers = ("вы откликнулись", "ваш отклик", "отклик отправлен", "negotiations", "отклики и приглашения")
+    url_after = live_result.current_url or ""
+    verified = False
+    try:
+        post_raw = evaluate_fn("""(() => {
+            const bodyText = (document.body ? document.body.innerText : '').slice(0, 4000).toLowerCase();
+            const url = window.location.href || '';
+            const respondedSuccessEl = document.querySelector('[data-qa*="responded-success"], [data-qa*="vacancy-response-link-view-topic"]');
+            return JSON.stringify({
+                has_responded_success: !!respondedSuccessEl,
+                has_topic_link: !!respondedSuccessEl,
+                text: bodyText,
+                url: url,
+                has_banner: !!respondedSuccessEl
+            });
+        })()""")
+        post_data = json.loads(post_raw) if isinstance(post_raw, str) else post_raw
+        body_head = post_data.get("text", "") or post_data.get("evidence_snippet", "")
+        url_after = post_data.get("url", url_after)
+        has_banner = post_data.get("has_banner", False) or post_data.get("has_responded_success", False) or post_data.get("has_topic_link", False)
+        verified = bool(has_banner or any(m in body_head.lower() for m in success_markers) or "negotiations" in url_after.lower())
+    except Exception:
+        verified = False
+
+    # 7. Update all databases synchronously
+    final_status = "SUBMITTED" if verified else "AMBIGUOUS"
+    sub_payload = {
+        "submission_id": sub_id,
+        "vacancy_stable_id": vacancy_stable_id,
+        "status": final_status,
+        "verified": verified,
+        "url_after": url_after,
+    }
+    save_submission(
+        vacancy_stable_id,
+        json.dumps(sub_payload),
+        status=final_status,
+        submission_id=sub_id,
+    )
+
+    from .submission_verifier import save_verification, SubmissionVerification, VerificationStatus
+    verif = SubmissionVerification(
+        vacancy_stable_id=vacancy_stable_id,
+        submission_id=sub_id,
+        verification_status=VerificationStatus.VERIFIED if verified else VerificationStatus.AMBIGUOUS,
+        evidence={"url_after": url_after, "body_marker": verified},
+        final_url=url_after,
+        verified_at=datetime.utcnow().isoformat(),
+    )
+    try:
+        save_verification(verif)
+    except Exception as e:
+        logger.warning(f"Could not save submission verification: {e}")
+
+    if verified:
+        set_application_status(
+            vacancy_stable_id,
+            ApplicationStatus.SUBMITTED,
+        )
+
+    app = get_hh_application(vacancy_stable_id) or get_hh_application_by_vacancy(vacancy_stable_id)
+    if app:
+        app_dict = dict(app)
+        app_dict["state"] = "SUBMITTED" if verified else "AMBIGUOUS_POST_SUBMIT"
+        save_hh_application(app_dict)
+
+    if review and getattr(review, "review_id", None):
+        _submitted_reviews.add(review.review_id)
+    _submitted_reviews.add(vacancy_stable_id)
+
+    return SubmissionExecutionResult(
+        ok=verified,
+        status=final_status,
+        reason="Application submitted and verified successfully" if verified else "Submit clicked but post-submit verification ambiguous",
+        vacancy_stable_id=vacancy_stable_id,
+        submit_count=1,
+        gate_check_result=gate_result,
+        live_page_result=live_result,
+        verification_status="VERIFIED" if verified else "AMBIGUOUS",
+        submission_id=sub_id,
+    )

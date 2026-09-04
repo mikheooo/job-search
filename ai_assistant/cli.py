@@ -856,15 +856,23 @@ def review_reject(vacancy_stable_id: str, note: str | None = None) -> int:
         return 1
 
 
-def submit_vacancy(vacancy_stable_id: str, confirm_submit: bool = False, force: bool = False, profile_path: str | None = None) -> int:
+def submit_vacancy(vacancy_stable_id: str, confirm_submit: bool = False, force: bool = False, profile_path: str | None = None, dry_run: bool = False) -> int:
     """Submit a single vacancy application."""
-    if not confirm_submit:
-        print("Submit confirmation required. Use --confirm-submit to proceed.")
+    if not confirm_submit and not dry_run:
+        print("Submit confirmation required. Use --confirm-submit to proceed (or --dry-run for safety simulation).")
         print("No browser action performed.")
         return 1
     from .browser_executor import submit_application_in_browser
     try:
-        result = submit_application_in_browser(vacancy_stable_id, confirm_submit=True, force=force, profile_path=None)
+        result = submit_application_in_browser(vacancy_stable_id, confirm_submit=confirm_submit, force=force, profile_path=None, dry_run=dry_run)
+        if getattr(result, "status", "") == "DRY_RUN_OK":
+            print("SUBMISSION: DRY_RUN_OK")
+            print(f"Vacancy: {result.vacancy_stable_id}")
+            print("All safety gates passed in read-only simulation mode.")
+            print("Safety:")
+            print("SUBMIT CLICKED: NO")
+            print("APPLICATION SENT: NO")
+            return 0
         if result.status == "SUBMITTED":
             print(f"SUBMISSION: SUBMITTED")
             print(f"Vacancy: {result.vacancy_stable_id}")
@@ -3681,6 +3689,7 @@ def application_runner_cmd(
     confirm_submit: bool = False,
     as_json: bool = False,
     evaluate_fn: Optional[Callable[[str], str]] = None,
+    dry_run: bool = False,
 ) -> int:
     """Execute controlled application runner command (Stage 46)."""
     import json
@@ -3700,7 +3709,7 @@ def application_runner_cmd(
                 evaluate_fn = _resolve_hh_evaluate(_DEFAULT_HH_CDP_URL, "hh.ru")
             except Exception:
                 evaluate_fn = None
-        res = run_next_application(confirm_submit=confirm_submit, evaluate_fn=evaluate_fn)
+        res = run_next_application(confirm_submit=confirm_submit, evaluate_fn=evaluate_fn, dry_run=dry_run)
     else:
         print(f"Unknown runner command: {command}", file=sys.stderr)
         return 1
@@ -4466,6 +4475,7 @@ def main() -> int:
     submit_parser = subparsers.add_parser("submit", help="Submit application (requires --confirm-submit)")
     submit_parser.add_argument("vacancy_stable_id", type=str)
     submit_parser.add_argument("--confirm-submit", action="store_true", help="Explicitly confirm submission")
+    submit_parser.add_argument("--dry-run", action="store_true", help="Execute gates in read-only mode without submitting")
     submit_parser.add_argument("--profile", type=str, default=None, help="Path to candidate_profile.json")
     submit_parser.add_argument("--force", action="store_true", help="Force re-submit if needed")
 
@@ -4697,6 +4707,7 @@ def main() -> int:
     runner_prev_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
     runner_next_p = runner_sub.add_parser("next", help="Execute pre-checks for the next application without submitting (or submit with --confirm-submit)")
     runner_next_p.add_argument("--confirm-submit", action="store_true", help="Explicit human confirmation to proceed with submit")
+    runner_next_p.add_argument("--dry-run", action="store_true", help="Execute gates in read-only mode without submitting")
     runner_next_p.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
 
     # Stage 51 — Autonomous Job Application Agent
@@ -4880,12 +4891,12 @@ def main() -> int:
             browser_parser.print_help()
             return 1
     elif args.command == "submit":
-        if not getattr(args, "confirm_submit", False):
-            print("Submit confirmation required. Use --confirm-submit to proceed.")
+        if not getattr(args, "confirm_submit", False) and not getattr(args, "dry_run", False):
+            print("Submit confirmation required. Use --confirm-submit to proceed (or --dry-run for safety simulation).")
             print("No browser action performed.")
             return 1
         from .browser_executor import submit_application_in_browser
-        return submit_vacancy(args.vacancy_stable_id, confirm_submit=True, force=args.force)
+        return submit_vacancy(args.vacancy_stable_id, confirm_submit=getattr(args, "confirm_submit", False), force=args.force, dry_run=getattr(args, "dry_run", False))
     elif args.command == "submit-next":
         if not getattr(args, "confirm_submit", False):
             print("Submit confirmation required. Use --confirm-submit to proceed.")
@@ -5093,6 +5104,7 @@ def main() -> int:
                 command=args.runner_command,
                 confirm_submit=getattr(args, "confirm_submit", False),
                 as_json=getattr(args, "as_json", False),
+                dry_run=getattr(args, "dry_run", False),
             )
         else:
             single_app_parser.print_help()

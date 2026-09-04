@@ -30,7 +30,16 @@ from ai_assistant.hh_application_runner import (
     RunnerPreCheckStatus,
     RunnerExecutionResult,
 )
+from ai_assistant.application_review import (
+    ApplicationReview,
+    ReviewStatus,
+    compute_review_fingerprint,
+    save_application_review,
+)
 from ai_assistant.hh_application_orchestrator import HHApplicationState
+from ai_assistant.hh_submission import (
+    clear_submitted_reviews,
+)
 
 
 @pytest.fixture
@@ -38,11 +47,13 @@ def clean_db(tmp_path):
     orig_db = config.DB_FILE
     db_file = str(tmp_path / "test_stage46_runner.db")
     config.DB_FILE = db_file
+    clear_submitted_reviews()
     db.init_db()
 
     yield {"db_file": db_file}
 
     config.DB_FILE = orig_db
+    clear_submitted_reviews()
 
 
 class MockRunnerBrowser:
@@ -184,9 +195,34 @@ def test_next_without_confirm_flag_stops_at_gate(clean_db):
 # Test 6 & 7: Confirm Submit Executes One Submit and Halts
 # ---------------------------------------------------------------------------
 
-def test_confirm_submit_executes_one_and_halts(clean_db):
+def test_confirm_submit_executes_one_and_halts(clean_db, monkeypatch):
     """With confirm_submit=True, executes exactly 1 submit, verifies it, and does not auto-advance."""
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
     browser = MockRunnerBrowser()
+
+    sid = "hh:136704137"
+    cover_letter = "Tailored cover letter for Python developer middle at Maxima.tech"
+    resume_version = "v1"
+    pkg_payload = {
+        "vacancy_stable_id": sid,
+        "cover_letter": cover_letter,
+        "resume_version": resume_version,
+        "title": "Python developer middle",
+        "validation_status": "VALID",
+    }
+    fp = compute_review_fingerprint(sid, pkg_payload)
+
+    db.save_application_package(
+        sid,
+        resume_version,
+        json.dumps(pkg_payload),
+    )
+    save_application_review(ApplicationReview(
+        vacancy_stable_id=sid,
+        status=ReviewStatus.APPROVED,
+        form_fingerprint=fp,
+        review_id="rev_136704137",
+    ))
 
     # Two ready applications in queue
     db.save_hh_application({

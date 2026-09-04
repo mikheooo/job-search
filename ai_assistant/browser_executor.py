@@ -39,6 +39,7 @@ class SubmitStatus(str, Enum):
     FAILED = "FAILED"
     AMBIGUOUS = "AMBIGUOUS"
     BLOCKED = "BLOCKED"
+    DRY_RUN_OK = "DRY_RUN_OK"
 
 class FlowType(str, Enum):
     NATIVE_FORM = "NATIVE_FORM"           # TYPE A: Native application form directly on vacancy page
@@ -305,6 +306,7 @@ class SubmitResult(BaseModel):
     flow_type: Optional[FlowType] = None
     application_domain: Optional[str] = None
     verification_strategy: Optional[str] = None
+    submit_count: int = 0
     executor_version: str = EXECUTOR_VERSION
 
     model_config = {"extra": "forbid"}
@@ -2047,6 +2049,7 @@ def submit_application_in_browser(
     profile_path: str | None = None,
     adapter: BrowserAdapter | None = None,
     force: bool = False,
+    dry_run: bool = False,
 ) -> SubmitResult:
     """Submit an application in the browser with full safety checks.
     
@@ -2063,7 +2066,7 @@ def submit_application_in_browser(
     
     If any check fails, returns error result without calling submit_application().
     """
-    if not confirm_submit:
+    if not confirm_submit and not dry_run:
         return SubmitResult(
             vacancy_stable_id=vacancy_stable_id,
             submission_id="",
@@ -2077,6 +2080,67 @@ def submit_application_in_browser(
     # Generate submission_id
     import uuid
     submission_id = f"{vacancy_stable_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
+    # Path A: If HeadHunter, route strictly through unified execute_hh_submission (Stage 41 / Remediation Phase 1.5)
+    if vacancy_stable_id.startswith("hh:"):
+        from .candidate_profile import load_candidate_profile
+        from .config import CANDIDATE_PROFILE_FILE
+        if profile_path:
+            prof = load_candidate_profile(profile_path)
+        elif CANDIDATE_PROFILE_FILE and CANDIDATE_PROFILE_FILE.strip():
+            try:
+                prof = load_candidate_profile(CANDIDATE_PROFILE_FILE)
+            except Exception:
+                prof = load_candidate_profile()
+        else:
+            prof = load_candidate_profile()
+
+        use_adapter = adapter or MockBrowserAdapter()
+        def _evaluate_wrapper(js: str) -> str:
+            if hasattr(use_adapter, "evaluate"):
+                return str(use_adapter.evaluate(js))
+            elif hasattr(use_adapter, "execute_script"):
+                return str(use_adapter.execute_script(js))
+            return json.dumps({"ok": True, "url": f"https://hh.ru/vacancy/{vacancy_stable_id.split(':')[-1]}"})
+
+        from .hh_submission import execute_hh_submission
+        exec_res = execute_hh_submission(
+            vacancy_stable_id=vacancy_stable_id,
+            evaluate_fn=_evaluate_wrapper,
+            human_confirmed=confirm_submit,
+            dry_run=dry_run,
+            candidate_profile=prof,
+            profile_path=profile_path,
+            submission_id=submission_id,
+        )
+        if exec_res.status == "SUBMITTED":
+            return SubmitResult(
+                vacancy_stable_id=vacancy_stable_id,
+                submission_id=exec_res.submission_id or submission_id,
+                status="SUBMITTED",
+                final_url=getattr(exec_res.live_page_result, "current_url", f"https://hh.ru/vacancy/{vacancy_stable_id.split(':')[-1]}"),
+                executor_version="v1",
+                submit_count=exec_res.submit_count,
+            )
+        elif exec_res.status == "DRY_RUN_OK":
+            return SubmitResult(
+                vacancy_stable_id=vacancy_stable_id,
+                submission_id=exec_res.submission_id or submission_id,
+                status="DRY_RUN_OK",
+                final_url=getattr(exec_res.live_page_result, "current_url", f"https://hh.ru/vacancy/{vacancy_stable_id.split(':')[-1]}"),
+                executor_version="v1",
+                submit_count=0,
+            )
+        else:
+            return SubmitResult(
+                vacancy_stable_id=vacancy_stable_id,
+                submission_id=exec_res.submission_id or submission_id,
+                status=exec_res.status,
+                error=exec_res.reason,
+                final_url=getattr(exec_res.live_page_result, "current_url", f"https://hh.ru/vacancy/{vacancy_stable_id.split(':')[-1]}"),
+                executor_version="v1",
+                submit_count=exec_res.submit_count,
+            )
     
     # Check if already submitted
     from .submission_state import get_submission_evidence
@@ -2242,9 +2306,21 @@ def submit_application_in_browser(
     url = vac.job_url
     site = _detect_site(url)
     warnings: List[str] = []
-    
+
     # Choose adapter
     use_adapter = adapter
+    if use_adapter is None:
+        use_real = os.getenv("BROWSER_USE_PLAYWRIGHT") == "1" or os.getenv("BROWSER_REAL") == "1" or os.getenv("USE_PLAYWRIGHT") == "1"
+        if use_real:
+            try:
+                use_adapter = PlaywrightBrowserAdapter(headless=True)
+            except Exception as e:
+                logging.warning(f"Playwright not available, fallback to Mock: {e}")
+                use_adapter = MockBrowserAdapter()
+        else:
+            use_adapter = MockBrowserAdapter()
+
+
     if use_adapter is None:
         use_real = os.getenv("BROWSER_USE_PLAYWRIGHT") == "1" or os.getenv("BROWSER_REAL") == "1" or os.getenv("USE_PLAYWRIGHT") == "1"
         if use_real:

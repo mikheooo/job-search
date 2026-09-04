@@ -168,7 +168,7 @@ def check_live_page(
         res.reason = f"Cannot inspect live DOM: {e}"
         return res
 
-    if not data.get("ok"):
+    if data.get("ok") is False or (not data.get("ok") and not data.get("url")):
         res.is_ok = False
         res.status = "FAIL_CLOSED"
         res.error_reason = "FAIL_CLOSED"
