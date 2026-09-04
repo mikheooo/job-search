@@ -228,7 +228,7 @@ Recruiter message handling follows strict truth-only and fail-closed rules:
 - **Factual Profile Immutability:** User feedback on job titles or technologies (e.g. liking Kubernetes roles) never mutates `candidate_profile.json` or promotes skill confidence from `UNKNOWN` to `PROFESSIONAL`.
 - **Minimum Evidence Threshold & Ambiguity:** Single feedback events are recorded as `RECORD_ONLY` with 0 ranking adjustment. Contradictory feedback produces `AMBIGUOUS_PREFERENCE` and suppresses confidence to 0.
 
-- **HH Submission Safety Gates (11 Strict Multi-Layer Gates — реализованы в `HHSubmissionGates`; подключение к боевым путям — в процессе, см. `docs/audit_remediation_log.md`):**
+- **HH Submission Safety Gates (11 Strict Multi-Layer Gates — unified execution via `HHSubmissionGates` and `execute_hh_submission`; fully wired across all paths, see `docs/audit_remediation_log.md`):**
   1. `GATE_SUBMIT_ALLOWED`: Environment / config kill-switch `SUBMIT_ALLOWED` must be explicitly enabled (`true`/`1`/`yes`) unless in dry_run mode.
   2. `GATE_REVIEW_APPROVED`: Vacancy review in DB must exist and have status `ReviewStatus.APPROVED`.
   3. `GATE_FINGERPRINT_MATCH`: Form fingerprint from live browser DOM snapshot must match approved review fingerprint.

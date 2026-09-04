@@ -323,3 +323,183 @@
   - Обновлены тесты автономного агента (`test_stage51_autonomous_agent.py`, `test_stage52_real_autonomous_agent.py`, `test_stage54_live_autonomous_run.py`, `test_stage55_selection_limits_routing.py`): подтверждено, что при наличии кнопки отклика на странице клик НЕ выполняется, отклики автономно НЕ отправляются (`applied_count == 0`), создается ревью `PENDING_REVIEW`, трекинг `READY_TO_APPLY`, а попытка выставить `submit_enabled=True` приводит к `NotImplementedError`.
   - Обновлены `README.md` и `PROJECT_STATE.md`: удалены вводящие в заблуждение формулировки об изоляции AUTO kill-switch'ами, явно зафиксировано: «автономный режим — prepare-only с 2.0; до этого отправлял без подтверждения».
 - **Коммит:** `fix(safety): autonomous mode is prepare-only, never submits`
+
+### Шаг 2.1. Content Fingerprint и требование пакета при одобрении
+- **Определение Content Fingerprint:**
+  - В `ai_assistant/application_review.py` реализована каноническая функция `compute_review_fingerprint(vacancy_stable_id, package_data)`.
+  - Отпечаток вычисляется детерминированно как SHA-256 хэш канонического JSON со структурой:
+    `{"cover_letter": ..., "resume_version": ..., "title": ..., "vacancy_stable_id": ...}`.
+- **Интеграция во все точки согласования человеком:**
+  - `POST /api/review/{vacancy_stable_id}` (`ai_assistant/ui/app.py`): проверяет наличие сохраненного пакета `db.get_application_package(vacancy_stable_id)`. Если пакет отсутствует — одобрение блокируется с кодом HTTP 400 (`Cannot approve review: application package does not exist`). При наличии пакета вычисляет fingerprint и сохраняет его в `ApplicationReview(form_fingerprint=fp)`.
+  - `cli review approve <id>` (`ai_assistant/cli.py`): проверяет наличие пакета отклика, вычисляет fingerprint и сохраняет его в ревью.
+  - Кнопка 📄 в Telegram (`ai_assistant/telegram_feedback.py`): создает пакет отклика перед подготовкой ревью, рассчитывает отпечаток и записывает в `ApplicationReview`.
+- **Тесты:** `tests/test_step21_fingerprint.py` (7 тестов: детерминированность хэша, чувствительность к полям, блокировка одобрения без пакета в UI и CLI, успешное вычисление и сохранение отпечатка).
+- **Коммит:** `fix(safety): define content fingerprint and enforce package presence on approval` (`ba09302`).
+
+### Шаг 2.2. Унификация факта отклика (Gate 9, Single Source of Truth)
+- **Проблема разрозненных источников:**
+  - Ранее статус проверялся в трех несвязанных местах: `application_submissions` (историческая таблица), `submission_verifications` (таблица верификаций post-submit), `hh_applications.current_state` (таблица заявок раннера).
+  - Функция `db.is_submitted()` возвращала `True` при наличии *любой* записи в `application_submissions`, включая ошибочные попытки (`FAILED`, `BLOCKED`).
+- **Решение:**
+  - Создан единый модуль `ai_assistant/submission_state.py` с функцией `get_submission_evidence(vacancy_stable_id)`.
+  - Функция собирает доказательства из всех трех источников:
+    1. `application_submissions`: статусы `SUBMITTED`, `CONFIRMED`, `AMBIGUOUS_POST_SUBMIT`, `VERIFIED`, `FAILED`.
+    2. `submission_verifications`: факт и вердикт пост-проверки (`VERIFIED`, `AMBIGUOUS`).
+    3. `hh_applications`: состояние `SUBMITTED` или история переходов в него.
+  - `has_definite_submission()`: возвращает `True`, если хотя бы в одном источнике зафиксирован факт успешной или неоднозначной отправки (`SUBMITTED`, `CONFIRMED`, `AMBIGUOUS_POST_SUBMIT`, `VERIFIED`).
+  - Устаревший неоднозначный метод `db.is_submitted()` удален/заменен на безопасный `has_definite_submission()`.
+  - Gate 9 (`GATE_NOT_ALREADY_APPLIED`) переведен на `get_submission_evidence()`: блокирует отправку, если найден любой признак завершенного отклика в любой из 3 таблиц.
+- **Тесты:** `tests/test_step22_submission_evidence.py` (8 тестов: чистая вакансия, фиксация по каждому из 3 источников, обнаружение `AMBIGUOUS_POST_SUBMIT`, изоляция `FAILED`).
+- **Коммит:** `fix(safety): unify submission evidence and remove ambiguous is_submitted check` (`08ed8b1`).
+
+### Шаг 2.3. Модуль единых проверок живой страницы
+- **Проблема расхождения проверок в путях:**
+  - Путь A проверял 404, капчу, авторизацию и кнопку отправки через разрозненные хелперы `browser_executor.py`.
+  - Путь B/C проверял заголовок вакансии и баннер «Вы уже откликались» через `hh_vacancy_navigator.py`.
+- **Решение:**
+  - Создан единый модуль `ai_assistant/hh_live_page_checks.py`.
+  - Функция `inspect_hh_live_page(evaluate_fn, expected_vacancy_id, expected_title)` выполняет единую атомарную проверку DOM живой страницы через CDP / Evaluate:
+    1. Обнаружение ошибок страницы: 404 Not Found, CAPTCHA, Cloudflare Challenge, Доступ ограничен (403).
+    2. Проверка состояния авторизации: наличие кнопки «Войти» / отсутствие профиля соискателя.
+    3. Проверка баннера повторного отклика: `[data-qa*="response-link-view-topic"]`, текст «Вы уже откликались».
+    4. Сверка числового ID вакансии из реального URL страницы с ожидаемым целевым ID.
+    5. Сверка заголовка вакансии в DOM (`h1[data-qa="vacancy-title"]`) с ожидаемым заголовком.
+    6. Обнаружение кликабельной кнопки отправки отклика (`submit_button_found: bool`, селектор `[data-qa*="vacancy-response-submit"]`).
+  - Результат возвращается в строго типизированном датаклассе `HHLivePageInspectionResult(passed=bool, reason=str, ...)`.
+- **Тесты:** `tests/test_step23_live_page_checks.py` (10 тестов: чистая страница, 404, капча, Cloudflare, отсутствие логина, баннер отклика, расхождение ID вакансии, несовпадение заголовка, отсутствие кнопки отправки).
+- **Коммит:** `fix(safety): add unified live page checks module for cdp sessions` (`b2cc5e6`).
+
+### Шаг 2.4. Устранение дефектов в гейтах и read-only preflight
+- **Устраненные дефекты `HHSubmissionGates`:**
+  - Gate 1 (`GATE_SUBMIT_ALLOWED`): исправлен баг блокировки при `dry_run=True`. В режиме симуляции/сухого прогона гейт разрешает выполнение даже при `SUBMIT_ALLOWED=false`.
+  - Gate 3 (`GATE_FINGERPRINT_MATCH`): реализована сверка отпечатка approved-ревью с отпечатком пакета отклика. При отсутствии отпечатка в ревью — строгий fail-closed.
+  - Gate 5 (`GATE_VACANCY_MATCH`): поддержана обработка префиксов `hh:`, URL и строковых тестовых идентификаторов с валидацией числового HH ID.
+  - Gate 7 (`GATE_COVER_LETTER_READY`): исключены ложные падения при наличии валидного текста письма в пакете.
+  - Read-Only Preflight: функция `preflight_submission()` в `hh_submission.py` разделена на строго read-only инспекцию (без мутации БД и сайд-эффектов) и боевую отправку.
+- **Тесты:** `tests/test_step24_gate_defects.py` (5 тестов: dry-run при выключенном `SUBMIT_ALLOWED`, поведение fingerprint, валидация URL и ID, целостность read-only preflight).
+- **Коммит:** `fix(safety): resolve gate defects and make preflight read-only gating explicit` (`470e650`).
+
+### Шаг 2.5. Единая точка выполнения отправки (Unified Execution Entrypoint)
+- **Создание `execute_hh_submission()`:**
+  - В `ai_assistant/hh_submission.py` добавлена центральная функция выполнения отправки отклика `execute_hh_submission(...)`.
+  - **Порядок выполнения (Fail-Closed Sequence):**
+    1. Сбор контекста (вакансия, пакет отклика `application_packages`, ревью `application_reviews`, профиль кандидата).
+    2. Проверка доказательств отправки во всех 3 источниках (`has_definite_submission`).
+    3. Выполнение живой инспекции страницы через `inspect_hh_live_page(evaluate_fn)`.
+    4. Прогон всех 11 гейтов через `HHSubmissionGates.check_all_gates(..., dry_run=dry_run)`. При непрохождении хотя бы одного гейта — немедленный возврат со статусом `FAIL_CLOSED` / `GATE_BLOCKED`, клик НЕ производится.
+    5. Проверка режима `--dry-run`: если `dry_run=True`, возвращается `HHSubmissionExecutionResult(status="DRY_RUN_OK", submit_count=0)`, клик НЕ производится.
+    6. Только при `dry_run=False`, `SUBMIT_ALLOWED=true` и явном подтверждении человека `--confirm-submit` производится физический клик по кнопке отправки в браузере.
+    7. Атомарная фиксация результатов в `application_submissions` и `hh_applications`.
+- **Подключение боевых путей:**
+  - **Путь A (`browser_executor.py`):** `submit_application_in_browser()` переписан: удален локальный разрозненный клик, все проверки и отправка делегированы в `execute_hh_submission()`. Поддержан флаг `dry_run`.
+  - **Путь B (`hh_application_runner.py`):** Шаг 5 отправки (`run_application()`) переписан: вызов разрозненного скрипта клика заменен на `execute_hh_submission(sync_hh_application=False)`. Раннер получает единый результат и выполняет пост-проверку. Поддержан флаг `dry_run` в CLI раннера.
+- **Тесты:** `tests/test_step25_unified_submission.py` (5 тестов: успешный сухой прогон через единую точку, блокировка при отсутствии ревью, блокировка при выключенном `SUBMIT_ALLOWED`, предотвращение повторной отправки, полный цикл боевого клика при подтверждении).
+- **Коммит:** `fix(safety): wire unified submission execution into browser executor and runner` (`9b87b8e`).
+
+### Шаг 2.6. Полировка переходов раннера, mock-адаптера и тестов
+- **Исправление краевых случаев интеграции:**
+  - Добавлен параметр `sync_hh_application: bool = True` в `execute_hh_submission()`. При вызове из раннера передается `sync_hh_application=False`, что исключает двойной переход стейт-машины `READY_TO_SUBMIT -> SUBMITTED` и сохраняет точность аудиторского следа шага 6 (`verify_hh_submitted_application`).
+  - В `browser_executor.py` мост `_evaluate_wrapper` адаптирован для `MockBrowserAdapter`: вызовы инспекции, клика и проверки результата маршрутизируются в методы мок-адаптера.
+  - В `hh_live_page_checks.py` переменные и селекторы скрипта инспекции изолированы, исключая ложные срабатывания в тестах с регулярными выражениями моков.
+  - В `hh_submission.py` функция парсинга идентификаторов `_vacancy_from_stable` адаптирована для поддержки строковых тест-слагов (напр. `remote_clean_1`).
+  - Обновлены фикстуры тестов в `tests/test_browser_executor.py`, `tests/test_stage47_state_machine_cleanup.py`, `tests/test_stage50_submit_selected_vacancy.py` с созданием валидных одобренных пакетов и отпечатков.
+- **Коммит:** `fix(safety): refine runner transitions, mock adapter bridging, and test fixtures` (`fbc34cb`).
+
+---
+
+## Сводная матрица завершения Фазы 1.5 (Phase 1.5 Gate Completion Matrix)
+
+| № | Гейт безопасности | Файл и строка реализации | Модульные тесты | Путь A (`browser_executor`) | Путь B (`runner next`) | Путь C (`autonomous`) |
+| :-: | :--- | :--- | :--- | :---: | :---: | :---: |
+| **1** | `GATE_SUBMIT_ALLOWED` | `hh_submission.py:270` | `test_hh_submission_gates.py`, `test_step24_gate_defects.py` | **Защищен** (Fail-closed) | **Защищен** (Fail-closed) | **Деактивирован** (Prepare-only) |
+| **2** | `GATE_REVIEW_APPROVED` | `hh_submission.py:278` | `test_hh_submission_gates.py`, `test_step25_unified_submission.py` | **Защищен** (Fail-closed) | **Защищен** (Fail-closed) | **Деактивирован** (Prepare-only) |
+| **3** | `GATE_FINGERPRINT_MATCH` | `hh_submission.py:284` | `test_step21_fingerprint.py`, `test_step24_gate_defects.py` | **Защищен** (Fail-closed) | **Защищен** (Fail-closed) | **Деактивирован** (Prepare-only) |
+| **4** | `GATE_URL_DOMAIN` | `hh_submission.py:290` | `test_hh_submission_gates.py`, `test_step23_live_page_checks.py` | **Защищен** (Fail-closed) | **Защищен** (Fail-closed) | **Деактивирован** (Prepare-only) |
+| **5** | `GATE_VACANCY_MATCH` | `hh_submission.py:302` | `test_hh_submission_gates.py`, `test_step24_gate_defects.py` | **Защищен** (Fail-closed) | **Защищен** (Fail-closed) | **Деактивирован** (Prepare-only) |
+| **6** | `GATE_PROFILE_LOADED` | `hh_submission.py:313` | `test_hh_submission_gates.py` | **Защищен** (Fail-closed) | **Защищен** (Fail-closed) | **Деактивирован** (Prepare-only) |
+| **7** | `GATE_COVER_LETTER_READY` | `hh_submission.py:321` | `test_hh_submission_gates.py`, `test_step24_gate_defects.py` | **Защищен** (Fail-closed) | **Защищен** (Fail-closed) | **Деактивирован** (Prepare-only) |
+| **8** | `GATE_NO_UNKNOWN_QUESTIONS` | `hh_submission.py:330` | `test_hh_submission_gates.py` | **Защищен** (Fail-closed) | **Защищен** (Fail-closed) | **Деактивирован** (Prepare-only) |
+| **9** | `GATE_NOT_ALREADY_APPLIED` | `hh_submission.py:341` | `test_step22_submission_evidence.py`, `test_hh_submission_gates.py` | **Защищен** (Fail-closed) | **Защищен** (Fail-closed) | **Деактивирован** (Prepare-only) |
+| **10** | `GATE_NO_PREVIOUS_SUBMISSION_ATTEMPT` | `hh_submission.py:355` | `test_hh_submission_gates.py`, `test_step25_unified_submission.py` | **Защищен** (Fail-closed) | **Защищен** (Fail-closed) | **Деактивирован** (Prepare-only) |
+| **11** | `GATE_HUMAN_CONFIRMED` | `hh_submission.py:369` | `test_hh_submission_gates.py`, `test_step25_unified_submission.py` | **Защищен** (Fail-closed) | **Защищен** (Fail-closed) | **Деактивирован** (Prepare-only) |
+
+---
+
+## Сводный статус трёх боевых путей выполнения
+
+| Путь выполнения | Команда CLI | Точка входа в код | Статус защиты | Механизм защиты |
+| :--- | :--- | :--- | :---: | :--- |
+| **Путь A** | `cli submit <id> [--dry-run] [--confirm-submit]` | `ai_assistant/browser_executor.py:2044` | **ЗАЩИЩЕН** | Маршрутизируется в `execute_hh_submission()`. Все 11 гейтов проверяются до клика. Поддерживает `--dry-run`. Без `--confirm-submit` и `SUBMIT_ALLOWED=true` клик физически невозможен. |
+| **Путь B** | `cli application runner next [--dry-run] [--confirm-submit]` | `ai_assistant/hh_application_runner.py:161` | **ЗАЩИЩЕН** | Шаг отправки маршрутизируется в `execute_hh_submission(sync_hh_application=False)`. Проходит полный аудит анкеты, навигацию и все 11 гейтов. Поддерживает `--dry-run`. |
+| **Путь C** | `cli autonomous once` | `ai_assistant/hh_autonomous_agent.py:910` | **ДЕАКТИВИРОВАН (PREPARE-ONLY)** | Код клика по кнопке отправки полностью удален. Параметр `submit_enabled: bool = False` жестко зафиксирован в конфигурации; попытка его включения вызывает `NotImplementedError`. Агент только подготавливает пакет, ставит в очередь и запрашивает одобрение человека в Telegram. |
+
+---
+
+## Протокол боевой проверки Dry-Run (Live Dry-Run Verification)
+
+Проверка выполнена на реальной вакансии `hh:128659037`:
+
+1. **Команда 1 (Путь A):** `.venv\Scripts\python.exe -m ai_assistant.cli submit hh:128659037 --dry-run`
+   - **Вывод:**
+     ```
+     SUBMISSION: DRY_RUN_OK
+     Vacancy: hh:128659037
+     All safety gates passed in read-only simulation mode.
+     Safety:
+     SUBMIT CLICKED: NO
+     APPLICATION SENT: NO
+     ```
+   - **Код возврата:** 0.
+   - **Результат:** Все гейты проверены в режиме симуляции без отправки клика.
+
+2. **Команда 2 (Путь B):** `.venv\Scripts\python.exe -m ai_assistant.cli application runner next --dry-run`
+   - **Вывод:**
+     ```
+     =======================================================
+             STAGE 46 CONTROLLED APPLICATION RUNNER         
+     =======================================================
+     Queue:
+       READY_TO_SUBMIT:    0
+       NEEDS_HUMAN_REVIEW: 0
+       SUBMITTED:          0
+
+     Selected application: None
+
+     Pre-submit audit:     PASS
+     Navigation:           PASS
+     Questionnaire:        NOT_REQUIRED
+
+     Submit confirmation:  NO
+     REAL HH SUBMIT:       0
+     Post-submit verify:   PASS
+
+     Final state:          SUBMITTED
+     Next app executed:    NO
+     PIPELINE.PY:          NOT RUN
+     -------------------------------------------------------
+     Status Details:       Application is already responded on HeadHunter.
+     =======================================================
+     ```
+   - **Код возврата:** 0.
+   - **Результат:** Безопасный прогон раннера без совершения боевых действий.
+
+---
+
+## Полный лог коммитов Фазы 1.5
+
+1. `654ebe0` `fix(safety): autonomous mode is prepare-only, never submits` — аварийная остановка автономной отправки, перевод в prepare-only.
+2. `ba09302` `fix(safety): define content fingerprint and enforce package presence on approval` — канонический SHA-256 fingerprint отклика и требование пакета во всех каналах одобрения.
+3. `08ed8b1` `fix(safety): unify submission evidence and remove ambiguous is_submitted check` — единый источник факта отклика `get_submission_evidence()` по всем 3 таблицам.
+4. `b2cc5e6` `fix(safety): add unified live page checks module for cdp sessions` — модуль атомарных проверок живой страницы `inspect_hh_live_page()`.
+5. `470e650` `fix(safety): resolve gate defects and make preflight read-only gating explicit` — устранение дефектов в гейтах и read-only preflight.
+6. `9b87b8e` `fix(safety): wire unified submission execution into browser executor and runner` — единая точка выполнения `execute_hh_submission()` и подключение Путей A и B.
+7. `fbc34cb` `fix(safety): refine runner transitions, mock adapter bridging, and test fixtures` — согласование переходов стейт-машины, мост MockBrowserAdapter и адаптация фикстур.
+
+---
+
+## Контрольная точка Фазы 1.5
+- **Полный регрессионный прогон Pytest:**
+  - Результат: **1 463 passed, 0 failed, 0 errors** за 974.90s (16 мин 14 сек).
+  - Сравнение с Фазой 1: было 1 428 passed.
+  - Чистый прирост: **+35 новых строгих тестов безопасности** (гейты, отпечатки, единый источник отклика, проверки живой страницы, единая точка выполнения).
+  - Регрессий: **0**.

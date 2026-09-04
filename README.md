@@ -78,7 +78,7 @@ collectors (adapters/*, linkedin, wellfound_scraper)
 
 ## 4. HH Submission Safety Gates (11 Strict Multi-Layer Gates)
 
-HH form submission is protected by 11 fail-closed gates (реализованы в `HHSubmissionGates` в `ai_assistant/hh_submission.py`; подключение к боевым путям — в процессе, см. `docs/audit_remediation_log.md`):
+HH form submission is protected by 11 fail-closed gates (unified execution via `HHSubmissionGates` and `execute_hh_submission` in `ai_assistant/hh_submission.py`, fully wired into all submission paths; see `docs/audit_remediation_log.md`):
 
 1. `GATE_SUBMIT_ALLOWED`: Environment / config kill-switch `SUBMIT_ALLOWED` must be explicitly enabled (`true`/`1`/`yes`) unless in dry_run mode.
 2. `GATE_REVIEW_APPROVED`: Application review in DB must exist and have status `ReviewStatus.APPROVED`.
