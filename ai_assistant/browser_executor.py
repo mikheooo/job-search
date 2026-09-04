@@ -2079,13 +2079,14 @@ def submit_application_in_browser(
     submission_id = f"{vacancy_stable_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     
     # Check if already submitted
-    from .db import is_submitted
-    if is_submitted(vacancy_stable_id):
+    from .submission_state import get_submission_evidence
+    evidence = get_submission_evidence(vacancy_stable_id)
+    if evidence.is_already_applied:
         return SubmitResult(
             vacancy_stable_id=vacancy_stable_id,
             submission_id=submission_id,
             status="BLOCKED",
-            error="Already submitted. Duplicate submission not allowed.",
+            error=f"Already submitted. Duplicate submission not allowed: {'; '.join(evidence.blocked_reasons)}",
             executor_version="v1",
         )
 

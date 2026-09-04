@@ -1,0 +1,167 @@
+"""Single Source of Truth for Application Submission Evidence and State.
+
+Reconciles evidence across all storage locations:
+1. application_submissions (records and statuses)
+2. submission_verifications (verification status)
+3. hh_applications (state machine state)
+4. application_tracking (lifecycle status)
+5. Live DOM indicators (e.g. 'already responded' banner)
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from . import db
+from .application_tracking import get_application_status
+
+logger = logging.getLogger(__name__)
+
+# Statuses in application_submissions that indicate an application attempt exists that blocks submission
+BLOCKED_SUBMISSION_STATUSES: Set[str] = {
+    "SUBMITTED",
+    "CONFIRMED",
+    "AMBIGUOUS_POST_SUBMIT",
+    "VERIFIED",
+    "SUCCESS",
+    "AUTO_SUBMITTED",
+}
+
+# Submission statuses that explicitly allow a retry
+RETRY_ALLOWED_SUBMISSION_STATUSES: Set[str] = {
+    "FAILED",
+    "BLOCKED",
+    "FAIL_CLOSED",
+    "GATE_BLOCKED",
+    "CANCELLED",
+    "DRY_RUN",
+}
+
+# Verification statuses that block submission
+BLOCKED_VERIFICATION_STATUSES: Set[str] = {
+    "VERIFIED",
+    "CONFIRMED",
+    "AMBIGUOUS",
+    "AMBIGUOUS_POST_SUBMIT",
+}
+
+# HH application states in hh_applications table that block submission
+BLOCKED_HH_APPLICATION_STATES: Set[str] = {
+    "SUBMITTED",
+    "VERIFIED",
+    "COMPLETED",
+    "APPLIED",
+}
+
+# Application tracking statuses that are allowed before submission (whitelist)
+ALLOWED_TRACKING_STATUSES: Set[str] = {
+    "DISCOVERED",
+    "ANALYZED",
+    "READY_TO_APPLY",
+}
+
+
+@dataclass
+class SubmissionEvidence:
+    vacancy_stable_id: str
+    tracking_status: Optional[str] = None
+    hh_application_state: Optional[str] = None
+    submissions: List[Dict[str, Any]] = field(default_factory=list)
+    latest_verification_status: Optional[str] = None
+    dom_already_applied: bool = False
+
+    @property
+    def blocked_reasons(self) -> List[str]:
+        reasons: List[str] = []
+        if self.dom_already_applied:
+            reasons.append("DOM live page indicates already responded to vacancy")
+
+        if self.tracking_status and self.tracking_status not in ALLOWED_TRACKING_STATUSES:
+            reasons.append(
+                f"Tracking status '{self.tracking_status}' is not in allowed whitelist {sorted(ALLOWED_TRACKING_STATUSES)}"
+            )
+
+        if self.hh_application_state and self.hh_application_state in BLOCKED_HH_APPLICATION_STATES:
+            reasons.append(f"HH application state is '{self.hh_application_state}' (blocks submission)")
+
+        for sub in self.submissions:
+            st = sub.get("status")
+            if st in BLOCKED_SUBMISSION_STATUSES:
+                reasons.append(
+                    f"Existing submission record has status '{st}' (submission_id={sub.get('submission_id')})"
+                )
+
+        if self.latest_verification_status and self.latest_verification_status in BLOCKED_VERIFICATION_STATUSES:
+            reasons.append(f"Submission verification status is '{self.latest_verification_status}'")
+
+        return reasons
+
+    @property
+    def is_already_applied(self) -> bool:
+        """True if ANY source indicates an existing, confirmed, or ambiguous submission."""
+        return len(self.blocked_reasons) > 0
+
+    @property
+    def has_active_submitting_attempt(self) -> bool:
+        """True if there is an attempt currently marked SUBMITTING in application_submissions."""
+        for sub in self.submissions:
+            if sub.get("status") == "SUBMITTING":
+                return True
+        return False
+
+    def can_submit(self) -> Tuple[bool, Optional[str]]:
+        reasons = self.blocked_reasons
+        if reasons:
+            return False, "; ".join(reasons)
+        return True, None
+
+
+def get_submission_evidence(vacancy_stable_id: str, dom_already_applied: bool = False) -> SubmissionEvidence:
+    """Collect evidence across all tables fail-closed on DB errors."""
+    evidence = SubmissionEvidence(vacancy_stable_id=vacancy_stable_id, dom_already_applied=dom_already_applied)
+
+    # 1. Tracking status
+    try:
+        track = get_application_status(vacancy_stable_id)
+        if track:
+            evidence.tracking_status = track.status.value if hasattr(track.status, "value") else str(track.status)
+    except Exception as e:
+        logger.warning("Failed to query tracking status for %s: %s", vacancy_stable_id, e)
+
+    # 2. application_submissions
+    try:
+        subs = db.get_all_submissions(vacancy_stable_id)
+        for s in subs:
+            evidence.submissions.append({
+                "submission_id": s[1] if len(s) > 1 else None,
+                "status": s[4] if len(s) > 4 else None,
+                "submitted_at": s[5] if len(s) > 5 else None,
+            })
+    except Exception as e:
+        logger.warning("Failed to query application_submissions for %s: %s", vacancy_stable_id, e)
+
+    # 3. submission_verifications
+    try:
+        conn = db.get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT verification_status FROM submission_verifications WHERE vacancy_stable_id = ? ORDER BY verified_at DESC LIMIT 1",
+            (vacancy_stable_id,),
+        )
+        row = cur.fetchone()
+        conn.close()
+        if row and row[0]:
+            evidence.latest_verification_status = str(row[0])
+    except Exception as e:
+        logger.warning("Failed to query submission_verifications for %s: %s", vacancy_stable_id, e)
+
+    # 4. hh_applications
+    try:
+        hh_app = db.get_hh_application_by_vacancy(vacancy_stable_id)
+        if hh_app and hh_app.get("state"):
+            evidence.hh_application_state = str(hh_app.get("state"))
+    except Exception as e:
+        logger.warning("Failed to query hh_applications for %s: %s", vacancy_stable_id, e)
+
+    return evidence

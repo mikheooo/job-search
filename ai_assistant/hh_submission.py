@@ -584,40 +584,34 @@ class HHSubmissionGates:
                     )
 
         # Gate 9: GATE_NOT_ALREADY_APPLIED
-        existing_subs = []
-        if review_obj is None:
-            try:
-                track = get_application_status(vacancy_stable_id)
-                if track:
-                    t_status = track.status.value if hasattr(track.status, "value") else str(track.status)
-                    if t_status not in HHSubmissionGates.ALLOWED_UNSUBMITTED_STATUSES:
-                        return GateCheckResult(
-                            passed=False,
-                            failed_gate=GateName.GATE_NOT_ALREADY_APPLIED,
-                            reason=f"Vacancy tracking status is '{t_status}', which is not in the allowed unsubmitted whitelist",
-                            details={
-                                "tracking_status": t_status,
-                                "allowed": sorted(HHSubmissionGates.ALLOWED_UNSUBMITTED_STATUSES),
-                            },
-                        )
-                existing_subs = get_all_submissions(vacancy_stable_id)
-            except Exception as e:
-                if "DB access during submission" in str(e):
-                    existing_subs = []
-                else:
-                    raise
+        from .submission_state import get_submission_evidence
+        dom_already_applied = bool(
+            form_snapshot.get("already_applied") or form_snapshot.get("already_responded")
+        )
+        try:
+            evidence = get_submission_evidence(vacancy_stable_id, dom_already_applied=dom_already_applied)
+        except Exception as e:
+            return GateCheckResult(
+                passed=False,
+                failed_gate=GateName.GATE_NOT_ALREADY_APPLIED,
+                reason=f"Database error while querying submission evidence: {e}",
+            )
 
-        for sub in existing_subs:
-            sub_st = sub[4] if len(sub) > 4 else None
-            if sub_st == "SUBMITTING":
-                continue
-            if sub_st not in HHSubmissionGates.RETRY_ALLOWED_SUBMISSION_STATUSES:
-                return GateCheckResult(
-                    passed=False,
-                    failed_gate=GateName.GATE_NOT_ALREADY_APPLIED,
-                    reason=f"Vacancy was already submitted (submission status: {sub_st})",
-                    details={"submission_status": sub_st},
-                )
+        can_sub, block_reason = evidence.can_submit()
+        if not can_sub:
+            return GateCheckResult(
+                passed=False,
+                failed_gate=GateName.GATE_NOT_ALREADY_APPLIED,
+                reason=f"Vacancy was already applied or cannot be re-applied: {block_reason}",
+                details={
+                    "tracking_status": evidence.tracking_status,
+                    "hh_application_state": evidence.hh_application_state,
+                    "latest_verification_status": evidence.latest_verification_status,
+                    "dom_already_applied": evidence.dom_already_applied,
+                    "submissions": evidence.submissions,
+                    "blocked_reasons": evidence.blocked_reasons,
+                },
+            )
 
         # Gate 10: GATE_NO_PREVIOUS_SUBMISSION_ATTEMPT
         if vacancy_stable_id in _submitted_reviews or rev_id in _submitted_reviews:
@@ -626,15 +620,13 @@ class HHSubmissionGates:
                 failed_gate=GateName.GATE_NO_PREVIOUS_SUBMISSION_ATTEMPT,
                 reason="Review or vacancy was already attempted in this session",
             )
-        for sub in existing_subs:
-            sub_st = sub[4] if len(sub) > 4 else None
-            if sub_st == "SUBMITTING":
-                return GateCheckResult(
-                    passed=False,
-                    failed_gate=GateName.GATE_NO_PREVIOUS_SUBMISSION_ATTEMPT,
-                    reason="Previous submission attempt is currently in progress",
-                    details={"submission_status": sub_st},
-                )
+        if evidence.has_active_submitting_attempt:
+            return GateCheckResult(
+                passed=False,
+                failed_gate=GateName.GATE_NO_PREVIOUS_SUBMISSION_ATTEMPT,
+                reason="Previous submission attempt is currently in progress (SUBMITTING)",
+                details={"submissions": evidence.submissions},
+            )
 
         # Gate 11: GATE_HUMAN_CONFIRMED
         if not human_confirmed and not dry_run:
