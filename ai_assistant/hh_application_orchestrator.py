@@ -24,11 +24,33 @@ import hashlib
 import json
 import logging
 import threading
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Literal, Optional, Set
 
 from pydantic import BaseModel, Field
+
+
+@dataclass
+class SubmitApproval:
+    """Explicit submit authorization required to enter SUBMITTED state.
+
+    Can be granted manually by a human or automatically by an audited policy gate.
+    """
+    source: Literal["human", "policy"]
+    policy_version: str = "v1"
+    checks_passed: List[str] = field(default_factory=list)
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "source": self.source,
+            "policy_version": self.policy_version,
+            "checks_passed": list(self.checks_passed),
+            "timestamp": self.timestamp,
+        }
+
 
 from . import db
 from .hh_questionnaire import (
@@ -316,22 +338,24 @@ def transition_application(
     reason: str,
     evidence: Optional[Dict[str, Any]] = None,
     expected_from_state: Optional[HHApplicationState | str] = None,
-    confirm_submit: bool = False,
+    approval: Optional[SubmitApproval] = None,
+    confirm_submit: Optional[bool] = None,
 ) -> TransitionResult:
     """Execute an explicit, audited state transition for an HH application.
 
     SAFETY CHECKS:
     1. Rejects illegal transitions not in LEGAL_TRANSITIONS.
     2. Rejects any transition to SUBMITTED without from_state == READY_TO_SUBMIT.
-    3. Rejects any transition to SUBMITTED without confirm_submit == True.
-    4. Records transition history in database.
+    3. Rejects any transition to SUBMITTED without explicit SubmitApproval (human or policy).
+    4. Enforces fingerprint evidence presence.
+    5. Records transition history in database.
     """
     with _ORCHESTRATOR_LOCK:
         db.init_db()
         data = db.get_hh_application(application_id)
         if not data:
             # Initialize with NEW state
-            now = datetime.utcnow().isoformat()
+            now = datetime.now(timezone.utc).isoformat()
             app = HHApplication(
                 application_id=application_id,
                 state=HHApplicationState.NEW.value,
@@ -375,17 +399,30 @@ def transition_application(
                 error="ILLEGAL_TRANSITION",
             )
 
-        # Invariant: Human Confirmation Gate for SUBMITTED
+        # Invariant: Submit Approval Gate for SUBMITTED
         if target_state_str == HHApplicationState.SUBMITTED.value:
-            if not confirm_submit:
+            # Backwards compatibility: allow legacy confirm_submit=True to construct human approval
+            if approval is None and confirm_submit is True:
+                approval = SubmitApproval(
+                    source="human",
+                    policy_version="legacy_confirm",
+                    checks_passed=["human_confirmation"],
+                )
+
+            if approval is None:
                 return TransitionResult(
                     ok=False,
                     application_id=application_id,
                     from_state=current_state,
                     to_state=target_state_str,
-                    reason="Explicit human confirmation (--confirm-submit / confirm_submit=True) required to enter SUBMITTED state.",
-                    error="MISSING_HUMAN_CONFIRMATION",
+                    reason="Submit approval (SubmitApproval with source 'human' or 'policy') is required to enter SUBMITTED state.",
+                    error="MISSING_SUBMIT_APPROVAL",
                 )
+
+            # Record approval into evidence
+            if evidence is None:
+                evidence = {}
+            evidence["approval"] = approval.to_dict()
 
             if current_state == HHApplicationState.SUBMITTED.value:
                 # Read-only audit/verification update on an already SUBMITTED application
@@ -840,7 +877,11 @@ class HHApplicationOrchestrator:
             to_state=HHApplicationState.SUBMITTED,
             reason="human_confirmed_submission_completed",
             evidence={"fingerprint": sub_fp},
-            confirm_submit=True,
+            approval=SubmitApproval(
+                source="human",
+                policy_version="manual",
+                checks_passed=["human_confirmation"],
+            ),
         )
 
         return {
