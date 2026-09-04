@@ -159,6 +159,54 @@
 - **Проверки:**
   - `pytest tests/test_ui.py` -> 14 passed (100%).
   - `ruff check tests/test_ui.py` -> All checks passed (0 errors).
+- Коммиты:
+  - `4681e6f` fix(security): bind web dashboard to localhost and add bearer token auth for mutating endpoints
+  - `86c7ec5` fix(safety): preserve legacy preflight submission compatibility for non-numeric test vacancies
+
+### 1.7. Контрольная точка Фазы 1
+- **Полный регрессионный прогон Pytest:**
+  - Результат: **1 428 passed, 0 failed, 0 errors** за 712.79s (11 мин 52 сек).
+  - Сравнение с Baseline: было 1 408 passed за 659.74s (10 мин 59 сек).
+  - Прирост: +20 новых тестов (11 гейтов отправки, 3 дедупликации очереди, 6 авторизации и хоста UI). Время прогона стабильно, регрессий нет.
+
+- **Сводный список выполненных коммитов Фазы 1:**
+  1. `ea81c7c` fix(security): remove exposed telegram bot token from tests and audit brief
+  2. `cc5979a` fix(production): sync hermes integration and reconcile legacy audit mismatch
+  3. `0c81d65` fix(syntax): resolve all undefined names (F821)
+  4. `ea64534` fix(cleanup): remove redefined functions and duplicate imports (F811)
+  5. `c38f9e1` fix(safety): harden hh submission gates and add comprehensive gate test suite
+  6. `4681e6f` fix(security): bind web dashboard to localhost and add bearer token auth for mutating endpoints
+  7. `86c7ec5` fix(safety): preserve legacy preflight submission compatibility for non-numeric test vacancies
+
+- **Раздел «Требует решения человека» (Requires Human Decision):**
+
+  #### 1. Четыре доменных вопроса аудита
+  - **Вопрос 1:** *Должен ли `GATE_SUBMIT_ALLOWED` проверять флаг конфигурации `SUBMIT_ALLOWED`?*  
+    **Ответ и статус:** Да, `SUBMIT_ALLOWED` является главным глобальным предохранителем (kill-switch latch). По умолчанию `false`. Отправка невозможна без явного включения (`SUBMIT_ALLOWED=true` / `1` / `yes`) или режима `dry_run=True`.  
+    *Рекомендация:* Решение однозначно, подтверждение человека не требуется.
+  - **Вопрос 2:** *Почему `GATE_NOT_ALREADY_APPLIED` должен проверять белый список статусов, а не просто `status != 'APPLIED'`?*  
+    **Ответ и статус:** Черный список `!= 'APPLIED'` небезопасен, так как пропускает вакансии со статусами `SUBMITTED`, `AMBIGUOUS_POST_SUBMIT`, `VERIFIED`, `INTERVIEW`, `REJECTED`, `WITHDRAWN`. Реализован строгий белый список предварительных статусов: `ALLOWED_UNSUBMITTED_STATUSES = {"DISCOVERED", "ANALYZED", "READY_TO_APPLY"}`, а также проверка отсутствия завершенных/неоднозначных записей в `submissions`.  
+    *Рекомендация:* Решение однозначно, подтверждение человека не требуется.
+  - **Вопрос 3:** *Почему `GATE_URL_DOMAIN` недопустимо реализовывать через подстроку `hh.ru in url`?*  
+    **Ответ и статус:** Подстрока уязвима к фишингу и SSRF (`https://evil-hh.ru`, `https://hh.ru.attacker.com`, `https://google.com/?hh.ru`). Реализован строгий парсинг через `urllib.parse.urlparse`, проверяющий `host == "hh.ru"` или `host.endswith(".hh.ru")`.  
+    *Рекомендация:* Решение однозначно, подтверждение человека не требуется.
+  - **Вопрос 4:** *Почему `GATE_VACANCY_MATCH` обязан падать, если `source_job_id` отсутствует или не числовой?*  
+    **Ответ и статус:** Принцип fail-closed. Если ID не числовой или отсутствует, система не может гарантировать, что браузер открыл нужную вакансию, а не случайную вкладку. В `HHSubmissionGates` отсутствие числового ID строго блокирует отправку (`passed=False`, `failed_gate=GATE_VACANCY_MATCH`). В функции `preflight_submission` сохранена совместимость для существующих тестов со строковыми ID (`himalayas:submit-flow-1`).  
+    *Рекомендация:* Решение однозначно, подтверждение человека не требуется.
+
+  #### 2. Инструкция по перевыпуску Telegram-токена
+  - Токен бота был удален из активного кода тестов и документации (`ea81c7c`), но исторически присутствует в ранних коммитах Git (начиная с `f3a08f1`).
+  - **Действия владельца бота:**
+    1. Открыть диалог с официальным ботом [@BotFather](https://t.me/BotFather) в Telegram.
+    2. Отправить команду `/revoke` и выбрать скомпрометированного бота для немедленного отзыва старого токена, либо `/token` -> Generate New Token.
+    3. Скопировать новый токен и задать его в локальном файле `.env` (который добавлен в `.gitignore` и не попадает в Git):  
+       `TELEGRAM_BOT_TOKEN=...`
+    4. **Почему история Git не переписывалась автоматически:** Переписывание истории (через `git-filter-repo` или BFG Repo-Cleaner) приведет к изменению SHA всех последующих коммитов и сломает существующие ветки и форки. Очистку публичной истории рекомендуется выполнить владельцу репозитория централизованно после отзыва токена в Telegram.
+
+  #### 3. Попутно обнаруженные нецелевые проблемы
+  - Зафиксированы в `docs/audit_followup.md`:
+    1. `ai_assistant/application_tracking.py:167-168`: при переводе статуса в `APPLIED` вызывается сайд-эффект `complete_review()`, меняющий статус ревью на `COMPLETED`.
+    2. `tests/test_stage31_watcher.py:509`: тест использует нечисловой мок-идентификатор вакансии `submit-flow-1` из адаптера `himalayas`, что выявило различие между боевыми числовыми ID HH и синтетическими ID тестов.
 
 
 
