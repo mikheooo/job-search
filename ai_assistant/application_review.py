@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
+import warnings
 from datetime import datetime
 from enum import Enum
 from typing import List, Optional, Dict, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from . import config
 from .db import get_connection, init_db
@@ -18,6 +20,62 @@ class ReviewStatus(str, Enum):
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
     COMPLETED = "COMPLETED"
+
+
+def compute_review_fingerprint(vacancy_stable_id: str, package: Any) -> str:
+    """Compute sha256 fingerprint from canonical JSON of {answers, cover_letter, vacancy_stable_id}.
+    
+    Answers are sorted by question_id.
+    """
+    pkg_data: Dict[str, Any] = {}
+    if isinstance(package, tuple) and len(package) >= 3:
+        raw_json = package[2]
+        try:
+            pkg_data = json.loads(raw_json) if raw_json else {}
+        except Exception:
+            pkg_data = {}
+    elif isinstance(package, str):
+        try:
+            pkg_data = json.loads(package)
+        except Exception:
+            pkg_data = {}
+    elif isinstance(package, dict):
+        pkg_data = package
+    elif hasattr(package, "model_dump"):
+        pkg_data = package.model_dump()
+    elif hasattr(package, "__dict__"):
+        pkg_data = package.__dict__
+
+    cover_letter = pkg_data.get("cover_letter") if isinstance(pkg_data, dict) else getattr(package, "cover_letter", "")
+    cover_letter = str(cover_letter or "")
+
+    raw_answers = pkg_data.get("answers") if isinstance(pkg_data, dict) else getattr(package, "answers", [])
+    if not isinstance(raw_answers, list):
+        raw_answers = []
+
+    normalized_answers = []
+    for ans in raw_answers:
+        if isinstance(ans, dict):
+            qid = str(ans.get("question_id", ""))
+            a = ans.get("answer")
+            normalized_answers.append({"answer": str(a) if a is not None else "", "question_id": qid})
+        elif hasattr(ans, "question_id"):
+            qid = str(getattr(ans, "question_id", ""))
+            a = getattr(ans, "answer", None)
+            normalized_answers.append({"answer": str(a) if a is not None else "", "question_id": qid})
+        else:
+            normalized_answers.append({"answer": "", "question_id": str(ans)})
+
+    sorted_answers = sorted(normalized_answers, key=lambda x: x["question_id"])
+
+    payload = {
+        "answers": sorted_answers,
+        "cover_letter": cover_letter,
+        "vacancy_stable_id": vacancy_stable_id,
+    }
+    canonical_str = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical_str.encode("utf-8")).hexdigest()
+
 
 class ApplicationReview(BaseModel):
     vacancy_stable_id: str
@@ -45,10 +103,36 @@ class ApplicationReview(BaseModel):
     updated_at: Optional[str] = None
     review_version: str = REVIEW_VERSION
     form_fingerprint: Optional[str] = None
-    fingerprint: Optional[str] = None
     review_id: Optional[str] = None
 
     model_config = {"use_enum_values": False}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_fingerprint(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if not data.get("form_fingerprint") and data.get("fingerprint"):
+                data["form_fingerprint"] = data["fingerprint"]
+        return data
+
+    @property
+    def fingerprint(self) -> Optional[str]:
+        """Deprecated alias for form_fingerprint. Use form_fingerprint instead."""
+        warnings.warn(
+            "ApplicationReview.fingerprint is deprecated, use form_fingerprint",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.form_fingerprint
+
+    @fingerprint.setter
+    def fingerprint(self, value: Optional[str]) -> None:
+        warnings.warn(
+            "ApplicationReview.fingerprint is deprecated, use form_fingerprint",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.form_fingerprint = value
 
 def _now() -> str:
     return datetime.utcnow().isoformat()
@@ -228,6 +312,7 @@ def create_application_review(vacancy_stable_id: str) -> ApplicationReview:
         created_at=now,
         updated_at=now,
         review_version=REVIEW_VERSION,
+        form_fingerprint=compute_review_fingerprint(vacancy_stable_id, pkg_json),
     )
     save_application_review(review)
     return review
@@ -243,6 +328,14 @@ def approve_review(vacancy_stable_id: str, note: str | None = None, force: bool 
         # If version mismatch, consider not found for current version
         if rev.review_version != REVIEW_VERSION:
             raise ValueError(f"Review version mismatch for {vacancy_stable_id} - needs recreation")
+
+    # Check package exists and compute fingerprint
+    from .db import get_application_package
+    pkg_row = get_application_package(vacancy_stable_id)
+    if not pkg_row:
+        raise ValueError(f"Application package not found for {vacancy_stable_id}: сначала подготовьте пакет")
+    fp = compute_review_fingerprint(vacancy_stable_id, pkg_row)
+
     # Check browser status
     if not force:
         from .browser_executor import get_browser_session, BrowserStatus
@@ -254,19 +347,28 @@ def approve_review(vacancy_stable_id: str, note: str | None = None, force: bool 
     track = get_application_status(vacancy_stable_id)
     if track and track.status not in [ApplicationStatus.READY_TO_APPLY, ApplicationStatus.DISCOVERED, ApplicationStatus.ANALYZED]:
         raise ValueError(f"Cannot approve: tracking status {track.status} is not READY_TO_APPLY")
+
     if rev.status == ReviewStatus.APPROVED:
+        modified = False
+        if not rev.form_fingerprint or rev.form_fingerprint != fp:
+            rev.form_fingerprint = fp
+            modified = True
         if note and note != rev.note:
             rev.note = note
+            modified = True
+        if modified:
             rev.updated_at = _now()
             save_application_review(rev)
         return rev  # idempotent
+
     if rev.status == ReviewStatus.REJECTED:
-        raise ValueError(f"Cannot approve: review already REJECTED")
+        raise ValueError("Cannot approve: review already REJECTED")
     if rev.status == ReviewStatus.COMPLETED:
-        raise ValueError(f"Cannot approve: review already COMPLETED")
+        raise ValueError("Cannot approve: review already COMPLETED")
 
     # Safety: never change tracking to APPLIED, never call browser submit
     rev.status = ReviewStatus.APPROVED
+    rev.form_fingerprint = fp
     if note:
         rev.note = note
     rev.updated_at = _now()
@@ -274,8 +376,7 @@ def approve_review(vacancy_stable_id: str, note: str | None = None, force: bool 
 
     # Sync validation_status in application_packages table upon human approval
     try:
-        from .db import get_application_package, save_application_package
-        pkg_row = get_application_package(vacancy_stable_id)
+        from .db import save_application_package
         if pkg_row and pkg_row[2]:
             pkg_data = json.loads(pkg_row[2])
             pkg_data["validation_status"] = "VALID"

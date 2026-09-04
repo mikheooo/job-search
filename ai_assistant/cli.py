@@ -819,13 +819,16 @@ def review_show(vacancy_stable_id: str) -> int:
         print(f"Error: {e}", file=__import__('sys').stderr)
         return 1
 
-def review_list(limit: int = 50, status_filter: str | None = None) -> None:
+def review_list(limit: int = 50, status_filter: str | None = None, missing_fingerprint: bool = False) -> None:
 
-    recs = list_application_reviews(status=status_filter, limit=limit)
-    print(f"{'STATUS':15} | {'RANK':4} | {'PRIORITY':8} | {'MATCH':5} | {'DEEP':4} | {'COMPANY':20} | TITLE")
-    print("-" * 110)
+    recs = list_application_reviews(status=status_filter, limit=200 if missing_fingerprint else limit)
+    if missing_fingerprint:
+        recs = [r for r in recs if not r.form_fingerprint][:limit]
+    print(f"{'STATUS':15} | {'FP':7} | {'RANK':4} | {'PRIORITY':8} | {'MATCH':5} | {'DEEP':4} | {'COMPANY':20} | TITLE")
+    print("-" * 120)
     for r in recs:
-        print(f"{r.status.value if hasattr(r.status,'value') else r.status:15} | {str(r.rank) if r.rank is not None else '-':4} | {str(int(r.priority_score)) if r.priority_score is not None else '-':8} | {str(int(r.match_score)) if r.match_score is not None else '-':5} | {str(int(r.deep_score)) if r.deep_score is not None else '-':4} | {(r.company or '')[:20]:20} | {(r.title or '')[:40]}")
+        fp_str = "YES" if r.form_fingerprint else "MISSING"
+        print(f"{r.status.value if hasattr(r.status,'value') else r.status:15} | {fp_str:7} | {str(r.rank) if r.rank is not None else '-':4} | {str(int(r.priority_score)) if r.priority_score is not None else '-':8} | {str(int(r.match_score)) if r.match_score is not None else '-':5} | {str(int(r.deep_score)) if r.deep_score is not None else '-':4} | {(r.company or '')[:20]:20} | {(r.title or '')[:40]}")
 
 def review_approve(vacancy_stable_id: str) -> int:
 
@@ -4439,6 +4442,7 @@ def main() -> int:
     review_list_p = review_sub.add_parser("list", help="List reviews")
     review_list_p.add_argument("--limit", type=int, default=50)
     review_list_p.add_argument("--status", type=str, default=None)
+    review_list_p.add_argument("--missing-fingerprint", action="store_true", default=False, help="Filter reviews missing form fingerprint")
     review_show_p = review_sub.add_parser("show", help="Show review")
     review_show_p.add_argument("vacancy_stable_id", type=str)
     review_approve_p = review_sub.add_parser("approve", help="Approve review")
@@ -4847,7 +4851,7 @@ def main() -> int:
         if args.review_command and args.review_command not in ["list", "show", "approve", "reject"]:
             return review_show(args.review_command)
         if args.review_command == "list":
-            review_list(limit=args.limit, status_filter=args.status)
+            review_list(limit=args.limit, status_filter=args.status, missing_fingerprint=getattr(args, "missing_fingerprint", False))
         elif args.review_command == "approve":
             return review_approve(args.vacancy_stable_id)
         elif args.review_command == "reject":

@@ -117,6 +117,10 @@ def sample_vacancy(isolated_db):
     )
     db.save_vacancy(v)
     db.mark_digest_delivered([v.stable_id()])
+    db.save_application_package(
+        v.stable_id(), "v1",
+        json.dumps({"cover_letter": "I am an experienced engineer.", "answers": []})
+    )
     return v
 
 

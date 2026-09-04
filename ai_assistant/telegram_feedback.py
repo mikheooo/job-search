@@ -18,7 +18,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ai_assistant import config, db
 from ai_assistant.application_queue import QueueItem, save_queue_item
-from ai_assistant.application_review import ApplicationReview, ReviewStatus, save_application_review, get_application_review
+from ai_assistant.application_review import (
+    ApplicationReview,
+    ReviewStatus,
+    save_application_review,
+    get_application_review,
+    approve_review,
+    REVIEW_VERSION,
+)
 from ai_assistant.application_tracking import ApplicationStatus, get_application_status, set_application_status
 from ai_assistant.telegram_notifier import TelegramNotifier
 
@@ -405,18 +412,25 @@ class TelegramFeedbackProcessor:
                     match_score=getattr(vac, 'match_score', None),
                     notes=note,
                 )
-                save_application_review(
-                    ApplicationReview(
+                rev = get_application_review(stable_id)
+                if not rev:
+                    rev = ApplicationReview(
                         vacancy_stable_id=stable_id,
                         company=getattr(vac, 'company', None),
                         title=getattr(vac, 'title', None),
                         source=getattr(vac, 'source', None),
                         vacancy_url=getattr(vac, 'job_url', None),
                         match_score=getattr(vac, 'match_score', None),
-                        status=ReviewStatus.APPROVED,
+                        status=ReviewStatus.PENDING_REVIEW,
                         note=note,
+                        review_version=REVIEW_VERSION,
                     )
-                )
+                    save_application_review(rev)
+
+                try:
+                    approve_review(stable_id, note=note)
+                except Exception as e:
+                    logger.warning("Could not immediately approve review for %s: %s", stable_id, e)
                 canon_id = f"can_{stable_id.replace(':', '_')}"
                 save_queue_item(
                     QueueItem(

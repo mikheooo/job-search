@@ -459,6 +459,13 @@ class HHSubmissionGates:
 
         # Gate 3: GATE_FINGERPRINT_MATCH
         actual_fp = form_snapshot.get("fingerprint")
+        if not actual_fp:
+            from .application_review import compute_review_fingerprint
+            if "package" in form_snapshot:
+                actual_fp = compute_review_fingerprint(vacancy_stable_id, form_snapshot["package"])
+            elif "cover_letter" in form_snapshot or "answers" in form_snapshot:
+                actual_fp = compute_review_fingerprint(vacancy_stable_id, form_snapshot)
+
         if not expected_fp or not actual_fp or expected_fp != actual_fp:
             return GateCheckResult(
                 passed=False,
