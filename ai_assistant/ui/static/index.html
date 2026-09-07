@@ -253,6 +253,29 @@
       return headers;
     }
 
+    // Обёртка над fetch для чтения /api/*: шлёт токен и не даёт странице молча
+    // показать «undefined» вместо данных. Без неё при включённом
+    // DASHBOARD_REQUIRE_AUTH_FOR_READS и невведённом токене GET отдаёт 401 с
+    // JSON-ом ошибки, а render-код разбирает его как успешный ответ.
+    // Кидает ошибку с name === 'ApiError', чтобы вызывающий catch не дублировал алерт.
+    async function fetchApi(url) {
+      const res = await fetch(url, { headers: getAuthHeaders() });
+      if (res.ok) return res;
+
+      const body = await res.json().catch(() => ({}));
+      if (res.status === 401) {
+        alert('Ошибка авторизации (401): неверный или отсутствующий DASHBOARD_TOKEN. Укажите токен в поле 🔑 вверху страницы.');
+      } else if (res.status === 503) {
+        alert('Ошибка сервера (503): DASHBOARD_TOKEN не настроен на сервере.');
+      } else {
+        alert(`Ошибка ${res.status}: ${body.detail || res.statusText}`);
+      }
+
+      const err = new Error(`HTTP ${res.status} on ${url}`);
+      err.name = 'ApiError';
+      throw err;
+    }
+
     window.addEventListener('DOMContentLoaded', () => {
       const input = document.getElementById('dashboard-token-input');
       if (input) {
@@ -266,7 +289,7 @@
 
     async function loadStats() {
       try {
-        const res = await fetch('/api/stats', { headers: getAuthHeaders() });
+        const res = await fetchApi('/api/stats');
         const d = await res.json();
         document.getElementById('stat-total-vacancies').innerText = d.total_vacancies;
         document.getElementById('stat-packages').innerText = d.total_packages;
@@ -334,7 +357,7 @@
       if (eligibility) params.append('eligibility', eligibility);
 
       try {
-        const res = await fetch(`/api/vacancies?${params}`, { headers: getAuthHeaders() });
+        const res = await fetchApi(`/api/vacancies?${params}`);
         const list = await res.json();
         const tbody = document.getElementById('vacancies-tbody');
         tbody.innerHTML = '';
@@ -387,7 +410,7 @@
 
     async function loadQueue() {
       try {
-        const res = await fetch('/api/queue', { headers: getAuthHeaders() });
+        const res = await fetchApi('/api/queue');
         const items = await res.json();
         document.getElementById('stat-queue-count').innerText = items.length;
         const container = document.getElementById('queue-cards-container');
@@ -429,7 +452,7 @@
     async function openPackageModal(stableId) {
       currentVacancyId = stableId;
       try {
-        const res = await fetch(`/api/package/${stableId}`, { headers: getAuthHeaders() });
+        const res = await fetchApi(`/api/package/${stableId}`);
         const d = await res.json();
 
         document.getElementById('modal-company').innerText = d.vacancy?.company || 'Компания';
@@ -464,7 +487,8 @@
 
         document.getElementById('package-modal').classList.remove('hidden');
       } catch (e) {
-        alert('Ошибка при загрузке пакета: ' + e);
+        // ApiError уже показал свой алерт внутри fetchApi.
+        if (!e || e.name !== 'ApiError') alert('Ошибка при загрузке пакета: ' + e);
       }
     }
 
