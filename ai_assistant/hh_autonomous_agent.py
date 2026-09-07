@@ -1048,6 +1048,12 @@ class AutonomousJobAgent:
                 f"🔗 https://hh.ru/vacancy/{vac_id}\n\n"
                 f"Статус: Готова к отправке (READY_TO_SUBMIT).\n"
             )
+            # Show the generated letter: the owner must be able to see what the agent
+            # produced, even though autonomous mode approves without a separate ✅.
+            if cover_letter:
+                clipped = cover_letter[:1200]
+                suffix = "…" if len(cover_letter) > 1200 else ""
+                msg_text += f"\n✉️ Сопроводительное письмо:\n{clipped}{suffix}\n"
             notifier.send_message(text=msg_text, reply_markup=reply_markup)
         except Exception as e:
             logger.warning(f"Failed to send telegram notification for {stable_id}: {e}")

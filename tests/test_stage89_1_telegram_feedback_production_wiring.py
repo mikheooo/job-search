@@ -503,7 +503,7 @@ def test_conflicting_transition_obeys_state_machine(sample_delivered_vacancy):
     assert get_application_status(sample_delivered_vacancy.stable_id()).status == ApplicationStatus.ANALYZED
     assert get_application_review(sample_delivered_vacancy.stable_id()).status == ReviewStatus.PENDING_REVIEW
 
-    # Transition 2: PREPARE_APPLICATION -> READY_TO_APPLY / APPROVED
+    # Transition 2: PREPARE_APPLICATION -> READY_TO_APPLY / PENDING_REVIEW (no blind approval)
     cb_prep = encode_callback_data(TelegramFeedbackAction.PREPARE_APPLICATION, sample_delivered_vacancy.stable_id())
     r2 = processor.process_callback_query({
         "id": "cb_step_2",
@@ -513,6 +513,17 @@ def test_conflicting_transition_obeys_state_machine(sample_delivered_vacancy):
     })
     assert r2["success"] is True
     assert get_application_status(sample_delivered_vacancy.stable_id()).status == ApplicationStatus.READY_TO_APPLY
+    assert get_application_review(sample_delivered_vacancy.stable_id()).status == ReviewStatus.PENDING_REVIEW
+
+    # Transition 2b: ✅ APPROVE_APPLICATION -> APPROVED
+    cb_appr = encode_callback_data(TelegramFeedbackAction.APPROVE_APPLICATION, sample_delivered_vacancy.stable_id())
+    r2b = processor.process_callback_query({
+        "id": "cb_step_2b",
+        "from": {"id": 392046103},
+        "message": {"chat": {"id": -1004399255305}},
+        "data": cb_appr,
+    })
+    assert r2b["success"] is True
     assert get_application_review(sample_delivered_vacancy.stable_id()).status == ReviewStatus.APPROVED
 
     # Transition 3: Attempt NOT_INTERESTED after already APPLIED

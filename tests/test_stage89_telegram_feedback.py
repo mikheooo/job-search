@@ -241,12 +241,115 @@ def test_prepare_application_enters_preparation_queue(sample_vacancy):
     assert app is not None
     assert app.status == ApplicationStatus.READY_TO_APPLY
 
+    # Two-step approval (1.5-R.7, option (a)): 📄 queues and shows the package,
+    # approval is a separate explicit action.
     rev = get_application_review(sample_vacancy.stable_id())
     assert rev is not None
-    assert rev.status == ReviewStatus.APPROVED
+    assert rev.status == ReviewStatus.PENDING_REVIEW
 
     q_item = get_queue_item(sample_vacancy.stable_id())
     assert q_item is not None
+
+
+# 6b. ✅ APPROVE_APPLICATION is what actually approves and fingerprints the package
+def test_approve_application_sets_approved_and_fingerprint(sample_vacancy):
+    notifier = TelegramNotifier()
+    processor = TelegramFeedbackProcessor(allowed_user_id="123456789", notifier=notifier)
+
+    cb_prep = encode_callback_data(TelegramFeedbackAction.PREPARE_APPLICATION, sample_vacancy.stable_id())
+    processor.process_callback_query({
+        "id": "cb_prep_approve_flow",
+        "from": {"id": 123456789},
+        "message": {"chat": {"id": 123456789}},
+        "data": cb_prep,
+    })
+    assert get_application_review(sample_vacancy.stable_id()).status == ReviewStatus.PENDING_REVIEW
+
+    cb_approve = encode_callback_data(TelegramFeedbackAction.APPROVE_APPLICATION, sample_vacancy.stable_id())
+    res = processor.process_callback_query({
+        "id": "cb_approve_1",
+        "from": {"id": 123456789},
+        "message": {"chat": {"id": 123456789}},
+        "data": cb_approve,
+    })
+    assert res["success"] is True
+
+    rev = get_application_review(sample_vacancy.stable_id())
+    assert rev.status == ReviewStatus.APPROVED
+    assert rev.form_fingerprint
+
+
+# 6c. 📄 sends the cover letter to the chat together with an explicit ✅ button
+def test_prepare_application_sends_letter_and_approve_button(sample_vacancy):
+    sent: list = []
+
+    def transport(token, payload):
+        sent.append(payload)
+        return {"ok": True, "result": {"message_id": 1}}
+
+    notifier = TelegramNotifier(transport_fn=transport)
+    processor = TelegramFeedbackProcessor(allowed_user_id="123456789", notifier=notifier)
+    cb_data = encode_callback_data(TelegramFeedbackAction.PREPARE_APPLICATION, sample_vacancy.stable_id())
+
+    processor.process_callback_query({
+        "id": "cb_prep_preview",
+        "from": {"id": 123456789},
+        "message": {"chat": {"id": 123456789}},
+        "data": cb_data,
+    })
+
+    # The transport also carries answerCallbackQuery - keep only outbound messages.
+    messages = [p for p in sent if "callback_query_id" not in p]
+    assert len(messages) == 1
+    text = messages[0]["text"]
+    assert "I am an experienced engineer." in text
+
+    markup = messages[0].get("reply_markup") or {}
+    buttons = [b for row in markup.get("inline_keyboard", []) for b in row]
+    callbacks = [b["callback_data"] for b in buttons]
+    assert any(c.startswith("fb:APR:") for c in callbacks)
+    assert all(not c.startswith("fb:APP:") for c in callbacks)
+
+
+# 6d. ✅ without a prepared package fails loudly instead of a silent log warning
+def test_approve_without_package_fails_loudly(isolated_db):
+    v = Vacancy(
+        source="himalayas",
+        source_job_id="hima_s89_nopkg",
+        title="Python Developer",
+        company="No Package Ltd",
+        description="Remote.",
+        job_url="https://himalayas.app/jobs/no-package",
+        location="Remote",
+    )
+    db.save_vacancy(v)
+    db.mark_digest_delivered([v.stable_id()])
+    assert db.get_application_package(v.stable_id()) is None
+
+    notifier = TelegramNotifier()
+    processor = TelegramFeedbackProcessor(allowed_user_id="123456789", notifier=notifier)
+    cb_data = encode_callback_data(TelegramFeedbackAction.APPROVE_APPLICATION, v.stable_id())
+
+    res = processor.process_callback_query({
+        "id": "cb_approve_nopkg",
+        "from": {"id": 123456789},
+        "message": {"chat": {"id": 123456789}},
+        "data": cb_data,
+    })
+
+    assert res["success"] is False
+    assert res["error"] == "PACKAGE_MISSING"
+    assert get_application_review(v.stable_id()) is None
+
+
+# 6e. APR action code survives encode/decode round trip (64-byte callback limit)
+def test_approve_action_code_round_trip():
+    sid = "hh:136591579"
+    data = encode_callback_data(TelegramFeedbackAction.APPROVE_APPLICATION, sid)
+    assert len(data.encode("utf-8")) <= 64
+    action, decoded_sid = decode_callback_data(data)
+    assert action == TelegramFeedbackAction.APPROVE_APPLICATION
+    assert decoded_sid == sid
 
 
 # 7. PREPARE_APPLICATION does not submit

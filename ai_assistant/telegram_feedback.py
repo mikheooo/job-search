@@ -3,7 +3,8 @@
 Provides secure, authenticated, idempotent callback handling for Telegram digest buttons:
 - INTERESTED (INT / 👍 Интересно) -> Promotes to ApplicationReview(PENDING_REVIEW), ApplicationStatus.ANALYZED/DISCOVERED.
 - NOT_INTERESTED (NOT / 👎 Не подходит) -> Sets ApplicationReview(REJECTED), ApplicationStatus.REJECTED.
-- PREPARE_APPLICATION (APP / 📄 Подготовить отклик) -> Sets ApplicationStatus.READY_TO_APPLY, ApplicationReview(APPROVED), application_queue. (NEVER submits externally).
+- PREPARE_APPLICATION (APP / 📄 Подготовить отклик) -> Sets ApplicationStatus.READY_TO_APPLY, ApplicationReview(PENDING_REVIEW), application_queue, and sends the cover letter + answers to the chat with an ✅ approve button. (NEVER submits externally, NEVER approves on its own).
+- APPROVE_APPLICATION (APR / ✅ Одобрить) -> Explicit owner approval: ApplicationReview(APPROVED) + content fingerprint. Fails loudly when no package was prepared.
 - SKIP (SKP / ⏭ Пропустить) -> Sets ApplicationStatus.WITHDRAWN, ApplicationReview(REJECTED).
 - Optional structured reasons for dislikes/skips/likes (Stage 91) without requiring extra steps.
 """
@@ -36,6 +37,7 @@ class TelegramFeedbackAction(str, Enum):
     INTERESTED = "INTERESTED"
     NOT_INTERESTED = "NOT_INTERESTED"
     PREPARE_APPLICATION = "PREPARE_APPLICATION"
+    APPROVE_APPLICATION = "APPROVE_APPLICATION"
     SKIP = "SKIP"
 
 
@@ -62,6 +64,7 @@ ACTION_CODE_MAP = {
     "INT": TelegramFeedbackAction.INTERESTED,
     "NOT": TelegramFeedbackAction.NOT_INTERESTED,
     "APP": TelegramFeedbackAction.PREPARE_APPLICATION,
+    "APR": TelegramFeedbackAction.APPROVE_APPLICATION,
     "SKP": TelegramFeedbackAction.SKIP,
 }
 
@@ -69,6 +72,7 @@ REVERSE_ACTION_CODE_MAP = {
     TelegramFeedbackAction.INTERESTED: "INT",
     TelegramFeedbackAction.NOT_INTERESTED: "NOT",
     TelegramFeedbackAction.PREPARE_APPLICATION: "APP",
+    TelegramFeedbackAction.APPROVE_APPLICATION: "APR",
     TelegramFeedbackAction.SKIP: "SKP",
 }
 
@@ -201,6 +205,106 @@ def build_reason_inline_keyboard(action: TelegramFeedbackAction, vacancy_stable_
     return []
 
 
+PREVIEW_TEXT_LIMIT = 3500
+_COVER_LETTER_LIMIT = 2000
+_ANSWER_LIMIT = 200
+_MAX_ANSWERS_SHOWN = 5
+
+
+def load_package_data(vacancy_stable_id: str) -> Optional[Dict[str, Any]]:
+    """Return decoded application package payload for a vacancy, or None if it was never prepared."""
+    row = db.get_application_package(vacancy_stable_id)
+    if not row:
+        return None
+    raw = row[2] if isinstance(row, tuple) else row.get("package_json")
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        logger.warning("Undecodable application package for %s", vacancy_stable_id)
+        return None
+
+
+def format_package_preview(package: Optional[Dict[str, Any]]) -> str:
+    """Render the cover letter and questionnaire answers for owner review.
+
+    Plain text (no HTML) on purpose: cover letters contain arbitrary user/LLM text
+    that must never be interpreted as markup by Telegram.
+    """
+    if not package:
+        return (
+            "⚠️ Пакет отклика ещё не подготовлен — показывать нечего.\n"
+            "Сначала выполни подготовку пакета, затем нажми 📄 снова."
+        )
+
+    cover = (package.get("cover_letter") or "").strip()
+    lines: List[str] = []
+    lines.append("📄 Пакет отклика готов к проверке")
+    if package.get("validation_status"):
+        lines.append(f"Валидация: {package['validation_status']}")
+
+    if cover:
+        clipped = cover[:_COVER_LETTER_LIMIT]
+        suffix = "…" if len(cover) > _COVER_LETTER_LIMIT else ""
+        lines.append("")
+        lines.append("✉️ Сопроводительное письмо:")
+        lines.append(f"{clipped}{suffix}")
+    else:
+        lines.append("")
+        lines.append("✉️ Сопроводительное письмо: отсутствует в пакете.")
+
+    answers = package.get("answers") or []
+    if isinstance(answers, dict):
+        answers = [{"question": k, "answer": v} for k, v in answers.items()]
+    if answers:
+        lines.append("")
+        lines.append("❓ Ответы на вопросы:")
+        for item in answers[:_MAX_ANSWERS_SHOWN]:
+            if isinstance(item, dict):
+                q = str(item.get("question") or item.get("label") or "?")
+                a = str(item.get("answer") or item.get("value") or "")
+            else:
+                q, a = "?", str(item)
+            lines.append(f"• {q[:_ANSWER_LIMIT]}: {a[:_ANSWER_LIMIT]}")
+        if len(answers) > _MAX_ANSWERS_SHOWN:
+            lines.append(f"…и ещё {len(answers) - _MAX_ANSWERS_SHOWN}")
+
+    reasons = package.get("review_reasons") or package.get("warnings") or []
+    if reasons:
+        lines.append("")
+        lines.append("⚠️ Замечания: " + "; ".join(str(r)[:120] for r in reasons[:3]))
+
+    text = "\n".join(lines)
+    if len(text) > PREVIEW_TEXT_LIMIT:
+        text = text[:PREVIEW_TEXT_LIMIT] + "\n…(обрезано)"
+    return text
+
+
+def build_approval_inline_keyboard(vacancy_stable_id: str) -> Dict[str, Any]:
+    """Inline keyboard shown under the package preview: explicit approve or skip."""
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "✅ Одобрить",
+                    "callback_data": encode_callback_data(
+                        TelegramFeedbackAction.APPROVE_APPLICATION, vacancy_stable_id
+                    ),
+                },
+                {
+                    "text": "⏭ Пропустить",
+                    "callback_data": encode_callback_data(
+                        TelegramFeedbackAction.SKIP, vacancy_stable_id
+                    ),
+                },
+            ]
+        ]
+    }
+
+
 class TelegramFeedbackProcessor:
     """Processes incoming Telegram feedback callbacks with strict authorization and idempotency."""
 
@@ -323,6 +427,7 @@ class TelegramFeedbackProcessor:
         cur_status = app_record.status.value if app_record else "DISCOVERED"
         new_status = cur_status
         ack_text = ""
+        failure: Optional[Dict[str, str]] = None
 
         # 6. Action Execution State Machine
         reason_str = feedback_reason.value if feedback_reason else None
@@ -427,10 +532,9 @@ class TelegramFeedbackProcessor:
                     )
                     save_application_review(rev)
 
-                try:
-                    approve_review(stable_id, note=note)
-                except Exception as e:
-                    logger.warning("Could not immediately approve review for %s: %s", stable_id, e)
+                # Two-step approval (decision 1.5-R.7, option (a)): prepare and show the
+                # package, but never approve it here. APPROVED + fingerprint are set only
+                # when the owner presses ✅, so nobody approves a letter they never saw.
                 canon_id = f"can_{stable_id.replace(':', '_')}"
                 save_queue_item(
                     QueueItem(
@@ -446,7 +550,45 @@ class TelegramFeedbackProcessor:
                     )
                 )
                 new_status = "READY_TO_APPLY"
-                ack_text = "📄 Добавлено в очередь на подготовку отклика"
+
+                package = load_package_data(stable_id)
+                preview = format_package_preview(package)
+                sent = self.notifier.send_message(
+                    text=preview,
+                    reply_markup=build_approval_inline_keyboard(stable_id) if package else None,
+                )
+                if not sent.get("ok", False):
+                    logger.warning("Failed to deliver package preview for %s: %s", stable_id, sent.get("error"))
+
+                already_approved = get_application_review(stable_id)
+                if already_approved is not None and already_approved.status == ReviewStatus.APPROVED:
+                    ack_text = "✅ Пакет уже одобрен ранее"
+                elif package:
+                    ack_text = "📄 Письмо отправлено в чат — проверь и нажми ✅ Одобрить"
+                else:
+                    ack_text = "⚠️ Пакет ещё не подготовлен — одобрение недоступно"
+
+        elif action == TelegramFeedbackAction.APPROVE_APPLICATION:
+            if cur_status in ("APPLIED", "SUBMITTED", "VERIFIED", "OFFER"):
+                ack_text = f"⚠️ Вакансия уже была отправлена ({cur_status})"
+                new_status = cur_status
+            else:
+                package = load_package_data(stable_id)
+                if not package:
+                    # Fail loud. approve_review() raises on a missing package; the old code
+                    # swallowed that and still reported success.
+                    ack_text = "⚠️ Пакет не подготовлен: сначала нажми 📄 и дождись письма"
+                    failure = {"error": "PACKAGE_MISSING"}
+                else:
+                    try:
+                        approve_review(stable_id, note="Approved by owner via Telegram ✅")
+                    except Exception as e:
+                        logger.warning("Approve failed for %s: %s", stable_id, e)
+                        ack_text = f"⚠️ Не удалось одобрить: {e}"
+                        failure = {"error": "APPROVE_FAILED", "reason": str(e)}
+                    else:
+                        new_status = "READY_TO_APPLY"
+                        ack_text = "✅ Одобрено: отпечаток пакета зафиксирован"
 
         elif action == TelegramFeedbackAction.SKIP:
             if cur_status in ("APPLIED", "OFFER", "INTERVIEW"):
@@ -506,8 +648,20 @@ class TelegramFeedbackProcessor:
             self.notifier.answer_callback_query(
                 callback_query_id=cb_id,
                 text=ack_text,
-                show_alert=False,
+                show_alert=bool(failure),
             )
+
+        if failure is not None:
+            return {
+                "success": False,
+                "action": action.value,
+                "vacancy_stable_id": stable_id,
+                "feedback_reason": reason_str,
+                "previous_status": cur_status,
+                "new_status": new_status,
+                "message": ack_text,
+                **failure,
+            }
 
         return {
             "success": True,
