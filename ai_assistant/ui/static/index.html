@@ -266,7 +266,7 @@
 
     async function loadStats() {
       try {
-        const res = await fetch('/api/stats');
+        const res = await fetch('/api/stats', { headers: getAuthHeaders() });
         const d = await res.json();
         document.getElementById('stat-total-vacancies').innerText = d.total_vacancies;
         document.getElementById('stat-packages').innerText = d.total_packages;
@@ -334,7 +334,7 @@
       if (eligibility) params.append('eligibility', eligibility);
 
       try {
-        const res = await fetch(`/api/vacancies?${params}`);
+        const res = await fetch(`/api/vacancies?${params}`, { headers: getAuthHeaders() });
         const list = await res.json();
         const tbody = document.getElementById('vacancies-tbody');
         tbody.innerHTML = '';
@@ -387,7 +387,7 @@
 
     async function loadQueue() {
       try {
-        const res = await fetch('/api/queue');
+        const res = await fetch('/api/queue', { headers: getAuthHeaders() });
         const items = await res.json();
         document.getElementById('stat-queue-count').innerText = items.length;
         const container = document.getElementById('queue-cards-container');
@@ -429,7 +429,7 @@
     async function openPackageModal(stableId) {
       currentVacancyId = stableId;
       try {
-        const res = await fetch(`/api/package/${stableId}`);
+        const res = await fetch(`/api/package/${stableId}`, { headers: getAuthHeaders() });
         const d = await res.json();
 
         document.getElementById('modal-company').innerText = d.vacancy?.company || 'Компания';

@@ -163,6 +163,68 @@ def test_ui_get_endpoints_accessible_without_token(monkeypatch):
         assert resp.status_code == 200, f"GET {ep} failed with {resp.status_code}"
 
 
+def test_ui_reads_open_when_require_auth_for_reads_disabled(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_TOKEN", "production-token-123")
+    monkeypatch.setenv("DASHBOARD_REQUIRE_AUTH_FOR_READS", "false")
+
+    for ep in ["/api/stats", "/api/vacancies?limit=5", "/api/queue"]:
+        resp = client.get(ep)
+        assert resp.status_code == 200, f"GET {ep} failed with {resp.status_code}"
+
+
+def test_ui_reads_require_token_when_require_auth_for_reads_enabled(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_TOKEN", "production-token-123")
+    monkeypatch.setenv("DASHBOARD_REQUIRE_AUTH_FOR_READS", "true")
+
+    r = client.get("/api/stats")
+    assert r.status_code == 401
+
+    r = client.get("/api/stats", headers={"Authorization": "Bearer production-token-123"})
+    assert r.status_code == 200
+
+    r = client.get("/api/queue", headers={"X-API-Key": "production-token-123"})
+    assert r.status_code == 200
+
+    # Страница UI обязана открываться без токена: иначе его некуда ввести.
+    assert client.get("/").status_code == 200
+
+
+def test_ui_reads_without_configured_token_returns_503_when_flag_enabled(monkeypatch):
+    monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.setattr(config, "DASHBOARD_TOKEN", "")
+    monkeypatch.setenv("DASHBOARD_REQUIRE_AUTH_FOR_READS", "1")
+
+    r = client.get("/api/stats")
+    assert r.status_code == 503
+    assert r.json()["detail"] == "DASHBOARD_TOKEN not configured"
+
+
+def test_ui_options_preflight_is_not_blocked(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_TOKEN", "production-token-123")
+    monkeypatch.setenv("DASHBOARD_REQUIRE_AUTH_FOR_READS", "true")
+
+    r = client.options(
+        "/api/stats",
+        headers={"Origin": "http://localhost:8000", "Access-Control-Request-Method": "GET"},
+    )
+    assert r.status_code in (200, 405)
+
+
+def test_ui_auth_error_carries_cors_headers(monkeypatch):
+    """CORSMiddleware должен лежать снаружи авторизации: иначе 401/503 уходят без
+    Access-Control-Allow-Origin, и браузер показывает «CORS error» вместо кода ответа.
+
+    Origin берём из дефолтного allow-list: DASHBOARD_CORS_ORIGINS читается один раз
+    на импорте приложения, в тесте его уже не подменить.
+    """
+    monkeypatch.setenv("DASHBOARD_TOKEN", "production-token-123")
+    monkeypatch.setenv("DASHBOARD_REQUIRE_AUTH_FOR_READS", "true")
+
+    r = client.get("/api/stats", headers={"Origin": "http://localhost:8000"})
+    assert r.status_code == 401
+    assert r.headers.get("access-control-allow-origin") == "http://localhost:8000"
+
+
 def test_ui_mutating_endpoints_without_dashboard_token_returns_503(monkeypatch):
     monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
     monkeypatch.setattr(config, "DASHBOARD_TOKEN", "")

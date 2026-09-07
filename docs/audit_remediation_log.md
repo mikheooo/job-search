@@ -825,3 +825,23 @@
   - `c448ee8` `feat(phase2.1): orchestrator AMBIGUOUS state and state machine invariants`
   - `7785c75` `feat(phase2.1): enforce exclusive claim, ambiguous crash safety, and kill switch check in submission path`
   - `2309553` `test(phase2.1): comprehensive crash safety, idempotency, and state machine suite`
+
+---
+
+### Доработка 2026-09-07: middleware авторизации
+
+- `require_dashboard_token_on_mutation` переименован в `require_dashboard_token`: мидлварь больше
+  отвечает не только за мутации. Поведение для мутаций не изменилось (503 без `DASHBOARD_TOKEN`,
+  401 при неверном/отсутствующем токене).
+- Дублировавшаяся логика проверки токена внутри мидлвари заменена вызовом `_dashboard_token_ok()`
+  (раньше функция была мёртвым кодом).
+- `_dashboard_require_auth_for_reads()` подключён: при `DASHBOARD_REQUIRE_AUTH_FOR_READS=1`
+  токен требуется и на чтение `/api/*`. Страница `/` и `OPTIONS` (CORS-preflight) намеренно
+  открыты — иначе некуда ввести токен и ломается preflight.
+- `ai_assistant/ui/static/index.html`: GET-запросы к `/api/*` теперь тоже ходят через
+  `getAuthHeaders()`, иначе при включённом флаге UI не мог бы подгружать данные.
+- Порядок мидлварей: `add_middleware(CORSMiddleware, ...)` перенесён **после** объявления
+  `require_dashboard_token`. Starlette делает внешним последний добавленный слой, поэтому
+  раньше авторизация была снаружи CORS и её 401/503 уходили без
+  `Access-Control-Allow-Origin` — браузер видел «CORS error» вместо читаемого 401.
+  Заодно это значит: `DASHBOARD_CORS_ORIGINS` читается один раз на импорте приложения.

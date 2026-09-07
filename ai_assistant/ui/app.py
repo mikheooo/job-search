@@ -50,39 +50,97 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Job Search Hub", version="1.0.0", lifespan=lifespan)
 
+def _dashboard_cors_origins() -> list:
+    raw = os.getenv("DASHBOARD_CORS_ORIGINS", "").strip()
+    if raw:
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    # Same-origin dashboard needs no CORS; default allows only loopback.
+    return ["http://localhost:8000", "http://127.0.0.1:8000"]
+
+
+def _dashboard_token() -> str:
+    """Токен дашборда. env приоритетнее config: config читает env только на импорте,
+    так что заданный позже DASHBOARD_TOKEN иначе бы не подхватился."""
+    return os.getenv("DASHBOARD_TOKEN", "").strip() or getattr(config, "DASHBOARD_TOKEN", "").strip()
+
+
+def _request_dashboard_token(request: Request) -> str:
+    """Токен из заголовка: Authorization: Bearer <token> либо X-API-Key: <token>."""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header[7:].strip()
+    return request.headers.get("X-API-Key", "").strip()
+
+
+def _dashboard_token_ok(request: Request) -> bool:
+    configured_token = _dashboard_token()
+    if not configured_token:
+        return False
+    token = _request_dashboard_token(request)
+    return bool(token) and secrets.compare_digest(token, configured_token)
+
+
+def _dashboard_require_auth_for_reads() -> bool:
+    raw = os.getenv("DASHBOARD_REQUIRE_AUTH_FOR_READS", "").strip().lower()
+    if raw:
+        return raw in ("1", "true", "yes")
+    return bool(getattr(config, "DASHBOARD_REQUIRE_AUTH_FOR_READS", False))
+
+
+# Мутирующие методы требуют токен всегда; читающие — только по флагу ниже.
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+# NB: CORSMiddleware намеренно добавляется ПОСЛЕ мидлвари авторизации (см. ниже).
+# Starlette делает внешним слоем последний add_middleware, поэтому так CORS
+# оказывается снаружи авторизации — иначе 401/503 уходят без
+# Access-Control-Allow-Origin и браузер показывает «CORS error» вместо читаемого 401.
+
+
+@app.middleware("http")
+async def require_dashboard_token(request: Request, call_next):
+    """Токен-авторизация для /api/.
+
+    Мутации (POST/PUT/PATCH/DELETE) — всегда. Читающие запросы — только при
+    DASHBOARD_REQUIRE_AUTH_FOR_READS=1.
+
+    Что намеренно не трогаем:
+      * всё вне /api/ — собственно страница дашборда. Если закрыть и её,
+        открыть UI и ввести токен будет негде (браузер не шлёт Bearer при
+        обычной навигации);
+      * OPTIONS — CORS-preflight, браузер не передаёт в нём credentials.
+    """
+    if not request.url.path.startswith("/api/"):
+        return await call_next(request)
+
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    if request.method not in _MUTATING_METHODS and not _dashboard_require_auth_for_reads():
+        return await call_next(request)
+
+    if not _dashboard_token():
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "DASHBOARD_TOKEN not configured"},
+        )
+
+    if not _dashboard_token_ok(request):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Unauthorized: invalid or missing dashboard token"},
+        )
+
+    return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_dashboard_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.middleware("http")
-async def require_dashboard_token_on_mutation(request: Request, call_next):
-    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
-        configured_token = os.getenv("DASHBOARD_TOKEN", "").strip() or getattr(config, "DASHBOARD_TOKEN", "").strip()
-        if not configured_token:
-            return JSONResponse(
-                status_code=503,
-                content={"detail": "DASHBOARD_TOKEN not configured"},
-            )
-        auth_header = request.headers.get("Authorization", "")
-        api_key_header = request.headers.get("X-API-Key", "")
-        token = ""
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:].strip()
-        elif api_key_header:
-            token = api_key_header.strip()
-
-        if not token or not secrets.compare_digest(token, configured_token):
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Unauthorized: invalid or missing dashboard token"},
-            )
-
-    return await call_next(request)
 
 
 STATIC_DIR = Path(__file__).parent / "static"
