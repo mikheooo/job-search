@@ -29,7 +29,12 @@ TRACKING_PARAMS = {
     "ref", "source", "campaign", "fbclid", "gclid", "gclsrc", "mc_cid", "mc_eid",
     "_ga", "_gl", "yclid", "msclkid", "dclid", "irgwc", "aff", "aff_id",
     "referrer", "share", "via", "entry", "position", "searchId", "search_id",
-    "utm_id", "utm_reader", "utm_name", "utm_social", "utm_social_type"
+    "utm_id", "utm_reader", "utm_name", "utm_social", "utm_social_type",
+    # HeadHunter search-navigation params. Every snippet in the search result list
+    # carries a different from=/hhtmFrom=/hhtmFromLabel= pair, so without these the
+    # same vacancy parsed from two snippets produces two different normalized URLs
+    # and lands in the DB twice. Keys are compared lowercased (see normalize_url).
+    "from", "hhtmfrom", "hhtmfromlabel", "hhtmfrompage"
 }
 
 
@@ -339,8 +344,8 @@ def get_canonical_by_normalized_url(normalized_url: str) -> Optional[CanonicalVa
         normalized_company=row[2],
         normalized_title=row[3],
         location=row[4],
-        first_seen_at=row[4],
-        last_seen_at=row[5],
+        first_seen_at=row[5],
+        last_seen_at=row[6],
     )
 
 
@@ -361,8 +366,8 @@ def get_all_canonical_vacancies() -> List[CanonicalVacancy]:
         normalized_company=row[2],
         normalized_title=row[3],
         location=row[4],
-        first_seen_at=row[4],
-        last_seen_at=row[5],
+        first_seen_at=row[5],
+        last_seen_at=row[6],
     ) for row in rows]
 
 

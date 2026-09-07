@@ -116,6 +116,58 @@ def test_query_order_normalized():
     assert normalize_url("https://example.com?z=1&a=2") == "https://example.com?a=2&z=1"
 
 
+def test_hh_snippet_params_do_not_split_identity():
+    """Two HH search snippets of the same vacancy must normalize to one URL.
+
+    Regression: from=/hhtmFrom=/hhtmFromLabel= differ per snippet, so without
+    them in TRACKING_PARAMS the same vacancy landed in the DB twice.
+    """
+    plain = normalize_url("https://hh.ru/vacancy/136591579")
+    snippet_a = normalize_url(
+        "https://hh.ru/vacancy/136591579?from=search_snippet&hhtmFrom=vacancy_search_list"
+    )
+    snippet_b = normalize_url(
+        "https://hh.ru/vacancy/136591579?hhtmFromLabel=vacancy_search_line&from=cluster"
+    )
+    assert snippet_a == snippet_b == plain
+    assert "from" not in snippet_a
+    assert "hhtmfrom" not in snippet_a.lower()
+
+
+def test_real_vacancy_params_survive_hh_normalization():
+    """Only navigation params are stripped - real identifiers stay."""
+    assert normalize_url(
+        "https://hh.ru/vacancy/136591579?from=search_snippet&vacancyId=136591579"
+    ) == "https://hh.ru/vacancy/136591579?vacancyId=136591579"
+
+
+def test_canonical_dates_read_from_correct_columns():
+    """Regression: first_seen/last_seen were read one column to the left."""
+    tmp_dir = setup_test_db()
+    try:
+        save_canonical_vacancy(CanonicalVacancy(
+            canonical_id="canonical_abc",
+            normalized_url="https://hh.ru/vacancy/136591579",
+            normalized_company="testco",
+            normalized_title="ai automation engineer",
+            location="remote",
+            first_seen_at="2026-01-01T00:00:00",
+            last_seen_at="2026-02-02T00:00:00",
+        ))
+        canon = get_canonical_by_normalized_url("https://hh.ru/vacancy/136591579")
+        assert canon is not None
+        assert canon.location == "remote"
+        assert canon.first_seen_at == "2026-01-01T00:00:00"
+        assert canon.last_seen_at == "2026-02-02T00:00:00"
+
+        all_canon = get_all_canonical_vacancies()
+        assert len(all_canon) == 1
+        assert all_canon[0].first_seen_at == "2026-01-01T00:00:00"
+        assert all_canon[0].last_seen_at == "2026-02-02T00:00:00"
+    finally:
+        teardown_test_db(tmp_dir)
+
+
 def test_normalize_company():
     """Test company normalization."""
     assert normalize_company("DeepSense Inc.") == "deepsense"
