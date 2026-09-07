@@ -387,6 +387,14 @@ def approve_review(vacancy_stable_id: str, note: str | None = None, force: bool 
     return rev
 
 def is_review_approved(vacancy_stable_id: str) -> bool:
+    """True only while the review is currently APPROVED.
+
+    Careful: once the application reaches APPLIED the review is consumed and moves
+    to COMPLETED (see application_tracking, all three APPLIED paths call
+    complete_review()). From then on this returns False - not because the review
+    was never approved, but because it is spent. For "was this ever approved?"
+    check COMPLETED as well.
+    """
     rev = get_application_review(vacancy_stable_id)
     return rev is not None and rev.status == ReviewStatus.APPROVED
 

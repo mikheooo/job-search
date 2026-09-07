@@ -10,7 +10,12 @@ import pytest
 
 from ai_assistant.schema import Vacancy
 from ai_assistant.candidate_profile import CandidateProfile
-from ai_assistant.application_tracking import ApplicationStatus, set_application_status, get_application_status
+from ai_assistant.application_tracking import (
+    ApplicationStatus,
+    set_application_status,
+    get_application_status,
+    transition_application,
+)
 from ai_assistant.application_queue import QueueItem
 from ai_assistant import db
 import ai_assistant.config as config
@@ -363,6 +368,140 @@ def test_pending_to_approved_and_rejected():
         # Approve after reject should fail
         with pytest.raises(ValueError):
             ar.approve_review(vac2.stable_id())
+    finally:
+        config.DB_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+def test_applied_consumes_approved_review():
+    """APPLIED moves an APPROVED review to COMPLETED (lifecycle, not a bug).
+
+    Locks the invariant the integrity checker relies on: APPROVED is only valid
+    while tracking is READY_TO_APPLY or SUBMITTED.
+    """
+    tmp = tempfile.mkdtemp()
+    vac, db_file, orig = _setup_ready(tmp, sid="consume_set")
+    try:
+        config.DB_FILE = db_file
+        ar.create_application_review(vac.stable_id())
+        ar.approve_review(vac.stable_id())
+        assert ar.get_application_review(vac.stable_id()).status == ar.ReviewStatus.APPROVED
+
+        set_application_status(
+            vac.stable_id(), ApplicationStatus.APPLIED,
+            company=vac.company, title=vac.title, source=vac.source,
+            vacancy_url=vac.job_url, match_score=90, notes="applied",
+        )
+        assert get_application_status(vac.stable_id()).status == ApplicationStatus.APPLIED
+        assert ar.get_application_review(vac.stable_id()).status == ar.ReviewStatus.COMPLETED
+        # The review was approved, then spent: reads as not-approved from here on.
+        assert ar.is_review_approved(vac.stable_id()) is False
+    finally:
+        config.DB_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_applied_consumes_review_through_transition_path():
+    """Same invariant via transition_application (READY -> SUBMITTED -> VERIFIED -> APPLIED)."""
+    tmp = tempfile.mkdtemp()
+    vac, db_file, orig = _setup_ready(tmp, sid="consume_transition")
+    try:
+        config.DB_FILE = db_file
+        ar.create_application_review(vac.stable_id())
+        ar.approve_review(vac.stable_id())
+        assert ar.get_application_review(vac.stable_id()).status == ar.ReviewStatus.APPROVED
+
+        for status in (ApplicationStatus.SUBMITTED, ApplicationStatus.VERIFIED, ApplicationStatus.APPLIED):
+            transition_application(vac.stable_id(), status, note=f"-> {status.value}")
+
+        assert get_application_status(vac.stable_id()).status == ApplicationStatus.APPLIED
+        assert ar.get_application_review(vac.stable_id()).status == ar.ReviewStatus.COMPLETED
+    finally:
+        config.DB_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_complete_review_leaves_non_approved_untouched():
+    """A review that was never approved is not marked consumed."""
+    tmp = tempfile.mkdtemp()
+    vac, db_file, orig = _setup_ready(tmp, sid="consume_pending")
+    try:
+        config.DB_FILE = db_file
+        ar.create_application_review(vac.stable_id())
+        assert ar.get_application_review(vac.stable_id()).status == ar.ReviewStatus.PENDING_REVIEW
+
+        set_application_status(
+            vac.stable_id(), ApplicationStatus.APPLIED,
+            company=vac.company, title=vac.title, source=vac.source,
+            vacancy_url=vac.job_url, match_score=90, notes="applied",
+        )
+        assert ar.get_application_review(vac.stable_id()).status == ar.ReviewStatus.PENDING_REVIEW
+    finally:
+        config.DB_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+def test_applied_consumes_approved_review():
+    """APPLIED moves an APPROVED review to COMPLETED (lifecycle, not a bug).
+
+    Locks the invariant the integrity checker relies on: APPROVED is only valid
+    while tracking is READY_TO_APPLY or SUBMITTED.
+    """
+    tmp = tempfile.mkdtemp()
+    vac, db_file, orig = _setup_ready(tmp, sid="consume_set")
+    try:
+        config.DB_FILE = db_file
+        ar.create_application_review(vac.stable_id())
+        ar.approve_review(vac.stable_id())
+        assert ar.get_application_review(vac.stable_id()).status == ar.ReviewStatus.APPROVED
+
+        set_application_status(
+            vac.stable_id(), ApplicationStatus.APPLIED,
+            company=vac.company, title=vac.title, source=vac.source,
+            vacancy_url=vac.job_url, match_score=90, notes="applied",
+        )
+        assert get_application_status(vac.stable_id()).status == ApplicationStatus.APPLIED
+        assert ar.get_application_review(vac.stable_id()).status == ar.ReviewStatus.COMPLETED
+        # The review was approved, then spent: reads as not-approved from here on.
+        assert ar.is_review_approved(vac.stable_id()) is False
+    finally:
+        config.DB_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_applied_consumes_review_through_transition_path():
+    """Same invariant via transition_application (READY -> SUBMITTED -> VERIFIED -> APPLIED)."""
+    tmp = tempfile.mkdtemp()
+    vac, db_file, orig = _setup_ready(tmp, sid="consume_transition")
+    try:
+        config.DB_FILE = db_file
+        ar.create_application_review(vac.stable_id())
+        ar.approve_review(vac.stable_id())
+        assert ar.get_application_review(vac.stable_id()).status == ar.ReviewStatus.APPROVED
+
+        for status in (ApplicationStatus.SUBMITTED, ApplicationStatus.VERIFIED, ApplicationStatus.APPLIED):
+            transition_application(vac.stable_id(), status, note=f"-> {status.value}")
+
+        assert get_application_status(vac.stable_id()).status == ApplicationStatus.APPLIED
+        assert ar.get_application_review(vac.stable_id()).status == ar.ReviewStatus.COMPLETED
+    finally:
+        config.DB_FILE = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_complete_review_leaves_non_approved_untouched():
+    """A review that was never approved is not marked consumed."""
+    tmp = tempfile.mkdtemp()
+    vac, db_file, orig = _setup_ready(tmp, sid="consume_pending")
+    try:
+        config.DB_FILE = db_file
+        ar.create_application_review(vac.stable_id())
+        assert ar.get_application_review(vac.stable_id()).status == ar.ReviewStatus.PENDING_REVIEW
+
+        set_application_status(
+            vac.stable_id(), ApplicationStatus.APPLIED,
+            company=vac.company, title=vac.title, source=vac.source,
+            vacancy_url=vac.job_url, match_score=90, notes="applied",
+        )
+        assert ar.get_application_review(vac.stable_id()).status == ar.ReviewStatus.PENDING_REVIEW
     finally:
         config.DB_FILE = orig
         shutil.rmtree(tmp, ignore_errors=True)
