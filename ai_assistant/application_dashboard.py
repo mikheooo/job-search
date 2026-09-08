@@ -2,19 +2,15 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
-from . import config
 from .application_queue import QUEUE_VERSION, generate_queue, get_queue_item
-from .application_review import ReviewStatus, get_application_review
+from .application_review import get_application_review
 from .application_tracking import (
-    ApplicationStatus,
     get_application_history,
-    get_application_status,
     list_applications,
 )
 from .browser_executor import BrowserStatus, get_browser_session
@@ -24,23 +20,15 @@ from .db import (
     get_application_package,
     get_connection,
     get_deep_analysis,
-    get_submission,
     get_verification,
     init_db,
-    list_vacancies,
     list_verifications,
 )
 from .vacancy_identity import (
-    CanonicalVacancy,
-    IdentityMatch,
     MatchType,
     get_aliases_for_canonical,
     get_all_canonical_vacancies,
     get_canonical_by_id,
-    get_canonical_by_normalized_url,
-    normalize_company,
-    normalize_title,
-    normalize_url,
     resolve_vacancy_identity,
 )
 
@@ -561,7 +549,7 @@ def _determine_canonical_action(
 def _action_reason(action: ActionType, tracking_status: str, verification_status: str | None) -> str:
     """Get human-readable reason for action."""
     reasons = {
-        ActionType.PREPARE_BROWSER: f"READY_TO_APPLY but browser not prepared",
+        ActionType.PREPARE_BROWSER: "READY_TO_APPLY but browser not prepared",
         ActionType.REVIEW_APPLICATION: f"Status is {tracking_status} - human review required",
         ActionType.SUBMIT_WITH_CONFIRMATION: "APPROVED + browser READY_FOR_REVIEW - ready for controlled submit",
         ActionType.VERIFY_SUBMISSION: "SUBMITTED but no verification performed",

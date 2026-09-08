@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import inspect
 import sqlite3
-from typing import Optional
 
 
 def apply_schema(conn: sqlite3.Connection) -> None:

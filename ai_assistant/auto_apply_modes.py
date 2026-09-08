@@ -48,13 +48,12 @@ import os
 import re
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Iterable
 
 from pydantic import BaseModel, Field
 
 from .application_review_gate import (
     GateStatus,
-    HumanReviewGate,
     HumanReviewStore,
     build_review_gate,
 )
@@ -62,9 +61,7 @@ from .hh_controlled_submit import controlled_real_submit
 from .hh_extractor import QuestionType
 from .hh_human_submission import confirm_human_submission
 from .prefill_orchestrate import (
-    OperationStatus,
     OrchestrationReport,
-    TrackedOperation,
     prepare_and_execute_prefill,
 )
 from .prefill_plan import PrefillPlan, build_prefill_plan

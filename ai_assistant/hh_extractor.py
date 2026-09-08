@@ -28,9 +28,8 @@ Confirmed from real HH inspection (2026-08-25, active vacancy 135112049):
 from __future__ import annotations
 
 import hashlib
-import re
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 

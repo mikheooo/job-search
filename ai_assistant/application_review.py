@@ -2,15 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 import warnings
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
-from . import config
 from .db import get_connection, init_db
 
 REVIEW_VERSION = "v1"
@@ -233,7 +231,6 @@ def _get_required_data(vacancy_stable_id: str):
     q = get_queue_item(vacancy_stable_id)
     if not q:
         # also try without version
-        from .application_queue import list_queue
         # fallback: check if vacancy exists in queue at all
         raise ValueError(f"Queue item not found for {vacancy_stable_id} - not READY_TO_APPLY in queue")
 
@@ -436,7 +433,7 @@ def reject_review(vacancy_stable_id: str, note: str | None = None) -> Applicatio
         if not rev:
             raise ValueError(f"Review not found for {vacancy_stable_id}")
         if rev.review_version != REVIEW_VERSION:
-            raise ValueError(f"Review version mismatch")
+            raise ValueError("Review version mismatch")
     if rev.status == ReviewStatus.REJECTED:
         # idempotent, update note if provided
         if note and note != rev.note:
@@ -445,9 +442,9 @@ def reject_review(vacancy_stable_id: str, note: str | None = None) -> Applicatio
             save_application_review(rev)
         return rev
     if rev.status == ReviewStatus.APPROVED:
-        raise ValueError(f"Cannot reject: already APPROVED")
+        raise ValueError("Cannot reject: already APPROVED")
     if rev.status == ReviewStatus.COMPLETED:
-        raise ValueError(f"Cannot reject: review already COMPLETED")
+        raise ValueError("Cannot reject: review already COMPLETED")
     rev.status = ReviewStatus.REJECTED
     rev.note = note
     rev.updated_at = _now()

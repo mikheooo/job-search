@@ -8,7 +8,7 @@ probation-delayed, and ambiguous/unknown work formats.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from .schema import Vacancy
 

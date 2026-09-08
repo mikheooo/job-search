@@ -18,10 +18,8 @@ persisted by this module.
 from __future__ import annotations
 
 import base64
-import os
 import re
-from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable
 
 # Gmail read-only scope - the MINIMAL scope that allows reading messages.
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"

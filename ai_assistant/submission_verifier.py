@@ -2,19 +2,15 @@ from __future__ import annotations
 
 import json
 import logging
-import re
-import sqlite3
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from pydantic import BaseModel, Field
 
-from . import config
 from .browser_executor import (
     BrowserAdapter,
-    FlowClassification,
     FlowType,
     MockBrowserAdapter,
     PlaywrightBrowserAdapter,
@@ -230,7 +226,6 @@ def verify_submission(
     """
     import os
 
-    from .candidate_profile import load_candidate_profile
     from .db import _row_to_vacancy, get_submission, get_vacancy_by_id
 
     init_db()

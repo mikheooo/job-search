@@ -15,7 +15,7 @@ import hashlib
 import json
 import logging
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from ai_assistant import config, db
 from ai_assistant.application_queue import QueueItem, save_queue_item

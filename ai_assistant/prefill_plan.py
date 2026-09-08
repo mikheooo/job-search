@@ -10,13 +10,12 @@ browser or DB mutation APIs.
 
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from pydantic import BaseModel, Field
 
-from .hh_extractor import ApplicationForm, ApplicationQuestion, QuestionType
+from .hh_extractor import ApplicationForm, QuestionType
 
 
 class PrefillTarget(BaseModel):

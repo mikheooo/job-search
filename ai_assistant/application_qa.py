@@ -23,7 +23,7 @@ calls LLM, never submits.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .candidate_profile import CandidateProfile
 from .hh_extractor import (

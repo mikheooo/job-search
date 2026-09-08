@@ -30,7 +30,7 @@ import os
 import re
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable
 
 from pydantic import BaseModel, Field
 
@@ -40,15 +40,8 @@ from .hh_message_reply import (
     _NO_REPLY_MARKERS,
     _REPLY_PROBE,
     _SENSITIVE_RE,
-    HHDialog,
-    HHMessage,
-    MessageClassification,
-    _context_texts,
     _load_profile,
     detect_language,
-)
-from .hh_message_reply import (
-    generate_reply as _hh_generate_reply,
 )
 
 DEFAULT_STATE_PATH = os.path.join("artifacts", "email_message_reply_state.json")

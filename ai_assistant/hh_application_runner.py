@@ -22,14 +22,13 @@ from __future__ import annotations
 import json
 import logging
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Callable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from . import db
 from .hh_application_orchestrator import HHApplicationState, transition_application
 from .hh_application_queue import (
-    HHQueueItem,
     can_submit,
     get_controlled_application_queue,
 )

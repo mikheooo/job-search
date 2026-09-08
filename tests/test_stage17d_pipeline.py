@@ -452,7 +452,8 @@ def test_cli_prepare_integrates_form_step(tmp_path, monkeypatch):
             "employment_types": ["Full Time"], "minimum_salary": 1500, "salary_currency": "USD",
         }), encoding="utf-8")
         monkeypatch.setattr(cli, "list_vacancies", lambda limit=10: [db.get_vacancy_by_id(vac.stable_id())])
-        monkeypatch.setattr(cli, "BATCH_LIMIT", 5)
+        # No cli.BATCH_LIMIT patch here on purpose: cli.py does not read it
+        # (batch size comes from the top_n argument), so patching it was a no-op.
         res = cli.prepare_applications(5, profile_path=str(prof_file))
         row = db.get_application_package(vac.stable_id(), APPLICATION_PREP_VERSION)
         assert row is not None

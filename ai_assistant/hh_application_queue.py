@@ -14,17 +14,14 @@ SAFETY INVARIANTS:
 
 from __future__ import annotations
 
-import json
 import logging
-from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from . import db
-from .candidate_profile import load_candidate_profile
 from .hh_application_orchestrator import HHApplicationState
-from .hh_questionnaire import HHQuestionnaire, HHQuestionStatus
+from .hh_questionnaire import HHQuestionStatus
 from .hh_questionnaire_audit import audit_questionnaire
 
 logger = logging.getLogger(__name__)
@@ -338,7 +335,7 @@ def format_ready_queue_cli(items: list[HHQueueItem]) -> str:
                 f"   Questionnaire:      {item.questionnaire_state} (ID: {item.questionnaire_id or 'N/A'})",
                 f"   Audit Result:       {item.audit_state}",
                 f"   Submit Eligibility: {'ELIGIBLE' if item.can_submit_allowed else 'BLOCKED'} ({item.can_submit_reason})",
-                f"   Action Required:    Explicit human confirmation (--confirm-submit)",
+                "   Action Required:    Explicit human confirmation (--confirm-submit)",
                 "-" * 80,
             ])
     lines.append("======================================================================================================")
@@ -361,7 +358,7 @@ def format_human_review_queue_cli(items: list[HHQueueItem]) -> str:
                 f"   Vacancy:            {item.vacancy_title} ({item.vacancy_id}) @ {item.company}",
                 f"   State:              {item.application_state}",
                 f"   Questionnaire ID:   {item.questionnaire_id or 'N/A'}",
-                f"   Questions requiring human decision:",
+                "   Questions requiring human decision:",
             ])
             if item.questions:
                 for q in item.questions:

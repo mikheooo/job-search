@@ -16,13 +16,12 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable
 
 from pydantic import BaseModel, Field
 
 from .hh_human_submission import (
     confirm_human_submission,
-    preflight_with_human_confirmation,
 )
 from .hh_submission import SubmissionStatus
 

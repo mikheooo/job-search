@@ -20,14 +20,13 @@ SAFETY INVARIANTS:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable, Dict, List, Literal, Optional, Set
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
 
@@ -56,8 +55,6 @@ from . import db
 from .hh_questionnaire import (
     HHQuestionnaire,
     HHQuestionStatus,
-    compute_questionnaire_fingerprint,
-    submit_questionnaire_response,
     validate_human_answers,
 )
 

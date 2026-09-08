@@ -13,16 +13,15 @@ SAFETY INVARIANTS:
 
 from __future__ import annotations
 
-import json
 import logging
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from . import db
 from .candidate_profile import CandidateProfile, load_candidate_profile
-from .hh_questionnaire import HHQuestionnaire, HHQuestionStatus, validate_human_answers
+from .hh_questionnaire import HHQuestionnaire, validate_human_answers
 
 logger = logging.getLogger(__name__)
 

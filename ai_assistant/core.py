@@ -1,7 +1,11 @@
 import json
-import logging
 
-import requests
+# NOTE: requests is intentionally unused here. Stage 65 forbids direct HTTP from
+# core.py: everything must go through the Telegram gateway. The import stays so
+# tests/test_stage65_telegram_single_gateway.py can patch ``ai_assistant.core
+# .requests.post`` and assert it is never called — remove this line and that
+# regression tripwire silently stops guarding anything.
+import requests  # noqa: F401
 from openai import OpenAI
 from pydantic import BaseModel, Field
 

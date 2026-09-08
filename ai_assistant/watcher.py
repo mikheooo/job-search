@@ -18,7 +18,7 @@ import logging
 import time
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable
 
 from pydantic import BaseModel, Field
 
@@ -35,31 +35,21 @@ from .application_queue import (
     QUEUE_VERSION,
     QueueItem,
     compute_priority,
-    get_queue_item,
     list_queue,
     save_queue_item,
 )
 from .application_review import (
     ApplicationReview,
     ReviewStatus,
-    create_application_review,
-    get_application_review,
     save_application_review,
-)
-from .application_review_gate import (
-    GateStatus,
-    HumanReviewGate,
-    HumanReviewStore,
-    build_review_gate,
 )
 from .application_tracking import (
     ApplicationStatus,
     get_application_status,
     set_application_status,
-    sync_application_tracking,
     transition_application,
 )
-from .candidate_profile import CandidateProfile, load_candidate_profile
+from .candidate_profile import load_candidate_profile
 from .config import CANDIDATE_PROFILE_FILE
 from .db import (
     _row_to_vacancy,
@@ -82,7 +72,6 @@ from .normalizer import normalize_vacancy
 from .remote_filter import is_strictly_remote
 from .schema import Vacancy
 from .vacancy_identity import (
-    get_canonical_by_normalized_url,
     normalize_url,
     resolve_vacancy_identity,
 )

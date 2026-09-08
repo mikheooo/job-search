@@ -4,18 +4,16 @@ import json
 import logging
 import os
 import re
-import sqlite3
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .submission_verifier import SubmissionVerification
 
 from pydantic import BaseModel, Field
 
-from . import config
 from .candidate_profile import CandidateProfile
 from .db import get_connection, init_db
 from .schema import Vacancy
@@ -1741,7 +1739,6 @@ def prepare_application_in_browser(
     adapter: BrowserAdapter | None = None,
     force: bool = False,
 ) -> BrowserResult:
-    import time
 
     from .application_tracking import ApplicationStatus, get_application_status
     from .candidate_profile import load_candidate_profile
@@ -2221,7 +2218,7 @@ def submit_application_in_browser(
     vac = _row_to_vacancy(row) if row else None
 
     # Load profile
-    from .candidate_profile import CandidateProfile, load_candidate_profile
+    from .candidate_profile import load_candidate_profile
     if profile_path:
         profile = load_candidate_profile(profile_path)
     else:
@@ -2780,10 +2777,7 @@ def verify_submission_in_browser(
 
 def submit_next_in_queue(top_n: int = 1, profile_path: str | None = None, adapter: BrowserAdapter | None = None) -> SubmitResult | None:
     """Submit the next READY_TO_APPLY + APPROVED + READY_FOR_REVIEW vacancy."""
-    from .application_queue import generate_queue, get_queue_item
-    from .application_review import ReviewStatus, get_application_review
-    from .application_tracking import ApplicationStatus, get_application_status
-    from .db import get_application_package
+    from .application_queue import generate_queue
     
     # Generate queue (syncs)
     items = generate_queue(top_n=top_n, profile_path=profile_path)

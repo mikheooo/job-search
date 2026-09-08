@@ -1,4 +1,4 @@
-from __future__ import annotationsimport jsonimport loggingfrom datetime import datetime, timezonefrom typing import Any, Dict, List, Optional, Tuplefrom pydantic import BaseModel, Fieldfrom . import configfrom .candidate_profile import CandidateProfilefrom .db import get_connection, init_dbfrom .schema import Vacancyfrom .vacancy_identity import (    MatchType,    get_aliases_for_canonical,    get_canonical_by_normalized_url,    resolve_vacancy_identity,)logger = logging.getLogger(__name__)
+from __future__ import annotationsimport loggingfrom datetime import datetimefrom typing import Anyfrom pydantic import BaseModel, Fieldfrom .candidate_profile import CandidateProfilefrom .db import get_connection, init_dbfrom .schema import Vacancyfrom .vacancy_identity import (    MatchType,    get_canonical_by_normalized_url,    resolve_vacancy_identity,)logger = logging.getLogger(__name__)
 
 QUEUE_VERSION = "v2"
 
@@ -267,7 +267,7 @@ def _select_representative(canonical_id: str, aliases: list[dict[str, Any]], pro
     4. highest match_score
     5. stable_id alphabetical
     """
-    from .application_tracking import ApplicationStatus, get_application_status    from .db import _row_to_vacancy, get_deep_analysis, get_vacancy_by_id    from .job_analyzer import DeepAnalysisResult    from .matcher import JobMatcher
+    from .application_tracking import get_application_status    from .db import _row_to_vacancy, get_vacancy_by_id
     
     best_alias = None
     best_score = None
@@ -290,7 +290,7 @@ def _select_representative(canonical_id: str, aliases: list[dict[str, Any]], pro
             continue
         
         vac = _row_to_vacancy(row)
-        from .candidate_profile import load_candidate_profile
+
         
         # This is a simplified approach - we'll just use the first non-terminal alias
         # In practice, we should compute priority for each alias
@@ -529,7 +529,7 @@ def clear_queue(queue_version: str | None = None) -> None:
 
 
 def generate_queue(top_n: int = 20, profile_path: str | None = None, status_filter: str = "READY_TO_APPLY") -> list[QueueItem]:
-    from .application_tracking import (        ApplicationStatus,        list_applications,        sync_application_tracking,    )    from .candidate_profile import load_candidate_profile    from .config import BATCH_LIMIT, CANDIDATE_PROFILE_FILE    from .db import list_vacancies    from .job_analyzer import DeepAnalysisResult    from .matcher import JobMatcher    from .vacancy_identity import normalize_url
+    from .application_tracking import (        ApplicationStatus,        list_applications,        sync_application_tracking,    )    from .candidate_profile import load_candidate_profile    from .config import CANDIDATE_PROFILE_FILE    from .job_analyzer import DeepAnalysisResult    from .matcher import JobMatcher
 
 
     # Ensure tracking is up to date
@@ -587,7 +587,7 @@ def generate_queue(top_n: int = 20, profile_path: str | None = None, status_filt
     deep_map: dict[str, Any] = {}
 
     matcher = JobMatcher(profile)
-    from .db import get_vacancy_eligibility, save_vacancy_eligibility    from .eligibility import EligibilityStatus, assess_vacancy_eligibility
+    from .db import get_vacancy_eligibility, save_vacancy_eligibility    from .eligibility import assess_vacancy_eligibility
 
     for sid in allowed_ids:
         row = get_vacancy_by_id(sid)

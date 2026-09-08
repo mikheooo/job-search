@@ -24,11 +24,10 @@ import asyncio
 import json
 import re
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable
 
 from pydantic import BaseModel, Field
 
-from .hh_extractor import QuestionType
 from .prefill_plan import PrefillOperation, PrefillPlan
 
 

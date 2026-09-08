@@ -15,11 +15,8 @@ Security:
 
 from __future__ import annotations
 
-import json
 import logging
-import urllib.parse
-import urllib.request
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable
 
 from ai_assistant import config, db
 from ai_assistant.telegram_notifier import TelegramNotifier

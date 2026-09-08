@@ -3,9 +3,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Sequence
 
-from .remote_filter import classify_work_format, is_strictly_remote
+from .remote_filter import is_strictly_remote
 from .schema import Vacancy
 
 try:
@@ -998,7 +998,7 @@ class JobMatcher:
                 seniority_score = 0
                 expected_str = ', '.join(vac_sen_list) if vac_sen_list else ', '.join(seniority)
                 gaps.append(f"Seniority mismatch: expected {expected_str}")
-                seniority_breakdown = f"seniority:0/15"
+                seniority_breakdown = "seniority:0/15"
 
         dimensions["seniority"] = {
             "score": seniority_score,
@@ -1296,7 +1296,6 @@ def apply_preference_adjustment(
 ) -> MatchResult:
     """Apply safe bounded preference adjustment to an existing MatchResult (Stage 90)."""
     from ai_assistant.feedback_analytics import (
-        PreferenceProfile,
         build_preference_profile,
         calculate_preference_adjustment,
     )

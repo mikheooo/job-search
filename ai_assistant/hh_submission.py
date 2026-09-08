@@ -39,7 +39,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 from pydantic import BaseModel, Field
@@ -48,9 +48,7 @@ logger = logging.getLogger("ai_assistant.hh_submission")
 
 from . import config
 from .application_review import ReviewStatus, get_application_review
-from .application_tracking import get_application_status
-from .candidate_profile import CandidateProfile, load_candidate_profile
-from .db import get_all_submissions
+from .candidate_profile import CandidateProfile
 
 # In-memory set of review_ids that have already had a submit attempt.
 _submitted_reviews: set[str] = set()

@@ -18,9 +18,9 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
-from . import config, db
+from . import db
 from .application_review import compute_review_fingerprint, get_application_review
 from .hh_application_orchestrator import (
     HHApplication,

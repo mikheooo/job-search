@@ -2,23 +2,19 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
-from . import config
-from .application_review import ReviewStatus, get_application_review
-from .application_tracking import ApplicationStatus, get_application_status
-from .browser_executor import BrowserStatus, get_browser_session
+from .application_review import get_application_review
+from .application_tracking import get_application_status
+from .browser_executor import get_browser_session
 from .db import (
-    get_all_submissions,
     get_connection,
     get_submission,
     get_verification,
     init_db,
-    list_verifications,
 )
 
 logger = logging.getLogger(__name__)

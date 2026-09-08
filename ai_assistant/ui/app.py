@@ -8,27 +8,20 @@ import os
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from .. import config
-from ..adapters.habr_career import HabrCareerAdapter
-from ..adapters.himalayas import HimalayasAdapter
-from ..adapters.remoteok import RemoteOkAdapter
-from ..adapters.weworkremotely import WeWorkRemotelyAdapter
-from ..application_queue import generate_queue, list_queue
+from ..application_queue import list_queue
 from ..application_review import approve_review, get_application_review, reject_review
 from ..application_tracking import (
-    ApplicationStatus,
     get_application_status,
-    list_applications,
     transition_application,
 )
-from ..candidate_profile import load_candidate_profile
 from ..cli import SOURCES, collect
 from ..db import (
     _row_to_vacancy,
@@ -37,9 +30,7 @@ from ..db import (
     get_deep_analysis,
     get_vacancy_by_id,
     init_db,
-    list_vacancies,
 )
-from ..matcher import JobMatcher
 
 
 @asynccontextmanager
@@ -415,10 +406,10 @@ def review_package(vacancy_stable_id: str, req: ReviewRequest) -> dict[str, Any]
     try:
         if action == "approve":
             approve_review(vacancy_stable_id, note=req.note or "Approved via Web UI", force=True)
-            return {"status": "success", "message": f"Вакансия успешно утверждена (APPROVED)"}
+            return {"status": "success", "message": "Вакансия успешно утверждена (APPROVED)"}
         else:
             reject_review(vacancy_stable_id, note=req.note or "Rejected via Web UI")
-            return {"status": "success", "message": f"Вакансия отклонена (REJECTED)"}
+            return {"status": "success", "message": "Вакансия отклонена (REJECTED)"}
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:

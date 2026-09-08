@@ -1,20 +1,16 @@
 from __future__ import annotations
 
-import json
 import logging
 import re
-import sqlite3
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from difflib import SequenceMatcher
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
-from pydantic import BaseModel, Field
 
-from . import config
 from .db import get_connection, init_db
 from .schema import Vacancy
 

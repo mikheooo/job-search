@@ -6,8 +6,7 @@ import re
 import subprocess
 import sys
 import time
-from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from . import config
 

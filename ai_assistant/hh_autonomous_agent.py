@@ -27,13 +27,12 @@ SAFETY INVARIANTS:
 from __future__ import annotations
 
 import datetime
-import hashlib
 import json
 import logging
 import re
 import time
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -45,23 +44,13 @@ from .hh_message_reply import (
     HHDialog,
     HHMessage,
     classify_hh_conversation_detailed,
-    detect_language,
     fetch_hh_conversations_list_readonly,
 )
 from .hh_message_watcher import compute_message_fingerprint
-from .hh_post_submit_verifier import verify_hh_submitted_application
-from .hh_questionnaire import (
-    HHQuestionnaire,
-    HHQuestionStatus,
-    compute_questionnaire_fingerprint,
-)
 from .hh_vacancy_navigator import (
     ensure_open_vacancy_tab,
-    extract_hh_numeric_id,
-    resolve_hh_vacancy_url,
     verify_and_navigate_hh_vacancy,
 )
-from .schema import Vacancy
 
 logger = logging.getLogger(__name__)
 
@@ -300,7 +289,7 @@ class NotificationDispatcher:
         print(f" Vacancy:      {vacancy_title}")
         print(f" Employer:     {incoming_message}")
         print(f" My reply:     {sent_reply}")
-        print(f" HH:           CONFIRMED")
+        print(" HH:           CONFIRMED")
         print(f" Conversation: {conv_str}")
         if chat_url:
             print(f" Open Chat:    {chat_url}")
@@ -415,7 +404,7 @@ class NotificationDispatcher:
             "vacancy_title": vacancy_title,
             "vacancy_url": url or (f"https://hh.ru/chat/{conversation_id}" if conversation_id else None),
             "conversation_id": conversation_id,
-            "action_required": f"Review test task requirements and complete assignment.",
+            "action_required": "Review test task requirements and complete assignment.",
             "metadata": {
                 "application_id": application_id,
                 "url": url,

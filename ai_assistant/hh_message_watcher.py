@@ -17,27 +17,24 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import time
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable
 
 from pydantic import BaseModel, Field
 
-from . import db, hh_message_reply
-from .candidate_profile import CandidateProfile, load_candidate_profile
+from . import db
+from .candidate_profile import load_candidate_profile
 from .db import (
     get_hh_message_event,
     is_hh_message_processed,
-    list_hh_message_events,
     save_hh_message_event,
 )
 from .hh_message_reply import (
     HHDialog,
     HHMessage,
-    MessageClassification,
     classify_hh_conversation_detailed,
     fetch_hh_conversation_readonly,
     fetch_hh_conversations_list_readonly,

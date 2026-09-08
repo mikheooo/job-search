@@ -5,14 +5,12 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
-from . import config
 from .application_queue import get_queue_item, list_queue
 from .application_review import (
     ReviewStatus,
     get_application_review,
-    list_application_reviews,
 )
 from .application_tracking import (
     ApplicationStatus,
@@ -25,11 +23,9 @@ from .db import (
     get_all_submissions,
     get_application_package,
     get_connection,
-    get_deep_analysis,
     get_submission,
     get_verification,
     init_db,
-    list_verifications,
 )
 from .vacancy_identity import (
     MatchType,

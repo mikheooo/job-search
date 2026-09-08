@@ -20,12 +20,11 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 from ai_assistant import config, db
 from ai_assistant.schema import Vacancy, is_genuine_production_vacancy

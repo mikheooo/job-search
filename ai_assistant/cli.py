@@ -1,6 +1,6 @@
-from __future__ import annotationsimport argparseimport jsonimport loggingimport osimport reimport sysfrom typing import Any, Callable, Dict, List, Optional, Set, Tuplelogger = logging.getLogger(__name__)
+from __future__ import annotationsimport argparseimport jsonimport loggingimport osimport reimport sysfrom typing import Any, Callablelogger = logging.getLogger(__name__)
 
-from . import (    email_message_reply,    gmail_readonly_connector,    hh_message_reply,    prefill_execute,)from .adapters.habr_career import HabrCareerAdapterfrom .adapters.himalayas import HimalayasAdapterfrom .adapters.remoteok import RemoteOkAdapterfrom .adapters.weworkremotely import WeWorkRemotelyAdapterfrom .application_dashboard import (    ActionType,    ApplicationDashboard,    build_dashboard,    get_dashboard_actions_only,    get_dashboard_history,    get_dashboard_queue,    get_dashboard_show,)from .application_integrity import (    IntegrityReport,    IntegritySeverity,    run_integrity_audit,)from .application_review import (    REVIEW_VERSION,    approve_review,    create_application_review,    get_application_review,    list_application_reviews,    reject_review,)from .application_tracking import (    ApplicationStatus,    verify_and_apply,)from .application_tracking import (    get_application_history as _get_app_history,)from .application_tracking import (    get_application_status as _get_app_status,)from .application_tracking import (    list_applications as _list_apps,)from .application_tracking import (    sync_application_tracking as _sync_tracking,)from .application_tracking import (    transition_application as _transition_app,)from .candidate_profile import load_candidate_profilefrom .config import BATCH_LIMIT, CANDIDATE_PROFILE_FILEfrom .db import (    _row_to_vacancy,    get_application_package,    get_deep_analysis,    get_production_health,    get_submission,    get_vacancy_by_id,    get_verification,    init_db,    is_digest_delivered,    list_digest_attempts,    list_submissions,    list_undigested_vacancies,    list_vacancies,    list_verifications,    mark_digest_delivered,    reconcile_digest_attempt,    record_digest_ambiguous,    record_digest_attempt,    record_digest_failed,    save_application_package,    save_deep_analysis,    save_vacancy,)from .matcher import JobMatcher, JobProfilefrom .normalizer import normalize_vacancyfrom .prefill_execute import make_cdp_evaluate, make_isolated_world_evaluatefrom .schema import Vacancyfrom .submission_verifier import verify_submission as _verify_submissionfrom .vacancy_identity import (    MatchType,    get_aliases_for_canonical,    get_all_canonical_vacancies,    get_canonical_by_id,    normalize_company,    normalize_title,    normalize_url,    resolve_vacancy_identity,    sync_identity_from_vacancies,)SOURCES = {
+from . import (    email_message_reply,    gmail_readonly_connector,    hh_message_reply,    prefill_execute,)from .adapters.habr_career import HabrCareerAdapterfrom .adapters.himalayas import HimalayasAdapterfrom .adapters.remoteok import RemoteOkAdapterfrom .adapters.weworkremotely import WeWorkRemotelyAdapterfrom .application_dashboard import (    build_dashboard,    get_dashboard_actions_only,    get_dashboard_history,    get_dashboard_queue,    get_dashboard_show,)from .application_integrity import (    IntegritySeverity,    run_integrity_audit,)from .application_review import (    approve_review,    create_application_review,    get_application_review,    list_application_reviews,    reject_review,)from .application_tracking import (    verify_and_apply,)from .application_tracking import (    get_application_history as _get_app_history,)from .application_tracking import (    get_application_status as _get_app_status,)from .application_tracking import (    list_applications as _list_apps,)from .application_tracking import (    sync_application_tracking as _sync_tracking,)from .application_tracking import (    transition_application as _transition_app,)from .candidate_profile import load_candidate_profilefrom .config import CANDIDATE_PROFILE_FILEfrom .db import (    _row_to_vacancy,    get_application_package,    get_deep_analysis,    get_production_health,    get_submission,    get_vacancy_by_id,    get_verification,    init_db,    list_digest_attempts,    list_submissions,    list_undigested_vacancies,    list_vacancies,    list_verifications,    mark_digest_delivered,    reconcile_digest_attempt,    save_application_package,    save_deep_analysis,    save_vacancy,)from .matcher import JobMatcherfrom .normalizer import normalize_vacancyfrom .prefill_execute import make_cdp_evaluate, make_isolated_world_evaluatefrom .submission_verifier import verify_submission as _verify_submissionfrom .vacancy_identity import (    MatchType,    get_aliases_for_canonical,    get_all_canonical_vacancies,    get_canonical_by_id,    normalize_company,    normalize_title,    normalize_url,    resolve_vacancy_identity,    sync_identity_from_vacancies,)SOURCES = {
     "himalayas": HimalayasAdapter(),
     "weworkremotely": WeWorkRemotelyAdapter(),
     "remoteok": RemoteOkAdapter(),
@@ -957,7 +957,7 @@ def submissions_list(limit: int = 50) -> None:
     
     for sub in submissions:
         try:
-            import json
+
             # New schema: 0=vacancy_stable_id, 1=submission_id, 2=executor_version, 3=submission_json, 4=status, 5=submitted_at
             sub_id = sub[1]
             vacancy_stable_id = sub[0]
@@ -1108,7 +1108,7 @@ def submissions_verify(vacancy_stable_id: str) -> int:
         print(f"Verification {ver.verification_status.value} - tracking will NOT be moved to APPLIED")
         try:
             verify_and_apply(vacancy_stable_id, ver.verification_status.value, note=f"Verification: {ver.verification_status.value}")
-            print(f"Tracking updated to READY_TO_APPLY for retry")
+            print("Tracking updated to READY_TO_APPLY for retry")
         except Exception as e:
             print(f"Warning: Could not update tracking: {e}")
     
@@ -1117,7 +1117,7 @@ def submissions_verify(vacancy_stable_id: str) -> int:
 
 def submissions_recover(vacancy_stable_id: str) -> int:
     """Inspect submission state and recommend action (read-only, never submits)."""
-    from .submission_recovery import RecoveryStatus, inspect_submission_state
+    from .submission_recovery import inspect_submission_state
     init_db()
     
     result = inspect_submission_state(vacancy_stable_id)
@@ -1189,7 +1189,7 @@ def submissions_reconcile(vacancy_stable_id: str) -> int:
         print("Already APPLIED - no action needed")
     elif result.recovery_status.value == "NO_ACTION" and result.last_verification and result.last_verification.get('verification_status') == "VERIFIED":
         print("Reconciled: VERIFIED -> APPLIED")
-        print(f"Tracking now: APPLIED")
+        print("Tracking now: APPLIED")
     else:
         print(f"No reconciliation performed. Recovery status: {result.recovery_status.value}")
         print(f"Reason: {result.reason}")
@@ -1466,7 +1466,7 @@ def dashboard_show_canonical(canonical_id: str) -> int:
     """Show detailed view for a canonical vacancy."""
     init_db()
 
-    from .application_queue import get_queue_item, list_queue    from .application_tracking import get_application_status
+    from .application_queue import get_queue_item    from .application_tracking import get_application_status
     
     canon = get_canonical_by_id(canonical_id)
     if not canon:
@@ -1501,7 +1501,7 @@ def dashboard_show_canonical(canonical_id: str) -> int:
         if queue_item:
             print(f"    Queue: Rank {queue_item.rank}, Priority {queue_item.priority_score}")
         else:
-            print(f"    Queue: NOT IN QUEUE")
+            print("    Queue: NOT IN QUEUE")
     print()
     
     # Show canonical queue item if exists
@@ -3234,7 +3234,7 @@ def questionnaire_show_cmd(target_id: str) -> int:
 
 def questionnaire_suggest_cmd(target_id: str, apply_answers: bool = False) -> int:
     """Generate and display smart tailored questionnaire answer suggestions."""
-    import json    from . import db    from .hh_questionnaire import (        HHQuestionnaire,        generate_suggested_answers,        validate_human_answers,    )
+    from . import db    from .hh_questionnaire import (        HHQuestionnaire,        generate_suggested_answers,        validate_human_answers,    )
     db.init_db()
     data = db.get_hh_questionnaire(target_id)
     if not data:
@@ -3365,7 +3365,7 @@ def questionnaire_submit_cmd(
         print("=======================================================")
         print(f"Questionnaire:             {quest.questionnaire_id}")
         print(f"Vacancy / Conv:            {quest.vacancy_stable_id or quest.conversation_id or 'N/A'}")
-        print(f"Status:                    READY_TO_SUBMIT (gated)")
+        print("Status:                    READY_TO_SUBMIT (gated)")
         print("Submit Action:             BLOCKED (Submit = 0)")
         print("-------------------------------------------------------")
         print("To proceed with actual submit, run:")
@@ -3432,14 +3432,14 @@ def application_submit_cmd(
     qid = data.get("questionnaire_id")
 
     if current_state == "SUBMITTED":
-        print(f"\n=======================================================", file=sys.stderr)
-        print(f"   SUBMISSION BLOCKED: APPLICATION ALREADY SUBMITTED", file=sys.stderr)
-        print(f"=======================================================", file=sys.stderr)
+        print("\n=======================================================", file=sys.stderr)
+        print("   SUBMISSION BLOCKED: APPLICATION ALREADY SUBMITTED", file=sys.stderr)
+        print("=======================================================", file=sys.stderr)
         print(f"Application:               {app_id}", file=sys.stderr)
-        print(f"Current State:             SUBMITTED", file=sys.stderr)
-        print(f"Reason:                    application_already_submitted", file=sys.stderr)
-        print(f"Submit Action:             BLOCKED (Submit = 0)", file=sys.stderr)
-        print(f"=======================================================\n", file=sys.stderr)
+        print("Current State:             SUBMITTED", file=sys.stderr)
+        print("Reason:                    application_already_submitted", file=sys.stderr)
+        print("Submit Action:             BLOCKED (Submit = 0)", file=sys.stderr)
+        print("=======================================================\n", file=sys.stderr)
         return 1
 
     if current_state != "READY_TO_SUBMIT":
@@ -3452,7 +3452,7 @@ def application_submit_cmd(
         print("=======================================================")
         print(f"Application:               {app_id}")
         print(f"Vacancy:                   {data.get('title') or 'N/A'}")
-        print(f"Status:                    READY_TO_SUBMIT (gated)")
+        print("Status:                    READY_TO_SUBMIT (gated)")
         print("Submit Action:             BLOCKED (Submit = 0)")
         print("-------------------------------------------------------")
         print("To proceed with actual submit, run:")
@@ -5324,7 +5324,7 @@ def duplicates_list() -> int:
 def identity_queue(canonical_id: str, limit: int = 50) -> int:
     """Show queue info for a canonical vacancy."""
 
-    from .application_queue import get_queue_item, list_queue    from .application_tracking import get_application_status
+    from .application_queue import get_queue_item    from .application_tracking import get_application_status
     init_db()
     
     canon = get_canonical_by_id(canonical_id)
@@ -5360,7 +5360,7 @@ def identity_queue(canonical_id: str, limit: int = 50) -> int:
         if queue_item:
             print(f"    Queue: Rank {queue_item.rank}, Priority {queue_item.priority_score}")
         else:
-            print(f"    Queue: NOT IN QUEUE")
+            print("    Queue: NOT IN QUEUE")
     print()
     
     # Show canonical queue item if exists

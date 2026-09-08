@@ -4,8 +4,6 @@ import json
 import logging
 import os
 import re
-from pathlib import Path
-from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -14,7 +12,6 @@ from .candidate_profile import CandidateProfile
 from .hh_extractor import (
     ApplicationAnswer,
     ApplicationForm,
-    ApplicationQuestion,
     ApplicationType,
 )
 from .job_analyzer import DeepAnalysisResult
