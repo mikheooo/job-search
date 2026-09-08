@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional, Dict, Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
     from .submission_verifier import SubmissionVerification
@@ -16,8 +16,8 @@ if TYPE_CHECKING:
 from pydantic import BaseModel, Field
 
 from . import config
-from .db import get_connection, init_db
 from .candidate_profile import CandidateProfile
+from .db import get_connection, init_db
 from .schema import Vacancy
 
 EXECUTOR_VERSION = "v1"
@@ -89,9 +89,9 @@ KNOWN_AGGREGATOR_DOMAINS = {
 class FlowClassification(BaseModel):
     flow_type: FlowType = FlowType.UNKNOWN
     source_url: str = ""
-    application_url: Optional[str] = None
-    application_domain: Optional[str] = None
-    redirect_chain: List[str] = Field(default_factory=list)
+    application_url: str | None = None
+    application_domain: str | None = None
+    redirect_chain: list[str] = Field(default_factory=list)
     is_external_application: bool = False
     verification_strategy: str = "manual_review"
     confidence_reason: str = ""
@@ -100,10 +100,10 @@ class FlowClassification(BaseModel):
 
 def classify_apply_flow(
     source_url: str,
-    final_url: Optional[str] = None,
-    apply_link: Optional[str] = None,
+    final_url: str | None = None,
+    apply_link: str | None = None,
     has_form: bool = False,
-    redirect_chain: Optional[List[str]] = None,
+    redirect_chain: list[str] | None = None,
 ) -> FlowClassification:
     """Classify the application flow into NATIVE_FORM, EXTERNAL_ATS, AGGREGATOR_REDIRECT, or UNKNOWN."""
     from urllib.parse import urlparse
@@ -295,21 +295,21 @@ class SubmitResult(BaseModel):
     vacancy_stable_id: str
     submission_id: str
     status: SubmitStatus
-    final_url: Optional[str] = None
-    page_title: Optional[str] = None
-    submitted_at: Optional[str] = None
-    before_screenshot: Optional[str] = None
-    after_screenshot: Optional[str] = None
+    final_url: str | None = None
+    page_title: str | None = None
+    submitted_at: str | None = None
+    before_screenshot: str | None = None
+    after_screenshot: str | None = None
     confirmation_used: bool = False
     submit_button_found: bool = False
-    error: Optional[str] = None
-    flow_type: Optional[FlowType] = None
-    application_domain: Optional[str] = None
-    verification_strategy: Optional[str] = None
+    error: str | None = None
+    flow_type: FlowType | None = None
+    application_domain: str | None = None
+    verification_strategy: str | None = None
     submit_count: int = 0
     executor_version: str = EXECUTOR_VERSION
-    gate_check_result: Optional[Any] = None
-    live_page_result: Optional[Any] = None
+    gate_check_result: Any | None = None
+    live_page_result: Any | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -317,62 +317,62 @@ class BrowserApplicationSession(BaseModel):
     vacancy_stable_id: str
     url: str
     status: BrowserStatus
-    fields_detected: List[str] = Field(default_factory=list)
-    fields_filled: List[str] = Field(default_factory=list)
-    fields_skipped: List[str] = Field(default_factory=list)
-    warnings: List[str] = Field(default_factory=list)
+    fields_detected: list[str] = Field(default_factory=list)
+    fields_filled: list[str] = Field(default_factory=list)
+    fields_skipped: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
     created_at: str
     updated_at: str
-    final_url: Optional[str] = None
-    page_title: Optional[str] = None
-    site: Optional[str] = None
+    final_url: str | None = None
+    page_title: str | None = None
+    site: str | None = None
     form_detected: bool = False
-    error: Optional[str] = None
-    screenshot_path: Optional[str] = None
-    flow_type: Optional[FlowType] = None
-    source_url: Optional[str] = None
-    application_url: Optional[str] = None
-    application_domain: Optional[str] = None
-    redirect_chain: List[str] = Field(default_factory=list)
+    error: str | None = None
+    screenshot_path: str | None = None
+    flow_type: FlowType | None = None
+    source_url: str | None = None
+    application_url: str | None = None
+    application_domain: str | None = None
+    redirect_chain: list[str] = Field(default_factory=list)
     is_external_application: bool = False
-    verification_strategy: Optional[str] = None
+    verification_strategy: str | None = None
 
 class BrowserResult(BaseModel):
     vacancy_stable_id: str
     url: str
-    final_url: Optional[str] = None
-    page_title: Optional[str] = None
-    site: Optional[str] = None
+    final_url: str | None = None
+    page_title: str | None = None
+    site: str | None = None
     status: BrowserStatus
     form_detected: bool = False
     apply_button_found: bool = False
-    fields_detected: List[str] = Field(default_factory=list)
-    fields_filled: List[str] = Field(default_factory=list)
-    fields_skipped: List[str] = Field(default_factory=list)
-    warnings: List[str] = Field(default_factory=list)
-    error: Optional[str] = None
-    screenshot_path: Optional[str] = None
-    flow_type: Optional[FlowType] = None
-    source_url: Optional[str] = None
-    application_url: Optional[str] = None
-    application_domain: Optional[str] = None
-    redirect_chain: List[str] = Field(default_factory=list)
+    fields_detected: list[str] = Field(default_factory=list)
+    fields_filled: list[str] = Field(default_factory=list)
+    fields_skipped: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    error: str | None = None
+    screenshot_path: str | None = None
+    flow_type: FlowType | None = None
+    source_url: str | None = None
+    application_url: str | None = None
+    application_domain: str | None = None
+    redirect_chain: list[str] = Field(default_factory=list)
     is_external_application: bool = False
-    verification_strategy: Optional[str] = None
+    verification_strategy: str | None = None
 
     model_config = {"extra": "forbid"}
 
 # Abstract BrowserAdapter - no submit/apply methods allowed
 class BrowserAdapter:
-    def open(self, url: str) -> Dict[str, Any]:
+    def open(self, url: str) -> dict[str, Any]:
         raise NotImplementedError
-    def inspect_page(self) -> Dict[str, Any]:
+    def inspect_page(self) -> dict[str, Any]:
         raise NotImplementedError
     def fill_field(self, selector: str, value: str) -> bool:
         raise NotImplementedError
     def upload_file(self, selector: str, path: str) -> bool:
         raise NotImplementedError
-    def screenshot(self, path: str) -> Optional[str]:
+    def screenshot(self, path: str) -> str | None:
         raise NotImplementedError
     def close(self) -> None:
         raise NotImplementedError
@@ -381,10 +381,10 @@ class BrowserAdapter:
     def get_title(self) -> str:
         raise NotImplementedError
     # Submit method - only for controlled submit flow
-    def submit_application(self) -> Dict[str, Any]:
+    def submit_application(self) -> dict[str, Any]:
         raise NotImplementedError
 
-    def extract_application_form(self) -> Dict[str, Any]:
+    def extract_application_form(self) -> dict[str, Any]:
         """Platform-aware: read the current page and return a normalized DOM
         snapshot for form extraction.
 
@@ -400,15 +400,15 @@ class BrowserAdapter:
         raise NotImplementedError
 
 class MockBrowserAdapter(BrowserAdapter):
-    def __init__(self, simulate: Dict[str, Any] | None = None):
+    def __init__(self, simulate: dict[str, Any] | None = None):
         self.simulate = simulate or {}
-        self.opened_url: Optional[str] = None
-        self.calls: List[str] = []
+        self.opened_url: str | None = None
+        self.calls: list[str] = []
         self.closed = False
         # Safety: ensure no submit is ever called
         self.submit_attempted = False
 
-    def open(self, url: str) -> Dict[str, Any]:
+    def open(self, url: str) -> dict[str, Any]:
         self.calls.append(f"open:{url}")
         self.opened_url = url
         # Simulate response
@@ -420,7 +420,7 @@ class MockBrowserAdapter(BrowserAdapter):
             return {"final_url": final_url, "title": title, "site": site, "blocked": True, "reason": blocked_reason}
         return {"final_url": final_url, "title": title, "site": site, "blocked": False}
 
-    def inspect_page(self) -> Dict[str, Any]:
+    def inspect_page(self) -> dict[str, Any]:
         self.calls.append("inspect_page")
         # Simulate detection
         if self.simulate.get("form_not_found"):
@@ -439,7 +439,7 @@ class MockBrowserAdapter(BrowserAdapter):
             "cloudflare": cloudflare,
         }
 
-    def extract_application_form(self) -> Dict[str, Any]:
+    def extract_application_form(self) -> dict[str, Any]:
         self.calls.append("extract_application_form")
         sim = self.simulate
         questions = sim.get("questions") or []
@@ -456,7 +456,7 @@ class MockBrowserAdapter(BrowserAdapter):
             "site": sim.get("site") or "hh.ru",
         }
 
-    def inspect_apply_flow(self) -> Dict[str, Any]:
+    def inspect_apply_flow(self) -> dict[str, Any]:
         self.calls.append("inspect_apply_flow")
         sim = self.simulate
         href = sim.get("apply_link")
@@ -493,7 +493,7 @@ class MockBrowserAdapter(BrowserAdapter):
         self.calls.append(f"upload:{selector}")
         return True
 
-    def screenshot(self, path: str) -> Optional[str]:
+    def screenshot(self, path: str) -> str | None:
         self.calls.append(f"screenshot:{path}")
         try:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -515,7 +515,7 @@ class MockBrowserAdapter(BrowserAdapter):
     def get_content(self) -> str:
         return self.simulate.get("content", f"{self.get_title()} {self.get_current_url()}")
 
-    def submit_application(self) -> Dict[str, Any]:
+    def submit_application(self) -> dict[str, Any]:
         self.calls.append("submit_application")
         self.submit_attempted = True
         # Mock always returns success for testing
@@ -595,10 +595,10 @@ class CDPBrowserAdapter(BrowserAdapter):
     """Direct CDP adapter over WebSocket / HTTP API (e.g. http://127.0.0.1:9222)."""
     def __init__(self, cdp_url: str = "http://127.0.0.1:9222"):
         self.cdp_url = cdp_url.rstrip("/")
-        self.tab_id: Optional[str] = None
-        self.ws_url: Optional[str] = None
-        self._final_url: Optional[str] = None
-        self._title: Optional[str] = None
+        self.tab_id: str | None = None
+        self.ws_url: str | None = None
+        self._final_url: str | None = None
+        self._title: str | None = None
         self.submit_attempted = False
 
     def _sync_run(self, coro):
@@ -613,8 +613,9 @@ class CDPBrowserAdapter(BrowserAdapter):
         except RuntimeError:
             return asyncio.run(coro)
 
-    def open(self, url: str) -> Dict[str, Any]:
-        import urllib.request, json
+    def open(self, url: str) -> dict[str, Any]:
+        import json
+        import urllib.request
         try:
             new_url = f"{self.cdp_url}/json/new?{url}"
             req = urllib.request.Request(new_url, method="PUT")
@@ -627,7 +628,9 @@ class CDPBrowserAdapter(BrowserAdapter):
             time.sleep(3)
             
             async def _init_page():
-                import websockets, asyncio
+                import asyncio
+
+                import websockets
                 async with websockets.connect(self.ws_url, open_timeout=15, close_timeout=15) as ws:
                     await ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {"expression": "JSON.stringify({url: window.location.href, title: document.title})"}}))
                     raw = await asyncio.wait_for(ws.recv(), timeout=10)
@@ -643,11 +646,14 @@ class CDPBrowserAdapter(BrowserAdapter):
         except Exception as e:
             return {"final_url": url, "title": "", "site": "", "blocked": True, "reason": str(e)}
 
-    def inspect_page(self) -> Dict[str, Any]:
+    def inspect_page(self) -> dict[str, Any]:
         if not self.ws_url:
             return {"form_detected": True, "fields": ["name", "email", "phone", "resume", "cover_letter", "linkedin"], "apply_button": True}
         async def _inspect():
-            import websockets, asyncio, json
+            import asyncio
+            import json
+
+            import websockets
             async with websockets.connect(self.ws_url, open_timeout=15, close_timeout=15) as ws:
                 script = """(() => {
                     const buttons = Array.from(document.querySelectorAll("button, a, input[type='submit']"));
@@ -679,12 +685,15 @@ class CDPBrowserAdapter(BrowserAdapter):
         except Exception:
             return {"form_detected": True, "fields": ["name", "email", "phone", "resume", "cover_letter", "linkedin"], "apply_button": True}
 
-    def inspect_apply_flow(self) -> Dict[str, Any]:
+    def inspect_apply_flow(self) -> dict[str, Any]:
         """Read-only inspection of apply buttons, hrefs, and form fields without clicking anything."""
         if not self.ws_url:
             return {"apply_present": False, "apply_href": None, "has_form": False, "fields": []}
         async def _inspect_flow():
-            import websockets, asyncio, json
+            import asyncio
+            import json
+
+            import websockets
             async with websockets.connect(self.ws_url, open_timeout=15, close_timeout=15) as ws:
                 script = r"""(() => {
                     const result = {
@@ -928,11 +937,15 @@ class CDPBrowserAdapter(BrowserAdapter):
     def upload_file(self, selector: str, path: str) -> bool:
         return True
 
-    def screenshot(self, path: str) -> Optional[str]:
+    def screenshot(self, path: str) -> str | None:
         if not self.ws_url:
             return None
         async def _shot():
-            import websockets, asyncio, json, base64
+            import asyncio
+            import base64
+            import json
+
+            import websockets
             async with websockets.connect(self.ws_url, open_timeout=15, close_timeout=15) as ws:
                 await ws.send(json.dumps({"id": 4, "method": "Page.captureScreenshot", "params": {"format": "png"}}))
                 raw = await asyncio.wait_for(ws.recv(), timeout=10)
@@ -947,12 +960,15 @@ class CDPBrowserAdapter(BrowserAdapter):
         except Exception:
             return None
 
-    def submit_application(self) -> Dict[str, Any]:
+    def submit_application(self) -> dict[str, Any]:
         self.submit_attempted = True
         if not self.ws_url:
             return {"success": False, "error": "No active tab"}
         async def _submit():
-            import websockets, asyncio, json
+            import asyncio
+            import json
+
+            import websockets
             async with websockets.connect(self.ws_url, open_timeout=15, close_timeout=15) as ws:
                 click_script = """(() => {
                     const btn = Array.from(document.querySelectorAll("button, a, input[type='submit']")).find(
@@ -994,7 +1010,10 @@ class CDPBrowserAdapter(BrowserAdapter):
         if not self.ws_url:
             return f"{self._title} {self._final_url}"
         async def _get_doc():
-            import websockets, asyncio, json
+            import asyncio
+            import json
+
+            import websockets
             async with websockets.connect(self.ws_url, open_timeout=15, close_timeout=15) as ws:
                 await ws.send(json.dumps({"id": 5, "method": "Runtime.evaluate", "params": {"expression": "document.documentElement.outerHTML"}}))
                 raw = await asyncio.wait_for(ws.recv(), timeout=10)
@@ -1010,7 +1029,10 @@ class CDPBrowserAdapter(BrowserAdapter):
         if not self.ws_url:
             return json.dumps({"error": "No active tab / ws_url"})
         async def _eval():
-            import websockets, asyncio, json
+            import asyncio
+            import json
+
+            import websockets
             async with websockets.connect(self.ws_url, open_timeout=15, close_timeout=15) as ws:
                 await ws.send(json.dumps({"id": 10, "method": "Runtime.evaluate", "params": {"expression": js, "returnByValue": True}}))
                 raw = await asyncio.wait_for(ws.recv(), timeout=10)
@@ -1039,7 +1061,7 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
         self._final_url = None
         self._title = None
 
-    def open(self, url: str) -> Dict[str, Any]:
+    def open(self, url: str) -> dict[str, Any]:
         try:
             from playwright.sync_api import sync_playwright
             self.play = sync_playwright().start()
@@ -1081,7 +1103,7 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
         except Exception as e:
             return {"final_url": url, "title": "", "site": "", "blocked": True, "reason": str(e)}
 
-    def inspect_page(self) -> Dict[str, Any]:
+    def inspect_page(self) -> dict[str, Any]:
         if not self.page:
             return {"form_detected": False, "fields": [], "apply_button": False}
         try:
@@ -1110,7 +1132,7 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
         except Exception:
             return {"form_detected": False, "fields": [], "apply_button": False}
 
-    def extract_application_form(self) -> Dict[str, Any]:
+    def extract_application_form(self) -> dict[str, Any]:
         """Read-only HH-aware extraction. Never clicks/fills/uploads.
 
         Uses REAL observed HH DOM patterns:
@@ -1280,7 +1302,7 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
             pass
         return False
 
-    def screenshot(self, path: str) -> Optional[str]:
+    def screenshot(self, path: str) -> str | None:
         try:
             if self.page:
                 Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -1319,7 +1341,7 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
     def get_title(self) -> str:
         return self._title or ""
 
-    def submit_application(self) -> Dict[str, Any]:
+    def submit_application(self) -> dict[str, Any]:
         """Click the submit/apply button and verify submission.
         Returns dict with success status and any error message."""
         if not self.page:
@@ -1383,7 +1405,7 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
         except Exception as e:
             return json.dumps({"error": str(e)})
 
-def _get_validated_package_answer(field: str, package: Any) -> Optional[str]:
+def _get_validated_package_answer(field: str, package: Any) -> str | None:
     """Stage 17D: validated package answers (truth-only). UNKNOWN /
     requires_review answers are NEVER used and never turned into text."""
     if package is None:
@@ -1406,7 +1428,7 @@ def _get_validated_package_answer(field: str, package: Any) -> Optional[str]:
             return str(ans)
     return None
 
-def _get_profile_value(field: str, profile: CandidateProfile, resume_text: str, vacancy: Vacancy, package: Any) -> Optional[str]:
+def _get_profile_value(field: str, profile: CandidateProfile, resume_text: str, vacancy: Vacancy, package: Any) -> str | None:
     """Truth-only field value: confirmed profile/resume data first, then a
     validated (requires_review=False) package answer. Never invents."""
     val = _get_profile_value_truth(field, profile, resume_text, vacancy, package)
@@ -1414,7 +1436,7 @@ def _get_profile_value(field: str, profile: CandidateProfile, resume_text: str, 
         return val
     return _get_validated_package_answer(field, package)
 
-def _get_profile_value_truth(field: str, profile: CandidateProfile, resume_text: str, vacancy: Vacancy, package: Any) -> Optional[str]:
+def _get_profile_value_truth(field: str, profile: CandidateProfile, resume_text: str, vacancy: Vacancy, package: Any) -> str | None:
     field = field.lower()
     # Truth-only: return None if not confirmed
     if field in ("name", "first_name", "last_name"):
@@ -1434,7 +1456,7 @@ def _get_profile_value_truth(field: str, profile: CandidateProfile, resume_text:
 
     if field == "email":
         if hasattr(profile, "email") and getattr(profile, "email", None):
-            return str(getattr(profile, "email")).strip()
+            return str(profile.email).strip()
         if resume_text:
             m = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", resume_text)
             if m:
@@ -1501,7 +1523,7 @@ def _get_profile_value_truth(field: str, profile: CandidateProfile, resume_text:
         return None
     if field == "linkedin":
         if hasattr(profile, "linkedin") and getattr(profile, "linkedin", None):
-            return str(getattr(profile, "linkedin")).strip()
+            return str(profile.linkedin).strip()
         if resume_text:
             m = re.search(r"https?://[^\s]*linkedin[^\s]*", resume_text, re.IGNORECASE)
             if m:
@@ -1509,7 +1531,7 @@ def _get_profile_value_truth(field: str, profile: CandidateProfile, resume_text:
         return None
     if field == "github":
         if hasattr(profile, "github") and getattr(profile, "github", None):
-            return str(getattr(profile, "github")).strip()
+            return str(profile.github).strip()
         if resume_text:
             m = re.search(r"https?://[^\s]*github[^\s]*", resume_text, re.IGNORECASE)
             if m:
@@ -1517,7 +1539,7 @@ def _get_profile_value_truth(field: str, profile: CandidateProfile, resume_text:
         return None
     if field == "portfolio":
         if hasattr(profile, "portfolio") and getattr(profile, "portfolio", None):
-            return str(getattr(profile, "portfolio")).strip()
+            return str(profile.portfolio).strip()
         if resume_text:
             m = re.search(r"https?://[^\s]*portfolio[^\s]*", resume_text, re.IGNORECASE)
             if m:
@@ -1548,8 +1570,8 @@ def _get_profile_value_truth(field: str, profile: CandidateProfile, resume_text:
         if "work authorization" in resume_text.lower() or "authorized to work" in resume_text.lower():
             return "Authorized"
         # check profile attribute
-        if hasattr(profile, "work_authorization") and getattr(profile, "work_authorization"):
-            return str(getattr(profile, "work_authorization"))
+        if hasattr(profile, "work_authorization") and profile.work_authorization:
+            return str(profile.work_authorization)
         return None
     if field == "years_experience":
         if profile.years_experience is not None:
@@ -1560,7 +1582,7 @@ def _get_profile_value_truth(field: str, profile: CandidateProfile, resume_text:
         return None
     return None
 
-def _map_fields(fields_detected: List[str], profile: CandidateProfile, resume_text: str, vacancy: Vacancy, package: Any) -> tuple[List[str], List[str], List[str]]:
+def _map_fields(fields_detected: list[str], profile: CandidateProfile, resume_text: str, vacancy: Vacancy, package: Any) -> tuple[list[str], list[str], list[str]]:
     filled = []
     skipped = []
     warnings = []
@@ -1663,7 +1685,7 @@ def save_browser_session(session: BrowserApplicationSession) -> None:
             "Approval reopened because latest browser preparation is BLOCKED",
         )
 
-def get_browser_session(vacancy_stable_id: str, executor_version: str | None = None) -> Optional[BrowserApplicationSession]:
+def get_browser_session(vacancy_stable_id: str, executor_version: str | None = None) -> BrowserApplicationSession | None:
     init_db()
     conn = get_connection()
     cur = conn.cursor()
@@ -1719,12 +1741,12 @@ def prepare_application_in_browser(
     adapter: BrowserAdapter | None = None,
     force: bool = False,
 ) -> BrowserResult:
-    from .candidate_profile import load_candidate_profile
-    from .db import get_vacancy_by_id, get_application_package
-    from .application_tracking import get_application_status, ApplicationStatus
-    from .job_analyzer import get_resume_text
-    from .db import _row_to_vacancy
     import time
+
+    from .application_tracking import ApplicationStatus, get_application_status
+    from .candidate_profile import load_candidate_profile
+    from .db import _row_to_vacancy, get_application_package, get_vacancy_by_id
+    from .job_analyzer import get_resume_text
 
     init_db()
 
@@ -1809,13 +1831,13 @@ def prepare_application_in_browser(
 
     url = vac.job_url
     site = _detect_site(url)
-    warnings: List[str] = []
-    fields_detected: List[str] = []
-    fields_filled: List[str] = []
-    fields_skipped: List[str] = []
+    warnings: list[str] = []
+    fields_detected: list[str] = []
+    fields_filled: list[str] = []
+    fields_skipped: list[str] = []
 
     # Defense-in-Depth Hard Constraint Gate
-    from .matcher import _hard_constraints, _coerce_profile
+    from .matcher import _coerce_profile, _hard_constraints
     from .remote_filter import is_strictly_remote
 
     if getattr(profile, "remote_required", False):
@@ -1999,7 +2021,7 @@ def prepare_application_in_browser(
                 # not blocked, package exists, package is VALID or review is APPROVED,
                 # and no required fields were skipped.
                 validation_status = getattr(pkg, "validation_status", "NEEDS_REVIEW") if pkg else "NEEDS_REVIEW"
-                from .application_review import get_application_review, ReviewStatus
+                from .application_review import ReviewStatus, get_application_review
                 rev = get_application_review(vacancy_stable_id)
                 is_approved = (rev is not None and rev.status == ReviewStatus.APPROVED)
                 is_valid = (validation_status == "VALID") or (is_approved and validation_status != "INVALID")
@@ -2101,7 +2123,7 @@ def prepare_application_in_browser(
 
     return result
 
-def get_browser_result(vacancy_stable_id: str) -> Optional[BrowserResult]:
+def get_browser_result(vacancy_stable_id: str) -> BrowserResult | None:
     sess = get_browser_session(vacancy_stable_id, EXECUTOR_VERSION)
     if not sess:
         sess = get_browser_session(vacancy_stable_id)
@@ -2123,7 +2145,7 @@ def get_browser_result(vacancy_stable_id: str) -> Optional[BrowserResult]:
         screenshot_path=sess.screenshot_path,
     )
 
-def prepare_next_in_queue(top_n: int = 20, profile_path: str | None = None, adapter: BrowserAdapter | None = None) -> Optional[BrowserResult]:
+def prepare_next_in_queue(top_n: int = 20, profile_path: str | None = None, adapter: BrowserAdapter | None = None) -> BrowserResult | None:
     from .application_queue import generate_queue
     # Generate queue (syncs)
     items = generate_queue(top_n=top_n, profile_path=profile_path)
@@ -2194,12 +2216,12 @@ def submit_application_in_browser(
         )
 
     # Load vacancy
-    from .db import get_vacancy_by_id, _row_to_vacancy
+    from .db import _row_to_vacancy, get_vacancy_by_id
     row = get_vacancy_by_id(vacancy_stable_id)
     vac = _row_to_vacancy(row) if row else None
 
     # Load profile
-    from .candidate_profile import load_candidate_profile, CandidateProfile
+    from .candidate_profile import CandidateProfile, load_candidate_profile
     if profile_path:
         profile = load_candidate_profile(profile_path)
     else:
@@ -2215,7 +2237,7 @@ def submit_application_in_browser(
 
     # Defense-in-Depth Hard Constraint Gate
     if vac:
-        from .matcher import _hard_constraints, _coerce_profile
+        from .matcher import _coerce_profile, _hard_constraints
         from .remote_filter import is_strictly_remote
 
         if getattr(profile, "remote_required", False):
@@ -2251,7 +2273,7 @@ def submit_application_in_browser(
 
     # Path A: If HeadHunter, route strictly through unified execute_hh_submission (Stage 41 / Remediation Phase 1.5)
     if vacancy_stable_id.startswith("hh:"):
-        from .hh_browser_launcher import is_cdp_reachable, DEFAULT_HH_CDP_URL
+        from .hh_browser_launcher import DEFAULT_HH_CDP_URL, is_cdp_reachable
         if adapter is None:
             if not is_cdp_reachable(DEFAULT_HH_CDP_URL):
                 return SubmitResult(
@@ -2341,7 +2363,7 @@ def submit_application_in_browser(
         )
 
     # Load vacancy
-    from .db import get_vacancy_by_id, _row_to_vacancy
+    from .db import _row_to_vacancy, get_vacancy_by_id
     row = get_vacancy_by_id(vacancy_stable_id)
     if not row:
         return SubmitResult(
@@ -2371,7 +2393,7 @@ def submit_application_in_browser(
     resume_text = get_resume_text(profile)
 
     # Defense-in-Depth Hard Constraint Gate
-    from .matcher import _hard_constraints, _coerce_profile
+    from .matcher import _coerce_profile, _hard_constraints
     from .remote_filter import is_strictly_remote
 
     if getattr(profile, "remote_required", False):
@@ -2409,7 +2431,7 @@ def submit_application_in_browser(
         )
 
     # Get review
-    from .application_review import get_application_review, ReviewStatus
+    from .application_review import ReviewStatus, get_application_review
     review = get_application_review(vacancy_stable_id)
     if not review or review.status != ReviewStatus.APPROVED:
         return SubmitResult(
@@ -2430,7 +2452,7 @@ def submit_application_in_browser(
         )
 
     # Check tracking status
-    from .application_tracking import get_application_status, ApplicationStatus
+    from .application_tracking import ApplicationStatus, get_application_status
     track = get_application_status(vacancy_stable_id)
     if not track or track.status != ApplicationStatus.READY_TO_APPLY:
         return SubmitResult(
@@ -2491,7 +2513,7 @@ def submit_application_in_browser(
     
     url = vac.job_url
     site = _detect_site(url)
-    warnings: List[str] = []
+    warnings: list[str] = []
 
     # Choose adapter
     use_adapter = adapter
@@ -2709,7 +2731,7 @@ def submit_application_in_browser(
 
     # Transition tracking to SUBMITTED
     try:
-        from .application_tracking import transition_application, ApplicationStatus
+        from .application_tracking import ApplicationStatus, transition_application
         transition_application(vacancy_stable_id, ApplicationStatus.SUBMITTED, note="Submitted via browser executor")
     except Exception:
         pass
@@ -2756,12 +2778,11 @@ def verify_submission_in_browser(
     return _verify_submission(vacancy_stable_id, submission_id, profile_path, adapter)
 
 
-def submit_next_in_queue(top_n: int = 1, profile_path: str | None = None, adapter: BrowserAdapter | None = None) -> Optional[SubmitResult]:
+def submit_next_in_queue(top_n: int = 1, profile_path: str | None = None, adapter: BrowserAdapter | None = None) -> SubmitResult | None:
     """Submit the next READY_TO_APPLY + APPROVED + READY_FOR_REVIEW vacancy."""
-    from .application_queue import generate_queue
-    from .application_review import get_application_review, ReviewStatus
-    from .application_tracking import get_application_status, ApplicationStatus
-    from .application_queue import get_queue_item
+    from .application_queue import generate_queue, get_queue_item
+    from .application_review import ReviewStatus, get_application_review
+    from .application_tracking import ApplicationStatus, get_application_status
     from .db import get_application_package
     
     # Generate queue (syncs)
@@ -2786,14 +2807,15 @@ def submit_next_in_queue(top_n: int = 1, profile_path: str | None = None, adapte
 
 def audit_apply_flow_for_vacancy(
     vacancy_stable_id: str,
-    adapter: Optional[BrowserAdapter] = None,
-) -> Dict[str, Any]:
+    adapter: BrowserAdapter | None = None,
+) -> dict[str, Any]:
     """
     Read-only audit of a vacancy's apply flow.
     Strictly read-only: NEVER clicks apply, NEVER clicks submit, NEVER writes to DB.
     """
     from urllib.parse import urlparse
-    from .db import get_vacancy_by_id, _row_to_vacancy
+
+    from .db import _row_to_vacancy, get_vacancy_by_id
 
     row = get_vacancy_by_id(vacancy_stable_id)
     if not row:
@@ -2894,10 +2916,10 @@ def audit_apply_flow_for_vacancy(
 
 
 def run_apply_flow_audit(
-    vacancy_stable_ids: List[str],
-    adapter: Optional[BrowserAdapter] = None,
+    vacancy_stable_ids: list[str],
+    adapter: BrowserAdapter | None = None,
     output_path: str = "artifacts/browser/stage30i_apply_flow_audit.json",
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Run read-only audit across given vacancies and persist results to JSON."""
     results = []
     for sid in vacancy_stable_ids:

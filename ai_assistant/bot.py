@@ -1,12 +1,12 @@
+import asyncio
 import json
 import logging
-import asyncio
+
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import CallbackQuery
 from openai import OpenAI
 
-from . import config
-from . import db
+from . import config, db
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 

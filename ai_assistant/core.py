@@ -1,9 +1,12 @@
 import json
 import logging
+
 import requests
-from pydantic import BaseModel, Field
 from openai import OpenAI
+from pydantic import BaseModel, Field
+
 from . import config
+
 
 class VacancyAnalysis(BaseModel):
     score: int = Field(..., ge=1, le=10, description="Оценка от 1 до 10")

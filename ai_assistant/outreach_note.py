@@ -1,8 +1,9 @@
 import json
 import logging
-from pydantic import BaseModel, Field
-from openai import OpenAI
+
 import config
+from openai import OpenAI
+from pydantic import BaseModel, Field
 
 client = OpenAI(
     api_key=config.LLM_API_KEY if config.LLM_API_KEY else "dummy-key",

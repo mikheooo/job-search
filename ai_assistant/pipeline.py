@@ -1,11 +1,9 @@
-import json
-import hashlib
-import logging
 import argparse
-from . import config
-from . import db
-from . import prefilter
-from . import core
+import hashlib
+import json
+import logging
+
+from . import config, core, db, prefilter
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 

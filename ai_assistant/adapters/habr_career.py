@@ -6,18 +6,18 @@ from typing import List, Optional
 
 import feedparser
 
-from ..schema import Vacancy
 from ..normalizer import normalize_salary_text
+from ..schema import Vacancy
 
 
 class HabrCareerAdapter:
     source = "habrcareer"
     feed_url = "https://career.habr.com/vacancies/rss"
 
-    def fetch_vacancies(self, url: Optional[str] = None) -> List[Vacancy]:
+    def fetch_vacancies(self, url: str | None = None) -> list[Vacancy]:
         target_url = url or self.feed_url
         feed = feedparser.parse(target_url)
-        results: List[Vacancy] = []
+        results: list[Vacancy] = []
 
         for entry in feed.entries:
             job_url = entry.get("link") or entry.get("id") or ""

@@ -19,7 +19,7 @@ from .application_tracking import get_application_status
 logger = logging.getLogger(__name__)
 
 # Statuses in application_submissions that indicate an application attempt exists that blocks submission
-BLOCKED_SUBMISSION_STATUSES: Set[str] = {
+BLOCKED_SUBMISSION_STATUSES: set[str] = {
     "SUBMITTED",
     "CONFIRMED",
     "AMBIGUOUS",
@@ -30,7 +30,7 @@ BLOCKED_SUBMISSION_STATUSES: Set[str] = {
 }
 
 # Submission statuses that explicitly allow a retry (pre-click failures only)
-RETRY_ALLOWED_SUBMISSION_STATUSES: Set[str] = {
+RETRY_ALLOWED_SUBMISSION_STATUSES: set[str] = {
     "FAILED",
     "BLOCKED",
     "FAIL_CLOSED",
@@ -41,7 +41,7 @@ RETRY_ALLOWED_SUBMISSION_STATUSES: Set[str] = {
 }
 
 # Verification statuses that block submission
-BLOCKED_VERIFICATION_STATUSES: Set[str] = {
+BLOCKED_VERIFICATION_STATUSES: set[str] = {
     "VERIFIED",
     "CONFIRMED",
     "AMBIGUOUS",
@@ -49,7 +49,7 @@ BLOCKED_VERIFICATION_STATUSES: Set[str] = {
 }
 
 # HH application states in hh_applications table that block submission
-BLOCKED_HH_APPLICATION_STATES: Set[str] = {
+BLOCKED_HH_APPLICATION_STATES: set[str] = {
     "SUBMITTED",
     "VERIFIED",
     "COMPLETED",
@@ -58,7 +58,7 @@ BLOCKED_HH_APPLICATION_STATES: Set[str] = {
 }
 
 # Application tracking statuses that are allowed before submission (whitelist)
-ALLOWED_TRACKING_STATUSES: Set[str] = {
+ALLOWED_TRACKING_STATUSES: set[str] = {
     "DISCOVERED",
     "ANALYZED",
     "READY_TO_APPLY",
@@ -68,16 +68,16 @@ ALLOWED_TRACKING_STATUSES: Set[str] = {
 @dataclass
 class SubmissionEvidence:
     vacancy_stable_id: str
-    tracking_status: Optional[str] = None
-    hh_application_state: Optional[str] = None
-    submissions: List[Dict[str, Any]] = field(default_factory=list)
-    latest_verification_status: Optional[str] = None
+    tracking_status: str | None = None
+    hh_application_state: str | None = None
+    submissions: list[dict[str, Any]] = field(default_factory=list)
+    latest_verification_status: str | None = None
     dom_already_applied: bool = False
-    claim_status: Optional[str] = None
+    claim_status: str | None = None
 
     @property
-    def blocked_reasons(self) -> List[str]:
-        reasons: List[str] = []
+    def blocked_reasons(self) -> list[str]:
+        reasons: list[str] = []
         if self.dom_already_applied:
             reasons.append("DOM live page indicates already responded to vacancy")
 
@@ -119,7 +119,7 @@ class SubmissionEvidence:
                 return True
         return False
 
-    def can_submit(self) -> Tuple[bool, Optional[str]]:
+    def can_submit(self) -> tuple[bool, str | None]:
         reasons = self.blocked_reasons
         if reasons:
             return False, "; ".join(reasons)

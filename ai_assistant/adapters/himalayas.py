@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import List
+
 import requests
 
 from ..schema import Vacancy
@@ -10,7 +11,7 @@ class HimalayasAdapter:
     source = "himalayas"
     api_url = "https://himalayas.app/jobs/api"
 
-    def fetch_vacancies(self, limit: int = 100, offset: int = 0) -> List[Vacancy]:
+    def fetch_vacancies(self, limit: int = 100, offset: int = 0) -> list[Vacancy]:
         response = requests.get(
             self.api_url,
             params={"limit": limit, "offset": offset},
@@ -19,7 +20,7 @@ class HimalayasAdapter:
         response.raise_for_status()
         payload = response.json()
 
-        results: List[Vacancy] = []
+        results: list[Vacancy] = []
         for item in payload.get("jobs", []):
             source_job_id = str(item.get("guid") or item.get("applicationLink") or item.get("title"))
             job_url = item.get("guid") or item.get("applicationLink") or ""

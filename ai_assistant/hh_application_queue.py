@@ -56,14 +56,14 @@ class HHQueueItem(BaseModel):
     vacancy_title: str
     company: str
     application_state: str
-    questionnaire_id: Optional[str] = None
+    questionnaire_id: str | None = None
     questionnaire_state: str
     audit_state: str
     can_submit_allowed: bool
     can_submit_reason: str
-    reason_blocker: Optional[str] = None
+    reason_blocker: str | None = None
     last_updated: str
-    questions: List[HumanReviewQuestionDetail] = Field(default_factory=list)
+    questions: list[HumanReviewQuestionDetail] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -204,14 +204,14 @@ def can_submit(application_id: str) -> SubmitEligibilityResult:
     )
 
 
-def get_controlled_application_queue(filter_mode: Optional[str] = None) -> List[HHQueueItem]:
+def get_controlled_application_queue(filter_mode: str | None = None) -> list[HHQueueItem]:
     """Retrieve and classify all HeadHunter applications in a controlled queue."""
     db.init_db()
     raw_apps = db.list_hh_applications(limit=200)
 
     # Deduplicate applications by application_id / vacancy_stable_id
     seen_apps = set()
-    queue_items: List[HHQueueItem] = []
+    queue_items: list[HHQueueItem] = []
 
     for app in raw_apps:
         app_id = app.get("application_id")
@@ -231,7 +231,7 @@ def get_controlled_application_queue(filter_mode: Optional[str] = None) -> List[
         # Questionnaire state & audit state
         q_state = "NOT_REQUIRED"
         audit_state = "N/A"
-        questions_detail: List[HumanReviewQuestionDetail] = []
+        questions_detail: list[HumanReviewQuestionDetail] = []
 
         if qid:
             q_data = db.get_hh_questionnaire(qid)
@@ -303,7 +303,7 @@ def get_controlled_application_queue(filter_mode: Optional[str] = None) -> List[
     return queue_items
 
 
-def format_queue_cli(items: List[HHQueueItem]) -> str:
+def format_queue_cli(items: list[HHQueueItem]) -> str:
     """Format full application queue for CLI display."""
     lines = [
         "======================================================================================================",
@@ -321,7 +321,7 @@ def format_queue_cli(items: List[HHQueueItem]) -> str:
     return "\n".join(lines)
 
 
-def format_ready_queue_cli(items: List[HHQueueItem]) -> str:
+def format_ready_queue_cli(items: list[HHQueueItem]) -> str:
     """Format READY queue for CLI display."""
     lines = [
         "======================================================================================================",
@@ -345,7 +345,7 @@ def format_ready_queue_cli(items: List[HHQueueItem]) -> str:
     return "\n".join(lines)
 
 
-def format_human_review_queue_cli(items: List[HHQueueItem]) -> str:
+def format_human_review_queue_cli(items: list[HHQueueItem]) -> str:
     """Format HUMAN REVIEW queue for CLI display."""
     lines = [
         "======================================================================================================",

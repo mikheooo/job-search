@@ -2,9 +2,11 @@ import json
 import logging
 import time
 from urllib.parse import urlencode
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
-import requests
+
 import config
+import requests
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
+from playwright.sync_api import sync_playwright
 
 logger = logging.getLogger(__name__)
 

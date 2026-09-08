@@ -71,7 +71,7 @@ MAX_AUTO_REPLIES_PER_RUN = 3
 class HHMessage(BaseModel):
     message_id: str
     text: str
-    sent_at: Optional[str] = None
+    sent_at: str | None = None
     sender: str = "employer"  # employer | candidate | system
 
     model_config = {"extra": "forbid"}
@@ -82,11 +82,11 @@ class HHDialog(BaseModel):
     vacancy_title: str = ""
     vacancy_stable_id: str = ""  # hh:<id> when provable
     employer: str = ""
-    messages: List[HHMessage] = Field(default_factory=list)
+    messages: list[HHMessage] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
-    def last_message(self) -> Optional[HHMessage]:
+    def last_message(self) -> HHMessage | None:
         return self.messages[-1] if self.messages else None
 
 
@@ -161,7 +161,7 @@ def classify_message(dialog: HHDialog) -> MessageClassification:
 _TRUTH_PROFILE_PATH = os.path.join("candidate_profile.json")
 
 # Facts about the candidate that are provable from the project truth sources.
-def _load_profile() -> Dict[str, Any]:
+def _load_profile() -> dict[str, Any]:
     try:
         with open(_TRUTH_PROFILE_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -176,10 +176,10 @@ def detect_language(text: str) -> str:
     return "ru" if _LANG_RU_RE.search(text or "") else "en"
 
 
-def _short_availability_facts(profile: Dict[str, Any]) -> List[str]:
+def _short_availability_facts(profile: dict[str, Any]) -> list[str]:
     """Return provable availability/role facts from the profile (truth-only).
     Never guesses salary, dates, locations beyond the profile, or skills."""
-    facts: List[str] = []
+    facts: list[str] = []
     roles = profile.get("desired_roles") or []
     if roles:
         facts.append("roles: " + ", ".join(roles[:3]))
@@ -194,8 +194,8 @@ def _short_availability_facts(profile: Dict[str, Any]) -> List[str]:
 
 def generate_reply(
     dialog: HHDialog,
-    profile: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Generate a short, natural, truth-only reply. Returns {"reply", "sources"}.
 
     Only used when classify_message(...) == REPLY_REQUIRED. If not enough
@@ -305,7 +305,7 @@ _TECH_ASK_CUE_RE = re.compile(
 )
 
 
-def resolve_vacancy_for_dialog(dialog: HHDialog) -> Optional[Dict[str, Any]]:
+def resolve_vacancy_for_dialog(dialog: HHDialog) -> dict[str, Any] | None:
     """Look up linked vacancy in database if available (read-only)."""
     try:
         from ai_assistant import db
@@ -344,8 +344,8 @@ def resolve_vacancy_for_dialog(dialog: HHDialog) -> Optional[Dict[str, Any]]:
 
 def classify_hh_conversation_detailed(
     dialog: HHDialog,
-    profile: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Stage 30D.5: Context-aware, truth-only classification, fact checking, and draft generation.
     Returns:
         conversation_id: str
@@ -376,7 +376,7 @@ def classify_hh_conversation_detailed(
     years_exp = prof.get("years_experience", 0)
 
     # Base available facts
-    available_facts: List[str] = []
+    available_facts: list[str] = []
     if profile_skills:
         available_facts.append(f"skills: {', '.join(profile_skills)}")
     if profile_roles:
@@ -514,9 +514,9 @@ def classify_hh_conversation_detailed(
             }
 
         # Analyze question requirements
-        required_facts: List[str] = []
-        missing_facts: List[str] = []
-        sources: List[str] = ["candidate_profile.json: skills", "candidate_profile.json: desired_roles"]
+        required_facts: list[str] = []
+        missing_facts: list[str] = []
+        sources: list[str] = ["candidate_profile.json: skills", "candidate_profile.json: desired_roles"]
         if vac_data:
             sources.append(f"database: vacancy {vac_data.get('stable_id')}")
 
@@ -749,7 +749,7 @@ def classify_hh_conversation_detailed(
         ]
         declared_low = [str(s).lower().replace("ё", "е") for s in declared_skills]
 
-        asked_skills: List[str] = []
+        asked_skills: list[str] = []
         for _s in declared_skills:
             _s_low = _s.lower().replace("ё", "е")
             if re.search(rf"(?<![a-zа-я0-9]){re.escape(_s_low)}(?![a-zа-я0-9])", q_text_low):
@@ -760,7 +760,7 @@ def classify_hh_conversation_detailed(
         # Technologies the employer named that are NOT in the profile. Same
         # word-boundary rule; a token is skipped when a declared skill already
         # covers it under the same or a longer name.
-        unknown_techs: List[str] = []
+        unknown_techs: list[str] = []
         for _tok, _disp in _TECH_VOCAB.items():
             _tok_re = rf"(?<![a-zа-я0-9]){re.escape(_tok)}(?![a-zа-я0-9])"
             if not re.search(_tok_re, q_text_low):
@@ -802,14 +802,14 @@ def classify_hh_conversation_detailed(
                 "TRANSFERABLE": "transferable",
             }
 
-            def _with_level(skills: List[str], table: Dict[str, str]) -> str:
+            def _with_level(skills: list[str], table: dict[str, str]) -> str:
                 out = []
                 for s in skills:
                     lvl = table.get(conf_map.get(s.lower().replace("ё", "е"), ""))
                     out.append(f"{s} ({lvl})" if lvl else s)
                 return _join_native(out)
 
-            def _join_native(items: List[str]) -> str:
+            def _join_native(items: list[str]) -> str:
                 """'A и B' / 'A and B' — recruiter-facing text, so punctuation matters."""
                 if len(items) <= 1:
                     return "".join(items)
@@ -817,7 +817,7 @@ def classify_hh_conversation_detailed(
                 return ", ".join(items[:-1]) + conj + items[-1]
 
             unknown_str = _join_native(unknown_techs)
-            tech_missing: List[str] = []
+            tech_missing: list[str] = []
 
             if asked_skills and asks_about_tech:
                 # Both halves: confirm what is verified, disclaim what is not.
@@ -978,10 +978,10 @@ _OFF_TOPIC_RE = re.compile(
 
 def validate_hh_reply_draft(
     dialog: HHDialog,
-    draft: Optional[str] = None,
-    classification: Optional[str] = None,
-    profile: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    draft: str | None = None,
+    classification: str | None = None,
+    profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Stage 30D.4/30D.5: READ-ONLY validation gate for prepared HH reply draft.
     Checks:
     - answers_last_question: does draft address the active question/context?
@@ -1011,7 +1011,7 @@ def validate_hh_reply_draft(
             draft = det.get("prepared_reply")
 
     is_empty = not draft or not draft.strip()
-    reasons: List[str] = []
+    reasons: list[str] = []
 
     if classification == "HUMAN_REVIEW":
         return {
@@ -1182,11 +1182,11 @@ class ReplyStateStore:
         conversation_id, message_id, timestamp, classification, reply, status.
     """
 
-    def __init__(self, path: Optional[str] = None):
+    def __init__(self, path: str | None = None):
         # Resolve at call time so tests can override DEFAULT_STATE_PATH after
         # import (a default arg would freeze the value at definition time).
         self.path = path if path is not None else DEFAULT_STATE_PATH
-        self._records: Dict[str, Dict[str, Any]] = {}
+        self._records: dict[str, dict[str, Any]] = {}
         self._load()
 
     def _load(self) -> None:
@@ -1222,7 +1222,7 @@ class ReplyStateStore:
         }
         self._save()
 
-    def last_processed_message_id(self, conversation_id: str) -> Optional[str]:
+    def last_processed_message_id(self, conversation_id: str) -> str | None:
         recs = self._records.get(conversation_id, {})
         return max(recs) if recs else None
 
@@ -1246,7 +1246,7 @@ class SendGate:
     def __init__(self, mode: ReplyMode = DEFAULT_MODE):
         self.mode = mode
 
-    def send_reply(self, dialog: HHDialog, text: str) -> Dict[str, Any]:
+    def send_reply(self, dialog: HHDialog, text: str) -> dict[str, Any]:
         """Attempt to send - ALWAYS blocked in Stage 22 (REVIEW only)."""
         if self.mode not in self.ALLOWED_MODES:
             return {"ok": False, "blocked": True,
@@ -1269,7 +1269,7 @@ class MessageReplyReport(BaseModel):
     last_message: str = ""
     classification: str = ""
     generated_reply: str = ""
-    sources: List[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
     status: str = "NEEDS_HUMAN_REVIEW"
     reason: str = ""
     send_action_count: int = 0
@@ -1281,8 +1281,8 @@ class MessageReplyReport(BaseModel):
 
 def process_incoming_message(
     dialog: HHDialog,
-    profile: Optional[Dict[str, Any]] = None,
-    state: Optional[ReplyStateStore] = None,
+    profile: dict[str, Any] | None = None,
+    state: ReplyStateStore | None = None,
     mode: ReplyMode = DEFAULT_MODE,
 ) -> MessageReplyReport:
     """Review-only processing of one incoming dialog/message.
@@ -1313,7 +1313,7 @@ def process_incoming_message(
 
     classification = classify_message(dialog)
     reply = ""
-    sources: List[str] = []
+    sources: list[str] = []
     reason = ""
     if classification == MessageClassification.REPLY_REQUIRED:
         gen = generate_reply(dialog, profile)
@@ -1384,7 +1384,7 @@ _DIALOG_LIST_JS = r"""() => {
 def fetch_hh_dialogs_readonly(
     evaluate_fn: Callable[[str], str],
     current_url: str = "",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Read-only discovery of HH message dialogs on the currently-open tab.
 
     Uses the caller-provided evaluate_fn (e.g. make_cdp_evaluate(...) or a
@@ -1471,7 +1471,7 @@ _CONVERSATIONS_LIST_JS = r"""() => {
 }"""
 
 
-def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> Dict[str, Any]:
+def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> dict[str, Any]:
     """Stage 30D.9: Read-only enumeration of all visible conversations in HH chat interface.
     Returns:
         conversations: List[Dict[str, Any]] (conversation_id, url, title, employer, snippet, is_selected)
@@ -1539,7 +1539,7 @@ _CONVERSATION_JS = """() => {
 }"""
 
 
-def fetch_hh_conversation_readonly(evaluate_fn: Callable[[str], str]) -> Dict[str, Any]:
+def fetch_hh_conversation_readonly(evaluate_fn: Callable[[str], str]) -> dict[str, Any]:
     """Read-only extraction of the currently-open HH conversation (chatik).
 
     Caller provides evaluate_fn bound to the chatik iframe (e.g. via
@@ -1589,7 +1589,7 @@ _AUTO_ALLOWED_PROBE = re.compile(
 )
 
 
-def _auto_enabled(env: Optional[Dict[str, str]] = None) -> bool:
+def _auto_enabled(env: dict[str, str] | None = None) -> bool:
     """Kill switch: AUTO requires HH_AUTO_REPLY_ENABLED=true (explicit)."""
     val = (env if env is not None else os.environ).get(_AUTO_ENV_VAR, "")
     return str(val).strip().lower() == "true"
@@ -1598,14 +1598,14 @@ def _auto_enabled(env: Optional[Dict[str, str]] = None) -> bool:
 def is_safe_for_auto_reply(
     dialog: HHDialog,
     classification: MessageClassification,
-    profile: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Safety predicate: is this message allowlisted for AUTO?
 
     Returns {"safe": bool, "reasons": [...]}. AUTO is allowed ONLY if every
     condition holds; any doubt -> safe=False.
     """
-    reasons: List[str] = []
+    reasons: list[str] = []
     if classification != MessageClassification.REPLY_REQUIRED:
         reasons.append("classification is not REPLY_REQUIRED")
     context = _context_texts(dialog)
@@ -1640,12 +1640,12 @@ class AutoReplyReport(BaseModel):
     employer: str = ""
     classification: str = ""
     generated_reply: str = ""
-    sources: List[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
     status: str = ""  # SENT | NEEDS_HUMAN_REVIEW | SKIPPED | BLOCKED_*
     reason: str = ""
-    safety_checks: List[Dict[str, Any]] = Field(default_factory=list)
+    safety_checks: list[dict[str, Any]] = Field(default_factory=list)
     send_action_count: int = 0
-    send_result: Optional[Dict[str, Any]] = None
+    send_result: dict[str, Any] | None = None
     dedup_skipped: bool = False
     fingerprint: str = ""
     processed_at: str = ""
@@ -1656,19 +1656,19 @@ class AutoReplyReport(BaseModel):
 def can_auto_send(
     dialog: HHDialog,
     classification: MessageClassification,
-    profile: Optional[Dict[str, Any]],
+    profile: dict[str, Any] | None,
     reply: str,
     composer_present: bool,
     fingerprint: str,
-    env: Optional[Dict[str, str]] = None,
-) -> Dict[str, Any]:
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """MANDATORY final safety gate, re-checked immediately before send.
 
     Re-verifies every condition independently (does not trust the earlier
     classification alone) plus composer availability + kill switch + non-empty
     truth-only reply + unchanged fingerprint.
     """
-    checks: List[Dict[str, Any]] = []
+    checks: list[dict[str, Any]] = []
     ok = True
 
     sw = _auto_enabled(env)
@@ -1727,7 +1727,7 @@ def _send_js(reply: str) -> str:
 def send_auto_reply(
     evaluate_fn: Callable[[str], str],
     reply: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Execute the single AUTO send mutation. Returns the raw send result.
 
     No retry, no fallback clicks, no navigation. The caller must have already
@@ -1744,13 +1744,13 @@ def send_auto_reply(
 def process_auto_reply(
     dialog: HHDialog,
     evaluate_fn: Callable[[str], str],
-    profile: Optional[Dict[str, Any]] = None,
-    state: Optional[ReplyStateStore] = None,
+    profile: dict[str, Any] | None = None,
+    state: ReplyStateStore | None = None,
     mode: ReplyMode = DEFAULT_MODE,
-    env: Optional[Dict[str, str]] = None,
+    env: dict[str, str] | None = None,
     max_auto_replies: int = MAX_AUTO_REPLIES_PER_RUN,
-    run_budget: Dict[str, int] | None = None,
-    target_conversation_id: Optional[str] = None,
+    run_budget: dict[str, int] | None = None,
+    target_conversation_id: str | None = None,
     confirm_live_send: bool = False,
 ) -> AutoReplyReport:
     """Limited AUTO / REVIEW / SKIP processing of one conversation.
@@ -1815,7 +1815,7 @@ def process_auto_reply(
 
     # --- REVIEW: generate preview, NEVER send ---
     reply = ""
-    sources: List[str] = []
+    sources: list[str] = []
     if classification == MessageClassification.REPLY_REQUIRED:
         gen = generate_reply(dialog, profile)
         reply = gen.get("reply", "")
@@ -1906,7 +1906,7 @@ def process_auto_reply(
 def send_confirmed_hh_reply(
     evaluate_fn: Callable[[str], str],
     reply: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Stage 30D.6: Execute minimal DOM/CDP send for a human-confirmed, validated reply.
     Strictly isolated: does not navigate, does not touch cookies/storage, does not click other elements.
     """

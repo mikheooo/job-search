@@ -36,7 +36,7 @@ DEFAULT_HH_PROFILE_DIR = os.getenv(
 DEFAULT_HH_URL = os.getenv("HH_URL", "https://hh.ru/chat")
 
 
-def find_chrome_executable() -> Optional[str]:
+def find_chrome_executable() -> str | None:
     """Locate Google Chrome executable in standard system locations."""
     # 1. Environment override
     env_path = os.getenv("CHROME_PATH")
@@ -86,7 +86,7 @@ def is_cdp_reachable(cdp_url: str = DEFAULT_HH_CDP_URL, timeout: float = 1.5) ->
     return False
 
 
-def get_cdp_version_info(cdp_url: str = DEFAULT_HH_CDP_URL, timeout: float = 2.0) -> Optional[Dict[str, Any]]:
+def get_cdp_version_info(cdp_url: str = DEFAULT_HH_CDP_URL, timeout: float = 2.0) -> dict[str, Any] | None:
     """Retrieve `/json/version` metadata from CDP endpoint."""
     try:
         url = cdp_url.rstrip("/") + "/json/version"
@@ -99,7 +99,7 @@ def get_cdp_version_info(cdp_url: str = DEFAULT_HH_CDP_URL, timeout: float = 2.0
     return None
 
 
-def get_cdp_targets(cdp_url: str = DEFAULT_HH_CDP_URL, timeout: float = 2.0) -> List[Dict[str, Any]]:
+def get_cdp_targets(cdp_url: str = DEFAULT_HH_CDP_URL, timeout: float = 2.0) -> list[dict[str, Any]]:
     """Retrieve `/json/list` targets from CDP endpoint."""
     try:
         url = cdp_url.rstrip("/") + "/json/list"
@@ -112,7 +112,7 @@ def get_cdp_targets(cdp_url: str = DEFAULT_HH_CDP_URL, timeout: float = 2.0) -> 
     return []
 
 
-def open_cdp_tab(cdp_url: str = DEFAULT_HH_CDP_URL, url_to_open: str = DEFAULT_HH_URL, timeout: float = 5.0) -> Optional[Dict[str, Any]]:
+def open_cdp_tab(cdp_url: str = DEFAULT_HH_CDP_URL, url_to_open: str = DEFAULT_HH_URL, timeout: float = 5.0) -> dict[str, Any] | None:
     """Open a new tab via CDP `/json/new?<url>` endpoint."""
     try:
         url = f"{cdp_url.rstrip('/')}/json/new?{url_to_open}"
@@ -132,7 +132,7 @@ def open_cdp_tab(cdp_url: str = DEFAULT_HH_CDP_URL, url_to_open: str = DEFAULT_H
     return None
 
 
-def check_hh_session_authenticated(evaluate_fn: Callable[[str], str]) -> Dict[str, Any]:
+def check_hh_session_authenticated(evaluate_fn: Callable[[str], str]) -> dict[str, Any]:
     """Check whether the active HH session is authenticated.
 
     Read-only DOM check: verifies absence of mandatory login redirects/buttons
@@ -176,12 +176,12 @@ def check_hh_session_authenticated(evaluate_fn: Callable[[str], str]) -> Dict[st
 
 def ensure_hh_browser(
     cdp_url: str = DEFAULT_HH_CDP_URL,
-    profile_dir: Optional[str] = None,
+    profile_dir: str | None = None,
     open_url: str = DEFAULT_HH_URL,
     auto_start: bool = True,
     timeout_seconds: float = 15.0,
     check_session: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Ensure that the designated HH Chrome instance is running and accessible over CDP.
 
     1. Checks if CDP endpoint is already reachable.
@@ -190,7 +190,7 @@ def ensure_hh_browser(
     4. Ensures an HH page target exists.
     """
     resolved_profile = profile_dir or DEFAULT_HH_PROFILE_DIR
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "ok": False,
         "cdp_url": cdp_url,
         "reused": False,

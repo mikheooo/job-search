@@ -26,8 +26,8 @@ from typing import Any, Callable, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from .hh_extractor import ApplicationForm, QuestionType
-from .prefill_plan import PrefillPlan, build_prefill_plan
 from .prefill_execute import execute_prefill_plan
+from .prefill_plan import PrefillPlan, build_prefill_plan
 
 
 class OperationStatus(str, Enum):
@@ -42,8 +42,8 @@ class TrackedOperation(BaseModel):
     question_id: str
     question_label: str = ""
     op_type: str = ""
-    target_name: Optional[str] = None
-    target_label: Optional[str] = None
+    target_name: str | None = None
+    target_label: str | None = None
     value: str = ""
     status: OperationStatus = OperationStatus.PLANNED
     reason: str = ""
@@ -54,8 +54,8 @@ class TrackedOperation(BaseModel):
 class GroupCheck(BaseModel):
     group_name: str
     input_type: str
-    expected_checked: List[str] = Field(default_factory=list)
-    actual_checked: List[str] = Field(default_factory=list)
+    expected_checked: list[str] = Field(default_factory=list)
+    actual_checked: list[str] = Field(default_factory=list)
     ok: bool = False
 
     model_config = {"extra": "forbid"}
@@ -80,12 +80,12 @@ class OrchestrationReport(BaseModel):
     submit_count: int = 0
     fill_count: int = 0
     upload_count: int = 0
-    url_before: Optional[str] = None
-    url_after: Optional[str] = None
-    operations: List[TrackedOperation] = Field(default_factory=list)
-    group_checks: List[GroupCheck] = Field(default_factory=list)
-    errors: List[str] = Field(default_factory=list)
-    review_reasons: List[str] = Field(default_factory=list)
+    url_before: str | None = None
+    url_after: str | None = None
+    operations: list[TrackedOperation] = Field(default_factory=list)
+    group_checks: list[GroupCheck] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    review_reasons: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -109,7 +109,7 @@ def _group_state_js(name: str, input_type: str) -> str:
 
 
 def _stopped(package_status: str, plan: PrefillPlan, reason: str,
-             review_reasons: Optional[List[str]] = None) -> OrchestrationReport:
+             review_reasons: list[str] | None = None) -> OrchestrationReport:
     return OrchestrationReport(
         verdict="STOPPED_NEEDS_REVIEW",
         stop_reason=reason,
@@ -126,10 +126,10 @@ def _stopped(package_status: str, plan: PrefillPlan, reason: str,
 def prepare_and_execute_prefill(
     package: Any,
     form: ApplicationForm,
-    snapshot: Dict[str, Any],
+    snapshot: dict[str, Any],
     evaluate_fn: Callable[[str], str],
-    allowed_url_markers: List[str] = ("hh.ru",),
-    required_url_markers: Optional[List[str]] = None,
+    allowed_url_markers: list[str] = ("hh.ru",),
+    required_url_markers: list[str] | None = None,
     stop_on_failure: bool = True,
 ) -> OrchestrationReport:
     """Full safe orchestration: gates -> plan -> execute -> verify -> report.
@@ -240,8 +240,8 @@ def prepare_and_execute_prefill(
         return report
 
     # Map mutation results onto tracked operations.
-    verified_by_key: Dict[str, bool] = {}
-    verify_map: Dict[str, Dict[str, Any]] = {}
+    verified_by_key: dict[str, bool] = {}
+    verify_map: dict[str, dict[str, Any]] = {}
     for v in exec_report.verification:
         verify_map[v.get("question_id", "") + "::" + str(v.get("value", ""))] = v
 
@@ -292,11 +292,11 @@ def prepare_and_execute_prefill(
         input_type = "radio" if q.normalized_type == QuestionType.RADIO else "checkbox"
 
         ans = answers_by_qid.get(q.id)
-        expected: List[str] = []
+        expected: list[str] = []
         if ans is not None and getattr(ans, "answer", None):
             expected = [p.strip() for p in str(ans.answer).split(";") if p.strip()]
 
-        actual: List[str] = []
+        actual: list[str] = []
         try:
             raw = evaluate_fn(_group_state_js(group_name, input_type))
             state = json.loads(raw)

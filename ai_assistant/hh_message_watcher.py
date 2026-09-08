@@ -26,24 +26,23 @@ from typing import Any, Callable, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from . import db, hh_message_reply
 from .candidate_profile import CandidateProfile, load_candidate_profile
-from . import db
-from . import hh_message_reply
+from .db import (
+    get_hh_message_event,
+    is_hh_message_processed,
+    list_hh_message_events,
+    save_hh_message_event,
+)
 from .hh_message_reply import (
     HHDialog,
     HHMessage,
     MessageClassification,
+    classify_hh_conversation_detailed,
     fetch_hh_conversation_readonly,
     fetch_hh_conversations_list_readonly,
-    classify_hh_conversation_detailed,
-    validate_hh_reply_draft,
     resolve_vacancy_for_dialog,
-)
-from .db import (
-    save_hh_message_event,
-    is_hh_message_processed,
-    get_hh_message_event,
-    list_hh_message_events,
+    validate_hh_reply_draft,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,9 +61,9 @@ class HHMessageWatcherStatus(str, Enum):
 def compute_message_fingerprint(
     conversation_id: str,
     sender: str,
-    sent_at: Optional[str],
+    sent_at: str | None,
     text: str,
-    message_id: Optional[str] = None,
+    message_id: str | None = None,
 ) -> str:
     """Build a stable, collision-resistant SHA-256 fingerprint for an HH message.
 
@@ -89,15 +88,15 @@ def compute_message_fingerprint(
 
 
 class HHMessageWatcherConfig(BaseModel):
-    cdp_url: Optional[str] = None
-    url_substring: Optional[str] = None
+    cdp_url: str | None = None
+    url_substring: str | None = None
     poll_interval_seconds: int = 60
-    max_iterations: Optional[int] = None
+    max_iterations: int | None = None
     batch_limit: int = 20
-    profile_path: Optional[str] = None
+    profile_path: str | None = None
     auto_start_browser: bool = True
-    custom_evaluate_fn: Optional[Any] = None  # Optional[Callable[[str], str]]
-    on_new_message: Optional[Any] = None  # Optional[Callable[[HHMessageWatcherItem], None]]
+    custom_evaluate_fn: Any | None = None  # Optional[Callable[[str], str]]
+    on_new_message: Any | None = None  # Optional[Callable[[HHMessageWatcherItem], None]]
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -108,17 +107,17 @@ class HHMessageWatcherItem(BaseModel):
     message_fingerprint: str
     sender: str
     text: str
-    sent_at: Optional[str] = None
-    vacancy_stable_id: Optional[str] = None
-    employer: Optional[str] = None
-    participant: Optional[str] = None
+    sent_at: str | None = None
+    vacancy_stable_id: str | None = None
+    employer: str | None = None
+    participant: str | None = None
     classification: str = ""
     confidence: float = 0.0
-    question: Optional[str] = None
-    required_facts: List[str] = Field(default_factory=list)
-    available_facts: List[str] = Field(default_factory=list)
-    missing_facts: List[str] = Field(default_factory=list)
-    reply_draft: Optional[str] = None
+    question: str | None = None
+    required_facts: list[str] = Field(default_factory=list)
+    available_facts: list[str] = Field(default_factory=list)
+    missing_facts: list[str] = Field(default_factory=list)
+    reply_draft: str | None = None
     validation: str = ""
     status: str = ""
     stop_reason: str = ""
@@ -140,8 +139,8 @@ class HHMessageWatcherCycleResult(BaseModel):
     needs_human_review: int = 0
     replies_sent: int = 0
     blocked: int = 0
-    errors: List[str] = Field(default_factory=list)
-    items: List[HHMessageWatcherItem] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    items: list[HHMessageWatcherItem] = Field(default_factory=list)
 
     # Safety Invariants
     reply_sent_count: int = 0
@@ -153,7 +152,7 @@ class HHMessageWatcherCycleResult(BaseModel):
 
 def run_message_watcher_cycle(
     config: HHMessageWatcherConfig,
-    evaluate_fn: Optional[Callable[[str], str]] = None,
+    evaluate_fn: Callable[[str], str] | None = None,
     iteration: int = 1,
 ) -> HHMessageWatcherCycleResult:
     """Execute a single polling and analysis cycle over connected HH conversations.
@@ -170,7 +169,7 @@ def run_message_watcher_cycle(
     )
 
     # 1. Load Candidate Profile
-    profile_dict: Dict[str, Any] = {}
+    profile_dict: dict[str, Any] = {}
     if config.profile_path:
         p = Path(config.profile_path)
         if p.exists():
@@ -190,8 +189,15 @@ def run_message_watcher_cycle(
     # 2. Resolve CDP evaluate function
     ev = config.custom_evaluate_fn or evaluate_fn
     if ev is None:
-        from .hh_browser_launcher import ensure_hh_browser, check_hh_session_authenticated
-        from .cli import _resolve_hh_evaluate, _DEFAULT_HH_CDP_URL, _DEFAULT_HH_MESSAGES_URL_SUBSTRING
+        from .cli import (
+            _DEFAULT_HH_CDP_URL,
+            _DEFAULT_HH_MESSAGES_URL_SUBSTRING,
+            _resolve_hh_evaluate,
+        )
+        from .hh_browser_launcher import (
+            check_hh_session_authenticated,
+            ensure_hh_browser,
+        )
 
         cdp = config.cdp_url or _DEFAULT_HH_CDP_URL
         sub = config.url_substring or _DEFAULT_HH_MESSAGES_URL_SUBSTRING
@@ -284,7 +290,7 @@ def run_message_watcher_cycle(
                 raw_msgs = []
 
             # If no detailed messages, construct from card snippet if available
-            dialog_msgs: List[HHMessage] = []
+            dialog_msgs: list[HHMessage] = []
             if raw_msgs:
                 for idx, m in enumerate(raw_msgs):
                     direction = (m.get("direction") or "").upper()
@@ -513,10 +519,10 @@ class HHMessageWatcher:
         finally:
             self._is_polling = False
 
-    def run(self, stop_callback: Optional[Callable[[], bool]] = None) -> List[HHMessageWatcherCycleResult]:
+    def run(self, stop_callback: Callable[[], bool] | None = None) -> list[HHMessageWatcherCycleResult]:
         """Run continuous polling loop until interrupted or max iterations reached."""
         self._running = True
-        results: List[HHMessageWatcherCycleResult] = []
+        results: list[HHMessageWatcherCycleResult] = []
         iteration = 0
 
         print("=======================================================")

@@ -11,9 +11,15 @@ from pydantic import BaseModel, Field
 
 from . import config
 from .candidate_profile import CandidateProfile
+from .hh_extractor import (
+    ApplicationAnswer,
+    ApplicationForm,
+    ApplicationQuestion,
+    ApplicationType,
+)
+from .job_analyzer import DeepAnalysisResult
+from .job_analyzer import get_resume_text as job_get_resume_text
 from .schema import Vacancy
-from .job_analyzer import DeepAnalysisResult, get_resume_text as job_get_resume_text
-from .hh_extractor import ApplicationType, ApplicationForm, ApplicationQuestion, ApplicationAnswer
 
 try:
     from openai import OpenAI
@@ -33,8 +39,8 @@ FORBIDDEN_PHRASES = [
 class ResumeAdaptation(BaseModel):
     target_title: str
     professional_summary: str
-    prioritized_skills: List[str]
-    relevant_experience_points: List[str]
+    prioritized_skills: list[str]
+    relevant_experience_points: list[str]
 
 
 class ApplicationPackage(BaseModel):
@@ -42,25 +48,25 @@ class ApplicationPackage(BaseModel):
     vacancy_stable_id: str
     resume_adaptation_needed: bool
     resume_summary: str
-    tailored_skills: List[str]
-    relevant_experience: List[str]
+    tailored_skills: list[str]
+    relevant_experience: list[str]
     cover_letter: str
     application_strategy: str
-    warnings: List[str]
+    warnings: list[str]
     generator_version: str
     adaptation: ResumeAdaptation
 
     # Stage 17C: HH Q&A extension (defaults preserve backward compatibility)
     application_type: ApplicationType = ApplicationType.unknown
-    form: Optional[ApplicationForm] = None
-    answers: List[ApplicationAnswer] = Field(default_factory=list)
+    form: ApplicationForm | None = None
+    answers: list[ApplicationAnswer] = Field(default_factory=list)
     validation_status: str = "NEEDS_REVIEW"  # VALID | NEEDS_REVIEW
-    review_reasons: List[str] = Field(default_factory=list)
+    review_reasons: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
 
-def get_resume_text(profile: Optional[CandidateProfile] = None) -> str:
+def get_resume_text(profile: CandidateProfile | None = None) -> str:
     # reuse same logic as job_analyzer
     return job_get_resume_text(profile)
 
@@ -257,8 +263,8 @@ def prepare_application(
     vacancy: Vacancy,
     deep_analysis: DeepAnalysisResult,
     profile: CandidateProfile,
-    resume_text: Optional[str] = None,
-) -> Optional[ApplicationPackage]:
+    resume_text: str | None = None,
+) -> ApplicationPackage | None:
     if deep_analysis.recommendation == "SKIP":
         return None
 
@@ -296,7 +302,7 @@ def prepare_application(
         resume_summary += f" Gaps (not confirmed): {', '.join(deep_analysis.gaps[:2])}."
 
     # warnings
-    warnings: List[str] = []
+    warnings: list[str] = []
     if deep_analysis.recommendation == "REVIEW":
         warnings.append("REVIEW recommendation - verify gaps before applying (not confirmed items require check)")
     if deep_analysis.missing_skills:

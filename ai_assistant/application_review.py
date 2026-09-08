@@ -6,7 +6,7 @@ import sqlite3
 import warnings
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -27,7 +27,7 @@ def compute_review_fingerprint(vacancy_stable_id: str, package: Any) -> str:
     
     Answers are sorted by question_id.
     """
-    pkg_data: Dict[str, Any] = {}
+    pkg_data: dict[str, Any] = {}
     if isinstance(package, tuple) and len(package) >= 3:
         raw_json = package[2]
         try:
@@ -79,31 +79,31 @@ def compute_review_fingerprint(vacancy_stable_id: str, package: Any) -> str:
 
 class ApplicationReview(BaseModel):
     vacancy_stable_id: str
-    company: Optional[str] = None
-    title: Optional[str] = None
-    source: Optional[str] = None
-    vacancy_url: Optional[str] = None
-    final_url: Optional[str] = None
-    match_score: Optional[float] = None
-    deep_score: Optional[float] = None
-    priority_score: Optional[float] = None
-    rank: Optional[int] = None
-    application_strategy: Optional[str] = None
-    resume_summary: Optional[str] = None
-    tailored_skills: List[str] = Field(default_factory=list)
-    relevant_experience: List[str] = Field(default_factory=list)
-    cover_letter: Optional[str] = None
-    fields_filled: List[str] = Field(default_factory=list)
-    fields_skipped: List[str] = Field(default_factory=list)
-    warnings: List[str] = Field(default_factory=list)
-    screenshot_path: Optional[str] = None
+    company: str | None = None
+    title: str | None = None
+    source: str | None = None
+    vacancy_url: str | None = None
+    final_url: str | None = None
+    match_score: float | None = None
+    deep_score: float | None = None
+    priority_score: float | None = None
+    rank: int | None = None
+    application_strategy: str | None = None
+    resume_summary: str | None = None
+    tailored_skills: list[str] = Field(default_factory=list)
+    relevant_experience: list[str] = Field(default_factory=list)
+    cover_letter: str | None = None
+    fields_filled: list[str] = Field(default_factory=list)
+    fields_skipped: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    screenshot_path: str | None = None
     status: ReviewStatus = ReviewStatus.PENDING_REVIEW
-    note: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    note: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
     review_version: str = REVIEW_VERSION
-    form_fingerprint: Optional[str] = None
-    review_id: Optional[str] = None
+    form_fingerprint: str | None = None
+    review_id: str | None = None
 
     model_config = {"use_enum_values": False}
 
@@ -116,7 +116,7 @@ class ApplicationReview(BaseModel):
         return data
 
     @property
-    def fingerprint(self) -> Optional[str]:
+    def fingerprint(self) -> str | None:
         """Deprecated alias for form_fingerprint. Use form_fingerprint instead."""
         warnings.warn(
             "ApplicationReview.fingerprint is deprecated, use form_fingerprint",
@@ -126,7 +126,7 @@ class ApplicationReview(BaseModel):
         return self.form_fingerprint
 
     @fingerprint.setter
-    def fingerprint(self, value: Optional[str]) -> None:
+    def fingerprint(self, value: str | None) -> None:
         warnings.warn(
             "ApplicationReview.fingerprint is deprecated, use form_fingerprint",
             DeprecationWarning,
@@ -170,7 +170,7 @@ def save_application_review(review: ApplicationReview) -> None:
     conn.commit()
     conn.close()
 
-def get_application_review(vacancy_stable_id: str, review_version: str | None = None) -> Optional[ApplicationReview]:
+def get_application_review(vacancy_stable_id: str, review_version: str | None = None) -> ApplicationReview | None:
     _ensure_table()
     conn = get_connection()
     cur = conn.cursor()
@@ -194,7 +194,7 @@ def get_application_review(vacancy_stable_id: str, review_version: str | None = 
 def is_review_created(vacancy_stable_id: str, review_version: str | None = None) -> bool:
     return get_application_review(vacancy_stable_id, review_version) is not None
 
-def list_application_reviews(status: Optional[str] = None, limit: int = 100) -> List[ApplicationReview]:
+def list_application_reviews(status: str | None = None, limit: int = 100) -> list[ApplicationReview]:
     _ensure_table()
     conn = get_connection()
     cur = conn.cursor()
@@ -213,11 +213,15 @@ def list_application_reviews(status: Optional[str] = None, limit: int = 100) -> 
     return res
 
 def _get_required_data(vacancy_stable_id: str):
-    from .application_tracking import get_application_status, ApplicationStatus
     from .application_queue import get_queue_item
-    from .db import get_vacancy_by_id, get_application_package, get_deep_analysis
-    from .browser_executor import get_browser_session, BrowserStatus
-    from .db import _row_to_vacancy
+    from .application_tracking import ApplicationStatus, get_application_status
+    from .browser_executor import BrowserStatus, get_browser_session
+    from .db import (
+        _row_to_vacancy,
+        get_application_package,
+        get_deep_analysis,
+        get_vacancy_by_id,
+    )
 
     track = get_application_status(vacancy_stable_id)
     if not track:
@@ -338,12 +342,12 @@ def approve_review(vacancy_stable_id: str, note: str | None = None, force: bool 
 
     # Check browser status
     if not force:
-        from .browser_executor import get_browser_session, BrowserStatus
+        from .browser_executor import BrowserStatus, get_browser_session
         sess = get_browser_session(vacancy_stable_id)
         if sess and sess.status == BrowserStatus.BLOCKED:
             raise ValueError(f"Cannot approve: browser status {sess.status} is BLOCKED. BLOCKED cannot be approved.")
     # Check tracking still READY
-    from .application_tracking import get_application_status, ApplicationStatus
+    from .application_tracking import ApplicationStatus, get_application_status
     track = get_application_status(vacancy_stable_id)
     if track and track.status not in [ApplicationStatus.READY_TO_APPLY, ApplicationStatus.DISCOVERED, ApplicationStatus.ANALYZED]:
         raise ValueError(f"Cannot approve: tracking status {track.status} is not READY_TO_APPLY")
@@ -399,7 +403,7 @@ def is_review_approved(vacancy_stable_id: str) -> bool:
     return rev is not None and rev.status == ReviewStatus.APPROVED
 
 
-def complete_review(vacancy_stable_id: str, note: str | None = None) -> Optional[ApplicationReview]:
+def complete_review(vacancy_stable_id: str, note: str | None = None) -> ApplicationReview | None:
     """Mark an approved review as consumed by a terminal application state."""
     rev = get_application_review(vacancy_stable_id)
     if not rev or rev.status == ReviewStatus.COMPLETED:
@@ -413,7 +417,7 @@ def complete_review(vacancy_stable_id: str, note: str | None = None) -> Optional
     return rev
 
 
-def reopen_review_after_browser_block(vacancy_stable_id: str, note: str | None = None) -> Optional[ApplicationReview]:
+def reopen_review_after_browser_block(vacancy_stable_id: str, note: str | None = None) -> ApplicationReview | None:
     """Revoke an approval when the latest browser preparation is blocked."""
     rev = get_application_review(vacancy_stable_id)
     if not rev or rev.status != ReviewStatus.APPROVED:

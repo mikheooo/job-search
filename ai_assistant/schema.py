@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional, List, Dict, Any, Set
+from typing import Any, Dict, List, Optional, Set
 
 
 class Vacancy:
@@ -13,18 +13,18 @@ class Vacancy:
         company: str,
         description: str,
         job_url: str,
-        application_url: Optional[str] = None,
-        location: Optional[str] = None,
-        country_restrictions: Optional[List[str]] = None,
-        timezone_restrictions: Optional[List[int]] = None,
-        salary_min: Optional[float] = None,
-        salary_max: Optional[float] = None,
-        salary_currency: Optional[str] = None,
-        employment_type: Optional[str] = None,
-        published_at: Optional[datetime] = None,
-        first_seen_at: Optional[datetime] = None,
-        last_seen_at: Optional[datetime] = None,
-        raw_data: Optional[Dict[str, Any]] = None,
+        application_url: str | None = None,
+        location: str | None = None,
+        country_restrictions: list[str] | None = None,
+        timezone_restrictions: list[int] | None = None,
+        salary_min: float | None = None,
+        salary_max: float | None = None,
+        salary_currency: str | None = None,
+        employment_type: str | None = None,
+        published_at: datetime | None = None,
+        first_seen_at: datetime | None = None,
+        last_seen_at: datetime | None = None,
+        raw_data: dict[str, Any] | None = None,
     ) -> None:
         self.source = source
         self.source_job_id = source_job_id
@@ -48,7 +48,7 @@ class Vacancy:
     def stable_id(self) -> str:
         return f"{self.source}:{self.source_job_id}"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.stable_id(),
             "source": self.source,
@@ -72,7 +72,7 @@ class Vacancy:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> Vacancy:
+    def from_dict(cls, data: dict[str, Any]) -> Vacancy:
         return cls(
             source=data["source"],
             source_job_id=data["source_job_id"],
@@ -95,7 +95,7 @@ class Vacancy:
         )
 
 
-def _parse_dt(value: Optional[str]) -> Optional[datetime]:
+def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
     for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
@@ -106,7 +106,7 @@ def _parse_dt(value: Optional[str]) -> Optional[datetime]:
     return None
 
 
-ACTIVE_PRODUCTION_SOURCES: Set[str] = {"himalayas", "weworkremotely", "remoteok", "habrcareer", "hh"}
+ACTIVE_PRODUCTION_SOURCES: set[str] = {"himalayas", "weworkremotely", "remoteok", "habrcareer", "hh"}
 
 SYNTHETIC_ID_PATTERNS = [
     r"dryrun", r"dry-run", r"dry_run", r"^test[-_]?\d+$", r"^fake", r"^mock",

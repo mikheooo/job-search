@@ -29,13 +29,13 @@ from typing import Any, Callable, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from .hh_extractor import QuestionType
-from .prefill_plan import PrefillPlan, PrefillOperation
+from .prefill_plan import PrefillOperation, PrefillPlan
 
 
 class MutationResult(BaseModel):
     question_id: str
-    target_name: Optional[str] = None
-    target_label: Optional[str] = None
+    target_name: str | None = None
+    target_label: str | None = None
     op_type: str = ""
     value: str = ""
     ok: bool = False
@@ -47,8 +47,8 @@ class MutationResult(BaseModel):
 class ExecutionReport(BaseModel):
     verdict: str = "NOTHING_TO_EXECUTE"  # VERIFIED | PARTIALLY_VERIFIED | FAILED | FAIL_CLOSED | NOTHING_TO_EXECUTE
     generated_at: str = ""
-    url_before: Optional[str] = None
-    url_after: Optional[str] = None
+    url_before: str | None = None
+    url_after: str | None = None
     navigation_count: int = 0
     click_count: int = 0
     submit_count: int = 0
@@ -57,9 +57,9 @@ class ExecutionReport(BaseModel):
     successful_mutations: int = 0
     failed_mutations: int = 0
     skipped_mutations: int = 0
-    mutations: List[MutationResult] = Field(default_factory=list)
-    verification: List[Dict[str, Any]] = Field(default_factory=list)
-    errors: List[str] = Field(default_factory=list)
+    mutations: list[MutationResult] = Field(default_factory=list)
+    verification: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -197,8 +197,8 @@ def _url_js() -> str:
 def execute_prefill_plan(
     plan: PrefillPlan,
     evaluate_fn: Callable[[str], str],
-    allowed_url_markers: List[str] = ("hh.ru",),
-    required_url_markers: Optional[List[str]] = None,
+    allowed_url_markers: list[str] = ("hh.ru",),
+    required_url_markers: list[str] | None = None,
     stop_on_failure: bool = False,
 ) -> ExecutionReport:
     """Execute a PrefillPlan against an already-open tab.
@@ -216,7 +216,7 @@ def execute_prefill_plan(
     report = ExecutionReport(generated_at=datetime.utcnow().isoformat())
     required = list(allowed_url_markers) + list(required_url_markers or [])
 
-    def _read_url() -> Optional[str]:
+    def _read_url() -> str | None:
         try:
             raw = evaluate_fn(_url_js())
             return json.loads(raw).get("url")
@@ -243,7 +243,7 @@ def execute_prefill_plan(
 
     # --- execute operations (defense in depth: re-check every op) ---
     aborted = False
-    executed_ops: List[PrefillOperation] = []
+    executed_ops: list[PrefillOperation] = []
     for idx, op in enumerate(plan.operations):
         # Stage 20G atomicity: stop subsequent mutations after a failure.
         if aborted and stop_on_failure:
@@ -352,7 +352,7 @@ def execute_prefill_plan(
 _HH_MESSAGES_PATTERN = re.compile(r"messages|messaging|negotiations|/chat/\d+", re.IGNORECASE)
 
 
-def select_best_hh_target(targets: List[Dict[str, Any]], url_substring: str) -> Optional[Dict[str, Any]]:
+def select_best_hh_target(targets: list[dict[str, Any]], url_substring: str) -> dict[str, Any] | None:
     """Select the most appropriate page target matching url_substring.
 
     Priority:
@@ -611,13 +611,13 @@ def probe_frames_and_world(
     cdp_url: str,
     ws_url: str,
     frame_substrings: Any,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Probe frame tree and isolated world over WebSocket.
     Stage 30D helper. Read-only, request/response only."""
     return _run_coro(_probe_cdp_frames_and_world_async, ws_url, frame_substrings)
 
 
-async def _probe_cdp_frames_and_world_async(ws_url: str, frame_substrings: Any) -> Dict[str, Any]:
+async def _probe_cdp_frames_and_world_async(ws_url: str, frame_substrings: Any) -> dict[str, Any]:
     """CDP: getFrameTree + createIsolatedWorld on matched frame + evaluate 1+1.
     Read-only, request/response only. Stage 30D."""
     import websockets
@@ -647,7 +647,7 @@ async def _probe_cdp_frames_and_world_async(ws_url: str, frame_substrings: Any) 
         tree = await _call("Page.getFrameTree")
         frame_tree = tree.get("frameTree") or {}
 
-        frames: List[Dict[str, Any]] = []
+        frames: list[dict[str, Any]] = []
 
         def _walk(node):
             f = node.get("frame") or {}

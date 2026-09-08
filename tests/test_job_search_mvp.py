@@ -133,15 +133,49 @@ def test_db_save_and_dedup():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_cli_collect_is_idempotent():
+class _FakeHimalayasAdapter:
+    """Offline stand-in for HimalayasAdapter.
+
+    The real adapter hits the network, and tests/conftest.py blocks sockets. That
+    made the old version of this test vacuous: the fetch always failed, both calls
+    returned 0, and ``assert new_second == 0`` proved nothing. On the rare run where
+    the block did not apply, the test went to the live API and produced 20/20.
+    Injecting a fixed set of vacancies keeps the assertion real and hermetic.
+    """
+
+    source = "himalayas"
+
+    def __init__(self, count: int = 5) -> None:
+        self.count = count
+
+    def fetch_vacancies(self):
+        return [
+            Vacancy(
+                source="himalayas",
+                source_job_id=str(i),
+                title=f"Python Dev {i}",
+                company="Acme",
+                description="python",
+                job_url=f"https://example.com/{i}",
+            )
+            for i in range(self.count)
+        ]
+
+
+def test_cli_collect_is_idempotent(monkeypatch):
     tmp_dir = tempfile.mkdtemp()
     try:
         db_file = str(tmp_dir + "/state.db")
         config.DB_FILE = db_file
         from ai_assistant import cli
+
+        monkeypatch.setitem(cli.SOURCES, "himalayas", _FakeHimalayasAdapter(count=5))
+
         new_first = cli.collect(["himalayas"])
         new_second = cli.collect(["himalayas"])
-        assert new_first >= 0
+
+        # The fake adapter must really be in play, otherwise this asserts nothing.
+        assert new_first == 5
         assert new_second == 0
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

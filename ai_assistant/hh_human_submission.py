@@ -15,11 +15,13 @@ from typing import Any, Callable, Dict, Set, Tuple
 from .hh_submission import (
     SubmissionReport,
     SubmissionStatus,
+)
+from .hh_submission import (
     clear_submitted_reviews as _clear_submitted,
 )
 
 # review_id -> (fingerprint, vacancy_stable_id) that was human-confirmed
-_human_confirmations: Dict[str, Tuple[str, str]] = {}
+_human_confirmations: dict[str, tuple[str, str]] = {}
 
 
 def clear_human_confirmations() -> None:
@@ -36,7 +38,7 @@ def confirm_human_submission(
     review_id: str,
     fingerprint: str,
     vacancy_stable_id: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Explicit human confirmation for a single future submit.
 
     Checks the same 11 gates as preflight plus the approval state.

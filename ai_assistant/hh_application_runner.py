@@ -28,7 +28,11 @@ from pydantic import BaseModel, Field
 
 from . import db
 from .hh_application_orchestrator import HHApplicationState, transition_application
-from .hh_application_queue import can_submit, get_controlled_application_queue, HHQueueItem
+from .hh_application_queue import (
+    HHQueueItem,
+    can_submit,
+    get_controlled_application_queue,
+)
 from .hh_post_submit_verifier import verify_hh_submitted_application
 from .hh_questionnaire import HHQuestionStatus, submit_questionnaire_response
 from .hh_questionnaire_audit import audit_questionnaire
@@ -45,14 +49,14 @@ class RunnerPreCheckStatus(str, Enum):
 
 
 class RunnerExecutionResult(BaseModel):
-    application_id: Optional[str] = None
-    vacancy_id: Optional[str] = None
-    vacancy_title: Optional[str] = None
-    company: Optional[str] = None
+    application_id: str | None = None
+    vacancy_id: str | None = None
+    vacancy_title: str | None = None
+    company: str | None = None
     queue_ready_count: int = 0
     queue_review_count: int = 0
     queue_submitted_count: int = 0
-    selected_application: Optional[str] = None
+    selected_application: str | None = None
     pre_submit_audit: RunnerPreCheckStatus = RunnerPreCheckStatus.NOT_RUN
     navigation: RunnerPreCheckStatus = RunnerPreCheckStatus.NOT_RUN
     questionnaire: RunnerPreCheckStatus = RunnerPreCheckStatus.NOT_RUN
@@ -63,7 +67,7 @@ class RunnerExecutionResult(BaseModel):
     next_application_executed: bool = False
     pipeline_py: str = "NOT RUN"
     reason: str = ""
-    error: Optional[str] = None
+    error: str | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -135,8 +139,8 @@ def preview_next_application() -> RunnerExecutionResult:
 def run_next_application(
     confirm_submit: bool = False,
     auto: bool = False,
-    evaluate_fn: Optional[Callable[[str], str]] = None,
-    cdp_url: Optional[str] = None,
+    evaluate_fn: Callable[[str], str] | None = None,
+    cdp_url: str | None = None,
     dry_run: bool = False,
 ) -> RunnerExecutionResult:
     """Select and run the next READY_TO_SUBMIT application in the queue."""
@@ -177,8 +181,8 @@ def run_application(
     application_id: str,
     confirm_submit: bool = False,
     auto: bool = False,
-    evaluate_fn: Optional[Callable[[str], str]] = None,
-    cdp_url: Optional[str] = None,
+    evaluate_fn: Callable[[str], str] | None = None,
+    cdp_url: str | None = None,
     queue_ready_count: int = 0,
     queue_review_count: int = 0,
     queue_submitted_count: int = 0,
@@ -291,9 +295,12 @@ def run_application(
     # Attach evaluate_fn to the target vacancy tab if evaluate_fn is not provided
     if evaluate_fn is None:
         try:
+            from .cli import _DEFAULT_HH_CDP_URL, _resolve_hh_evaluate
             from .hh_browser_launcher import ensure_hh_browser
-            from .hh_vacancy_navigator import ensure_open_vacancy_tab, extract_hh_numeric_id
-            from .cli import _resolve_hh_evaluate, _DEFAULT_HH_CDP_URL
+            from .hh_vacancy_navigator import (
+                ensure_open_vacancy_tab,
+                extract_hh_numeric_id,
+            )
             ensure_hh_browser()
             endpoint = cdp_url or _DEFAULT_HH_CDP_URL
             if target_url:
@@ -396,7 +403,8 @@ def run_application(
     submit_approval = None
 
     if auto_mode:
-        from .hh_submit_policy import evaluate as evaluate_policy, route_policy_rejection
+        from .hh_submit_policy import evaluate as evaluate_policy
+        from .hh_submit_policy import route_policy_rejection
         policy_decision = evaluate_policy(app)
         if not policy_decision.approve:
             route_policy_rejection(app_id, policy_decision)

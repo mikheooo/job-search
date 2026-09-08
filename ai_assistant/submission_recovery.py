@@ -9,17 +9,17 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from . import config
+from .application_review import ReviewStatus, get_application_review
+from .application_tracking import ApplicationStatus, get_application_status
+from .browser_executor import BrowserStatus, get_browser_session
 from .db import (
+    get_all_submissions,
     get_connection,
-    init_db,
     get_submission,
     get_verification,
+    init_db,
     list_verifications,
-    get_all_submissions,
 )
-from .application_tracking import ApplicationStatus, get_application_status
-from .application_review import ReviewStatus, get_application_review
-from .browser_executor import get_browser_session, BrowserStatus
 
 logger = logging.getLogger(__name__)
 
@@ -34,13 +34,13 @@ class RecoveryStatus(str, Enum):
 
 class RecoveryResult(BaseModel):
     vacancy_stable_id: str
-    submission_id: Optional[str] = None
-    current_tracking_status: Optional[str] = None
+    submission_id: str | None = None
+    current_tracking_status: str | None = None
     recovery_status: RecoveryStatus
     reason: str
-    warnings: List[str] = Field(default_factory=list)
-    last_submission: Optional[Dict[str, Any]] = None
-    last_verification: Optional[Dict[str, Any]] = None
+    warnings: list[str] = Field(default_factory=list)
+    last_submission: dict[str, Any] | None = None
+    last_verification: dict[str, Any] | None = None
     recommended_action: str
 
     model_config = {"extra": "forbid"}
@@ -129,11 +129,11 @@ def inspect_submission_state(vacancy_stable_id: str) -> RecoveryResult:
 
 
 def _determine_recovery_status(
-    tracking_status: Optional[str],
-    submission: Optional[Dict],
-    verification: Optional[Dict],
-    review_status: Optional[str],
-    browser_status: Optional[str],
+    tracking_status: str | None,
+    submission: dict | None,
+    verification: dict | None,
+    review_status: str | None,
+    browser_status: str | None,
 ) -> tuple[RecoveryStatus, str, str]:
     """Determine recovery status based on all available state."""
 
@@ -257,7 +257,7 @@ def reconcile_submission_state(vacancy_stable_id: str) -> RecoveryResult:
     if result.recovery_status == RecoveryStatus.NO_ACTION and result.last_verification:
         ver_status = result.last_verification.get("verification_status")
         if ver_status == "VERIFIED" and result.current_tracking_status != "APPLIED":
-            from .application_tracking import verify_and_apply, get_application_status
+            from .application_tracking import get_application_status, verify_and_apply
             try:
                 track = get_application_status(vacancy_stable_id)
                 if track and track.status.value != "APPLIED":
@@ -273,7 +273,7 @@ def reconcile_submission_state(vacancy_stable_id: str) -> RecoveryResult:
     return result
 
 
-def get_submission_audit(vacancy_stable_id: str) -> List[Dict[str, Any]]:
+def get_submission_audit(vacancy_stable_id: str) -> list[dict[str, Any]]:
     """
     Get chronological audit trail for a vacancy.
     Includes: reviews, browser preparations, submissions, verifications, tracking transitions.

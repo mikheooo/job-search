@@ -96,14 +96,14 @@ class NotificationType(str, Enum):
 class AutonomousConfig(BaseModel):
     """Configuration for Autonomous Job Application Agent."""
     cdp_url: str = "http://127.0.0.1:9222"
-    search_queries: List[str] = Field(default_factory=lambda: list(DEFAULT_SEARCH_QUERIES))
+    search_queries: list[str] = Field(default_factory=lambda: list(DEFAULT_SEARCH_QUERIES))
     poll_interval_seconds: int = 60
     max_applications_per_cycle: int = 5
     max_auto_replies_per_cycle: int = 3
     remote_required: bool = True
     min_match_score: float = 70.0
     auto_start_browser: bool = True
-    evaluate_fn: Optional[Any] = None
+    evaluate_fn: Any | None = None
     submit_enabled: bool = False
 
     model_config = {"extra": "forbid"}
@@ -123,10 +123,10 @@ class AutonomousCycleResult(BaseModel):
     interviews_detected: int = 0
     rejections_count: int = 0
     unanswered_questions_count: int = 0
-    interview_details: List[Dict[str, Any]] = Field(default_factory=list)
-    notifications_sent: List[Dict[str, Any]] = Field(default_factory=list)
-    applications_processed: List[Dict[str, Any]] = Field(default_factory=list)
-    errors: List[str] = Field(default_factory=list)
+    interview_details: list[dict[str, Any]] = Field(default_factory=list)
+    notifications_sent: list[dict[str, Any]] = Field(default_factory=list)
+    applications_processed: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
     summary: str = ""
 
     model_config = {"extra": "forbid"}
@@ -144,10 +144,10 @@ class NotificationDispatcher:
         company: str,
         vacancy_title: str,
         invitation_text: str,
-        invitation_url: Optional[str] = None,
-        conversation_id: Optional[str] = None,
+        invitation_url: str | None = None,
+        conversation_id: str | None = None,
         action_required: str = "Review message and confirm available interview time slot.",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Dispatch high-priority interview notification to user."""
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         from .telegram_notifier import TelegramNotifier
@@ -225,14 +225,18 @@ class NotificationDispatcher:
         vacancy_title: str,
         incoming_message: str,
         sent_reply: str,
-        conversation_id: Optional[str] = None,
-        application_id: Optional[str] = None,
-        vacancy_url: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        conversation_id: str | None = None,
+        application_id: str | None = None,
+        vacancy_url: str | None = None,
+    ) -> dict[str, Any]:
         """Dispatch user notification when an autonomous reply is verified sent on HeadHunter."""
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         conv_str = conversation_id or "unknown"
-        from .telegram_notifier import TelegramNotifier, verify_hh_chat_url, get_telegram_notifier
+        from .telegram_notifier import (
+            TelegramNotifier,
+            get_telegram_notifier,
+            verify_hh_chat_url,
+        )
         is_valid_url, verified_url = verify_hh_chat_url(conversation_id=conversation_id, url=vacancy_url)
         chat_url = verified_url if is_valid_url else None
 
@@ -312,9 +316,9 @@ class NotificationDispatcher:
         url: str,
         questions: str = "Требуется заполнение внешней анкеты",
         action: str = "REQUIRES REVIEW",
-        conversation_id: Optional[str] = None,
-        application_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        conversation_id: str | None = None,
+        application_id: str | None = None,
+    ) -> dict[str, Any]:
         """Dispatch notification for external questionnaire or form."""
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         from .telegram_notifier import TelegramNotifier
@@ -388,9 +392,9 @@ class NotificationDispatcher:
         task_description: str,
         url: str = "",
         action: str = "REQUIRES REVIEW",
-        conversation_id: Optional[str] = None,
-        application_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        conversation_id: str | None = None,
+        application_id: str | None = None,
+    ) -> dict[str, Any]:
         """Dispatch notification for technical test task."""
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         url_line = f"\nURL:\n{url}\n\n" if url else "\n\n"
@@ -451,9 +455,9 @@ class NotificationDispatcher:
         company: str,
         vacancy_title: str,
         unanswered_question: str,
-        vacancy_url: Optional[str] = None,
-        application_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        vacancy_url: str | None = None,
+        application_id: str | None = None,
+    ) -> dict[str, Any]:
         """Dispatch notification when an unknown question blocks an application."""
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         notif_data = {
@@ -500,9 +504,9 @@ def evaluate_candidate_match(
     vacancy_title: str,
     company: str,
     description: str,
-    raw_data: Optional[Dict[str, Any]] = None,
-    profile: Optional[CandidateProfile] = None,
-) -> Tuple[bool, float, str]:
+    raw_data: dict[str, Any] | None = None,
+    profile: CandidateProfile | None = None,
+) -> tuple[bool, float, str]:
     """Evaluate if a vacancy matches Candidate Profile hard filters and stack.
 
     Returns: (is_match, match_score, reason)
@@ -586,9 +590,9 @@ def evaluate_candidate_match(
 # ---------------------------------------------------------------------------
 
 def solve_questionnaire_autonomously(
-    questions: List[Dict[str, Any]],
-    profile: Optional[CandidateProfile] = None,
-) -> Tuple[bool, Dict[str, Any], List[str]]:
+    questions: list[dict[str, Any]],
+    profile: CandidateProfile | None = None,
+) -> tuple[bool, dict[str, Any], list[str]]:
     """Automatically answer questionnaire questions using Candidate Profile facts.
 
     Separates AUTO_ANSWERABLE from UNKNOWN_REQUIRES_HUMAN.
@@ -599,8 +603,8 @@ def solve_questionnaire_autonomously(
     if profile is None:
         profile = load_candidate_profile()
 
-    answers: Dict[str, Any] = {}
-    unanswered: List[str] = []
+    answers: dict[str, Any] = {}
+    unanswered: list[str] = []
 
     for q in questions:
         qid = q.get("id") or str(q.get("number") or "")
@@ -696,7 +700,7 @@ def solve_questionnaire_autonomously(
 def generate_autonomous_cover_letter(
     vacancy_title: str,
     company: str,
-    profile: Optional[CandidateProfile] = None,
+    profile: CandidateProfile | None = None,
 ) -> str:
     """Generate professional, truth-only cover letter tailored to the vacancy."""
     if profile is None:
@@ -725,7 +729,7 @@ def generate_autonomous_cover_letter(
 class AutonomousJobAgent:
     """Fully autonomous job agent for HeadHunter."""
 
-    def __init__(self, config: Optional[AutonomousConfig] = None):
+    def __init__(self, config: AutonomousConfig | None = None):
         self.config = config or AutonomousConfig()
         self.profile = load_candidate_profile()
         db.init_db()
@@ -834,9 +838,9 @@ class AutonomousJobAgent:
 
         return result
 
-    def _discover_fresh_vacancies(self) -> List[Dict[str, Any]]:
+    def _discover_fresh_vacancies(self) -> list[dict[str, Any]]:
         """Discover new HeadHunter vacancies via CDP session and deduplicate against DB."""
-        fresh: List[Dict[str, Any]] = []
+        fresh: list[dict[str, Any]] = []
         seen_ids = set()
 
         # Populate from existing database
@@ -913,7 +917,7 @@ class AutonomousJobAgent:
 
         return fresh
 
-    def _process_single_application(self, vac_data: Dict[str, Any], score: float) -> Dict[str, Any]:
+    def _process_single_application(self, vac_data: dict[str, Any], score: float) -> dict[str, Any]:
         """Process a single matching vacancy autonomously: discovers, scores, prepares package and transitions to READY_TO_SUBMIT."""
         vac_id = str(vac_data.get("vacancy_id") or "").strip()
         title = vac_data.get("title") or "Python Developer"
@@ -978,12 +982,12 @@ class AutonomousJobAgent:
 
         # Step 4: Create ApplicationReview
         from .application_review import (
+            REVIEW_VERSION,
             ApplicationReview,
             ReviewStatus,
-            save_application_review,
-            get_application_review,
             compute_review_fingerprint,
-            REVIEW_VERSION,
+            get_application_review,
+            save_application_review,
         )
         rev = get_application_review(stable_id)
         if not rev:
@@ -1005,7 +1009,7 @@ class AutonomousJobAgent:
             save_application_review(rev)
 
         # Step 5: Transition tracking to READY_TO_APPLY
-        from .application_tracking import set_application_status, ApplicationStatus
+        from .application_tracking import ApplicationStatus, set_application_status
         set_application_status(
             vacancy_stable_id=stable_id,
             status=ApplicationStatus.READY_TO_APPLY,
@@ -1061,7 +1065,7 @@ class AutonomousJobAgent:
         app_record["reason"] = "Prepared for autonomous submission (READY_TO_SUBMIT)"
         return app_record
 
-    def _process_messages(self) -> Dict[str, Any]:
+    def _process_messages(self) -> dict[str, Any]:
         """Watch and process incoming dialogs, detecting interviews and auto-replying."""
         out = {
             "messages_checked": 0,
@@ -1090,7 +1094,7 @@ class AutonomousJobAgent:
         elif isinstance(raw_res, list):
             convs = raw_res
 
-        dialogs: List[HHDialog] = []
+        dialogs: list[HHDialog] = []
         for it in convs:
             if isinstance(it, HHDialog):
                 dialogs.append(it)
@@ -1517,13 +1521,13 @@ def urllib_quote(s: str) -> str:
     return urllib.parse.quote(str(s))
 
 
-def run_autonomous_cycle(config: Optional[AutonomousConfig] = None) -> AutonomousCycleResult:
+def run_autonomous_cycle(config: AutonomousConfig | None = None) -> AutonomousCycleResult:
     """Run one single autonomous cycle."""
     agent = AutonomousJobAgent(config=config)
     return agent.run_cycle()
 
 
-def start_autonomous_daemon(config: Optional[AutonomousConfig] = None) -> None:
+def start_autonomous_daemon(config: AutonomousConfig | None = None) -> None:
     """Run continuous autonomous agent loop until stopped."""
     agent = AutonomousJobAgent(config=config)
     poll_sec = agent.config.poll_interval_seconds

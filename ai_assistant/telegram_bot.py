@@ -32,10 +32,10 @@ class TelegramBot:
 
     def __init__(
         self,
-        bot_token: Optional[str] = None,
-        allowed_chat_id: Optional[str] = None,
-        notifier: Optional[TelegramNotifier] = None,
-        get_updates_fn: Optional[Callable[[int], List[Dict[str, Any]]]] = None,
+        bot_token: str | None = None,
+        allowed_chat_id: str | None = None,
+        notifier: TelegramNotifier | None = None,
+        get_updates_fn: Callable[[int], list[dict[str, Any]]] | None = None,
     ):
         self.bot_token = bot_token if bot_token is not None else config.TELEGRAM_BOT_TOKEN
         self.allowed_chat_id = str(allowed_chat_id or config.TELEGRAM_CHAT_ID or "").strip()
@@ -191,7 +191,7 @@ class TelegramBot:
         else:
             return f"Неизвестная команда: `{cmd}`. Введите /help для просмотра доступных команд."
 
-    def process_update(self, update: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def process_update(self, update: dict[str, Any]) -> dict[str, Any] | None:
         """Process a single Telegram update dict (messages and callback queries)."""
         update_id = update.get("update_id")
         if update_id:

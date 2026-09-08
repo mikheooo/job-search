@@ -10,7 +10,7 @@ from datetime import datetime
 from difflib import SequenceMatcher
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from pydantic import BaseModel, Field
 
@@ -46,11 +46,11 @@ class MatchType(str, Enum):
 
 @dataclass
 class IdentityMatch:
-    canonical_id: Optional[str]
+    canonical_id: str | None
     match_type: MatchType
     confidence: int  # 0-100
-    reasons: List[str]
-    existing_canonical: Optional[Dict[str, Any]] = None
+    reasons: list[str]
+    existing_canonical: dict[str, Any] | None = None
 
 
 @dataclass
@@ -59,7 +59,7 @@ class CanonicalVacancy:
     normalized_url: str
     normalized_company: str
     normalized_title: str
-    location: Optional[str]
+    location: str | None
     first_seen_at: str
     last_seen_at: str
 
@@ -180,11 +180,11 @@ def is_exact_duplicate(normalized_url: str, existing: CanonicalVacancy) -> bool:
 def is_probable_duplicate(
     normalized_company: str,
     normalized_title: str,
-    location: Optional[str],
+    location: str | None,
     existing: CanonicalVacancy,
     company_threshold: float = 0.95,
     title_threshold: float = 0.85
-) -> Tuple[bool, int, List[str]]:
+) -> tuple[bool, int, list[str]]:
     """
     Check if vacancy is a probable duplicate.
     Returns (is_probable, confidence, reasons).
@@ -301,7 +301,7 @@ def save_vacancy_alias(
     conn.close()
 
 
-def get_canonical_by_id(canonical_id: str) -> Optional[CanonicalVacancy]:
+def get_canonical_by_id(canonical_id: str) -> CanonicalVacancy | None:
     """Get canonical vacancy by ID."""
     init_db()
     conn = get_connection()
@@ -325,7 +325,7 @@ def get_canonical_by_id(canonical_id: str) -> Optional[CanonicalVacancy]:
     )
 
 
-def get_canonical_by_normalized_url(normalized_url: str) -> Optional[CanonicalVacancy]:
+def get_canonical_by_normalized_url(normalized_url: str) -> CanonicalVacancy | None:
     """Get canonical vacancy by normalized URL."""
     init_db()
     conn = get_connection()
@@ -349,7 +349,7 @@ def get_canonical_by_normalized_url(normalized_url: str) -> Optional[CanonicalVa
     )
 
 
-def get_all_canonical_vacancies() -> List[CanonicalVacancy]:
+def get_all_canonical_vacancies() -> list[CanonicalVacancy]:
     """Get all canonical vacancies."""
     init_db()
     conn = get_connection()
@@ -371,7 +371,7 @@ def get_all_canonical_vacancies() -> List[CanonicalVacancy]:
     ) for row in rows]
 
 
-def get_aliases_for_canonical(canonical_id: str) -> List[Dict[str, Any]]:
+def get_aliases_for_canonical(canonical_id: str) -> list[dict[str, Any]]:
     """Get all aliases for a canonical vacancy."""
     init_db()
     conn = get_connection()
@@ -477,7 +477,7 @@ def resolve_vacancy_identity(vacancy: Vacancy) -> IdentityMatch:
     )
 
 
-def sync_identity_from_vacancies() -> Dict[str, int]:
+def sync_identity_from_vacancies() -> dict[str, int]:
     """
     Sync canonical identity from all existing vacancies.
     Idempotent - can be run multiple times.

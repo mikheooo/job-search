@@ -2,21 +2,20 @@
 import datetime
 import json
 import os
+import re
 import subprocess
 import sys
 import time
-import re
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from . import config
 
-
 ADAPTER_FAILURE_RE = re.compile(r"Adapter\s+([^\r\n:]+)\s+fetch error:\s*([^\r\n]+)", re.IGNORECASE)
 PRODUCTION_CIRCUIT_OPEN_EXIT_CODE = 5
 
 
-def _tracker_defaults() -> Dict[str, Any]:
+def _tracker_defaults() -> dict[str, Any]:
     """Return the backward-compatible persistent production tracker schema."""
     return {
         "consecutive_failures": 0,
@@ -81,13 +80,13 @@ def mask_secrets(text: str) -> str:
 class SingleInstanceLock:
     """Guarantees at most one production job-search process runs concurrently."""
 
-    def __init__(self, lock_dir: Optional[str] = None, lock_name: str = "job_search.lock", stale_seconds: int = 1800):
+    def __init__(self, lock_dir: str | None = None, lock_name: str = "job_search.lock", stale_seconds: int = 1800):
         self.lock_dir = lock_dir or config.LOGS_DIR
         self.lock_file = os.path.join(self.lock_dir, lock_name)
         self.stale_seconds = stale_seconds
         self._acquired = False
 
-    def acquire(self) -> Tuple[bool, str]:
+    def acquire(self) -> tuple[bool, str]:
         """Try to acquire process lock.
         
         Returns:
@@ -150,11 +149,11 @@ class SingleInstanceLock:
 class ConsecutiveFailureTracker:
     """Track production failures and persist the fail-closed circuit state."""
 
-    def __init__(self, storage_dir: Optional[str] = None):
+    def __init__(self, storage_dir: str | None = None):
         self.storage_dir = storage_dir or config.LOGS_DIR
         self.file_path = os.path.join(self.storage_dir, "failure_tracker.json")
 
-    def _read_data(self) -> Dict[str, Any]:
+    def _read_data(self) -> dict[str, Any]:
         data = _tracker_defaults()
         if os.path.exists(self.file_path):
             try:
@@ -166,7 +165,7 @@ class ConsecutiveFailureTracker:
                 pass
         return data
 
-    def _write_data(self, data: Dict[str, Any]) -> None:
+    def _write_data(self, data: dict[str, Any]) -> None:
         os.makedirs(self.storage_dir, exist_ok=True)
         try:
             with open(self.file_path, "w", encoding="utf-8") as f:
@@ -177,13 +176,13 @@ class ConsecutiveFailureTracker:
     def get_consecutive_failures(self) -> int:
         return self._read_data().get("consecutive_failures", 0)
 
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self) -> dict[str, Any]:
         data = self._read_data()
         data["circuit_open"] = self.is_circuit_open()
         data["circuit_threshold"] = config.PRODUCTION_FAILURE_ALERT_THRESHOLD
         return data
 
-    def is_circuit_open(self, threshold: Optional[int] = None) -> bool:
+    def is_circuit_open(self, threshold: int | None = None) -> bool:
         """Return True once tripped; only an explicit operator resume unlatches it."""
         limit = threshold or config.PRODUCTION_FAILURE_ALERT_THRESHOLD
         data = self._read_data()
@@ -198,7 +197,7 @@ class ConsecutiveFailureTracker:
         data["circuit_opened_at"] = None
         self._write_data(data)
 
-    def record_failure(self, error: str = "", threshold: Optional[int] = None) -> int:
+    def record_failure(self, error: str = "", threshold: int | None = None) -> int:
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         data = self._read_data()
         data["consecutive_failures"] = data.get("consecutive_failures", 0) + 1
@@ -210,7 +209,7 @@ class ConsecutiveFailureTracker:
         self._write_data(data)
         return data["consecutive_failures"]
 
-    def resume_after_operator_review(self) -> Dict[str, Any]:
+    def resume_after_operator_review(self) -> dict[str, Any]:
         """Close the circuit explicitly while preserving the last failure evidence."""
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         data = self._read_data()
@@ -239,9 +238,9 @@ def rotate_log_if_needed(log_path: str, max_size_bytes: int = 5 * 1024 * 1024, m
 
 
 def run_production_pipeline(
-    fetcher_script: Optional[str] = None,
+    fetcher_script: str | None = None,
     dry_run: bool = False,
-    logs_dir: Optional[str] = None,
+    logs_dir: str | None = None,
 ) -> int:
     """Canonical production execution wrapper (Stage 83)."""
     target_logs_dir = logs_dir or config.LOGS_DIR

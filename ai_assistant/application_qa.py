@@ -26,8 +26,6 @@ import re
 from typing import Any, Dict, List, Optional
 
 from .candidate_profile import CandidateProfile
-from .schema import Vacancy
-from .job_analyzer import DeepAnalysisResult
 from .hh_extractor import (
     ApplicationAnswer,
     ApplicationForm,
@@ -35,6 +33,8 @@ from .hh_extractor import (
     QuestionSource,
     QuestionType,
 )
+from .job_analyzer import DeepAnalysisResult
+from .schema import Vacancy
 
 
 class QuestionAnswerGenerator:
@@ -44,9 +44,9 @@ class QuestionAnswerGenerator:
         self,
         profile: CandidateProfile,
         resume_text: str,
-        deep: Optional[DeepAnalysisResult],
-        vacancy: Optional[Vacancy],
-        llm: Optional[Any] = None,
+        deep: DeepAnalysisResult | None,
+        vacancy: Vacancy | None,
+        llm: Any | None = None,
     ):
         self.profile = profile
         self.resume_text = resume_text or ""
@@ -56,7 +56,7 @@ class QuestionAnswerGenerator:
 
     # --- confirmed profile/resume lookups (truth-only) ---
 
-    def _confirmed(self, question: ApplicationQuestion) -> Optional[str]:
+    def _confirmed(self, question: ApplicationQuestion) -> str | None:
         label = (question.label or "").lower()
         if "имя" in label or "name" in label or "фио" in label or "фамилия" in label:
             m = re.search(r"(?:name|candidate|фио):\s*([A-Za-zА-Яа-яЁё]+(?:\s+[A-Za-zА-Яа-яЁё]+)+)", self.resume_text, re.IGNORECASE)
@@ -94,7 +94,7 @@ class QuestionAnswerGenerator:
 
     # --- option resolution (never fabricates) ---
 
-    def _resolve_option(self, question: ApplicationQuestion, candidate: Optional[str]) -> Optional[str]:
+    def _resolve_option(self, question: ApplicationQuestion, candidate: str | None) -> str | None:
         if not question.options:
             return None
         if not candidate:
@@ -189,7 +189,7 @@ class QuestionAnswerGenerator:
                     requires_review=True,
                     reason="CHECKBOX options not exposed - cannot resolve safely",
                 )
-            matched: List[str] = []
+            matched: list[str] = []
             if val:
                 val_l = val.lower()
                 for opt in question.options:
@@ -268,11 +268,11 @@ class QuestionAnswerGenerator:
 class ApplicationPackageValidator:
     """Validate a package's Q&A state. Read-only, never mutates, never writes."""
 
-    def validate(self, pkg: Any) -> Dict[str, Any]:
-        reasons: List[str] = []
-        form: Optional[ApplicationForm] = getattr(pkg, "form", None)
-        questions: List[ApplicationQuestion] = list(getattr(pkg, "questions", []) or [])
-        answers: List[ApplicationAnswer] = list(getattr(pkg, "answers", []) or [])
+    def validate(self, pkg: Any) -> dict[str, Any]:
+        reasons: list[str] = []
+        form: ApplicationForm | None = getattr(pkg, "form", None)
+        questions: list[ApplicationQuestion] = list(getattr(pkg, "questions", []) or [])
+        answers: list[ApplicationAnswer] = list(getattr(pkg, "answers", []) or [])
 
         # Fall back to questions embedded in form.
         if not questions and form is not None:
@@ -350,13 +350,13 @@ class ApplicationPackageValidator:
 
 
 def resolve_answers(
-    questions: List[ApplicationQuestion],
+    questions: list[ApplicationQuestion],
     profile: CandidateProfile,
     resume_text: str,
-    deep: Optional[DeepAnalysisResult],
-    vacancy: Optional[Vacancy],
-    llm: Optional[Any] = None,
-) -> List[ApplicationAnswer]:
+    deep: DeepAnalysisResult | None,
+    vacancy: Vacancy | None,
+    llm: Any | None = None,
+) -> list[ApplicationAnswer]:
     """Convenience: resolve all questions in a form to answers."""
     gen = QuestionAnswerGenerator(profile, resume_text, deep, vacancy, llm=llm)
     return [gen.generate(q) for q in questions]
@@ -367,9 +367,9 @@ def enrich_package_with_form(
     form: ApplicationForm,
     profile: CandidateProfile,
     resume_text: str,
-    deep: Optional[DeepAnalysisResult] = None,
-    vacancy: Optional[Vacancy] = None,
-    llm: Optional[Any] = None,
+    deep: DeepAnalysisResult | None = None,
+    vacancy: Vacancy | None = None,
+    llm: Any | None = None,
 ) -> Any:
     """Populate a package's Q&A fields from an extracted form.
 
@@ -393,11 +393,11 @@ def prepare_package_with_form(
     url: str,
     profile: CandidateProfile,
     resume_text: str,
-    deep: Optional[DeepAnalysisResult] = None,
-    vacancy: Optional[Vacancy] = None,
-    adapter: Optional[Any] = None,
-    canonical_id: Optional[str] = None,
-    llm: Optional[Any] = None,
+    deep: DeepAnalysisResult | None = None,
+    vacancy: Vacancy | None = None,
+    adapter: Any | None = None,
+    canonical_id: str | None = None,
+    llm: Any | None = None,
 ) -> Any:
     """Stage 17D integration: extraction -> resolution -> validation.
 
@@ -429,7 +429,7 @@ def prepare_package_with_form(
         return pkg
 
     meta = form.extraction_meta or {}
-    gate_reasons: List[str] = []
+    gate_reasons: list[str] = []
     if meta.get("captcha"):
         gate_reasons.append("CAPTCHA detected during extraction - manual required")
     if meta.get("cloudflare"):
@@ -440,7 +440,7 @@ def prepare_package_with_form(
     pkg = enrich_package_with_form(pkg, form, profile, resume_text, deep, vacancy, llm=llm)
 
     # Merge gate reasons with validator reasons (gate reasons first, dedup).
-    merged: List[str] = []
+    merged: list[str] = []
     for r in list(gate_reasons) + list(getattr(pkg, "review_reasons", []) or []):
         if r not in merged:
             merged.append(r)

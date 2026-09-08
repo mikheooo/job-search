@@ -12,15 +12,15 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 from . import config
-from .db import init_db, get_connection
 from .browser_executor import (
     BrowserAdapter,
+    FlowClassification,
+    FlowType,
     MockBrowserAdapter,
     PlaywrightBrowserAdapter,
-    FlowType,
-    FlowClassification,
     classify_apply_flow,
 )
+from .db import get_connection, init_db
 
 VERIFICATION_VERSION = "v1"
 
@@ -38,20 +38,20 @@ class SubmissionVerification(BaseModel):
     vacancy_stable_id: str
     submission_id: str
     verification_status: VerificationStatus
-    evidence: Dict[str, Any] = Field(default_factory=dict)
-    final_url: Optional[str] = None
-    page_title: Optional[str] = None
-    success_signal: Optional[str] = None
-    screenshot_path: Optional[str] = None
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    final_url: str | None = None
+    page_title: str | None = None
+    success_signal: str | None = None
+    screenshot_path: str | None = None
     verified_at: str
-    warnings: List[str] = Field(default_factory=list)
-    flow_type: Optional[FlowType] = None
-    source_url: Optional[str] = None
-    application_url: Optional[str] = None
-    application_domain: Optional[str] = None
-    redirect_chain: List[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    flow_type: FlowType | None = None
+    source_url: str | None = None
+    application_url: str | None = None
+    application_domain: str | None = None
+    redirect_chain: list[str] = Field(default_factory=list)
     is_external_application: bool = False
-    verification_strategy: Optional[str] = None
+    verification_strategy: str | None = None
     verification_version: str = VERIFICATION_VERSION
 
     model_config = {"extra": "forbid"}
@@ -144,7 +144,7 @@ def save_verification(verification: SubmissionVerification) -> None:
     conn.close()
 
 
-def get_verification(vacancy_stable_id: str, submission_id: str, verification_version: str | None = None) -> Optional[SubmissionVerification]:
+def get_verification(vacancy_stable_id: str, submission_id: str, verification_version: str | None = None) -> SubmissionVerification | None:
     """Get verification result from database."""
     init_db()
     conn = get_connection()
@@ -175,7 +175,7 @@ def get_verification(vacancy_stable_id: str, submission_id: str, verification_ve
         return None
 
 
-def list_verifications(limit: int = 50) -> List[SubmissionVerification]:
+def list_verifications(limit: int = 50) -> list[SubmissionVerification]:
     """List all verification results."""
     init_db()
     conn = get_connection()
@@ -204,7 +204,7 @@ def is_verified(vacancy_stable_id: str, submission_id: str, verification_version
     return ver is not None and ver.verification_status == VerificationStatus.VERIFIED
 
 
-def _detect_signals(content: str, title: str, url: str) -> Tuple[List[str], List[str], List[str]]:
+def _detect_signals(content: str, title: str, url: str) -> tuple[list[str], list[str], list[str]]:
     """Detect success, error, and blocked signals from page content."""
     content_lower = content.lower()
     title_lower = title.lower()
@@ -228,10 +228,10 @@ def verify_submission(
     Verify a submission by checking the application page for success/error/blocked signals.
     Does NOT re-submit the application - only reads the current page state.
     """
-    from .db import get_submission, get_vacancy_by_id
-    from .db import _row_to_vacancy
-    from .candidate_profile import load_candidate_profile
     import os
+
+    from .candidate_profile import load_candidate_profile
+    from .db import _row_to_vacancy, get_submission, get_vacancy_by_id
 
     init_db()
 
@@ -271,12 +271,12 @@ def verify_submission(
         else:
             use_adapter = MockBrowserAdapter()
 
-    warnings: List[str] = []
+    warnings: list[str] = []
     final_url = ""
     page_title = ""
     content = ""
     screenshot_path = None
-    evidence: Dict[str, Any] = {}
+    evidence: dict[str, Any] = {}
 
     try:
         # Open the vacancy URL to check current state

@@ -20,14 +20,18 @@ from typing import Any, Dict, List, Optional, Tuple
 from ai_assistant import config, db
 from ai_assistant.application_queue import QueueItem, save_queue_item
 from ai_assistant.application_review import (
+    REVIEW_VERSION,
     ApplicationReview,
     ReviewStatus,
-    save_application_review,
-    get_application_review,
     approve_review,
-    REVIEW_VERSION,
+    get_application_review,
+    save_application_review,
 )
-from ai_assistant.application_tracking import ApplicationStatus, get_application_status, set_application_status
+from ai_assistant.application_tracking import (
+    ApplicationStatus,
+    get_application_status,
+    set_application_status,
+)
 from ai_assistant.telegram_notifier import TelegramNotifier
 
 logger = logging.getLogger(__name__)
@@ -76,7 +80,7 @@ REVERSE_ACTION_CODE_MAP = {
     TelegramFeedbackAction.SKIP: "SKP",
 }
 
-REASON_CODE_MAP: Dict[str, FeedbackReason] = {
+REASON_CODE_MAP: dict[str, FeedbackReason] = {
     "ROL": FeedbackReason.ROLE,
     "SAL": FeedbackReason.SALARY,
     "COM": FeedbackReason.COMPANY,
@@ -99,7 +103,7 @@ REVERSE_REASON_CODE_MAP = {v: k for k, v in REASON_CODE_MAP.items()}
 def encode_callback_data(
     action: TelegramFeedbackAction,
     vacancy_stable_id: str,
-    reason: Optional[FeedbackReason | str] = None,
+    reason: FeedbackReason | str | None = None,
 ) -> str:
     """Encode action, stable_id, and optional reason into a compact string respecting Telegram's 64-byte callback limit."""
     code = REVERSE_ACTION_CODE_MAP.get(action, "INT")
@@ -121,21 +125,21 @@ def encode_callback_data(
 
 class DecodedCallback(tuple):
     """2-tuple (action, stable_id) with optional .reason attribute for seamless 2-tuple unpacking."""
-    def __new__(cls, action: Optional[TelegramFeedbackAction], stable_id: Optional[str], reason: Optional[FeedbackReason] = None):
+    def __new__(cls, action: TelegramFeedbackAction | None, stable_id: str | None, reason: FeedbackReason | None = None):
         inst = super().__new__(cls, (action, stable_id))
         inst._reason = reason
         return inst
     
     @property
-    def action(self) -> Optional[TelegramFeedbackAction]:
+    def action(self) -> TelegramFeedbackAction | None:
         return self[0]
         
     @property
-    def stable_id(self) -> Optional[str]:
+    def stable_id(self) -> str | None:
         return self[1]
 
     @property
-    def reason(self) -> Optional[FeedbackReason]:
+    def reason(self) -> FeedbackReason | None:
         return getattr(self, "_reason", None)
 
 
@@ -174,7 +178,7 @@ def decode_callback_data(callback_data: str) -> DecodedCallback:
     return DecodedCallback(action, target, None)
 
 
-def build_reason_inline_keyboard(action: TelegramFeedbackAction, vacancy_stable_id: str) -> List[List[Dict[str, str]]]:
+def build_reason_inline_keyboard(action: TelegramFeedbackAction, vacancy_stable_id: str) -> list[list[dict[str, str]]]:
     """Build optional compact 2-level reason keyboard for Telegram."""
     if action in (TelegramFeedbackAction.NOT_INTERESTED, TelegramFeedbackAction.SKIP):
         return [
@@ -211,7 +215,7 @@ _ANSWER_LIMIT = 200
 _MAX_ANSWERS_SHOWN = 5
 
 
-def load_package_data(vacancy_stable_id: str) -> Optional[Dict[str, Any]]:
+def load_package_data(vacancy_stable_id: str) -> dict[str, Any] | None:
     """Return decoded application package payload for a vacancy, or None if it was never prepared."""
     row = db.get_application_package(vacancy_stable_id)
     if not row:
@@ -228,7 +232,7 @@ def load_package_data(vacancy_stable_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def format_package_preview(package: Optional[Dict[str, Any]]) -> str:
+def format_package_preview(package: dict[str, Any] | None) -> str:
     """Render the cover letter and questionnaire answers for owner review.
 
     Plain text (no HTML) on purpose: cover letters contain arbitrary user/LLM text
@@ -241,7 +245,7 @@ def format_package_preview(package: Optional[Dict[str, Any]]) -> str:
         )
 
     cover = (package.get("cover_letter") or "").strip()
-    lines: List[str] = []
+    lines: list[str] = []
     lines.append("📄 Пакет отклика готов к проверке")
     if package.get("validation_status"):
         lines.append(f"Валидация: {package['validation_status']}")
@@ -283,7 +287,7 @@ def format_package_preview(package: Optional[Dict[str, Any]]) -> str:
     return text
 
 
-def build_approval_inline_keyboard(vacancy_stable_id: str) -> Dict[str, Any]:
+def build_approval_inline_keyboard(vacancy_stable_id: str) -> dict[str, Any]:
     """Inline keyboard shown under the package preview: explicit approve or skip."""
     return {
         "inline_keyboard": [
@@ -310,9 +314,9 @@ class TelegramFeedbackProcessor:
 
     def __init__(
         self,
-        allowed_user_id: Optional[str] = None,
-        allowed_chat_id: Optional[str] = None,
-        notifier: Optional[TelegramNotifier] = None,
+        allowed_user_id: str | None = None,
+        allowed_chat_id: str | None = None,
+        notifier: TelegramNotifier | None = None,
         require_delivered: bool = True,
     ):
         self.allowed_user_id = str(
@@ -339,7 +343,7 @@ class TelegramFeedbackProcessor:
             return False
         return uid_str == self.allowed_user_id
 
-    def process_callback_query(self, callback_query: Dict[str, Any]) -> Dict[str, Any]:
+    def process_callback_query(self, callback_query: dict[str, Any]) -> dict[str, Any]:
         """Process a single Telegram callback query."""
         cb_id = str(callback_query.get("id") or "").strip()
         user_info = callback_query.get("from") or {}
@@ -427,7 +431,7 @@ class TelegramFeedbackProcessor:
         cur_status = app_record.status.value if app_record else "DISCOVERED"
         new_status = cur_status
         ack_text = ""
-        failure: Optional[Dict[str, str]] = None
+        failure: dict[str, str] | None = None
 
         # 6. Action Execution State Machine
         reason_str = feedback_reason.value if feedback_reason else None

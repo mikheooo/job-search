@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-def _norm_list(values: Any) -> List[str]:
+def _norm_list(values: Any) -> list[str]:
     if values is None:
         return []
     if isinstance(values, str):
@@ -15,7 +15,7 @@ def _norm_list(values: Any) -> List[str]:
         if "," in values:
             return [v.strip() for v in values.split(",") if v.strip()]
         return [values.strip()] if values.strip() else []
-    result: List[str] = []
+    result: list[str] = []
     for v in values:
         s = str(v).strip()
         if s:
@@ -23,94 +23,94 @@ def _norm_list(values: Any) -> List[str]:
     return result
 
 
-def _norm_lower_list(values: Any) -> List[str]:
+def _norm_lower_list(values: Any) -> list[str]:
     return [v.lower() for v in _norm_list(values)]
 
 
 @dataclass
 class CandidateProfile:
     # --- Role & Targeting ---
-    target_roles: List[str] = field(default_factory=list)
-    desired_roles: List[str] = field(default_factory=list)
-    alternative_roles: List[str] = field(default_factory=list)
-    role_families: List[str] = field(default_factory=list)
+    target_roles: list[str] = field(default_factory=list)
+    desired_roles: list[str] = field(default_factory=list)
+    alternative_roles: list[str] = field(default_factory=list)
+    role_families: list[str] = field(default_factory=list)
 
     # --- Skills: Confirmed vs Transferable ---
-    core_skills: List[str] = field(default_factory=list)          # Confirmed / Direct demonstrated skills
-    secondary_skills: List[str] = field(default_factory=list)     # Related / Transferable skills
-    transferable_skills: List[str] = field(default_factory=list)  # Alias for secondary_skills
-    skills: List[str] = field(default_factory=list)               # Combined / Legacy skills
+    core_skills: list[str] = field(default_factory=list)          # Confirmed / Direct demonstrated skills
+    secondary_skills: list[str] = field(default_factory=list)     # Related / Transferable skills
+    transferable_skills: list[str] = field(default_factory=list)  # Alias for secondary_skills
+    skills: list[str] = field(default_factory=list)               # Combined / Legacy skills
 
     # --- Seniority & Experience ---
-    seniority_range: List[str] = field(default_factory=list)
-    preferred_seniority: List[str] = field(default_factory=list)
-    years_experience: Optional[int] = None
-    years_of_experience: Optional[int] = None
+    seniority_range: list[str] = field(default_factory=list)
+    preferred_seniority: list[str] = field(default_factory=list)
+    years_experience: int | None = None
+    years_of_experience: int | None = None
 
     # --- Location & Remote ---
     remote_required: bool = False
-    allowed_locations: List[str] = field(default_factory=list)
-    allowed_timezones: List[str] = field(default_factory=list)
-    location_constraints: List[str] = field(default_factory=list)
+    allowed_locations: list[str] = field(default_factory=list)
+    allowed_timezones: list[str] = field(default_factory=list)
+    location_constraints: list[str] = field(default_factory=list)
 
     # --- Stage 87: Profile Provenance, Skill Confidence & Domain Calibration ---
-    provenance: Dict[str, str] = field(default_factory=dict)
-    skill_confidence: Dict[str, str] = field(default_factory=dict)
-    role_priorities: Dict[str, str] = field(default_factory=dict)
-    role_family_seniority: Dict[str, List[str]] = field(default_factory=dict)
-    domain_years: Dict[str, float] = field(default_factory=dict)
-    role_specific_skills: Dict[str, Any] = field(default_factory=dict)
+    provenance: dict[str, str] = field(default_factory=dict)
+    skill_confidence: dict[str, str] = field(default_factory=dict)
+    role_priorities: dict[str, str] = field(default_factory=dict)
+    role_family_seniority: dict[str, list[str]] = field(default_factory=dict)
+    domain_years: dict[str, float] = field(default_factory=dict)
+    role_specific_skills: dict[str, Any] = field(default_factory=dict)
 
     # --- Other Preferences ---
-    languages: List[str] = field(default_factory=list)
-    employment_types: List[str] = field(default_factory=list)
-    employment_type: Optional[str] = None
-    minimum_salary: Optional[float] = None
-    salary_currency: Optional[str] = None
-    salary_preferences: Dict[str, Any] = field(default_factory=dict)
-    industries: List[str] = field(default_factory=list)
+    languages: list[str] = field(default_factory=list)
+    employment_types: list[str] = field(default_factory=list)
+    employment_type: str | None = None
+    minimum_salary: float | None = None
+    salary_currency: str | None = None
+    salary_preferences: dict[str, Any] = field(default_factory=dict)
+    industries: list[str] = field(default_factory=list)
 
     # --- Contact Info ---
-    name: Optional[str] = None
-    email: Optional[str] = None
-    phone_ru: Optional[str] = None
-    phone_th: Optional[str] = None
-    phone: Optional[str] = None
-    linkedin: Optional[str] = None
-    github: Optional[str] = None
-    portfolio: Optional[str] = None
+    name: str | None = None
+    email: str | None = None
+    phone_ru: str | None = None
+    phone_th: str | None = None
+    phone: str | None = None
+    linkedin: str | None = None
+    github: str | None = None
+    portfolio: str | None = None
 
     # --- Exclusions & Hard Gates ---
-    excluded_roles: List[str] = field(default_factory=list)
-    excluded_companies: List[str] = field(default_factory=list)
-    excluded_countries: List[str] = field(default_factory=list)
-    excluded_industries: List[str] = field(default_factory=list)
-    must_avoid_conditions: List[str] = field(default_factory=list)
+    excluded_roles: list[str] = field(default_factory=list)
+    excluded_companies: list[str] = field(default_factory=list)
+    excluded_countries: list[str] = field(default_factory=list)
+    excluded_industries: list[str] = field(default_factory=list)
+    must_avoid_conditions: list[str] = field(default_factory=list)
 
     # normalized lower-case caches (filled in __post_init__)
-    _target_roles_lc: List[str] = field(init=False, repr=False, default_factory=list)
-    _desired_roles_lc: List[str] = field(init=False, repr=False, default_factory=list)
-    _alternative_roles_lc: List[str] = field(init=False, repr=False, default_factory=list)
-    _role_families_lc: List[str] = field(init=False, repr=False, default_factory=list)
-    _core_skills_lc: List[str] = field(init=False, repr=False, default_factory=list)
-    _secondary_skills_lc: List[str] = field(init=False, repr=False, default_factory=list)
-    _transferable_skills_lc: List[str] = field(init=False, repr=False, default_factory=list)
-    _skills_lc: List[str] = field(init=False, repr=False, default_factory=list)
-    _seniority_lc: List[str] = field(init=False, repr=False, default_factory=list)
-    _seniority_range_lc: List[str] = field(init=False, repr=False, default_factory=list)
-    _allowed_locations_lc: List[str] = field(init=False, repr=False, default_factory=list)
-    _allowed_timezones_lc: List[str] = field(init=False, repr=False, default_factory=list)
-    _languages_lc: List[str] = field(init=False, repr=False, default_factory=list)
-    _employment_types_lc: List[str] = field(init=False, repr=False, default_factory=list)
-    _industries_lc: List[str] = field(init=False, repr=False, default_factory=list)
-    _excluded_roles_lc: List[str] = field(init=False, repr=False, default_factory=list)
-    _excluded_companies_lc: List[str] = field(init=False, repr=False, default_factory=list)
-    _excluded_countries_lc: List[str] = field(init=False, repr=False, default_factory=list)
-    _excluded_industries_lc: List[str] = field(init=False, repr=False, default_factory=list)
-    _must_avoid_conditions_lc: List[str] = field(init=False, repr=False, default_factory=list)
-    _skill_confidence_lc: Dict[str, str] = field(init=False, repr=False, default_factory=dict)
-    _role_priorities_lc: Dict[str, str] = field(init=False, repr=False, default_factory=dict)
-    _role_family_seniority_lc: Dict[str, List[str]] = field(init=False, repr=False, default_factory=dict)
+    _target_roles_lc: list[str] = field(init=False, repr=False, default_factory=list)
+    _desired_roles_lc: list[str] = field(init=False, repr=False, default_factory=list)
+    _alternative_roles_lc: list[str] = field(init=False, repr=False, default_factory=list)
+    _role_families_lc: list[str] = field(init=False, repr=False, default_factory=list)
+    _core_skills_lc: list[str] = field(init=False, repr=False, default_factory=list)
+    _secondary_skills_lc: list[str] = field(init=False, repr=False, default_factory=list)
+    _transferable_skills_lc: list[str] = field(init=False, repr=False, default_factory=list)
+    _skills_lc: list[str] = field(init=False, repr=False, default_factory=list)
+    _seniority_lc: list[str] = field(init=False, repr=False, default_factory=list)
+    _seniority_range_lc: list[str] = field(init=False, repr=False, default_factory=list)
+    _allowed_locations_lc: list[str] = field(init=False, repr=False, default_factory=list)
+    _allowed_timezones_lc: list[str] = field(init=False, repr=False, default_factory=list)
+    _languages_lc: list[str] = field(init=False, repr=False, default_factory=list)
+    _employment_types_lc: list[str] = field(init=False, repr=False, default_factory=list)
+    _industries_lc: list[str] = field(init=False, repr=False, default_factory=list)
+    _excluded_roles_lc: list[str] = field(init=False, repr=False, default_factory=list)
+    _excluded_companies_lc: list[str] = field(init=False, repr=False, default_factory=list)
+    _excluded_countries_lc: list[str] = field(init=False, repr=False, default_factory=list)
+    _excluded_industries_lc: list[str] = field(init=False, repr=False, default_factory=list)
+    _must_avoid_conditions_lc: list[str] = field(init=False, repr=False, default_factory=list)
+    _skill_confidence_lc: dict[str, str] = field(init=False, repr=False, default_factory=dict)
+    _role_priorities_lc: dict[str, str] = field(init=False, repr=False, default_factory=dict)
+    _role_family_seniority_lc: dict[str, list[str]] = field(init=False, repr=False, default_factory=dict)
 
     def __post_init__(self) -> None:
         # Cross-populate target_roles / desired_roles
@@ -233,7 +233,7 @@ class CandidateProfile:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "CandidateProfile":
+    def from_dict(cls, data: dict[str, Any]) -> "CandidateProfile":
         desired = data.get("desired_roles") or data.get("desiredRoles") or data.get("target_roles") or data.get("targetRoles") or []
         target = data.get("target_roles") or data.get("targetRoles") or desired
         alternative = data.get("alternative_roles") or data.get("alternativeRoles") or []
@@ -343,8 +343,8 @@ class CandidateProfile:
             raise ValueError(f"Profile file must contain JSON object, got {type(data)}")
         return cls.from_dict(data)
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "target_roles": self.target_roles,
             "desired_roles": self.desired_roles,
             "alternative_roles": self.alternative_roles,
@@ -405,7 +405,7 @@ DEFAULT_PROFILE_PATHS = [
 ]
 
 
-def load_candidate_profile(path: Optional[str | os.PathLike] = None) -> CandidateProfile:
+def load_candidate_profile(path: str | os.PathLike | None = None) -> CandidateProfile:
     """Load profile from explicit path, env var, or default locations.
     Falls back to a sensible default profile if nothing found.
     """

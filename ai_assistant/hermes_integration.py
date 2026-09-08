@@ -6,23 +6,23 @@ external Hermes runtime components (fetcher script and Telegram platform adapter
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import sys
-import hashlib
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 from integrations.hermes.telegram_adapter_hook import (
-    HERMES_CALLBACK_HOOK_MARKER,
     HERMES_CALLBACK_HOOK_CODE,
+    HERMES_CALLBACK_HOOK_MARKER,
 )
 
 DEFAULT_HERMES_APP_DATA = Path(r"C:\Users\Misha\AppData\Local\hermes")
 CANONICAL_ROOT = Path(r"C:\Users\Misha\Documents\job-search")
 
 
-def get_hermes_paths(base_dir: Optional[Path] = None) -> Dict[str, Path]:
+def get_hermes_paths(base_dir: Path | None = None) -> dict[str, Path]:
     """Resolve active Hermes filesystem paths."""
     base = base_dir or Path(os.environ.get("HERMES_ROOT", str(DEFAULT_HERMES_APP_DATA)))
     return {
@@ -33,7 +33,7 @@ def get_hermes_paths(base_dir: Optional[Path] = None) -> Dict[str, Path]:
     }
 
 
-def compute_file_sha256(path: Path) -> Optional[str]:
+def compute_file_sha256(path: Path) -> str | None:
     """Compute SHA256 hex digest of a file if it exists."""
     if not path.exists() or not path.is_file():
         return None
@@ -42,7 +42,7 @@ def compute_file_sha256(path: Path) -> Optional[str]:
     return h.hexdigest().upper()
 
 
-def get_hermes_integration_status(base_dir: Optional[Path] = None) -> Dict[str, Any]:
+def get_hermes_integration_status(base_dir: Path | None = None) -> dict[str, Any]:
     """Audit external Hermes runtime integration for health, capabilities, and drift."""
     paths = get_hermes_paths(base_dir=base_dir)
 
@@ -128,7 +128,7 @@ def get_hermes_integration_status(base_dir: Optional[Path] = None) -> Dict[str, 
     }
 
 
-def sync_hermes_integration(base_dir: Optional[Path] = None, dry_run: bool = False) -> Dict[str, Any]:
+def sync_hermes_integration(base_dir: Path | None = None, dry_run: bool = False) -> dict[str, Any]:
     """Idempotently sync canonical integration files to Hermes runtime locations."""
     paths = get_hermes_paths(base_dir=base_dir)
     status_before = get_hermes_integration_status(base_dir=base_dir)

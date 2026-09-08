@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from typing import List, Optional
 from datetime import datetime, timezone
+from typing import List, Optional
 
 from ..schema import Vacancy
 
@@ -10,7 +10,7 @@ class RemoteOkAdapter:
     source = "remoteok"
     api_url = "https://remoteok.com/api"
 
-    def fetch_vacancies(self) -> List[Vacancy]:
+    def fetch_vacancies(self) -> list[Vacancy]:
         import requests
 
         response = requests.get(self.api_url, timeout=20)
@@ -18,7 +18,7 @@ class RemoteOkAdapter:
         payload = response.json()
         items = payload[1:] if payload and isinstance(payload[0], dict) and "legal" in payload[0] else payload
 
-        results: List[Vacancy] = []
+        results: list[Vacancy] = []
         for item in items:
             source_job_id = str(item.get("id") or item.get("slug") or item.get("url"))
             job_url = item.get("url") or item.get("apply_url") or f"https://remoteok.com/remote-jobs/{source_job_id}"
@@ -56,7 +56,7 @@ class RemoteOkAdapter:
         return results
 
     @staticmethod
-    def _parse_date(value: Optional[str]) -> Optional[datetime]:
+    def _parse_date(value: str | None) -> datetime | None:
         if not value:
             return None
         if isinstance(value, (int, float)):
@@ -73,7 +73,7 @@ class RemoteOkAdapter:
         return None
 
     @staticmethod
-    def _infer_employment(tags: List[str]) -> Optional[str]:
+    def _infer_employment(tags: list[str]) -> str | None:
         joined = ", ".join(tags).lower()
         if "full-time" in joined or "full time" in joined:
             return "Full Time"

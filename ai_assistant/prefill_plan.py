@@ -22,10 +22,10 @@ from .hh_extractor import ApplicationForm, ApplicationQuestion, QuestionType
 class PrefillTarget(BaseModel):
     tag: str = ""
     type: str = ""
-    name: Optional[str] = None
-    id: Optional[str] = None
-    dataQa: Optional[str] = None
-    label: Optional[str] = None
+    name: str | None = None
+    id: str | None = None
+    dataQa: str | None = None
+    label: str | None = None
     visible: bool = True
     disabled: bool = False
     readOnly: bool = False
@@ -59,21 +59,21 @@ class PrefillPlan(BaseModel):
     generated_at: str = ""
     application_type: str = "unknown"
     status: str = "NEEDS_REVIEW"  # VALID | NEEDS_REVIEW
-    operations: List[PrefillOperation] = Field(default_factory=list)
-    unresolved: List[UnresolvedField] = Field(default_factory=list)
-    warnings: List[str] = Field(default_factory=list)
+    operations: list[PrefillOperation] = Field(default_factory=list)
+    unresolved: list[UnresolvedField] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
 
-def _stable_sort_key(op: PrefillOperation) -> Tuple[str, str]:
+def _stable_sort_key(op: PrefillOperation) -> tuple[str, str]:
     return (op.question_id, op.target.name or "")
 
 
 def build_prefill_plan(
     package: Any,
     form: ApplicationForm,
-    snapshot: Dict[str, Any],
+    snapshot: dict[str, Any],
 ) -> PrefillPlan:
     """Deterministic read-only plan: validated answers -> real controls.
 
@@ -94,17 +94,17 @@ def build_prefill_plan(
     )
 
     questions_by_id = {q.id: q for q in (form.questions or [])}
-    controls: List[Dict[str, Any]] = list(snapshot.get("controls") or [])
+    controls: list[dict[str, Any]] = list(snapshot.get("controls") or [])
 
     # Index controls by name for fast lookup (deterministic order preserved).
-    controls_by_name: Dict[str, List[Dict[str, Any]]] = {}
+    controls_by_name: dict[str, list[dict[str, Any]]] = {}
     for c in controls:
         name = c.get("name") or ""
         if name:
             controls_by_name.setdefault(name, []).append(c)
 
     # Only validated answers (requires_review is False, answer present).
-    answers_all: List[Any] = list(getattr(package, "answers", []) or [])
+    answers_all: list[Any] = list(getattr(package, "answers", []) or [])
     validated = [a for a in answers_all
                  if not getattr(a, "requires_review", True) and getattr(a, "answer", None)]
 

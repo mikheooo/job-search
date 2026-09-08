@@ -9,29 +9,39 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from . import config
-from .db import get_connection, init_db
-from .application_tracking import ApplicationStatus, get_application_status, list_applications, get_application_history
-from .application_queue import generate_queue, get_queue_item, QUEUE_VERSION
-from .application_review import get_application_review, ReviewStatus
-from .browser_executor import get_browser_session, BrowserStatus
+from .application_queue import QUEUE_VERSION, generate_queue, get_queue_item
+from .application_review import ReviewStatus, get_application_review
+from .application_tracking import (
+    ApplicationStatus,
+    get_application_history,
+    get_application_status,
+    list_applications,
+)
+from .browser_executor import BrowserStatus, get_browser_session
+from .db import (
+    _row_to_vacancy,
+    get_all_submissions,
+    get_application_package,
+    get_connection,
+    get_deep_analysis,
+    get_submission,
+    get_verification,
+    init_db,
+    list_vacancies,
+    list_verifications,
+)
 from .vacancy_identity import (
-    resolve_vacancy_identity,
+    CanonicalVacancy,
+    IdentityMatch,
+    MatchType,
+    get_aliases_for_canonical,
+    get_all_canonical_vacancies,
     get_canonical_by_id,
     get_canonical_by_normalized_url,
-    get_all_canonical_vacancies,
-    get_aliases_for_canonical,
-    normalize_url,
     normalize_company,
     normalize_title,
-    MatchType,
-    IdentityMatch,
-    CanonicalVacancy,
-)
-from .db import (
-    list_vacancies, get_deep_analysis, get_application_package,
-    get_submission, get_all_submissions,
-    get_verification, list_verifications,
-    _row_to_vacancy,
+    normalize_url,
+    resolve_vacancy_identity,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,12 +63,12 @@ class QueueSummary:
     canonical_id: str
     rank: int
     priority_score: int
-    match_score: Optional[float]
-    deep_score: Optional[float]
+    match_score: float | None
+    deep_score: float | None
     company: str
     title: str
     status: str
-    warnings: List[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     alias_count: int = 1
 
 
@@ -73,11 +83,11 @@ class ActionItem:
     action: ActionType
     reason: str
     priority: int = 0
-    match_score: Optional[float] = None
-    deep_score: Optional[float] = None
+    match_score: float | None = None
+    deep_score: float | None = None
 
 
-def _extract_verification_status(ver: Any) -> Optional[str]:
+def _extract_verification_status(ver: Any) -> str | None:
     if ver is None:
         return None
     if isinstance(ver, (tuple, list)):
@@ -90,7 +100,7 @@ def _extract_verification_status(ver: Any) -> Optional[str]:
     return str(ver)
 
 
-def _extract_verification_vacancy_id(ver: Any) -> Optional[str]:
+def _extract_verification_vacancy_id(ver: Any) -> str | None:
     if ver is None:
         return None
     if isinstance(ver, (tuple, list)):
@@ -133,15 +143,15 @@ class ApplicationDashboard:
     average_deep: float = 0.0
     average_priority: float = 0.0
     # Action items
-    action_items: List[ActionItem] = field(default_factory=list)
+    action_items: list[ActionItem] = field(default_factory=list)
 
 
-def _get_all_tracking() -> List[Any]:
+def _get_all_tracking() -> list[Any]:
     """Get all application tracking records."""
     return list_applications(limit=10000)
 
 
-def _get_all_queue_items() -> List[Any]:
+def _get_all_queue_items() -> list[Any]:
     """Get all queue items with summary data."""
     items = generate_queue(top_n=1000, status_filter="READY_TO_APPLY")
     summaries = []
@@ -165,13 +175,13 @@ def _get_all_queue_items() -> List[Any]:
     return summaries
 
 
-def _get_all_canonical_groups() -> Dict[str, List[Tuple[Any, str]]]:
+def _get_all_canonical_groups() -> dict[str, list[tuple[Any, str]]]:
     """
     Get all tracking records grouped by canonical_id.
     Returns dict: canonical_id -> List[(tracking_record, vacancy_stable_id)]
     """
     all_tracking = _get_all_tracking()
-    canonical_groups: Dict[str, List[Tuple[Any, str]]] = {}
+    canonical_groups: dict[str, list[tuple[Any, str]]] = {}
     
     for track in all_tracking:
         # Resolve canonical identity for this vacancy
@@ -188,8 +198,8 @@ def _get_all_canonical_groups() -> Dict[str, List[Tuple[Any, str]]]:
             canonical_id = row[0]
         else:
             # Resolve canonical identity
+            from .db import _row_to_vacancy, get_vacancy_by_id
             from .vacancy_identity import resolve_vacancy_identity
-            from .db import get_vacancy_by_id, _row_to_vacancy
             
             vac_row = get_vacancy_by_id(vacancy_stable_id)
             if vac_row:
@@ -206,7 +216,7 @@ def _get_all_canonical_groups() -> Dict[str, List[Tuple[Any, str]]]:
     return canonical_groups
 
 
-def _get_canonical_status(canonical_id: str, aliases: List[Tuple[Any, str]]) -> str:
+def _get_canonical_status(canonical_id: str, aliases: list[tuple[Any, str]]) -> str:
     """
     Determine the effective lifecycle status for a canonical vacancy.
     Priority: OFFER > INTERVIEW > APPLIED > VERIFIED > SUBMITTED > APPROVED > PENDING_REVIEW > READY_TO_APPLY > ANALYZED > DISCOVERED > REJECTED > WITHDRAWN
@@ -246,7 +256,7 @@ def _get_canonical_alias_count(canonical_id: str) -> int:
     return len(aliases)
 
 
-def _get_canonical_representative(canonical_id: str, aliases: List[Tuple[Any, str]]) -> Tuple[Any, str]:
+def _get_canonical_representative(canonical_id: str, aliases: list[tuple[Any, str]]) -> tuple[Any, str]:
     """
     Select representative vacancy for a canonical group.
     Priority: 1. READY_TO_APPLY, 2. highest priority_score, 2. highest deep_score, 3. highest match_score, 4. stable_id alphabetical
@@ -292,9 +302,9 @@ def build_dashboard() -> ApplicationDashboard:
     # First, we need to get canonical vacancies and their aliases to determine match types
     
     all_canonical = get_all_canonical_vacancies()
-    canonical_alias_counts: Dict[str, int] = {}
-    canonical_exact_alias_counts: Dict[str, int] = {}
-    canonical_probable_alias_counts: Dict[str, int] = {}
+    canonical_alias_counts: dict[str, int] = {}
+    canonical_exact_alias_counts: dict[str, int] = {}
+    canonical_probable_alias_counts: dict[str, int] = {}
     
     for canon in all_canonical:
         aliases = get_aliases_for_canonical(canon.canonical_id)
@@ -377,13 +387,13 @@ def build_dashboard() -> ApplicationDashboard:
     return dashboard
 
 
-def _build_canonical_action_items(canonical_groups: Dict[str, List[Tuple[Any, str]]]) -> List[ActionItem]:
+def _build_canonical_action_items(canonical_groups: dict[str, list[tuple[Any, str]]]) -> list[ActionItem]:
     """Build action items at canonical level."""
     actions = []
     
     # Map verifications by vacancy_stable_id
     all_verifications = list_verifications(limit=10000)
-    ver_by_vid: Dict[str, str] = {}
+    ver_by_vid: dict[str, str] = {}
     for ver in all_verifications:
         ver_vid = _extract_verification_vacancy_id(ver)
         ver_status = _extract_verification_status(ver)
@@ -393,7 +403,7 @@ def _build_canonical_action_items(canonical_groups: Dict[str, List[Tuple[Any, st
     # Map queue items by canonical_id and vacancy_stable_id
     queue_items = _get_all_queue_items()
     queue_by_sid = {q.vacancy_stable_id: q for q in queue_items}
-    queue_by_canonical: Dict[str, Any] = {}
+    queue_by_canonical: dict[str, Any] = {}
     for q in queue_items:
         canonical_id = q.canonical_id
         if canonical_id not in queue_by_canonical or q.priority_score > queue_by_canonical[canonical_id].priority_score:
@@ -468,8 +478,8 @@ def _build_canonical_action_items(canonical_groups: Dict[str, List[Tuple[Any, st
 def _determine_canonical_action(
     canonical_id: str,
     tracking_status: str,
-    verification_status: Optional[str],
-    aliases: List[Tuple[Any, str]],
+    verification_status: str | None,
+    aliases: list[tuple[Any, str]],
 ) -> ActionType:
     """Determine required action for a canonical vacancy based on its state."""
     
@@ -548,7 +558,7 @@ def _determine_canonical_action(
     return ActionType.NO_ACTION
 
 
-def _action_reason(action: ActionType, tracking_status: str, verification_status: Optional[str]) -> str:
+def _action_reason(action: ActionType, tracking_status: str, verification_status: str | None) -> str:
     """Get human-readable reason for action."""
     reasons = {
         ActionType.PREPARE_BROWSER: f"READY_TO_APPLY but browser not prepared",
@@ -562,7 +572,7 @@ def _action_reason(action: ActionType, tracking_status: str, verification_status
     return reasons.get(action, "")
 
 
-def get_dashboard_show(vacancy_stable_id: str) -> Optional[Dict[str, Any]]:
+def get_dashboard_show(vacancy_stable_id: str) -> dict[str, Any] | None:
     """Get detailed view for a single vacancy (canonical-aware)."""
     init_db()
     
@@ -772,7 +782,7 @@ def get_dashboard_show(vacancy_stable_id: str) -> Optional[Dict[str, Any]]:
     return detail
 
 
-def get_dashboard_history(limit: int = 50) -> List[Dict[str, Any]]:
+def get_dashboard_history(limit: int = 50) -> list[dict[str, Any]]:
     """Get recent lifecycle events across all vacancies."""
     init_db()
     conn = get_connection()
@@ -798,12 +808,12 @@ def get_dashboard_history(limit: int = 50) -> List[Dict[str, Any]]:
     return events
 
 
-def get_dashboard_queue() -> List[QueueSummary]:
+def get_dashboard_queue() -> list[QueueSummary]:
     """Get queue summary for dashboard."""
     return _get_all_queue_items()
 
 
-def get_dashboard_actions_only() -> List[ActionItem]:
+def get_dashboard_actions_only() -> list[ActionItem]:
     """Get only action items from dashboard."""
     dashboard = build_dashboard()
     return dashboard.action_items
@@ -811,10 +821,10 @@ def get_dashboard_actions_only() -> List[ActionItem]:
 
 # Legacy functions for backward compatibility
 def _build_action_items(
-    all_tracking: List[Any],
-    queue_items: List[QueueSummary],
-    all_verifications: List[Any]
-) -> List[ActionItem]:
+    all_tracking: list[Any],
+    queue_items: list[QueueSummary],
+    all_verifications: list[Any]
+) -> list[ActionItem]:
     """Legacy function for backward compatibility - builds action items at individual vacancy level."""
     actions = []
     
@@ -874,8 +884,8 @@ def _build_action_items(
 def _determine_action(
     vacancy_stable_id: str,
     tracking_status: str,
-    verification_status: Optional[str],
-    queue_item: Optional[QueueSummary],
+    verification_status: str | None,
+    queue_item: QueueSummary | None,
     track: Any
 ) -> ActionType:
     """Legacy function for backward compatibility - determines action for a single vacancy."""

@@ -3,12 +3,13 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional, Dict, Any, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
 from . import config
 from .db import get_connection, init_db
+
 
 # Keep consistent with spec order
 class ApplicationStatus(str, Enum):
@@ -25,7 +26,7 @@ class ApplicationStatus(str, Enum):
     WITHDRAWN = "WITHDRAWN"
 
 # Allowed transitions per spec
-_ALLOWED: Dict[ApplicationStatus, List[ApplicationStatus]] = {
+_ALLOWED: dict[ApplicationStatus, list[ApplicationStatus]] = {
     ApplicationStatus.DISCOVERED: [ApplicationStatus.ANALYZED],
     ApplicationStatus.ANALYZED: [ApplicationStatus.READY_TO_APPLY],
     ApplicationStatus.READY_TO_APPLY: [ApplicationStatus.SUBMITTED],
@@ -58,27 +59,27 @@ def _now_iso() -> str:
 class ApplicationRecord(BaseModel):
     vacancy_stable_id: str
     status: ApplicationStatus
-    company: Optional[str] = None
-    title: Optional[str] = None
-    source: Optional[str] = None
-    vacancy_url: Optional[str] = None
-    match_score: Optional[float] = None
-    deep_score: Optional[float] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-    applied_at: Optional[str] = None
-    last_status_change_at: Optional[str] = None
-    notes: Optional[str] = None
+    company: str | None = None
+    title: str | None = None
+    source: str | None = None
+    vacancy_url: str | None = None
+    match_score: float | None = None
+    deep_score: float | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    applied_at: str | None = None
+    last_status_change_at: str | None = None
+    notes: str | None = None
 
     model_config = {"use_enum_values": False}
 
 class HistoryRecord(BaseModel):
     id: int
     vacancy_stable_id: str
-    old_status: Optional[str]
+    old_status: str | None
     new_status: str
     changed_at: str
-    note: Optional[str] = None
+    note: str | None = None
 
 def _is_valid_transition(old: ApplicationStatus, new: ApplicationStatus) -> bool:
     if old == new:
@@ -89,7 +90,7 @@ def _is_valid_transition(old: ApplicationStatus, new: ApplicationStatus) -> bool
     allowed = _ALLOWED.get(old, [])
     return new in allowed
 
-def _row_to_record(row: Tuple) -> ApplicationRecord:
+def _row_to_record(row: tuple) -> ApplicationRecord:
     # row order matches table columns
     return ApplicationRecord(
         vacancy_stable_id=row[0],
@@ -107,7 +108,7 @@ def _row_to_record(row: Tuple) -> ApplicationRecord:
         notes=row[12],
     )
 
-def get_application_status(vacancy_stable_id: str) -> Optional[ApplicationRecord]:
+def get_application_status(vacancy_stable_id: str) -> ApplicationRecord | None:
     init_db()
     conn = get_connection()
     cur = conn.cursor()
@@ -121,13 +122,13 @@ def get_application_status(vacancy_stable_id: str) -> Optional[ApplicationRecord
 def set_application_status(
     vacancy_stable_id: str,
     status: ApplicationStatus | str,
-    company: Optional[str] = None,
-    title: Optional[str] = None,
-    source: Optional[str] = None,
-    vacancy_url: Optional[str] = None,
-    match_score: Optional[float] = None,
-    deep_score: Optional[float] = None,
-    notes: Optional[str] = None,
+    company: str | None = None,
+    title: str | None = None,
+    source: str | None = None,
+    vacancy_url: str | None = None,
+    match_score: float | None = None,
+    deep_score: float | None = None,
+    notes: str | None = None,
     # allow passing vacancy object like dict? we handle caller
 ) -> ApplicationRecord:
     # Direct set without validation (for sync). Creates or updates.
@@ -209,13 +210,13 @@ def set_application_status(
 def transition_application(
     vacancy_stable_id: str,
     new_status: ApplicationStatus | str,
-    note: Optional[str] = None,
-    company: Optional[str] = None,
-    title: Optional[str] = None,
-    source: Optional[str] = None,
-    vacancy_url: Optional[str] = None,
-    match_score: Optional[float] = None,
-    deep_score: Optional[float] = None,
+    note: str | None = None,
+    company: str | None = None,
+    title: str | None = None,
+    source: str | None = None,
+    vacancy_url: str | None = None,
+    match_score: float | None = None,
+    deep_score: float | None = None,
 ) -> ApplicationRecord:
     if isinstance(new_status, str):
         try:
@@ -275,7 +276,7 @@ def transition_application(
 def verify_and_apply(
     vacancy_stable_id: str,
     verification_status: str,
-    note: Optional[str] = None,
+    note: str | None = None,
 ) -> ApplicationRecord:
     """
     Transition based on verification result:
@@ -308,7 +309,7 @@ def verify_and_apply(
         raise ValueError(f"Unknown verification status: {verification_status}")
 
 
-def list_applications(status: Optional[str | ApplicationStatus] = None, limit: int = 100, order_by: str = "updated_at") -> List[ApplicationRecord]:
+def list_applications(status: str | ApplicationStatus | None = None, limit: int = 100, order_by: str = "updated_at") -> list[ApplicationRecord]:
     init_db()
     conn = get_connection()
     cur = conn.cursor()
@@ -331,7 +332,7 @@ def list_applications(status: Optional[str | ApplicationStatus] = None, limit: i
     conn.close()
     return [_row_to_record(r) for r in rows]
 
-def get_application_history(vacancy_stable_id: str) -> List[HistoryRecord]:
+def get_application_history(vacancy_stable_id: str) -> list[HistoryRecord]:
     init_db()
     conn = get_connection()
     cur = conn.cursor()
@@ -343,7 +344,7 @@ def get_application_history(vacancy_stable_id: str) -> List[HistoryRecord]:
         res.append(HistoryRecord(id=r[0], vacancy_stable_id=r[1], old_status=r[2], new_status=r[3], changed_at=r[4], note=r[5]))
     return res
 
-def sync_application_tracking(profile_path: Optional[str] = None) -> Dict[str, int]:
+def sync_application_tracking(profile_path: str | None = None) -> dict[str, int]:
     """
     Sync tracking with current pipeline data.
     - new vacancies with matcher APPLY/REVIEW -> DISCOVERED
@@ -353,9 +354,9 @@ def sync_application_tracking(profile_path: Optional[str] = None) -> Dict[str, i
     Returns {Created, Updated, Unchanged}
     """
     from .candidate_profile import load_candidate_profile
-    from .matcher import JobMatcher
-    from .db import list_vacancies, get_deep_analysis, get_application_package
     from .config import BATCH_LIMIT, CANDIDATE_PROFILE_FILE
+    from .db import get_application_package, get_deep_analysis, list_vacancies
+    from .matcher import JobMatcher
 
     init_db()
     # load profile

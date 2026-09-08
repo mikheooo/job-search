@@ -5,8 +5,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
+from .remote_filter import classify_work_format, is_strictly_remote
 from .schema import Vacancy
-from .remote_filter import is_strictly_remote, classify_work_format
 
 try:
     from .candidate_profile import CandidateProfile
@@ -69,9 +69,9 @@ class HardRequirementStatus(str, Enum):
 class DimensionResult:
     score: float
     max_score: float
-    evidence: List[str] = field(default_factory=list)
+    evidence: list[str] = field(default_factory=list)
     confidence: str = "HIGH"  # HIGH, MEDIUM, LOW
-    gaps: List[str] = field(default_factory=list)
+    gaps: list[str] = field(default_factory=list)
 
 
 class JobProfile:
@@ -82,9 +82,9 @@ class JobProfile:
         skills: Sequence[str] = (),
         experience: Sequence[str] = (),
         seniority: Sequence[str] = (),
-        salary_min: Optional[float] = None,
-        salary_max: Optional[float] = None,
-        salary_currency: Optional[str] = None,
+        salary_min: float | None = None,
+        salary_max: float | None = None,
+        salary_currency: str | None = None,
         employment_types: Sequence[str] = (),
         countries: Sequence[str] = (),
         timezones: Sequence[str] = (),
@@ -114,7 +114,7 @@ class JobProfile:
         for k, v in kwargs.items():
             setattr(self, k, v)
 
-    def missing_profile_fields(self) -> List[str]:
+    def missing_profile_fields(self) -> list[str]:
         missing = []
         if not self.desired_roles:
             missing.append("desired_roles")
@@ -130,17 +130,17 @@ class MatchResult:
         self,
         score: int,
         decision: str,
-        reasons: List[str],
-        strengths: List[str],
-        gaps: List[str],
-        decision_class: Optional[str] = None,
+        reasons: list[str],
+        strengths: list[str],
+        gaps: list[str],
+        decision_class: str | None = None,
         eligibility: str = "ELIGIBLE",
         role_family: str = "OTHER",
         role_priority: str = "P1",
-        dimensions: Optional[Dict[str, Any]] = None,
+        dimensions: dict[str, Any] | None = None,
         preference_adjustment: float = 0.0,
-        ranking_score: Optional[int] = None,
-        preference_reasons: Optional[List[str]] = None,
+        ranking_score: int | None = None,
+        preference_reasons: list[str] | None = None,
     ) -> None:
         self.score = int(score)
         self.decision = str(decision)
@@ -156,7 +156,7 @@ class MatchResult:
         self.ranking_score = ranking_score if ranking_score is not None else int(max(0, min(100, round(self.score + self.preference_adjustment))))
         self.preference_reasons = preference_reasons or []
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         d = {
             "score": self.score,
             "decision": self.decision,
@@ -180,7 +180,7 @@ class MatchResult:
 # PROFILE COERCION LAYER
 # =============================================================================
 
-def _coerce_profile(profile: Any) -> Dict[str, Any]:
+def _coerce_profile(profile: Any) -> dict[str, Any]:
     """Normalize any profile (CandidateProfile, JobProfile, or Dict) to unified dict."""
     if CandidateProfile is not None and isinstance(profile, CandidateProfile):
         return {
@@ -222,60 +222,60 @@ def _coerce_profile(profile: Any) -> Dict[str, Any]:
     desired = [str(x).lower() for x in getattr(profile, "desired_roles", []) or []]
     alt = []
     if hasattr(profile, "alternative_roles"):
-        alt = [str(x).lower() for x in getattr(profile, "alternative_roles") or []]
-    elif hasattr(profile, "extra") and isinstance(getattr(profile, "extra"), dict):
+        alt = [str(x).lower() for x in profile.alternative_roles or []]
+    elif hasattr(profile, "extra") and isinstance(profile.extra, dict):
         alt = [str(x).lower() for x in profile.extra.get("alternative_roles", []) or profile.extra.get("alternativeRoles", [])]
 
     skills = [str(x).lower() for x in getattr(profile, "skills", []) or []]
     core_sk = []
     if hasattr(profile, "core_skills"):
-        core_sk = [str(x).lower() for x in getattr(profile, "core_skills") or []]
-    elif hasattr(profile, "extra") and isinstance(getattr(profile, "extra"), dict):
+        core_sk = [str(x).lower() for x in profile.core_skills or []]
+    elif hasattr(profile, "extra") and isinstance(profile.extra, dict):
         core_sk = [str(x).lower() for x in profile.extra.get("core_skills", []) or []]
     if not core_sk:
         core_sk = list(skills)
 
     sec_sk = []
     if hasattr(profile, "secondary_skills"):
-        sec_sk = [str(x).lower() for x in getattr(profile, "secondary_skills") or []]
+        sec_sk = [str(x).lower() for x in profile.secondary_skills or []]
     elif hasattr(profile, "transferable_skills"):
-        sec_sk = [str(x).lower() for x in getattr(profile, "transferable_skills") or []]
-    elif hasattr(profile, "extra") and isinstance(getattr(profile, "extra"), dict):
+        sec_sk = [str(x).lower() for x in profile.transferable_skills or []]
+    elif hasattr(profile, "extra") and isinstance(profile.extra, dict):
         sec_sk = [str(x).lower() for x in profile.extra.get("secondary_skills", []) or profile.extra.get("transferable_skills", []) or []]
 
-    seniority: List[str] = []
+    seniority: list[str] = []
     if hasattr(profile, "preferred_seniority"):
-        seniority = [str(x).lower() for x in getattr(profile, "preferred_seniority") or []]
-    elif hasattr(profile, "seniority") and getattr(profile, "seniority"):
-        seniority = [str(x).lower() for x in getattr(profile, "seniority") or []]
-    elif hasattr(profile, "experience") and getattr(profile, "experience"):
-        seniority = [str(x).lower() for x in getattr(profile, "experience") or []]
+        seniority = [str(x).lower() for x in profile.preferred_seniority or []]
+    elif hasattr(profile, "seniority") and profile.seniority:
+        seniority = [str(x).lower() for x in profile.seniority or []]
+    elif hasattr(profile, "experience") and profile.experience:
+        seniority = [str(x).lower() for x in profile.experience or []]
 
     remote_required = False
     if hasattr(profile, "remote_required"):
-        remote_required = bool(getattr(profile, "remote_required"))
-    elif hasattr(profile, "extra") and isinstance(getattr(profile, "extra"), dict):
+        remote_required = bool(profile.remote_required)
+    elif hasattr(profile, "extra") and isinstance(profile.extra, dict):
         remote_required = bool(profile.extra.get("remote_required") or profile.extra.get("remoteRequired"))
 
-    allowed_locs: List[str] = []
+    allowed_locs: list[str] = []
     if hasattr(profile, "allowed_locations"):
-        allowed_locs = [str(x).lower() for x in getattr(profile, "allowed_locations") or []]
+        allowed_locs = [str(x).lower() for x in profile.allowed_locations or []]
     elif hasattr(profile, "countries"):
-        allowed_locs = [str(x).lower() for x in getattr(profile, "countries") or []]
+        allowed_locs = [str(x).lower() for x in profile.countries or []]
 
-    allowed_tz: List[str] = []
+    allowed_tz: list[str] = []
     if hasattr(profile, "allowed_timezones"):
-        allowed_tz = [str(x).lower() for x in getattr(profile, "allowed_timezones") or []]
+        allowed_tz = [str(x).lower() for x in profile.allowed_timezones or []]
     elif hasattr(profile, "timezones"):
-        allowed_tz = [str(x).lower() for x in getattr(profile, "timezones") or []]
+        allowed_tz = [str(x).lower() for x in profile.timezones or []]
 
-    langs: List[str] = []
+    langs: list[str] = []
     if hasattr(profile, "languages"):
-        langs = [str(x).lower() for x in getattr(profile, "languages") or []]
+        langs = [str(x).lower() for x in profile.languages or []]
 
-    emp: List[str] = []
+    emp: list[str] = []
     if hasattr(profile, "employment_types"):
-        emp = [str(x).lower() for x in getattr(profile, "employment_types") or []]
+        emp = [str(x).lower() for x in profile.employment_types or []]
 
     min_sal = getattr(profile, "minimum_salary", None)
     if min_sal is None:
@@ -302,9 +302,9 @@ def _coerce_profile(profile: Any) -> Dict[str, Any]:
         except Exception:
             yrs = None
 
-    role_fams: List[str] = []
+    role_fams: list[str] = []
     if hasattr(profile, "role_families"):
-        role_fams = [str(x).lower() for x in getattr(profile, "role_families") or []]
+        role_fams = [str(x).lower() for x in profile.role_families or []]
 
     extra_dict = getattr(profile, "extra", {}) if isinstance(getattr(profile, "extra", {}), dict) else {}
     prov = getattr(profile, "provenance", {}) or extra_dict.get("provenance", {})
@@ -357,7 +357,7 @@ def _coerce_profile(profile: Any) -> Dict[str, Any]:
 # ROLE FAMILIES & CLASSIFIER
 # =============================================================================
 
-_ROLE_FAMILY_PATTERNS: List[Tuple[RoleFamily, List[str]]] = [
+_ROLE_FAMILY_PATTERNS: list[tuple[RoleFamily, list[str]]] = [
     (
         RoleFamily.AI_AUTOMATION,
         [
@@ -489,12 +489,12 @@ def classify_role_family(title: str, description: str = "") -> RoleFamily:
 
 
 def calculate_role_compatibility(
-    candidate_target_roles: List[str],
-    candidate_alt_roles: List[str],
-    candidate_role_families: List[str],
+    candidate_target_roles: list[str],
+    candidate_alt_roles: list[str],
+    candidate_role_families: list[str],
     vacancy_title: str,
     vacancy_family: RoleFamily,
-) -> Tuple[float, str]:
+) -> tuple[float, str]:
     """Calculates compatibility multiplier (0.0 to 1.0) and evidence string."""
     title_lc = (vacancy_title or "").lower()
     
@@ -509,7 +509,7 @@ def calculate_role_compatibility(
             return 0.85, f"Alternative role match: '{r}'"
 
     # 3. Dynamic role family compatibility matrix
-    cand_fams: Set[RoleFamily] = set()
+    cand_fams: set[RoleFamily] = set()
     for fam_str in candidate_role_families:
         try:
             cand_fams.add(RoleFamily(fam_str.upper()))
@@ -584,10 +584,10 @@ _SENIORITY_PATTERNS = [
 ]
 
 
-def extract_seniority(title: str, description: str = "") -> List[str]:
+def extract_seniority(title: str, description: str = "") -> list[str]:
     """Extract seniority levels found in title and description."""
     text = f"{title or ''} {description or ''}".lower()
-    found: List[str] = []
+    found: list[str] = []
     for level, patterns in _SENIORITY_PATTERNS:
         for p in patterns:
             if re.search(p, text):
@@ -597,7 +597,7 @@ def extract_seniority(title: str, description: str = "") -> List[str]:
     return found
 
 
-def extract_required_years(title: str, description: str = "") -> Optional[int]:
+def extract_required_years(title: str, description: str = "") -> int | None:
     """Extract required minimum years of experience from vacancy text."""
     text = f"{title or ''} {description or ''}".lower()
     
@@ -607,7 +607,7 @@ def extract_required_years(title: str, description: str = "") -> Optional[int]:
         r"опыт\s*(?:работы)?\s*(?:от)?\s*(\d+)\+?\s*(?:лет|года|год)",
         r"(\d+)\+\s*(?:years|лет)",
     ]
-    years_found: List[int] = []
+    years_found: list[int] = []
     for p in patterns:
         for m in re.finditer(p, text):
             try:
@@ -645,17 +645,17 @@ _DISQUALIFYING_TECH_PATTERNS = [
 
 
 def evaluate_hard_requirements(
-    profile_dict: Dict[str, Any],
+    profile_dict: dict[str, Any],
     vacancy: Vacancy,
-    candidate_years: Optional[int] = None,
-    candidate_seniority: Optional[List[str]] = None,
-) -> Tuple[HardRequirementStatus, List[str]]:
+    candidate_years: int | None = None,
+    candidate_seniority: list[str] | None = None,
+) -> tuple[HardRequirementStatus, list[str]]:
     """Evaluates strict mandatory gates and returns (status, reasons)."""
     text = f"{vacancy.title or ''} {vacancy.description or ''}".lower()
     company = (vacancy.company or "").lower()
     loc = (vacancy.location or "").lower()
     country_text = ", ".join(vacancy.country_restrictions or []).lower()
-    reasons: List[str] = []
+    reasons: list[str] = []
 
     # 1. Excluded roles (hard avoid)
     for role in profile_dict.get("excluded_roles_lc", []):
@@ -689,7 +689,7 @@ def evaluate_hard_requirements(
             return HardRequirementStatus.INELIGIBLE, [f"Remote required but vacancy is not remote: {rem_reason}"]
 
         # Multi-dimensional Remote Eligibility Gate
-        from .eligibility import assess_vacancy_eligibility, EligibilityStatus
+        from .eligibility import EligibilityStatus, assess_vacancy_eligibility
         cand_country = profile_dict.get("candidate_country") or "TH"
         assessment = assess_vacancy_eligibility(vacancy, candidate_country=cand_country)
         if assessment.eligibility == EligibilityStatus.INELIGIBLE:
@@ -728,7 +728,7 @@ def evaluate_hard_requirements(
     return HardRequirementStatus.ELIGIBLE, reasons
 
 
-def _hard_constraints(profile_dict: Dict[str, Any], vacancy: Vacancy) -> Tuple[bool, str]:
+def _hard_constraints(profile_dict: dict[str, Any], vacancy: Vacancy) -> tuple[bool, str]:
     """Legacy helper for backward compatibility."""
     status, reasons = evaluate_hard_requirements(profile_dict, vacancy)
     if status == HardRequirementStatus.INELIGIBLE:
@@ -750,13 +750,13 @@ class JobMatcher:
         cand_country = self._p.get("candidate_country") or "TH"
         return assess_vacancy_eligibility(vacancy, candidate_country=cand_country)
 
-    def _hard_constraints(self, vacancy: Vacancy) -> Tuple[bool, str]:
+    def _hard_constraints(self, vacancy: Vacancy) -> tuple[bool, str]:
         return _hard_constraints(self._p, vacancy)
 
     def match(self, vacancy: Vacancy) -> MatchResult:
-        strengths: List[str] = []
-        gaps: List[str] = []
-        dimensions: Dict[str, Any] = {}
+        strengths: list[str] = []
+        gaps: list[str] = []
+        dimensions: dict[str, Any] = {}
 
         title = vacancy.title or ""
         desc = vacancy.description or ""
@@ -793,7 +793,7 @@ class JobMatcher:
 
         # Record warnings for eligible with warning
         try:
-            from .eligibility import assess_vacancy_eligibility, EligibilityStatus
+            from .eligibility import EligibilityStatus, assess_vacancy_eligibility
             cand_country = self._p.get("candidate_country") or "TH"
             assessment = assess_vacancy_eligibility(vacancy, candidate_country=cand_country)
             if assessment.eligibility == EligibilityStatus.ELIGIBLE_WITH_WARNING:
@@ -1182,7 +1182,7 @@ class JobMatcher:
         # 9. DOMAIN-SPECIFIC EXPERIENCE & NEGATIVE PENALTIES
         # ---------------------------------------------------------------------
         negative_penalties = 0.0
-        penalty_reasons: List[str] = []
+        penalty_reasons: list[str] = []
 
         domain_years = self._p.get("domain_years", {})
         if vacancy_family in (RoleFamily.APPLICATION_SUPPORT, RoleFamily.TECH_SUPPORT, RoleFamily.SYSTEM_ADMIN):
@@ -1291,14 +1291,14 @@ class JobMatcher:
 def apply_preference_adjustment(
     match_result: MatchResult,
     vacancy: Vacancy,
-    preference_profile: Optional[Any] = None,
-    enabled: Optional[bool] = None,
+    preference_profile: Any | None = None,
+    enabled: bool | None = None,
 ) -> MatchResult:
     """Apply safe bounded preference adjustment to an existing MatchResult (Stage 90)."""
     from ai_assistant.feedback_analytics import (
+        PreferenceProfile,
         build_preference_profile,
         calculate_preference_adjustment,
-        PreferenceProfile,
     )
 
     if preference_profile is None:

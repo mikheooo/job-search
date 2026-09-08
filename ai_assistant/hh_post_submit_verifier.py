@@ -19,13 +19,14 @@ import json
 import logging
 import re
 from typing import Any, Callable, Dict, Optional
+
 from pydantic import BaseModel, Field
 
 from . import db
 from .hh_vacancy_navigator import (
-    resolve_hh_vacancy_url,
-    extract_hh_numeric_id,
     ensure_open_vacancy_tab,
+    extract_hh_numeric_id,
+    resolve_hh_vacancy_url,
 )
 
 logger = logging.getLogger("ai_assistant.hh_post_submit_verifier")
@@ -83,12 +84,12 @@ _POST_SUBMIT_INSPECT_JS = """// hh_post_submit_verify
 class PostSubmitVerificationResult(BaseModel):
     """Structured evidence for post-submit verification."""
     application_id: str
-    vacancy_id: Optional[str] = None
-    vacancy_url: Optional[str] = None
+    vacancy_id: str | None = None
+    vacancy_url: str | None = None
     current_state: str = "UNKNOWN"
     hh_status: str = "unknown"  # responded-success, ALREADY_RESPONDED, chat_active, REJECTED, BLOCKED, FAILED
-    detected_page_title: Optional[str] = None
-    evidence_text: Optional[str] = None
+    detected_page_title: str | None = None
+    evidence_text: str | None = None
     verification_verdict: str = "BLOCKED"  # PASS, FAIL, BLOCKED
     timestamp: str = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())
     reason: str = ""
@@ -99,8 +100,8 @@ class PostSubmitVerificationResult(BaseModel):
 
 def verify_hh_submitted_application(
     application_id: str,
-    evaluate_fn: Optional[Callable[[str], str]] = None,
-    cdp_url: Optional[str] = None,
+    evaluate_fn: Callable[[str], str] | None = None,
+    cdp_url: str | None = None,
 ) -> PostSubmitVerificationResult:
     """Verify that a submitted application is factually recorded on HeadHunter.
 
@@ -146,7 +147,7 @@ def verify_hh_submitted_application(
     # 2. Resolve evaluate_fn if not provided
     if evaluate_fn is None:
         try:
-            from .cli import _resolve_hh_evaluate, _DEFAULT_HH_CDP_URL
+            from .cli import _DEFAULT_HH_CDP_URL, _resolve_hh_evaluate
             from .hh_browser_launcher import ensure_hh_browser
             ensure_hh_browser()
             endpoint = cdp_url or _DEFAULT_HH_CDP_URL

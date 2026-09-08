@@ -22,32 +22,22 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from pydantic import BaseModel, Field
 
-from .adapters.himalayas import HimalayasAdapter
-from .adapters.weworkremotely import WeWorkRemotelyAdapter
-from .adapters.remoteok import RemoteOkAdapter
 from .adapters.habr_career import HabrCareerAdapter
-from .normalizer import normalize_vacancy
-from .schema import Vacancy
-from .candidate_profile import CandidateProfile, load_candidate_profile
-from .matcher import JobMatcher, _hard_constraints, _coerce_profile
-from .remote_filter import is_strictly_remote
-from .eligibility import assess_vacancy_eligibility, EligibilityStatus
-from .job_analyzer import analyze_job_deep, DeepAnalysisResult, ANALYZER_VERSION
-from .application_prep import prepare_application, ApplicationPackage, APPLICATION_PREP_VERSION
-from .application_tracking import (
-    ApplicationStatus,
-    get_application_status,
-    set_application_status,
-    transition_application,
-    sync_application_tracking,
+from .adapters.himalayas import HimalayasAdapter
+from .adapters.remoteok import RemoteOkAdapter
+from .adapters.weworkremotely import WeWorkRemotelyAdapter
+from .application_prep import (
+    APPLICATION_PREP_VERSION,
+    ApplicationPackage,
+    prepare_application,
 )
 from .application_queue import (
-    QueueItem,
     QUEUE_VERSION,
+    QueueItem,
     compute_priority,
-    save_queue_item,
     get_queue_item,
     list_queue,
+    save_queue_item,
 )
 from .application_review import (
     ApplicationReview,
@@ -62,22 +52,40 @@ from .application_review_gate import (
     HumanReviewStore,
     build_review_gate,
 )
-from .vacancy_identity import resolve_vacancy_identity, get_canonical_by_normalized_url, normalize_url
-from .db import (
-    init_db,
-    save_vacancy,
-    get_vacancy_by_id,
-    list_vacancies,
-    save_deep_analysis,
-    get_deep_analysis,
-    save_application_package,
-    get_application_package,
-    save_vacancy_eligibility,
-    get_vacancy_eligibility,
-    _row_to_vacancy,
-    is_dry_run,
+from .application_tracking import (
+    ApplicationStatus,
+    get_application_status,
+    set_application_status,
+    sync_application_tracking,
+    transition_application,
 )
+from .candidate_profile import CandidateProfile, load_candidate_profile
 from .config import CANDIDATE_PROFILE_FILE
+from .db import (
+    _row_to_vacancy,
+    get_application_package,
+    get_deep_analysis,
+    get_vacancy_by_id,
+    get_vacancy_eligibility,
+    init_db,
+    is_dry_run,
+    list_vacancies,
+    save_application_package,
+    save_deep_analysis,
+    save_vacancy,
+    save_vacancy_eligibility,
+)
+from .eligibility import EligibilityStatus, assess_vacancy_eligibility
+from .job_analyzer import ANALYZER_VERSION, DeepAnalysisResult, analyze_job_deep
+from .matcher import JobMatcher, _coerce_profile, _hard_constraints
+from .normalizer import normalize_vacancy
+from .remote_filter import is_strictly_remote
+from .schema import Vacancy
+from .vacancy_identity import (
+    get_canonical_by_normalized_url,
+    normalize_url,
+    resolve_vacancy_identity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,37 +113,37 @@ class WatcherStatus(str, Enum):
 
 
 class WatcherConfig(BaseModel):
-    sources: List[str] = Field(default_factory=lambda: list(DEFAULT_SOURCES))
+    sources: list[str] = Field(default_factory=lambda: list(DEFAULT_SOURCES))
     poll_interval_seconds: int = 60
-    max_iterations: Optional[int] = None
+    max_iterations: int | None = None
     candidate_country: str = "TH"
-    profile_path: Optional[str] = None
+    profile_path: str | None = None
     batch_limit: int = 20
-    custom_adapters: Optional[Dict[str, Any]] = None
-    evaluate_fn: Optional[Callable[[str], str]] = None
-    cdp_url: Optional[str] = None
+    custom_adapters: dict[str, Any] | None = None
+    evaluate_fn: Callable[[str], str] | None = None
+    cdp_url: str | None = None
 
     model_config = {"extra": "forbid", "arbitrary_types_allowed": True}
 
 
 class WatcherItem(BaseModel):
     vacancy_stable_id: str
-    canonical_id: Optional[str] = None
+    canonical_id: str | None = None
     title: str
     company: str
     url: str
     source: str = ""
     status: str = WatcherStatus.DISCOVERED.value
     match_decision: str = ""
-    match_score: Optional[float] = None
-    deep_fit_score: Optional[float] = None
-    why_fit: List[str] = Field(default_factory=list)
-    prepared_answers: List[Dict[str, str]] = Field(default_factory=list)
-    unresolved_questions: List[str] = Field(default_factory=list)
-    review_reasons: List[str] = Field(default_factory=list)
-    warnings: List[str] = Field(default_factory=list)
-    review_gate_id: Optional[str] = None
-    review_fingerprint: Optional[str] = None
+    match_score: float | None = None
+    deep_fit_score: float | None = None
+    why_fit: list[str] = Field(default_factory=list)
+    prepared_answers: list[dict[str, str]] = Field(default_factory=list)
+    unresolved_questions: list[str] = Field(default_factory=list)
+    review_reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    review_gate_id: str | None = None
+    review_fingerprint: str | None = None
     stop_reason: str = ""
     submit_attempted: bool = False
     submit_count: int = 0
@@ -160,13 +168,13 @@ class WatcherCycleResult(BaseModel):
     ready_for_review_count: int = 0
     needs_human_review_count: int = 0
     blocked_count: int = 0
-    items: List[WatcherItem] = Field(default_factory=list)
-    errors: List[str] = Field(default_factory=list)
+    items: list[WatcherItem] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
 
-def _normalize_rejection_reasons(reasons: Any) -> List[str]:
+def _normalize_rejection_reasons(reasons: Any) -> list[str]:
     if isinstance(reasons, (list, tuple)):
         return [str(x) for x in reasons if str(x).strip()]
     if isinstance(reasons, str) and reasons.strip():
@@ -175,7 +183,7 @@ def _normalize_rejection_reasons(reasons: Any) -> List[str]:
 
 
 def run_watcher_cycle(
-    config: Optional[WatcherConfig] = None,
+    config: WatcherConfig | None = None,
     iteration: int = 1,
     dry_run: bool = False,
 ) -> WatcherCycleResult:
@@ -191,7 +199,8 @@ def run_watcher_cycle(
         submit_count is ALWAYS 0.
         click_count is ALWAYS 0.
     """
-    from .db import set_dry_run as _set_dry_run, is_dry_run as _is_dry_run
+    from .db import is_dry_run as _is_dry_run
+    from .db import set_dry_run as _set_dry_run
     previous_dry_run = _is_dry_run()
     _set_dry_run(dry_run)
     try:
@@ -201,7 +210,7 @@ def run_watcher_cycle(
 
 
 def _run_watcher_cycle_impl(
-    config: Optional[WatcherConfig] = None,
+    config: WatcherConfig | None = None,
     iteration: int = 1,
     dry_run: bool = False,
 ) -> WatcherCycleResult:
@@ -249,7 +258,7 @@ def _run_watcher_cycle_impl(
             elif name in ADAPTER_MAP:
                 adapters[name] = ADAPTER_MAP[name]()
 
-    fetched_vacancies: List[Vacancy] = []
+    fetched_vacancies: list[Vacancy] = []
 
     for name, adapter in adapters.items():
         adapter_fetched = 0
@@ -327,7 +336,7 @@ def _run_watcher_cycle_impl(
 
     # If no new vacancies fetched in this cycle, also check unapplied / discovered vacancies in DB
     # up to batch_limit to ensure backlog can progress
-    candidates_to_process: List[Vacancy] = list(fetched_vacancies)
+    candidates_to_process: list[Vacancy] = list(fetched_vacancies)
     if not dry_run and len(candidates_to_process) < config.batch_limit:
         db_rows = list_vacancies(limit=config.batch_limit * 2)
         for row in db_rows:
@@ -599,8 +608,8 @@ def _run_watcher_cycle_impl(
             save_queue_item(qitem)
 
         # Build review information & check for unresolved items
-        prepared_answers: List[Dict[str, str]] = []
-        unresolved_questions: List[str] = []
+        prepared_answers: list[dict[str, str]] = []
+        unresolved_questions: list[str] = []
         for ans in getattr(pkg, "answers", []) or []:
             if getattr(ans, "requires_review", True) or not getattr(ans, "answer", None):
                 unresolved_questions.append(getattr(ans, "question_id", "unknown"))
@@ -705,7 +714,7 @@ def _run_watcher_cycle_impl(
 class Watcher:
     """Watcher service for running periodic polling loops."""
 
-    def __init__(self, config: Optional[WatcherConfig] = None):
+    def __init__(self, config: WatcherConfig | None = None):
         self.config = config or WatcherConfig()
         self._running = False
 
@@ -713,10 +722,10 @@ class Watcher:
         """Run a single polling cycle."""
         return run_watcher_cycle(self.config, iteration=iteration, dry_run=dry_run)
 
-    def run(self, stop_callback: Optional[Callable[[], bool]] = None) -> List[WatcherCycleResult]:
+    def run(self, stop_callback: Callable[[], bool] | None = None) -> list[WatcherCycleResult]:
         """Run periodic polling until stopped or max_iterations reached."""
         self._running = True
-        results: List[WatcherCycleResult] = []
+        results: list[WatcherCycleResult] = []
         iteration = 0
 
         while self._running:

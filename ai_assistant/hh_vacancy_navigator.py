@@ -67,16 +67,16 @@ def _make_navigate_js(target_url: str) -> str:
 
 class VacancyVerificationResult(BaseModel):
     ok: bool = False
-    target_vacancy_id: Optional[str] = None
-    target_url: Optional[str] = None
-    current_url: Optional[str] = None
-    expected_title: Optional[str] = None
-    current_title: Optional[str] = None
+    target_vacancy_id: str | None = None
+    target_url: str | None = None
+    current_url: str | None = None
+    expected_title: str | None = None
+    current_title: str | None = None
     url_matched: bool = False
     title_matched: bool = False
     already_responded: bool = False
     submit_or_apply_ui_present: bool = False
-    ui_element_detected: Optional[str] = None
+    ui_element_detected: str | None = None
     navigated: bool = False
     reason: str = ""
     status: str = "BLOCKED"  # READY, BLOCKED, NOT_FOUND, MISMATCH
@@ -84,7 +84,7 @@ class VacancyVerificationResult(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-def extract_hh_numeric_id(target: str) -> Optional[str]:
+def extract_hh_numeric_id(target: str) -> str | None:
     """Extract numeric HH vacancy ID from string/URL/stable_id."""
     if not target:
         return None
@@ -98,7 +98,7 @@ def extract_hh_numeric_id(target: str) -> Optional[str]:
     return None
 
 
-def resolve_hh_vacancy_url(target: str | Dict[str, Any]) -> Optional[str]:
+def resolve_hh_vacancy_url(target: str | dict[str, Any]) -> str | None:
     """Resolve the canonical HH vacancy URL from an application, questionnaire, vacancy ID, or dict."""
     if isinstance(target, dict):
         if target.get("job_url") and "hh.ru" in str(target.get("job_url")):
@@ -148,15 +148,15 @@ def resolve_hh_vacancy_url(target: str | Dict[str, Any]) -> Optional[str]:
     if vac:
         if isinstance(vac, dict) and vac.get("job_url"):
             return str(vac["job_url"])
-        elif hasattr(vac, "job_url") and getattr(vac, "job_url"):
-            return str(getattr(vac, "job_url"))
+        elif hasattr(vac, "job_url") and vac.job_url:
+            return str(vac.job_url)
         elif isinstance(vac, (list, tuple)) and len(vac) > 13 and vac[13]:
             return str(vac[13])
 
     return None
 
 
-def ensure_open_vacancy_tab(cdp_url: str, target: str | Dict[str, Any]) -> Optional[str]:
+def ensure_open_vacancy_tab(cdp_url: str, target: str | dict[str, Any]) -> str | None:
     """Ensure a browser tab with the target vacancy URL exists and is ready."""
     target_url = resolve_hh_vacancy_url(target)
     if not target_url:
@@ -200,10 +200,10 @@ def ensure_open_vacancy_tab(cdp_url: str, target: str | Dict[str, Any]) -> Optio
 
 
 def verify_and_navigate_hh_vacancy(
-    target: str | Dict[str, Any],
-    evaluate_fn: Optional[Callable[[str], str]] = None,
+    target: str | dict[str, Any],
+    evaluate_fn: Callable[[str], str] | None = None,
     navigate_if_needed: bool = True,
-    expected_title: Optional[str] = None,
+    expected_title: str | None = None,
 ) -> VacancyVerificationResult:
     """Verify that the browser is on the correct vacancy page and navigate if needed.
 

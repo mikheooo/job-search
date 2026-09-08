@@ -32,15 +32,15 @@ No DB writes, no cookies/storage access.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import logging
 import os
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
 
 from pydantic import BaseModel, Field
 
@@ -53,7 +53,7 @@ from .candidate_profile import CandidateProfile, load_candidate_profile
 from .db import get_all_submissions
 
 # In-memory set of review_ids that have already had a submit attempt.
-_submitted_reviews: Set[str] = set()
+_submitted_reviews: set[str] = set()
 
 # JS: find the real HH submit button (read-only).
 _SUBMIT_BTN_JS = """(() => {
@@ -98,11 +98,11 @@ class SubmissionReport(BaseModel):
     vacancy_stable_id: str = ""
     review_id: str = ""
     fingerprint: str = ""
-    url_before: Optional[str] = None
-    url_after: Optional[str] = None
-    vacancy_before: Optional[str] = None
-    vacancy_after: Optional[str] = None
-    button_meta: Optional[Dict[str, Any]] = None
+    url_before: str | None = None
+    url_after: str | None = None
+    vacancy_before: str | None = None
+    vacancy_after: str | None = None
+    button_meta: dict[str, Any] | None = None
     reason: str = ""
     navigation_count: int = 0
     click_count: int = 0
@@ -114,7 +114,7 @@ class SubmissionReport(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-def _parse_vacancy_id(url: str) -> Optional[str]:
+def _parse_vacancy_id(url: str) -> str | None:
     if not url:
         return None
     try:
@@ -136,7 +136,7 @@ def _parse_vacancy_id(url: str) -> Optional[str]:
     return None
 
 
-def _vacancy_from_stable(vacancy_stable_id: str) -> Optional[str]:
+def _vacancy_from_stable(vacancy_stable_id: str) -> str | None:
     if not vacancy_stable_id or ":" not in vacancy_stable_id:
         return None
     source, part = vacancy_stable_id.split(":", 1)
@@ -195,7 +195,7 @@ def preflight_submission(
         return report
 
     # Gates 3-9: package / plan / orchestration.
-    gate_reasons: List[str] = []
+    gate_reasons: list[str] = []
     pkg_status = getattr(package, "validation_status", "") or ""
     if pkg_status != "VALID":
         gate_reasons.append(f"package.validation_status is {pkg_status or 'UNKNOWN'} (must be VALID)")
@@ -403,10 +403,10 @@ class GateName(str, Enum):
 
 class GateCheckResult(BaseModel):
     passed: bool
-    failed_gate: Optional[GateName] = None
+    failed_gate: GateName | None = None
     reason: str = ""
-    details: Dict[str, Any] = Field(default_factory=dict)
-    gate_results: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    details: dict[str, Any] = Field(default_factory=dict)
+    gate_results: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class HHSubmissionGates:
@@ -417,9 +417,9 @@ class HHSubmissionGates:
     def _check_review_gate(
         cls,
         vacancy_stable_id: str,
-        review_obj: Optional[Any] = None,
-        approval: Optional[Any] = None,
-    ) -> tuple[Optional[GateCheckResult], Optional[str], Optional[str]]:
+        review_obj: Any | None = None,
+        approval: Any | None = None,
+    ) -> tuple[GateCheckResult | None, str | None, str | None]:
         """Gate 2: GATE_REVIEW_APPROVED."""
         review = review_obj or get_application_review(vacancy_stable_id)
         if not review:
@@ -462,10 +462,10 @@ class HHSubmissionGates:
     def _check_fingerprint_gate(
         cls,
         vacancy_stable_id: str,
-        expected_fp: Optional[str],
-        fingerprint: Optional[str] = None,
-        form_snapshot: Optional[Dict[str, Any]] = None,
-    ) -> Optional[GateCheckResult]:
+        expected_fp: str | None,
+        fingerprint: str | None = None,
+        form_snapshot: dict[str, Any] | None = None,
+    ) -> GateCheckResult | None:
         """Gate 3: GATE_FINGERPRINT_MATCH."""
         actual_fp = fingerprint
         if not actual_fp and form_snapshot:
@@ -490,8 +490,8 @@ class HHSubmissionGates:
     def _check_url_domain_gate(
         cls,
         current_url: str,
-        live_page_result: Optional[Any] = None,
-    ) -> Optional[GateCheckResult]:
+        live_page_result: Any | None = None,
+    ) -> GateCheckResult | None:
         """Gate 4: GATE_URL_DOMAIN."""
         cur_url = current_url or (getattr(live_page_result, "current_url", "") if live_page_result else "")
         if live_page_result and not getattr(live_page_result, "is_ok", True):
@@ -539,8 +539,8 @@ class HHSubmissionGates:
         cls,
         vacancy_stable_id: str,
         current_url: str,
-        live_page_result: Optional[Any] = None,
-    ) -> Optional[GateCheckResult]:
+        live_page_result: Any | None = None,
+    ) -> GateCheckResult | None:
         """Gate 5: GATE_VACANCY_MATCH."""
         cur_url = current_url or (getattr(live_page_result, "current_url", "") if live_page_result else "")
         if live_page_result:
@@ -591,9 +591,9 @@ class HHSubmissionGates:
     def _check_submission_evidence_gate(
         cls,
         vacancy_stable_id: str,
-        form_snapshot: Optional[Dict[str, Any]] = None,
-        live_page_result: Optional[Any] = None,
-    ) -> tuple[Optional[GateCheckResult], Any]:
+        form_snapshot: dict[str, Any] | None = None,
+        live_page_result: Any | None = None,
+    ) -> tuple[GateCheckResult | None, Any]:
         """Gate 9: GATE_NOT_ALREADY_APPLIED."""
         from .submission_state import get_submission_evidence
         dom_already_applied = bool(
@@ -641,9 +641,9 @@ class HHSubmissionGates:
     def _check_previous_attempt_gate(
         cls,
         vacancy_stable_id: str,
-        rev_id: Optional[str],
+        rev_id: str | None,
         evidence: Any,
-    ) -> Optional[GateCheckResult]:
+    ) -> GateCheckResult | None:
         """Gate 10: GATE_NO_PREVIOUS_SUBMISSION_ATTEMPT."""
         if vacancy_stable_id in _submitted_reviews or (rev_id and rev_id in _submitted_reviews):
             return GateCheckResult(
@@ -665,10 +665,10 @@ class HHSubmissionGates:
         cls,
         vacancy_stable_id: str,
         current_url: str,
-        fingerprint: Optional[str] = None,
-        form_snapshot: Optional[Dict[str, Any]] = None,
-        review_obj: Optional[Any] = None,
-        live_page_result: Optional[Any] = None,
+        fingerprint: str | None = None,
+        form_snapshot: dict[str, Any] | None = None,
+        review_obj: Any | None = None,
+        live_page_result: Any | None = None,
     ) -> GateCheckResult:
         """Read-only preflight gates (2, 3, 4, 5, 9, 10).
 
@@ -712,16 +712,16 @@ class HHSubmissionGates:
         cls,
         vacancy_stable_id: str,
         current_url: str,
-        form_snapshot: Dict[str, Any],
+        form_snapshot: dict[str, Any],
         human_confirmed: bool = False,
-        approval: Optional[Any] = None,
+        approval: Any | None = None,
         dry_run: bool = False,
-        candidate_profile: Optional[CandidateProfile] = None,
-        profile_path: Optional[str] = None,
-        review_obj: Optional[Any] = None,
-        live_page_result: Optional[Any] = None,
+        candidate_profile: CandidateProfile | None = None,
+        profile_path: str | None = None,
+        review_obj: Any | None = None,
+        live_page_result: Any | None = None,
     ) -> GateCheckResult:
-        gate_results: Dict[str, Dict[str, Any]] = {}
+        gate_results: dict[str, dict[str, Any]] = {}
 
         # Gate 1: GATE_SUBMIT_ALLOWED (kill-switch safety latch)
         submit_allowed = (
@@ -804,7 +804,11 @@ class HHSubmissionGates:
                 continue
             if label and (is_req or f_type in ("textarea", "text", "radio", "checkbox", "select")):
                 from .application_qa import QuestionAnswerGenerator
-                from .hh_extractor import ApplicationQuestion, QuestionType, QuestionSource
+                from .hh_extractor import (
+                    ApplicationQuestion,
+                    QuestionSource,
+                    QuestionType,
+                )
                 gen = QuestionAnswerGenerator(profile, resume_text="", deep=None, vacancy=None) if profile else None
                 if gen:
                     q = ApplicationQuestion(
@@ -887,21 +891,21 @@ class SubmissionExecutionResult:
     reason: str = ""
     vacancy_stable_id: str = ""
     submit_count: int = 0
-    gate_check_result: Optional[GateCheckResult] = None
-    live_page_result: Optional[Any] = None
-    verification_status: Optional[str] = None
-    submission_id: Optional[str] = None
+    gate_check_result: GateCheckResult | None = None
+    live_page_result: Any | None = None
+    verification_status: str | None = None
+    submission_id: str | None = None
 
 
 def execute_hh_submission(
     vacancy_stable_id: str,
-    evaluate_fn: Optional[Callable[[str], str]] = None,
+    evaluate_fn: Callable[[str], str] | None = None,
     human_confirmed: bool = False,
-    approval: Optional[Any] = None,
+    approval: Any | None = None,
     dry_run: bool = False,
-    candidate_profile: Optional[CandidateProfile] = None,
-    profile_path: Optional[str] = None,
-    submission_id: Optional[str] = None,
+    candidate_profile: CandidateProfile | None = None,
+    profile_path: str | None = None,
+    submission_id: str | None = None,
     sync_hh_application: bool = True,
 ) -> SubmissionExecutionResult:
     """Unified entry point for HeadHunter submissions across all execution paths.
@@ -932,18 +936,19 @@ def execute_hh_submission(
             out-of-order state mutations.
     """
     import uuid
+
     from . import db
+    from .application_review import compute_review_fingerprint, get_application_review
+    from .application_tracking import ApplicationStatus, set_application_status
     from .db import (
-        init_db,
         get_application_package,
         get_hh_application,
         get_hh_application_by_vacancy,
+        init_db,
         save_hh_application,
         save_submission,
     )
-    from .application_review import get_application_review, compute_review_fingerprint
     from .hh_live_page_checks import check_live_page
-    from .application_tracking import set_application_status, ApplicationStatus
 
     init_db()
     if approval is None and human_confirmed:
@@ -1126,7 +1131,11 @@ def execute_hh_submission(
             status="AMBIGUOUS",
             submission_id=sub_id,
         )
-        from .submission_verifier import save_verification, SubmissionVerification, VerificationStatus
+        from .submission_verifier import (
+            SubmissionVerification,
+            VerificationStatus,
+            save_verification,
+        )
         verif = SubmissionVerification(
             vacancy_stable_id=vacancy_stable_id,
             submission_id=sub_id,
@@ -1140,7 +1149,10 @@ def execute_hh_submission(
             pass
         if sync_hh_application and hh_app and hh_app.get("application_id"):
             try:
-                from .hh_application_orchestrator import transition_application, HHApplicationState
+                from .hh_application_orchestrator import (
+                    HHApplicationState,
+                    transition_application,
+                )
                 transition_application(
                     application_id=hh_app["application_id"],
                     to_state=HHApplicationState.AMBIGUOUS,
@@ -1236,7 +1248,11 @@ def execute_hh_submission(
         submission_id=sub_id,
     )
 
-    from .submission_verifier import save_verification, SubmissionVerification, VerificationStatus
+    from .submission_verifier import (
+        SubmissionVerification,
+        VerificationStatus,
+        save_verification,
+    )
     verif = SubmissionVerification(
         vacancy_stable_id=vacancy_stable_id,
         submission_id=sub_id,
@@ -1261,7 +1277,10 @@ def execute_hh_submission(
         if app:
             app_id = app.get("application_id")
             if verified and app_id:
-                from .hh_application_orchestrator import transition_application, HHApplicationState
+                from .hh_application_orchestrator import (
+                    HHApplicationState,
+                    transition_application,
+                )
                 sub_fp = actual_pkg_fp or (form_snapshot.get("fingerprint") if form_snapshot else "") or "submission_verified_fp"
                 transition_application(
                     application_id=app_id,
@@ -1275,7 +1294,10 @@ def execute_hh_submission(
                     approval=approval,
                 )
             elif app_id:
-                from .hh_application_orchestrator import transition_application, HHApplicationState
+                from .hh_application_orchestrator import (
+                    HHApplicationState,
+                    transition_application,
+                )
                 transition_application(
                     application_id=app_id,
                     to_state=HHApplicationState.AMBIGUOUS,

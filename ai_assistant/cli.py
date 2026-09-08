@@ -1,90 +1,6 @@
-from __future__ import annotations
+from __future__ import annotationsimport argparseimport jsonimport loggingimport osimport reimport sysfrom typing import Any, Callable, Dict, List, Optional, Set, Tuplelogger = logging.getLogger(__name__)
 
-import argparse
-import json
-import logging
-import os
-import re
-import sys
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
- 
-logger = logging.getLogger(__name__)
-
-from .adapters.himalayas import HimalayasAdapter
-from .adapters.weworkremotely import WeWorkRemotelyAdapter
-from .adapters.remoteok import RemoteOkAdapter
-from .adapters.habr_career import HabrCareerAdapter
-from .schema import Vacancy
-from .normalizer import normalize_vacancy
-from .matcher import JobMatcher, JobProfile
-from .candidate_profile import load_candidate_profile
-from .prefill_execute import make_cdp_evaluate, make_isolated_world_evaluate
-from . import prefill_execute
-from . import hh_message_reply, email_message_reply, gmail_readonly_connector
-from .db import (
-    init_db,
-    save_vacancy,
-    get_vacancy_by_id,
-    list_vacancies,
-    get_deep_analysis,
-    save_deep_analysis,
-    get_application_package,
-    save_application_package,
-    get_submission,
-    list_submissions,
-    get_verification,
-    list_verifications,
-    _row_to_vacancy,
-    list_undigested_vacancies,
-    mark_digest_delivered,
-    is_digest_delivered,
-    record_digest_attempt,
-    record_digest_failed,
-    record_digest_ambiguous,
-    list_digest_attempts,
-    reconcile_digest_attempt,
-    get_production_health,
-)
-from .config import BATCH_LIMIT, CANDIDATE_PROFILE_FILE
-from .application_review import create_application_review, get_application_review, list_application_reviews, approve_review, reject_review, REVIEW_VERSION
-from .application_tracking import (
-    get_application_status as _get_app_status,
-    list_applications as _list_apps,
-    get_application_history as _get_app_history,
-    transition_application as _transition_app,
-    sync_application_tracking as _sync_tracking,
-    verify_and_apply,
-    ApplicationStatus,
-)
-from .submission_verifier import verify_submission as _verify_submission
-from .application_dashboard import (
-    build_dashboard,
-    get_dashboard_show,
-    get_dashboard_history,
-    get_dashboard_queue,
-    get_dashboard_actions_only,
-    ApplicationDashboard,
-    ActionType,
-)
-from .application_integrity import (
-    run_integrity_audit,
-    IntegrityReport,
-    IntegritySeverity,
-)
-from .vacancy_identity import (
-    resolve_vacancy_identity,
-    sync_identity_from_vacancies,
-    get_canonical_by_id,
-    get_aliases_for_canonical,
-    get_all_canonical_vacancies,
-    normalize_url,
-    normalize_company,
-    normalize_title,
-    MatchType,
-)
-
-
-SOURCES = {
+from . import (    email_message_reply,    gmail_readonly_connector,    hh_message_reply,    prefill_execute,)from .adapters.habr_career import HabrCareerAdapterfrom .adapters.himalayas import HimalayasAdapterfrom .adapters.remoteok import RemoteOkAdapterfrom .adapters.weworkremotely import WeWorkRemotelyAdapterfrom .application_dashboard import (    ActionType,    ApplicationDashboard,    build_dashboard,    get_dashboard_actions_only,    get_dashboard_history,    get_dashboard_queue,    get_dashboard_show,)from .application_integrity import (    IntegrityReport,    IntegritySeverity,    run_integrity_audit,)from .application_review import (    REVIEW_VERSION,    approve_review,    create_application_review,    get_application_review,    list_application_reviews,    reject_review,)from .application_tracking import (    ApplicationStatus,    verify_and_apply,)from .application_tracking import (    get_application_history as _get_app_history,)from .application_tracking import (    get_application_status as _get_app_status,)from .application_tracking import (    list_applications as _list_apps,)from .application_tracking import (    sync_application_tracking as _sync_tracking,)from .application_tracking import (    transition_application as _transition_app,)from .candidate_profile import load_candidate_profilefrom .config import BATCH_LIMIT, CANDIDATE_PROFILE_FILEfrom .db import (    _row_to_vacancy,    get_application_package,    get_deep_analysis,    get_production_health,    get_submission,    get_vacancy_by_id,    get_verification,    init_db,    is_digest_delivered,    list_digest_attempts,    list_submissions,    list_undigested_vacancies,    list_vacancies,    list_verifications,    mark_digest_delivered,    reconcile_digest_attempt,    record_digest_ambiguous,    record_digest_attempt,    record_digest_failed,    save_application_package,    save_deep_analysis,    save_vacancy,)from .matcher import JobMatcher, JobProfilefrom .normalizer import normalize_vacancyfrom .prefill_execute import make_cdp_evaluate, make_isolated_world_evaluatefrom .schema import Vacancyfrom .submission_verifier import verify_submission as _verify_submissionfrom .vacancy_identity import (    MatchType,    get_aliases_for_canonical,    get_all_canonical_vacancies,    get_canonical_by_id,    normalize_company,    normalize_title,    normalize_url,    resolve_vacancy_identity,    sync_identity_from_vacancies,)SOURCES = {
     "himalayas": HimalayasAdapter(),
     "weworkremotely": WeWorkRemotelyAdapter(),
     "remoteok": RemoteOkAdapter(),
@@ -92,7 +8,7 @@ SOURCES = {
 }
 
 
-def collect(sources: List[str]) -> int:
+def collect(sources: list[str]) -> int:
     init_db()
     adapters = [SOURCES[name] for name in sources if name in SOURCES]
     if not adapters:
@@ -138,14 +54,7 @@ def reclassify_eligibility_cmd(candidate_country: str = "TH", profile_path: str 
         print(f"Database initialization error: {e}", file=sys.stderr)
         return 1
 
-    from .eligibility import assess_vacancy_eligibility, EligibilityStatus
-    from .db import (
-        list_vacancies,
-        _row_to_vacancy,
-        save_vacancy_eligibility,
-        delete_queue_item,
-        get_connection,
-    )
+    from .db import (        _row_to_vacancy,        delete_queue_item,        get_connection,        list_vacancies,        save_vacancy_eligibility,    )    from .eligibility import EligibilityStatus, assess_vacancy_eligibility
 
     rows = list_vacancies(limit=50000)
     total = len(rows)
@@ -279,9 +188,7 @@ def analyze(top_n: int = 20, profile_path: str | None = None, persist: bool = Fa
         if persist:
             # persist match results to DB
             try:
-                import json
-                import sqlite3
-                from . import config
+                import json                import sqlite3                from . import config
                 conn = sqlite3.connect(config.DB_FILE)
                 cur = conn.cursor()
                 cur.execute(
@@ -317,8 +224,7 @@ def analyze(top_n: int = 20, profile_path: str | None = None, persist: bool = Fa
 
 
 def analyze_deep(top_n: int = 20, profile_path: str | None = None, force: bool = False) -> None:
-    import json as _json
-    from .job_analyzer import ANALYZER_VERSION, analyze_job_deep, should_analyze, get_resume_text
+    import json as _json    from .job_analyzer import (        ANALYZER_VERSION,        analyze_job_deep,        get_resume_text,        should_analyze,    )
 
     init_db()
     rows = list_vacancies(limit=50000)
@@ -425,11 +331,7 @@ def analyze_deep(top_n: int = 20, profile_path: str | None = None, force: bool =
 
 
 def prepare_applications(top_n: int = 20, profile_path: str | None = None, force: bool = False) -> None:
-    import json as _json
-    from .job_analyzer import ANALYZER_VERSION, analyze_job_deep, should_analyze as deep_should
-    from .job_analyzer import get_resume_text as deep_resume
-    from .application_prep import APPLICATION_PREP_VERSION, prepare_application
-    from .job_analyzer import DeepAnalysisResult
+    import json as _json    from .application_prep import APPLICATION_PREP_VERSION, prepare_application    from .job_analyzer import ANALYZER_VERSION, DeepAnalysisResult, analyze_job_deep    from .job_analyzer import get_resume_text as deep_resume    from .job_analyzer import should_analyze as deep_should
 
     init_db()
     rows = list_vacancies(limit=50000)
@@ -617,7 +519,7 @@ def applications_sync(profile_path: str | None = None) -> int:
     return 0
 
 def queue_list(top: int = 20, status_filter: str | None = None, profile_path: str | None = None) -> None:
-    from .application_queue import generate_queue as _gen_queue, list_queue as _list_queue, QUEUE_VERSION
+    from .application_queue import QUEUE_VERSION    from .application_queue import generate_queue as _gen_queue    from .application_queue import list_queue as _list_queue
     init_db()
     # generate queue (includes sync and only READY_TO_APPLY)
     items = _gen_queue(top_n=top, profile_path=profile_path, status_filter=status_filter or "READY_TO_APPLY")
@@ -633,7 +535,7 @@ def queue_list(top: int = 20, status_filter: str | None = None, profile_path: st
         print(f"{it.rank:4} | {it.priority_score:6} | {int(it.match_score) if it.match_score is not None else '-':5} | {int(it.deep_score) if it.deep_score is not None else '-':4} | {(it.company or '')[:22]:22} | {(it.title or '')[:45]}")
 
 def queue_show(vacancy_stable_id: str) -> int:
-    from .application_queue import get_queue_item, QUEUE_VERSION
+    from .application_queue import QUEUE_VERSION, get_queue_item
     init_db()
     item = get_queue_item(vacancy_stable_id, queue_version=QUEUE_VERSION)
     if not item:
@@ -667,8 +569,7 @@ def browser_prepare(vacancy_stable_id: str, force: bool = False) -> int:
     from .browser_executor import prepare_application_in_browser
     try:
         result = prepare_application_in_browser(vacancy_stable_id, force=force)
-        from .db import get_vacancy_by_id
-        from .application_tracking import get_application_status
+        from .application_tracking import get_application_status        from .db import get_vacancy_by_id
         row = get_vacancy_by_id(vacancy_stable_id)
         from .db import _row_to_vacancy
         vac = _row_to_vacancy(row) if row else None
@@ -820,8 +721,7 @@ def review_show(vacancy_stable_id: str) -> int:
         return 1
 
 def review_list(limit: int = 50, status_filter: str | None = None, missing_fingerprint: bool = False) -> None:
-    from .db import get_application_package
-    from .application_review import compute_review_fingerprint
+    from .application_review import compute_review_fingerprint    from .db import get_application_package
 
     recs = list_application_reviews(status=status_filter, limit=200 if missing_fingerprint else limit)
     items = []
@@ -885,12 +785,7 @@ def submit_vacancy(
         print("Submit confirmation required. Use --confirm-submit to proceed (or --dry-run for safety simulation).")
         print("No browser action performed.")
         return 1
-    from .browser_executor import (
-        submit_application_in_browser,
-        MockBrowserAdapter,
-        CDPBrowserAdapter,
-        PlaywrightBrowserAdapter,
-    )
+    from .browser_executor import (        CDPBrowserAdapter,        MockBrowserAdapter,        PlaywrightBrowserAdapter,        submit_application_in_browser,    )
     adapter = None
     if adapter_name == "mock":
         adapter = MockBrowserAdapter()
@@ -1070,8 +965,7 @@ def submissions_list(limit: int = 50) -> None:
             submitted_at = sub[5] or ""
             
             # Get company and title from vacancy
-            from .db import get_vacancy_by_id
-            from .db import _row_to_vacancy
+            from .db import _row_to_vacancy, get_vacancy_by_id
             row = get_vacancy_by_id(vacancy_stable_id)
             company = ""
             title = ""
@@ -1111,8 +1005,7 @@ def submissions_show(vacancy_stable_id: str) -> int:
     executor_version = sub_row[2]
     
     # Get vacancy info
-    from .db import get_vacancy_by_id
-    from .db import _row_to_vacancy
+    from .db import _row_to_vacancy, get_vacancy_by_id
     row = get_vacancy_by_id(vacancy_stable_id)
     if row:
         vac = _row_to_vacancy(row)
@@ -1224,14 +1117,13 @@ def submissions_verify(vacancy_stable_id: str) -> int:
 
 def submissions_recover(vacancy_stable_id: str) -> int:
     """Inspect submission state and recommend action (read-only, never submits)."""
-    from .submission_recovery import inspect_submission_state, RecoveryStatus
+    from .submission_recovery import RecoveryStatus, inspect_submission_state
     init_db()
     
     result = inspect_submission_state(vacancy_stable_id)
     
     # Get vacancy info
-    from .db import get_vacancy_by_id
-    from .db import _row_to_vacancy
+    from .db import _row_to_vacancy, get_vacancy_by_id
     row = get_vacancy_by_id(vacancy_stable_id)
     if row:
         vac = _row_to_vacancy(row)
@@ -1311,8 +1203,7 @@ def submissions_audit(vacancy_stable_id: str) -> int:
     init_db()
     
     # Get vacancy info
-    from .db import get_vacancy_by_id
-    from .db import _row_to_vacancy
+    from .db import _row_to_vacancy, get_vacancy_by_id
     row = get_vacancy_by_id(vacancy_stable_id)
     if row:
         vac = _row_to_vacancy(row)
@@ -1575,8 +1466,7 @@ def dashboard_show_canonical(canonical_id: str) -> int:
     """Show detailed view for a canonical vacancy."""
     init_db()
 
-    from .application_queue import get_queue_item, list_queue
-    from .application_tracking import get_application_status
+    from .application_queue import get_queue_item, list_queue    from .application_tracking import get_application_status
     
     canon = get_canonical_by_id(canonical_id)
     if not canon:
@@ -1708,7 +1598,7 @@ def hh_message_preview(conversation_id: str | None = None, cdp_url=None, url_sub
     """Preview one conversation's context + truth-only reply. READ-ONLY:
     never sends, never calls confirm_live_send, never touches AUTO gates."""
     errors = []
-    fresh: Dict[str, Any] = {}
+    fresh: dict[str, Any] = {}
     try:
         ev = _resolve_chatik_evaluate(cdp_url=cdp_url, url_substring=url_substring,
                                       evaluate_fn=evaluate_fn)
@@ -1910,7 +1800,7 @@ def hh_message_classify(conversation_id: str | None = None, cdp_url=None, url_su
                         profile=None) -> int:
     """Classify one conversation's context and draft reply. READ-ONLY: never sends."""
     errors = []
-    fresh: Dict[str, Any] = {}
+    fresh: dict[str, Any] = {}
     try:
         ev = _resolve_chatik_evaluate(cdp_url=cdp_url, url_substring=url_substring,
                                       evaluate_fn=evaluate_fn)
@@ -2052,7 +1942,7 @@ def hh_message_validate(conversation_id: str | None = None, cdp_url=None, url_su
                         profile=None) -> int:
     """Validate prepared reply draft against safety rules and profile evidence. READ-ONLY: never sends."""
     errors = []
-    fresh: Dict[str, Any] = {}
+    fresh: dict[str, Any] = {}
     try:
         ev = _resolve_chatik_evaluate(cdp_url=cdp_url, url_substring=url_substring,
                                       evaluate_fn=evaluate_fn)
@@ -2825,15 +2715,15 @@ def hh_message_diagnose(
     else:
         f_subs = list(_DEFAULT_CHATIK_FRAME_SUBSTRINGS)
 
-    errors: List[str] = []
+    errors: list[str] = []
 
     cdp_reachable = False
-    matching_tabs: List[Dict[str, str]] = []
+    matching_tabs: list[dict[str, str]] = []
     hh_page_present = False
     page_url: str | None = None
     page_title: str | None = None
     page_is_messages: bool | None = None
-    frames: List[Dict[str, Any]] = []
+    frames: list[dict[str, Any]] = []
     chatik_frame_found = False
     chatik_frame_url: str | None = None
     isolated_world_ok: bool | None = None
@@ -2844,7 +2734,7 @@ def hh_message_diagnose(
     dialogs_visible: int | None = None
 
     # Step 1: CDP Reachability / Targets
-    target_list: List[Dict[str, Any]] = []
+    target_list: list[dict[str, Any]] = []
     if targets is not None:
         target_list = targets
         cdp_reachable = True
@@ -3100,8 +2990,7 @@ def hh_message_diagnose(
 
 def system_info() -> int:
     """Print environment/app diagnostics. READ-ONLY: no network, no DB, no send."""
-    import platform as _platform
-    import importlib as _importlib
+    import importlib as _importlib    import platform as _platform
 
     print(f"Python: {sys.version}")
     print(f"python_version: {_platform.python_version()}")
@@ -3145,12 +3034,12 @@ def ui_cmd(host: str = "127.0.0.1", port: int = 8000) -> int:
 
 
 def watch_cmd(
-    sources: Optional[List[str]] = None,
+    sources: list[str] | None = None,
     interval: int = 60,
     once: bool = False,
     limit: int = 20,
     candidate_country: str = "TH",
-    profile_path: Optional[str] = None,
+    profile_path: str | None = None,
     output_json: bool = False,
 ) -> int:
     """Run the controlled application watcher (READ-ONLY review queueing; NO auto-submit)."""
@@ -3223,17 +3112,17 @@ def watch_cmd(
 
 
 def message_watch_cmd(
-    cdp_url: Optional[str] = None,
-    url_substring: Optional[str] = None,
+    cdp_url: str | None = None,
+    url_substring: str | None = None,
     interval: int = 60,
     once: bool = False,
     continuous: bool = False,
     limit: int = 20,
-    iterations: Optional[int] = None,
-    profile_path: Optional[str] = None,
+    iterations: int | None = None,
+    profile_path: str | None = None,
     output_json: bool = False,
-    evaluate_fn: Optional[Any] = None,
-    stop_callback: Optional[Callable[[], bool]] = None,
+    evaluate_fn: Any | None = None,
+    stop_callback: Callable[[], bool] | None = None,
 ) -> int:
     """Run the controlled HH message watcher (READ-ONLY review queueing; NO auto-send)."""
     from .hh_message_watcher import HHMessageWatcher, HHMessageWatcherConfig
@@ -3302,7 +3191,7 @@ def message_watch_cmd(
         return 0
 
 
-def questionnaire_list_cmd(status: Optional[str] = None, limit: int = 50) -> int:
+def questionnaire_list_cmd(status: str | None = None, limit: int = 50) -> int:
     """List stored questionnaires."""
     from . import db
     db.init_db()
@@ -3322,8 +3211,7 @@ def questionnaire_list_cmd(status: Optional[str] = None, limit: int = 50) -> int
 
 def questionnaire_show_cmd(target_id: str) -> int:
     """Show questionnaire details."""
-    from . import db
-    from .hh_questionnaire import HHQuestionnaire, format_questionnaire_cli_output
+    from . import db    from .hh_questionnaire import HHQuestionnaire, format_questionnaire_cli_output
     db.init_db()
     data = db.get_hh_questionnaire(target_id)
     if not data:
@@ -3346,9 +3234,7 @@ def questionnaire_show_cmd(target_id: str) -> int:
 
 def questionnaire_suggest_cmd(target_id: str, apply_answers: bool = False) -> int:
     """Generate and display smart tailored questionnaire answer suggestions."""
-    import json
-    from . import db
-    from .hh_questionnaire import HHQuestionnaire, generate_suggested_answers, validate_human_answers
+    import json    from . import db    from .hh_questionnaire import (        HHQuestionnaire,        generate_suggested_answers,        validate_human_answers,    )
     db.init_db()
     data = db.get_hh_questionnaire(target_id)
     if not data:
@@ -3393,13 +3279,11 @@ def questionnaire_suggest_cmd(target_id: str, apply_answers: bool = False) -> in
 
 def questionnaire_answer_cmd(
     target_id: str,
-    answers_json: Optional[str] = None,
-    single_answers: Optional[List[str]] = None,
+    answers_json: str | None = None,
+    single_answers: list[str] | None = None,
 ) -> int:
     """Validate and record human answers for a questionnaire."""
-    import json
-    from . import db
-    from .hh_questionnaire import HHQuestionnaire, validate_human_answers
+    import json    from . import db    from .hh_questionnaire import HHQuestionnaire, validate_human_answers
     db.init_db()
     data = db.get_hh_questionnaire(target_id)
     if not data:
@@ -3411,7 +3295,7 @@ def questionnaire_answer_cmd(
         return 1
 
     quest = HHQuestionnaire(**data)
-    answers: Dict[str, Any] = dict(quest.answers or {})
+    answers: dict[str, Any] = dict(quest.answers or {})
     
     if answers_json:
         try:
@@ -3449,13 +3333,11 @@ def questionnaire_answer_cmd(
 def questionnaire_submit_cmd(
     target_id: str,
     confirm_submit: bool = False,
-    answers_json: Optional[str] = None,
-    evaluate_fn: Optional[Any] = None,
+    answers_json: str | None = None,
+    evaluate_fn: Any | None = None,
 ) -> int:
     """Submit questionnaire response with explicit human confirmation."""
-    import json
-    from . import db
-    from .hh_questionnaire import HHQuestionnaire, submit_questionnaire_response
+    import json    from . import db    from .hh_questionnaire import HHQuestionnaire, submit_questionnaire_response
     db.init_db()
     data = db.get_hh_questionnaire(target_id)
     if not data:
@@ -3467,7 +3349,7 @@ def questionnaire_submit_cmd(
         return 1
 
     quest = HHQuestionnaire(**data)
-    answers: Dict[str, Any] = dict(quest.answers or {})
+    answers: dict[str, Any] = dict(quest.answers or {})
     if answers_json:
         try:
             parsed = json.loads(answers_json)
@@ -3493,8 +3375,7 @@ def questionnaire_submit_cmd(
 
     if evaluate_fn is None:
         try:
-            from .hh_browser_launcher import ensure_hh_browser
-            from .hh_vacancy_navigator import ensure_open_vacancy_tab
+            from .hh_browser_launcher import ensure_hh_browser            from .hh_vacancy_navigator import ensure_open_vacancy_tab
             ensure_hh_browser()
             ensure_open_vacancy_tab(_DEFAULT_HH_CDP_URL, quest.vacancy_stable_id or quest.questionnaire_id)
         except Exception as e:
@@ -3531,12 +3412,11 @@ def questionnaire_submit_cmd(
 def application_submit_cmd(
     target_id: str,
     confirm_submit: bool = False,
-    answers_json: Optional[str] = None,
-    evaluate_fn: Optional[Callable[[str], str]] = None,
+    answers_json: str | None = None,
+    evaluate_fn: Callable[[str], str] | None = None,
 ) -> int:
     """Submit an HH application with mandatory confirmation gate."""
-    from . import db
-    from .hh_application_orchestrator import transition_application, HHApplicationState
+    from . import db    from .hh_application_orchestrator import HHApplicationState, transition_application
     db.init_db()
     data = db.get_hh_application(target_id)
     if not data:
@@ -3636,7 +3516,7 @@ def application_submit_cmd(
     return 1
 
 
-def application_list_cmd(state: Optional[str] = None, limit: int = 50) -> int:
+def application_list_cmd(state: str | None = None, limit: int = 50) -> int:
     """List stored HH applications with their current state."""
     from . import db
     db.init_db()
@@ -3659,8 +3539,7 @@ def application_list_cmd(state: Optional[str] = None, limit: int = 50) -> int:
 
 def application_show_cmd(target_id: str) -> int:
     """Show detailed status and human action required for an HH application."""
-    from . import db
-    from .hh_application_orchestrator import HHApplication, format_application_cli_output
+    from . import db    from .hh_application_orchestrator import (        HHApplication,        format_application_cli_output,    )
     db.init_db()
     data = db.get_hh_application(target_id)
     if not data:
@@ -3732,8 +3611,7 @@ def questionnaire_audit_cmd(target_id: str) -> int:
 
 def application_audit_cmd(target_id: str) -> int:
     """Run a pre-submit audit on application questionnaire answers."""
-    from . import db
-    from .hh_questionnaire_audit import audit_questionnaire
+    from . import db    from .hh_questionnaire_audit import audit_questionnaire
     db.init_db()
     data = db.get_hh_application(target_id)
     if not data:
@@ -3761,7 +3639,7 @@ def application_status_cmd(target_id: str) -> int:
     return application_show_cmd(target_id)
 
 
-def application_verify_submit_cmd(target_id: str, evaluate_fn: Optional[Callable[[str], str]] = None) -> int:
+def application_verify_submit_cmd(target_id: str, evaluate_fn: Callable[[str], str] | None = None) -> int:
     """Verify factual post-submit status of an application on HeadHunter."""
     from .hh_post_submit_verifier import verify_hh_submitted_application
     res = verify_hh_submitted_application(target_id, evaluate_fn=evaluate_fn)
@@ -3784,13 +3662,7 @@ def application_verify_submit_cmd(target_id: str, evaluate_fn: Optional[Callable
 
 def application_queue_cmd(as_json: bool = False, ready_only: bool = False, human_review_only: bool = False) -> int:
     """Show controlled HH application queue (Stage 45)."""
-    import json
-    from .hh_application_queue import (
-        get_controlled_application_queue,
-        format_queue_cli,
-        format_ready_queue_cli,
-        format_human_review_queue_cli,
-    )
+    import json    from .hh_application_queue import (        format_human_review_queue_cli,        format_queue_cli,        format_ready_queue_cli,        get_controlled_application_queue,    )
     filter_mode = None
     if ready_only:
         filter_mode = "ready"
@@ -3817,20 +3689,15 @@ def application_runner_cmd(
     confirm_submit: bool = False,
     auto: bool = False,
     as_json: bool = False,
-    evaluate_fn: Optional[Callable[[str], str]] = None,
+    evaluate_fn: Callable[[str], str] | None = None,
     dry_run: bool = False,
 ) -> int:
     """Execute controlled application runner command (Stage 46)."""
-    import json
-    from .hh_application_runner import (
-        preview_next_application,
-        run_next_application,
-        format_runner_result_cli,
-    )
+    import json    from .hh_application_runner import (        format_runner_result_cli,        preview_next_application,        run_next_application,    )
     if command == "preview":
         res = preview_next_application()
     elif command == "next":
-        from .hh_application_runner import get_controlled_application_queue, HHApplicationState
+        from .hh_application_runner import (            HHApplicationState,            get_controlled_application_queue,        )
         queue_items = get_controlled_application_queue()
         ready_apps = [it for it in queue_items if it.application_state == HHApplicationState.READY_TO_SUBMIT.value]
         if not ready_apps:
@@ -3859,7 +3726,7 @@ def export_digest_cmd(
     format_type: str = "telegram",
     limit: int = 10,
     min_score: float = 60.0,
-    profile_path: Optional[str] = None,
+    profile_path: str | None = None,
     output_json: bool = False,
     mark_delivered: bool = False,
     include_legacy: bool = False,
@@ -3972,9 +3839,9 @@ def export_digest_cmd(
     # - Cap max 2 per company
     # - Cap max 4 per role family (unless score >= 90)
     # - Deduplicate near-identical title + company
-    company_counts: Dict[str, int] = {}
-    family_counts: Dict[str, int] = {}
-    seen_normalized_keys: Set[str] = set()
+    company_counts: dict[str, int] = {}
+    family_counts: dict[str, int] = {}
+    seen_normalized_keys: set[str] = set()
 
     top_items = []
     for cand in matched_candidates:
@@ -4074,8 +3941,8 @@ def export_digest_cmd(
 
 def digest_attempts_cmd(
     action: str = "list",
-    batch_key: Optional[str] = None,
-    new_status: Optional[str] = None,
+    batch_key: str | None = None,
+    new_status: str | None = None,
     limit: int = 50,
     output_json: bool = False,
 ) -> int:
@@ -4218,9 +4085,9 @@ def production_control_cmd(
 def feedback_cmd(
     action: str = "list",
     limit: int = 50,
-    vacancy_id: Optional[str] = None,
+    vacancy_id: str | None = None,
     output_json: bool = False,
-    profile_path: Optional[str] = None,
+    profile_path: str | None = None,
 ) -> int:
     """Inspect, summarize, and analyze Telegram human feedback & preference calibration (Stage 89/90)."""
     try:
@@ -4229,8 +4096,7 @@ def feedback_cmd(
         print(f"Failed to open DB: {e}", file=sys.stderr)
         return 1
 
-    from . import db
-    from .db import list_telegram_feedback, get_telegram_feedback_summary
+    from . import db    from .db import get_telegram_feedback_summary, list_telegram_feedback
 
     if action == "summary":
         summary = get_telegram_feedback_summary()
@@ -4332,7 +4198,7 @@ def feedback_cmd(
         return 0
 
     if action == "provenance":
-        from .feedback_analytics import extract_all_preference_evidence, build_preference_profile
+        from .feedback_analytics import (            build_preference_profile,            extract_all_preference_evidence,        )
         all_raw = extract_all_preference_evidence(include_non_production=True)
         prof = build_preference_profile()
         if output_json:
@@ -4381,10 +4247,7 @@ def feedback_cmd(
         return 0
 
     if action == "simulate":
-        from .feedback_analytics import build_preference_profile, calculate_preference_adjustment
-        from .matcher import JobMatcher
-        from .candidate_profile import load_candidate_profile
-        from .db import _row_to_vacancy
+        from .candidate_profile import load_candidate_profile        from .db import _row_to_vacancy        from .feedback_analytics import (            build_preference_profile,            calculate_preference_adjustment,        )        from .matcher import JobMatcher
 
         prof = build_preference_profile()
         cand_prof = load_candidate_profile(path=profile_path)
@@ -4466,7 +4329,7 @@ def hermes_cmd(
     output_json: bool = False,
 ) -> int:
     """Inspect and synchronize external Hermes runtime integration (Stage 89.2)."""
-    from .hermes_integration import get_hermes_integration_status, sync_hermes_integration
+    from .hermes_integration import (        get_hermes_integration_status,        sync_hermes_integration,    )
 
     if action == "sync":
         res = sync_hermes_integration(dry_run=dry_run)
@@ -5340,8 +5203,7 @@ def main() -> int:
 def identity_show(vacancy_stable_id: str) -> int:
     """Show canonical identity for a vacancy."""
     init_db()
-    from .db import get_vacancy_by_id
-    from .db import _row_to_vacancy
+    from .db import _row_to_vacancy, get_vacancy_by_id
 
     
     row = get_vacancy_by_id(vacancy_stable_id)
@@ -5462,8 +5324,7 @@ def duplicates_list() -> int:
 def identity_queue(canonical_id: str, limit: int = 50) -> int:
     """Show queue info for a canonical vacancy."""
 
-    from .application_queue import get_queue_item, list_queue
-    from .application_tracking import get_application_status
+    from .application_queue import get_queue_item, list_queue    from .application_tracking import get_application_status
     init_db()
     
     canon = get_canonical_by_id(canonical_id)
@@ -5759,8 +5620,7 @@ def audit_canonical(canonical_id: str) -> int:
 
 def autonomous_once_cmd(as_json: bool = False, limit: int = 5) -> int:
     """Execute a single complete autonomous cycle."""
-    from .hh_autonomous_agent import AutonomousConfig, run_autonomous_cycle
-    import json
+    import json    from .hh_autonomous_agent import AutonomousConfig, run_autonomous_cycle
     cfg = AutonomousConfig(max_applications_per_cycle=limit)
     res = run_autonomous_cycle(config=cfg)
 
@@ -5874,8 +5734,8 @@ def autonomous_notifications_cmd(limit: int = 20, as_json: bool = False) -> int:
 
 def autonomous_conversations_cmd(
     limit: int = 50,
-    application_id: Optional[str] = None,
-    conversation_id: Optional[str] = None,
+    application_id: str | None = None,
+    conversation_id: str | None = None,
     as_json: bool = False,
 ) -> int:
     """Show full conversation and auto-reply audit trail."""
@@ -5932,8 +5792,8 @@ def autonomous_conversations_cmd(
 
 def autonomous_replies_cmd(
     limit: int = 50,
-    application_id: Optional[str] = None,
-    conversation_id: Optional[str] = None,
+    application_id: str | None = None,
+    conversation_id: str | None = None,
     as_json: bool = False,
 ) -> int:
     """Show autonomous recruiter replies sent with full visibility (Stage 53)."""

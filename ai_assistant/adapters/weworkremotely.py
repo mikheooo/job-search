@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import re
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -13,9 +14,9 @@ class WeWorkRemotelyAdapter:
     source = "weworkremotely"
     feed_url = "https://weworkremotely.com/remote-jobs.rss"
 
-    def fetch_vacancies(self) -> List[Vacancy]:
+    def fetch_vacancies(self) -> list[Vacancy]:
         feed = feedparser.parse(self.feed_url)
-        results: List[Vacancy] = []
+        results: list[Vacancy] = []
         seen_urls = set()
         for entry in feed.entries:
             raw_url = entry.get("link") or entry.get("id") or ""

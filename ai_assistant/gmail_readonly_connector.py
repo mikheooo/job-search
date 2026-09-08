@@ -44,7 +44,7 @@ class GmailReadOnlyConnector:
     def __init__(
         self,
         credentials=None,
-        service: Optional[Any] = None,
+        service: Any | None = None,
         max_live_emails: int = DEFAULT_MAX_LIVE_EMAILS,
         query: str = "in:inbox is:unread newer_than:7d",
     ):
@@ -88,7 +88,7 @@ class GmailReadOnlyConnector:
         return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
     # -- read-only API helpers -----------------------------------------------
-    def _messages_list(self, service, user_id: str = "me") -> List[Dict[str, Any]]:
+    def _messages_list(self, service, user_id: str = "me") -> list[dict[str, Any]]:
         """incoming-only discovery (search query), capped; never changes state."""
         self.read_calls += 1
         results = service.users().messages().list(
@@ -96,14 +96,14 @@ class GmailReadOnlyConnector:
         ).execute()
         return results.get("messages", []) or []
 
-    def _message_get(self, service, msg_id: str, user_id: str = "me") -> Dict[str, Any]:
+    def _message_get(self, service, msg_id: str, user_id: str = "me") -> dict[str, Any]:
         """read-only message fetch (no modify/trash/labels)."""
         self.read_calls += 1
         return service.users().messages().get(
             userId=user_id, id=msg_id, format="full"
         ).execute()
 
-    def _thread_get(self, service, thread_id: str, user_id: str = "me") -> Dict[str, Any]:
+    def _thread_get(self, service, thread_id: str, user_id: str = "me") -> dict[str, Any]:
         """read-only thread fetch."""
         self.read_calls += 1
         return service.users().threads().get(
@@ -111,14 +111,14 @@ class GmailReadOnlyConnector:
         ).execute()
 
     # -- transport callable (Stage 27 contract) ------------------------------
-    def transport(self) -> Callable[[], List[Dict[str, Any]]]:
+    def transport(self) -> Callable[[], list[dict[str, Any]]]:
         """Return a Stage 27-compatible transport (list of raw email dicts)."""
 
-        def _run() -> List[Dict[str, Any]]:
+        def _run() -> list[dict[str, Any]]:
             service = self._service_or_default()
             meta = service.users().getProfile(userId="me").execute()  # read-only
             self.read_calls += 1
-            out: List[Dict[str, Any]] = []
+            out: list[dict[str, Any]] = []
             for m in self._messages_list(service):
                 try:
                     full = self._message_get(service, m["id"])
@@ -130,7 +130,7 @@ class GmailReadOnlyConnector:
         return _run
 
     # -- mapping helpers -----------------------------------------------------
-    def _to_email_dict(self, full_msg: Dict[str, Any]) -> Dict[str, Any]:
+    def _to_email_dict(self, full_msg: dict[str, Any]) -> dict[str, Any]:
         headers = {}
         for h in full_msg.get("payload", {}).get("headers", []) or []:
             headers[(h.get("name") or "").lower()] = h.get("value") or ""
@@ -163,7 +163,7 @@ class GmailReadOnlyConnector:
         return s, ""
 
     @staticmethod
-    def _extract_body(payload: Dict[str, Any]) -> str:
+    def _extract_body(payload: dict[str, Any]) -> str:
         """Extract plain-text body (read-only). Falls back gracefully."""
         if payload.get("mimeType") == "text/plain":
             data = payload.get("body", {}).get("data")
@@ -188,7 +188,7 @@ class GmailReadOnlyConnector:
 
 # ---------------- provider status helpers -----------------------------------
 
-def gmail_provider_status(credentials=None) -> Dict[str, Any]:
+def gmail_provider_status(credentials=None) -> dict[str, Any]:
     """Determine Gmail access status WITHOUT exposing secrets.
 
     Returns one of:

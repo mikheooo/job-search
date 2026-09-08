@@ -8,12 +8,35 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from . import config
-from .db import get_connection, init_db, get_deep_analysis, get_application_package, get_submission, get_all_submissions, get_verification, list_verifications
-from .application_tracking import get_application_status, list_applications, get_application_history, ApplicationStatus
-from .application_review import get_application_review, list_application_reviews, ReviewStatus
 from .application_queue import get_queue_item, list_queue
-from .browser_executor import get_browser_session, BrowserStatus
-from .vacancy_identity import get_canonical_by_id, get_aliases_for_canonical, get_all_canonical_vacancies, MatchType
+from .application_review import (
+    ReviewStatus,
+    get_application_review,
+    list_application_reviews,
+)
+from .application_tracking import (
+    ApplicationStatus,
+    get_application_history,
+    get_application_status,
+    list_applications,
+)
+from .browser_executor import BrowserStatus, get_browser_session
+from .db import (
+    get_all_submissions,
+    get_application_package,
+    get_connection,
+    get_deep_analysis,
+    get_submission,
+    get_verification,
+    init_db,
+    list_verifications,
+)
+from .vacancy_identity import (
+    MatchType,
+    get_aliases_for_canonical,
+    get_all_canonical_vacancies,
+    get_canonical_by_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +52,9 @@ class IntegrityIssue:
     severity: IntegritySeverity
     code: str
     vacancy_stable_id: str
-    canonical_id: Optional[str] = None
+    canonical_id: str | None = None
     message: str = ""
-    evidence: Dict[str, Any] = field(default_factory=dict)
+    evidence: dict[str, Any] = field(default_factory=dict)
 
     def __lt__(self, other: "IntegrityIssue") -> bool:
         o = {IntegritySeverity.ERROR: 0, IntegritySeverity.WARNING: 1, IntegritySeverity.INFO: 2}
@@ -59,7 +82,7 @@ class IntegrityReport:
     info_count: int = 0
     warning_count: int = 0
     error_count: int = 0
-    issues: List[IntegrityIssue] = field(default_factory=list)
+    issues: list[IntegrityIssue] = field(default_factory=list)
     audited_vacancies: int = 0
     audited_canonicals: int = 0
     queue_items: int = 0
@@ -73,7 +96,7 @@ class IntegrityReport:
     def healthy(self) -> bool:
         return self.error_count == 0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "generated_at": self.generated_at,
             "total_checked": self.total_checked,
@@ -97,23 +120,23 @@ class IntegrityReport:
 class IntegrityAuditor:
     def __init__(self, scope: str = "full"):
         self.scope = scope if scope in ("full", "tracked") else "full"
-        self.issues: List[IntegrityIssue] = []
-        self._audited_vacancies: Set[str] = set()
-        self._audited_canonicals: Set[str] = set()
+        self.issues: list[IntegrityIssue] = []
+        self._audited_vacancies: set[str] = set()
+        self._audited_canonicals: set[str] = set()
 
-    def _add(self, sev: IntegritySeverity, code: str, vid: str, cid: Optional[str], msg: str, ev: Dict[str, Any] = None):
+    def _add(self, sev: IntegritySeverity, code: str, vid: str, cid: str | None, msg: str, ev: dict[str, Any] = None):
         self.issues.append(IntegrityIssue(severity=sev, code=code, vacancy_stable_id=vid, canonical_id=cid, message=msg, evidence=ev or {}))
 
-    def _err(self, code: str, vid: str, cid: Optional[str], msg: str, ev: Dict[str, Any] = None):
+    def _err(self, code: str, vid: str, cid: str | None, msg: str, ev: dict[str, Any] = None):
         self._add(IntegritySeverity.ERROR, code, vid, cid, msg, ev)
 
-    def _warn(self, code: str, vid: str, cid: Optional[str], msg: str, ev: Dict[str, Any] = None):
+    def _warn(self, code: str, vid: str, cid: str | None, msg: str, ev: dict[str, Any] = None):
         self._add(IntegritySeverity.WARNING, code, vid, cid, msg, ev)
 
-    def _info(self, code: str, vid: str, cid: Optional[str], msg: str, ev: Dict[str, Any] = None):
+    def _info(self, code: str, vid: str, cid: str | None, msg: str, ev: dict[str, Any] = None):
         self._add(IntegritySeverity.INFO, code, vid, cid, msg, ev)
 
-    def _check_canonical_identity_consistency(self, cid: str, aliases: List[Tuple[Any, str]]):
+    def _check_canonical_identity_consistency(self, cid: str, aliases: list[tuple[Any, str]]):
         if cid.startswith("unknown_"):
             return
         aliases_db = get_aliases_for_canonical(cid)
@@ -125,13 +148,13 @@ class IntegrityAuditor:
             if len(cids) > 1:
                 self._err("CANONICAL_EXACT_MISMATCH", exact[0]["vacancy_stable_id"], cid, f"EXACT aliases have different canonical_ids: {cids}", {"canonical_ids": list(cids)})
 
-    def _check_canonical_has_aliases(self, cid: str, aliases: List[Tuple[Any, str]]):
+    def _check_canonical_has_aliases(self, cid: str, aliases: list[tuple[Any, str]]):
         if cid.startswith("unknown_"):
             return
         if not aliases:
             self._err("CANONICAL_NO_ALIASES", "", cid, f"Canonical {cid} has no aliases", {"canonical_id": cid})
 
-    def _check_alias_belongs_to_canonical(self, cid: str, aliases: List[Tuple[Any, str]]):
+    def _check_alias_belongs_to_canonical(self, cid: str, aliases: list[tuple[Any, str]]):
         if cid.startswith("unknown_"):
             return
         valid = {a["vacancy_stable_id"] for a in get_aliases_for_canonical(cid)}
@@ -139,15 +162,15 @@ class IntegrityAuditor:
             if sid not in valid:
                 self._err("ALIAS_CANONICAL_MISMATCH", sid, cid, f"Alias {sid} does not belong to canonical {cid}", {"alias": sid})
 
-    def _check_queue_canonical_consistency(self, cid: str, aliases: List[Tuple[Any, str]]):
+    def _check_queue_canonical_consistency(self, cid: str, aliases: list[tuple[Any, str]]):
         items = list_queue(queue_version="v2")
-        by_cid: Dict[str, List[Any]] = {}
+        by_cid: dict[str, list[Any]] = {}
         for it in items:
             by_cid.setdefault(it.canonical_id, []).append(it)
         if cid in by_cid and len(by_cid[cid]) > 1:
             self._err("QUEUE_CANONICAL_DUPLICATE", by_cid[cid][0].vacancy_stable_id, cid, f"Canonical {cid} has {len(by_cid[cid])} queue items", {"queue_items": [q.vacancy_stable_id for q in by_cid[cid]]})
 
-    def _check_tracking_queue_consistency(self, cid: str, aliases: List[Tuple[Any, str]]):
+    def _check_tracking_queue_consistency(self, cid: str, aliases: list[tuple[Any, str]]):
         for _, sid in aliases:
             tr = get_application_status(sid)
             if not tr:
@@ -159,7 +182,7 @@ class IntegrityAuditor:
                 if qi:
                     self._err("TERMINAL_IN_READY_QUEUE", sid, cid, f"Terminal {st} is in queue", {"tracking": st})
 
-    def _check_review_tracking_browser_consistency(self, cid: str, aliases: List[Tuple[Any, str]]):
+    def _check_review_tracking_browser_consistency(self, cid: str, aliases: list[tuple[Any, str]]):
         for _, sid in aliases:
             rev = get_application_review(sid)
             if not rev:
@@ -174,7 +197,7 @@ class IntegrityAuditor:
             if bs == BrowserStatus.BLOCKED.value and rs == ReviewStatus.APPROVED.value:
                 self._err("REVIEW_BROWSER_MISMATCH", sid, cid, "Review APPROVED but browser BLOCKED", {"review": rs, "browser": bs})
 
-    def _check_browser_vacancy_package_consistency(self, cid: str, aliases: List[Tuple[Any, str]]):
+    def _check_browser_vacancy_package_consistency(self, cid: str, aliases: list[tuple[Any, str]]):
         for _, sid in aliases:
             bsess = get_browser_session(sid)
             if not bsess:
@@ -183,7 +206,7 @@ class IntegrityAuditor:
             if bs == BrowserStatus.READY_FOR_REVIEW.value and not get_application_package(sid):
                 self._err("BROWSER_READY_NO_PACKAGE", sid, cid, "Browser READY_FOR_REVIEW but no package", {"browser": bs})
 
-    def _check_submission_tracking_consistency(self, cid: str, aliases: List[Tuple[Any, str]]):
+    def _check_submission_tracking_consistency(self, cid: str, aliases: list[tuple[Any, str]]):
         for _, sid in aliases:
             tr = get_application_status(sid)
             if not tr:
@@ -198,7 +221,7 @@ class IntegrityAuditor:
                 if sub_st == "SUBMITTED" and ts not in {ApplicationStatus.SUBMITTED.value, ApplicationStatus.VERIFIED.value, ApplicationStatus.APPLIED.value}:
                     self._warn("SUBMISSION_TRACKING_MISMATCH", sid, cid, f"Submission SUBMITTED but tracking {ts}", {"sub": sub_st, "track": ts})
 
-    def _check_verification_submission_consistency(self, cid: str, aliases: List[Tuple[Any, str]]):
+    def _check_verification_submission_consistency(self, cid: str, aliases: list[tuple[Any, str]]):
         for _, sid in aliases:
             tr = get_application_status(sid)
             if not tr:
@@ -215,7 +238,7 @@ class IntegrityAuditor:
                 if vs in {"FAILED", "AMBIGUOUS", "BLOCKED"} and ts == ApplicationStatus.APPLIED.value:
                     self._err("VERIFICATION_FAILED_BUT_APPLIED", sid, cid, f"Verification {vs} but APPLIED", {"verification": vs, "tracking": ts})
 
-    def _check_lifecycle_transitions(self, cid: str, aliases: List[Tuple[Any, str]]):
+    def _check_lifecycle_transitions(self, cid: str, aliases: list[tuple[Any, str]]):
         allowed = {
             ApplicationStatus.DISCOVERED: {ApplicationStatus.ANALYZED},
             ApplicationStatus.ANALYZED: {ApplicationStatus.READY_TO_APPLY},
@@ -245,7 +268,7 @@ class IntegrityAuditor:
                     if oe in allowed and ne not in allowed[oe]:
                         self._err("INVALID_LIFECYCLE_TRANSITION", sid, cid, f"Invalid {old} -> {new}", {"from": old, "to": new, "current": ts})
 
-    def _check_submission_records(self, cid: str, aliases: List[Tuple[Any, str]]):
+    def _check_submission_records(self, cid: str, aliases: list[tuple[Any, str]]):
         for _, sid in aliases:
             subs = get_all_submissions(sid)
             seen = set()
@@ -266,7 +289,7 @@ class IntegrityAuditor:
                     except Exception:
                         pass
 
-    def _check_verification_json_records(self, tracked_sids: Set[str]):
+    def _check_verification_json_records(self, tracked_sids: set[str]):
         """Validate persisted verification JSON independently of model getters."""
         from .submission_verifier import SubmissionVerification
 
@@ -296,7 +319,7 @@ class IntegrityAuditor:
                     {"submission_id": sub_id, "version": version, "status": status, "error": str(exc)},
                 )
 
-    def _check_orphan_artifacts(self, cid: str, aliases: List[Tuple[Any, str]]):
+    def _check_orphan_artifacts(self, cid: str, aliases: list[tuple[Any, str]]):
         for _, sid in aliases:
             tr = get_application_status(sid)
             if get_queue_item(sid, "v2") and not tr:
@@ -355,11 +378,11 @@ class IntegrityAuditor:
                     self._err("BROWSER_PREP_ORPHAN", sid, cid, "Browser prep without tracking (global)", {})
         conn.close()
 
-    def _count_artifacts(self, tracked_sids: Set[str], tracked_cids: Set[str]) -> Dict[str, int]:
+    def _count_artifacts(self, tracked_sids: set[str], tracked_cids: set[str]) -> dict[str, int]:
         conn = get_connection()
         cur = conn.cursor()
 
-        def count_in(table: str, col: str, ids: Set[str]) -> int:
+        def count_in(table: str, col: str, ids: set[str]) -> int:
             if not ids:
                 return 0
             ph = ",".join("?" for _ in ids)
@@ -395,7 +418,7 @@ class IntegrityAuditor:
         all_canonicals = get_all_canonical_vacancies()
         all_tracking = list_applications(limit=10000)
         self._audited_vacancies = {t.vacancy_stable_id for t in all_tracking}
-        groups: Dict[str, List[Tuple[Any, str]]] = {}
+        groups: dict[str, list[tuple[Any, str]]] = {}
         for tr in all_tracking:
             sid = tr.vacancy_stable_id
             conn = get_connection()

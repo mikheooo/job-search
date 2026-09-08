@@ -25,7 +25,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ai_assistant import config, db
 from ai_assistant.schema import Vacancy, is_genuine_production_vacancy
@@ -45,7 +45,7 @@ class SignalStrength(str, Enum):
     WEAK_NEGATIVE = "WEAK_NEGATIVE"                # weight 0.5, raw_val -0.3 (Plain SKIP / contextual pass)
 
 
-SIGNAL_WEIGHT_MAP: Dict[SignalStrength, Tuple[float, float]] = {
+SIGNAL_WEIGHT_MAP: dict[SignalStrength, tuple[float, float]] = {
     SignalStrength.VERY_STRONG_POSITIVE: (1.5, 1.0),
     SignalStrength.STRONG_POSITIVE: (1.0, 0.8),
     SignalStrength.STRONG_NEGATIVE: (1.0, -0.8),
@@ -65,7 +65,7 @@ class EvidenceProvenance(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
-PROVENANCE_PRECEDENCE: Dict[EvidenceProvenance, int] = {
+PROVENANCE_PRECEDENCE: dict[EvidenceProvenance, int] = {
     EvidenceProvenance.EXPLICIT_HUMAN_FEEDBACK: 1,
     EvidenceProvenance.CONFIRMED_REAL_APPLICATION: 2,
     EvidenceProvenance.EXPLICIT_HUMAN_APPLICATION_INTENT: 3,
@@ -99,7 +99,7 @@ FeedbackReason = SkipReason
 
 
 # Canonical tracked technology/skill tokens for preference analytics
-TRACKED_SKILL_PATTERNS: Dict[str, List[str]] = {
+TRACKED_SKILL_PATTERNS: dict[str, list[str]] = {
     "python": [r"\bpython\b", r"\bpython3\b"],
     "n8n": [r"\bn8n\b", r"\bn8n\.io\b"],
     "ai_agents": [r"\bai agent\b", r"\bai agents\b", r"\bagentic\b", r"\bautogen\b", r"\bcrewai\b"],
@@ -118,7 +118,7 @@ TRACKED_SKILL_PATTERNS: Dict[str, List[str]] = {
 
 
 # Canonical Role Concept Patterns
-ROLE_CONCEPT_PATTERNS: List[Tuple[str, List[str]]] = [
+ROLE_CONCEPT_PATTERNS: list[tuple[str, list[str]]] = [
     ("AI Automation Engineer", [r"ai automation", r"n8n", r"agentic", r"ai engineer", r"ai developer", r"ai specialist"]),
     ("Application Support Engineer", [r"application support", r"app support", r"l2 support", r"l3 support"]),
     ("Technical Support Engineer", [r"tech support", r"technical support", r"help desk", r"it support", r"service desk"]),
@@ -146,18 +146,18 @@ class PreferenceEvidenceEvent:
     correlation_key: str = ""
     source_table: str = ""
     event_id: str = ""
-    skip_reason: Optional[str] = None
-    feedback_reason: Optional[str] = None
+    skip_reason: str | None = None
+    feedback_reason: str | None = None
     title: str = ""
     company: str = ""
     source: str = ""
     role_family: str = "OTHER"
     role_concept: str = ""
-    skills: List[str] = field(default_factory=list)
-    seniority: List[str] = field(default_factory=list)
-    match_score: Optional[float] = None
-    match_decision: Optional[str] = None
-    notes: List[str] = field(default_factory=list)
+    skills: list[str] = field(default_factory=list)
+    seniority: list[str] = field(default_factory=list)
+    match_score: float | None = None
+    match_decision: str | None = None
+    notes: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         if not self.occurred_at and self.created_at:
@@ -173,7 +173,7 @@ class PreferenceEvidenceEvent:
         elif not self.skip_reason and self.feedback_reason:
             self.skip_reason = self.feedback_reason
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["signal_strength"] = self.signal_strength.value if hasattr(self.signal_strength, "value") else str(self.signal_strength)
         d["provenance"] = self.provenance.value if hasattr(self.provenance, "value") else str(self.provenance)
@@ -195,10 +195,10 @@ class DimensionSignal:
     confidence: float = 0.0         # [0.0, 1.0]
     status: str = "NO_EVIDENCE"     # NO_EVIDENCE, RECORD_ONLY, WEAK_HINT, LOW_CONFIDENCE, HIGH_CONFIDENCE, AMBIGUOUS_PREFERENCE
     readiness: str = "COLLECTING"   # NO_EVIDENCE, COLLECTING, CALIBRATION_ELIGIBLE
-    last_feedback_at: Optional[str] = None
-    notes: List[str] = field(default_factory=list)
+    last_feedback_at: str | None = None
+    notes: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -213,16 +213,16 @@ class PreferenceProfile:
     events_needed_for_threshold: int = 0
     calibration_readiness: str = "NO_EVIDENCE"  # NO_EVIDENCE, COLLECTING, LOW_CONFIDENCE, CALIBRATION_ELIGIBLE
     calibration_status: str = "INSUFFICIENT_EVIDENCE_FOR_AUTOMATIC_CALIBRATION"
-    role_families: Dict[str, DimensionSignal] = field(default_factory=dict)
-    role_concepts: Dict[str, DimensionSignal] = field(default_factory=dict)
-    skills: Dict[str, DimensionSignal] = field(default_factory=dict)
-    companies: Dict[str, DimensionSignal] = field(default_factory=dict)
-    skip_reasons: Dict[str, int] = field(default_factory=dict)
-    feedback_reasons: Dict[str, int] = field(default_factory=dict)
-    provenance_summary: Dict[str, int] = field(default_factory=dict)
-    dimension_readiness: Dict[str, str] = field(default_factory=dict)
-    selection_bias_notes: List[str] = field(default_factory=list)
-    evidence_events: List[PreferenceEvidenceEvent] = field(default_factory=list)
+    role_families: dict[str, DimensionSignal] = field(default_factory=dict)
+    role_concepts: dict[str, DimensionSignal] = field(default_factory=dict)
+    skills: dict[str, DimensionSignal] = field(default_factory=dict)
+    companies: dict[str, DimensionSignal] = field(default_factory=dict)
+    skip_reasons: dict[str, int] = field(default_factory=dict)
+    feedback_reasons: dict[str, int] = field(default_factory=dict)
+    provenance_summary: dict[str, int] = field(default_factory=dict)
+    dimension_readiness: dict[str, str] = field(default_factory=dict)
+    selection_bias_notes: list[str] = field(default_factory=list)
+    evidence_events: list[PreferenceEvidenceEvent] = field(default_factory=list)
 
     def __post_init__(self):
         if not self.total_evidence_events:
@@ -234,7 +234,7 @@ class PreferenceProfile:
         threshold = getattr(config, "PREFERENCE_MIN_EVIDENCE_THRESHOLD", 5)
         self.events_needed_for_threshold = max(0, threshold - self.production_eligible_events_count)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "generated_at": self.generated_at,
             "raw_evidence_count": self.raw_evidence_count,
@@ -274,7 +274,7 @@ def extract_role_concept(title: str) -> str:
     return title.strip()[:40]
 
 
-def extract_vacancy_skills(title: str, description: str = "") -> List[str]:
+def extract_vacancy_skills(title: str, description: str = "") -> list[str]:
     """Extract canonical tracked skill tags from text."""
     combined = f"{title or ''} {description or ''}".lower()
     matched = []
@@ -286,7 +286,7 @@ def extract_vacancy_skills(title: str, description: str = "") -> List[str]:
     return matched
 
 
-def extract_vacancy_seniority(title: str) -> List[str]:
+def extract_vacancy_seniority(title: str) -> list[str]:
     """Extract seniority indicators from title."""
     tl = (title or "").lower()
     levels = []
@@ -299,7 +299,7 @@ def extract_vacancy_seniority(title: str) -> List[str]:
     return levels or ["mid_or_unspecified"]
 
 
-def calculate_recency_weight(created_at: str, now_dt: Optional[datetime] = None) -> float:
+def calculate_recency_weight(created_at: str, now_dt: datetime | None = None) -> float:
     """Compute recency decay weight based on age in days."""
     if not created_at:
         return 0.5
@@ -330,8 +330,8 @@ def calculate_recency_weight(created_at: str, now_dt: Optional[datetime] = None)
 def aggregate_events_to_signal(
     dimension_key: str,
     name: str,
-    events: List[PreferenceEvidenceEvent],
-    now_dt: Optional[datetime] = None,
+    events: list[PreferenceEvidenceEvent],
+    now_dt: datetime | None = None,
 ) -> DimensionSignal:
     """Deterministic aggregation of events into a confidence-scored DimensionSignal."""
     if not events:
@@ -426,10 +426,10 @@ def aggregate_events_to_signal(
 # ---------------------------------------------------------------------------
 
 def extract_all_preference_evidence(
-    now_dt: Optional[datetime] = None,
-    storage_dir: Optional[str] = None,
+    now_dt: datetime | None = None,
+    storage_dir: str | None = None,
     include_non_production: bool = False,
-) -> List[PreferenceEvidenceEvent]:
+) -> list[PreferenceEvidenceEvent]:
     """Extract, audit provenance, and deduplicate all preference signals across canonical state tables.
     
     Stage 91 Enhancements:
@@ -448,7 +448,7 @@ def extract_all_preference_evidence(
         FROM vacancies
     ''')
     vac_rows = cur.fetchall()
-    vac_map: Dict[str, Dict[str, Any]] = {}
+    vac_map: dict[str, dict[str, Any]] = {}
     for r in vac_rows:
         sid = r[0]
         src = r[1] or ""
@@ -493,7 +493,7 @@ def extract_all_preference_evidence(
         for sid, vinfo in vac_map.items():
             vinfo["role_family"] = "OTHER"
 
-    raw_events: List[PreferenceEvidenceEvent] = []
+    raw_events: list[PreferenceEvidenceEvent] = []
     owner_id = str(getattr(config, "TELEGRAM_OWNER_ID", "") or "392046103").strip()
 
     # 1. Telegram Feedback Records
@@ -710,11 +710,11 @@ def extract_all_preference_evidence(
         return raw_events
 
     # Group by correlation_key (vacancy_stable_id)
-    events_by_key: Dict[str, List[PreferenceEvidenceEvent]] = {}
+    events_by_key: dict[str, list[PreferenceEvidenceEvent]] = {}
     for ev in raw_events:
         events_by_key.setdefault(ev.correlation_key, []).append(ev)
 
-    filtered_ground_truth: List[PreferenceEvidenceEvent] = []
+    filtered_ground_truth: list[PreferenceEvidenceEvent] = []
     for key, group in events_by_key.items():
         eligible = [e for e in group if e.is_production_eligible]
         if not eligible:
@@ -747,7 +747,7 @@ def extract_all_preference_evidence(
 # Feedback Coverage Metrics (Stage 91 Task 12)
 # ---------------------------------------------------------------------------
 
-def get_feedback_coverage_metrics() -> Dict[str, Any]:
+def get_feedback_coverage_metrics() -> dict[str, Any]:
     """Compute read-only feedback coverage metrics across digest-delivered vacancies.
     
     Stage 91.1 Clarification:
@@ -764,7 +764,7 @@ def get_feedback_coverage_metrics() -> Dict[str, Any]:
         WHERE delivery_key LIKE 'digest:%' AND status = 'DELIVERED'
     ''')
     deliv_keys = cur.fetchall()
-    delivered_vids: Set[str] = set()
+    delivered_vids: set[str] = set()
     for (k,) in deliv_keys:
         vid = k.split("digest:", 1)[-1].strip()
         if vid and not vid.startswith("can_"):
@@ -796,7 +796,7 @@ def get_feedback_coverage_metrics() -> Dict[str, Any]:
     prep_count = sum(1 for e in evidence_events if e.action in ("PREPARE_APPLICATION", "APPLIED"))
     no_feedback = max(0, delivered_count - tg_count)
 
-    reasons: Dict[str, int] = {}
+    reasons: dict[str, int] = {}
     for e in evidence_events:
         if e.feedback_reason:
             reasons[e.feedback_reason] = reasons.get(e.feedback_reason, 0) + 1
@@ -825,8 +825,8 @@ def get_feedback_coverage_metrics() -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def build_preference_profile(
-    events: Optional[List[PreferenceEvidenceEvent]] = None,
-    now_dt: Optional[datetime] = None,
+    events: list[PreferenceEvidenceEvent] | None = None,
+    now_dt: datetime | None = None,
 ) -> PreferenceProfile:
     """Build derived PreferenceProfile from audited canonical evidence without mutating anything."""
     if now_dt is None:
@@ -856,12 +856,12 @@ def build_preference_profile(
     now_iso = now_dt.isoformat()
 
     # Groupings with Reason-Aware Signal Routing (Stage 91 Task 16)
-    by_rf: Dict[str, List[PreferenceEvidenceEvent]] = {}
-    by_concept: Dict[str, List[PreferenceEvidenceEvent]] = {}
-    by_skill: Dict[str, List[PreferenceEvidenceEvent]] = {}
-    by_company: Dict[str, List[PreferenceEvidenceEvent]] = {}
-    skip_reasons: Dict[str, int] = {}
-    feedback_reasons: Dict[str, int] = {}
+    by_rf: dict[str, list[PreferenceEvidenceEvent]] = {}
+    by_concept: dict[str, list[PreferenceEvidenceEvent]] = {}
+    by_skill: dict[str, list[PreferenceEvidenceEvent]] = {}
+    by_company: dict[str, list[PreferenceEvidenceEvent]] = {}
+    skip_reasons: dict[str, int] = {}
+    feedback_reasons: dict[str, int] = {}
 
     for ev in events:
         rsn = ev.feedback_reason or ev.skip_reason
@@ -997,8 +997,8 @@ def calculate_preference_adjustment(
     base_match_score: int,
     decision_class: str = "MATCH",
     eligibility: str = "ELIGIBLE",
-    enabled: Optional[bool] = None,
-) -> Tuple[float, List[str]]:
+    enabled: bool | None = None,
+) -> tuple[float, list[str]]:
     """Compute bounded preference ranking adjustment for a vacancy.
     
     Strict Invariants:
@@ -1010,7 +1010,7 @@ def calculate_preference_adjustment(
     if enabled is None:
         enabled = getattr(config, "PREFERENCE_CALIBRATION_ENABLED", False)
 
-    reasons: List[str] = []
+    reasons: list[str] = []
 
     # Invariant 1: Hard Gates / Ineligibility / Disqualifications
     if eligibility not in ("ELIGIBLE", "WARNING") or decision_class == "REJECT" or base_match_score < 60:

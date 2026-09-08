@@ -3,10 +3,11 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
+
 from . import config
-from .schema import Vacancy
 from .db_schema import apply_schema, schema_fingerprint
+from .schema import Vacancy
 
 logger = logging.getLogger(__name__)
 
@@ -248,8 +249,8 @@ def save_vacancy(vacancy) -> str:
 
 def save_vacancy_eligibility(vacancy_stable_id: str, assessment: Any, assessed_at: str | None = None) -> None:
     """Save or update structured eligibility assessment for a vacancy."""
-    import json
     import datetime as _dt
+    import json
     if assessed_at is None:
         assessed_at = _dt.datetime.utcnow().isoformat()
     init_db()
@@ -281,7 +282,7 @@ def save_vacancy_eligibility(vacancy_stable_id: str, assessment: Any, assessed_a
     conn.close()
 
 
-def get_vacancy_eligibility(vacancy_stable_id: str) -> Optional[Dict[str, Any]]:
+def get_vacancy_eligibility(vacancy_stable_id: str) -> dict[str, Any] | None:
     """Retrieve saved eligibility assessment for a specific vacancy."""
     init_db()
     conn = get_connection()
@@ -309,7 +310,7 @@ def get_vacancy_eligibility(vacancy_stable_id: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def get_all_vacancy_eligibilities() -> Dict[str, Dict[str, Any]]:
+def get_all_vacancy_eligibilities() -> dict[str, dict[str, Any]]:
     """Retrieve all saved eligibility records as a mapping from stable_id to dict."""
     init_db()
     conn = get_connection()
@@ -636,8 +637,9 @@ def get_verification(vacancy_stable_id: str, submission_id: str, verification_ve
         return None
     try:
         # Import at module level to avoid circular import issues
-        from .submission_verifier import SubmissionVerification
         import json
+
+        from .submission_verifier import SubmissionVerification
         data = json.loads(row[4]) if row[4] else {}
         return SubmissionVerification(**data)
     except Exception as e:
@@ -742,7 +744,7 @@ def is_hh_message_processed(message_fingerprint: str) -> bool:
     return bool(row[0])
 
 
-def get_hh_message_event(message_fingerprint: str) -> Optional[Dict[str, Any]]:
+def get_hh_message_event(message_fingerprint: str) -> dict[str, Any] | None:
     conn = get_connection()
     cur = conn.cursor()
     cur.execute('''
@@ -773,7 +775,7 @@ def get_hh_message_event(message_fingerprint: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def list_hh_message_events(conversation_id: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+def list_hh_message_events(conversation_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
     conn = get_connection()
     cur = conn.cursor()
     if conversation_id:
@@ -817,7 +819,7 @@ def list_hh_message_events(conversation_id: Optional[str] = None, limit: int = 5
 # Stage 34: HH Questionnaire DB Helpers
 # ---------------------------------------------------------------------------
 
-def save_hh_questionnaire(data: Dict[str, Any]) -> None:
+def save_hh_questionnaire(data: dict[str, Any]) -> None:
     """Save or update an HH questionnaire in state.db."""
     conn = get_connection()
     cur = conn.cursor()
@@ -866,7 +868,7 @@ def save_hh_questionnaire(data: Dict[str, Any]) -> None:
     conn.close()
 
 
-def _row_to_questionnaire(row: Any) -> Optional[Dict[str, Any]]:
+def _row_to_questionnaire(row: Any) -> dict[str, Any] | None:
     if not row:
         return None
     import json
@@ -897,7 +899,7 @@ def _row_to_questionnaire(row: Any) -> Optional[Dict[str, Any]]:
     }
 
 
-def get_hh_questionnaire(questionnaire_id: str) -> Optional[Dict[str, Any]]:
+def get_hh_questionnaire(questionnaire_id: str) -> dict[str, Any] | None:
     """Retrieve an HH questionnaire by its ID."""
     conn = get_connection()
     cur = conn.cursor()
@@ -911,7 +913,7 @@ def get_hh_questionnaire(questionnaire_id: str) -> Optional[Dict[str, Any]]:
     return _row_to_questionnaire(row)
 
 
-def get_hh_questionnaire_by_vacancy(vacancy_stable_id: str) -> Optional[Dict[str, Any]]:
+def get_hh_questionnaire_by_vacancy(vacancy_stable_id: str) -> dict[str, Any] | None:
     """Retrieve the latest HH questionnaire for a given vacancy."""
     conn = get_connection()
     cur = conn.cursor()
@@ -925,7 +927,7 @@ def get_hh_questionnaire_by_vacancy(vacancy_stable_id: str) -> Optional[Dict[str
     return _row_to_questionnaire(row)
 
 
-def get_hh_questionnaire_by_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
+def get_hh_questionnaire_by_conversation(conversation_id: str) -> dict[str, Any] | None:
     """Retrieve the latest HH questionnaire for a given conversation."""
     conn = get_connection()
     cur = conn.cursor()
@@ -939,7 +941,7 @@ def get_hh_questionnaire_by_conversation(conversation_id: str) -> Optional[Dict[
     return _row_to_questionnaire(row)
 
 
-def list_hh_questionnaires(status: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+def list_hh_questionnaires(status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
     """List stored HH questionnaires optionally filtered by status."""
     conn = get_connection()
     cur = conn.cursor()
@@ -962,8 +964,8 @@ def list_hh_questionnaires(status: Optional[str] = None, limit: int = 50) -> Lis
 
 def update_hh_questionnaire_answers(
     questionnaire_id: str,
-    answers: Dict[str, Any],
-    new_status: Optional[str] = None,
+    answers: dict[str, Any],
+    new_status: str | None = None,
 ) -> bool:
     """Update answers and status for a questionnaire."""
     import json
@@ -993,7 +995,7 @@ def update_hh_questionnaire_answers(
 # Stage 35: HH Applications & Transitions DB Helpers
 # ---------------------------------------------------------------------------
 
-def save_hh_application(data: Dict[str, Any]) -> None:
+def save_hh_application(data: dict[str, Any]) -> None:
     """Save or update an HH application record in state.db."""
     import json
     conn = get_connection()
@@ -1043,7 +1045,7 @@ def save_hh_application(data: Dict[str, Any]) -> None:
     conn.close()
 
 
-def _row_to_application(row: Any) -> Optional[Dict[str, Any]]:
+def _row_to_application(row: Any) -> dict[str, Any] | None:
     if not row:
         return None
     import json
@@ -1070,7 +1072,7 @@ def _row_to_application(row: Any) -> Optional[Dict[str, Any]]:
     }
 
 
-def get_hh_application(application_id: str) -> Optional[Dict[str, Any]]:
+def get_hh_application(application_id: str) -> dict[str, Any] | None:
     """Retrieve an HH application by its application_id."""
     conn = get_connection()
     cur = conn.cursor()
@@ -1085,7 +1087,7 @@ def get_hh_application(application_id: str) -> Optional[Dict[str, Any]]:
     return _row_to_application(row)
 
 
-def get_hh_application_by_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
+def get_hh_application_by_conversation(conversation_id: str) -> dict[str, Any] | None:
     """Retrieve the latest HH application for a conversation."""
     conn = get_connection()
     cur = conn.cursor()
@@ -1100,7 +1102,7 @@ def get_hh_application_by_conversation(conversation_id: str) -> Optional[Dict[st
     return _row_to_application(row)
 
 
-def get_hh_application_by_vacancy(vacancy_stable_id: str) -> Optional[Dict[str, Any]]:
+def get_hh_application_by_vacancy(vacancy_stable_id: str) -> dict[str, Any] | None:
     """Retrieve the latest HH application for a vacancy."""
     conn = get_connection()
     cur = conn.cursor()
@@ -1115,7 +1117,7 @@ def get_hh_application_by_vacancy(vacancy_stable_id: str) -> Optional[Dict[str, 
     return _row_to_application(row)
 
 
-def list_hh_applications(state: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+def list_hh_applications(state: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
     """List stored HH applications, optionally filtered by state."""
     conn = get_connection()
     cur = conn.cursor()
@@ -1138,7 +1140,7 @@ def list_hh_applications(state: Optional[str] = None, limit: int = 50) -> List[D
     return [_row_to_application(r) for r in rows if r is not None]
 
 
-def save_hh_application_transition(data: Dict[str, Any]) -> int:
+def save_hh_application_transition(data: dict[str, Any]) -> int:
     """Save an audit record for an application state transition."""
     import json
     conn = get_connection()
@@ -1170,7 +1172,7 @@ def save_hh_application_transition(data: Dict[str, Any]) -> int:
     return trans_id
 
 
-def list_hh_application_transitions(application_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+def list_hh_application_transitions(application_id: str, limit: int = 100) -> list[dict[str, Any]]:
     """List transition history for an application."""
     import json
     conn = get_connection()
@@ -1209,7 +1211,7 @@ def list_hh_application_transitions(application_id: str, limit: int = 100) -> Li
 # Stage 51 — Autonomous Operations DB Helpers
 # ---------------------------------------------------------------------------
 
-def save_autonomous_notification(data: Dict[str, Any]) -> int:
+def save_autonomous_notification(data: dict[str, Any]) -> int:
     """Save an autonomous notification."""
     import json
     conn = get_connection()
@@ -1244,7 +1246,7 @@ def save_autonomous_notification(data: Dict[str, Any]) -> int:
     return notif_id
 
 
-def list_autonomous_notifications(limit: int = 50, unread_only: bool = False) -> List[Dict[str, Any]]:
+def list_autonomous_notifications(limit: int = 50, unread_only: bool = False) -> list[dict[str, Any]]:
     """List recent autonomous notifications."""
     import json
     conn = get_connection()
@@ -1255,7 +1257,7 @@ def list_autonomous_notifications(limit: int = 50, unread_only: bool = False) ->
                metadata_json, created_at, read
         FROM autonomous_notifications
     '''
-    params: List[Any] = []
+    params: list[Any] = []
     if unread_only:
         query += " WHERE read = 0"
     query += " ORDER BY id DESC LIMIT ?"
@@ -1290,7 +1292,7 @@ def list_autonomous_notifications(limit: int = 50, unread_only: bool = False) ->
     return result
 
 
-def save_interview_event(data: Dict[str, Any]) -> int:
+def save_interview_event(data: dict[str, Any]) -> int:
     """Save a detected interview event."""
     conn = get_connection()
     cur = conn.cursor()
@@ -1321,7 +1323,7 @@ def save_interview_event(data: Dict[str, Any]) -> int:
     return event_id
 
 
-def list_interview_events(limit: int = 50) -> List[Dict[str, Any]]:
+def list_interview_events(limit: int = 50) -> list[dict[str, Any]]:
     """List recent interview events."""
     conn = get_connection()
     cur = conn.cursor()
@@ -1352,7 +1354,7 @@ def list_interview_events(limit: int = 50) -> List[Dict[str, Any]]:
     ]
 
 
-def save_autonomous_cycle_run(data: Dict[str, Any]) -> int:
+def save_autonomous_cycle_run(data: dict[str, Any]) -> int:
     """Save an autonomous cycle execution summary."""
     import json
     conn = get_connection()
@@ -1391,7 +1393,7 @@ def save_autonomous_cycle_run(data: Dict[str, Any]) -> int:
     return run_id
 
 
-def list_autonomous_cycle_runs(limit: int = 20) -> List[Dict[str, Any]]:
+def list_autonomous_cycle_runs(limit: int = 20) -> list[dict[str, Any]]:
     """List recent autonomous cycle runs."""
     import json
     conn = get_connection()
@@ -1434,7 +1436,7 @@ def list_autonomous_cycle_runs(limit: int = 20) -> List[Dict[str, Any]]:
     return result
 
 
-def save_conversation_audit(data: Dict[str, Any]) -> int:
+def save_conversation_audit(data: dict[str, Any]) -> int:
     """Save an autonomous conversation audit record."""
     import json
     conn = get_connection()
@@ -1479,11 +1481,11 @@ def save_conversation_audit(data: Dict[str, Any]) -> int:
 
 
 def list_conversation_audits(
-    application_id: Optional[str] = None,
-    conversation_id: Optional[str] = None,
-    status: Optional[str] = None,
+    application_id: str | None = None,
+    conversation_id: str | None = None,
+    status: str | None = None,
     limit: int = 50,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """List stored autonomous conversation audits with optional filtering."""
     import json
     conn = get_connection()
@@ -1496,7 +1498,7 @@ def list_conversation_audits(
                profile_facts_used, decision_reason, status, error, created_at
         FROM autonomous_conversation_audits
     '''
-    params: List[Any] = []
+    params: list[Any] = []
     clauses = []
     if application_id:
         clauses.append("application_id = ?")
@@ -1548,7 +1550,7 @@ def list_conversation_audits(
     return result
 
 
-def get_conversation_audit(audit_id: int) -> Optional[Dict[str, Any]]:
+def get_conversation_audit(audit_id: int) -> dict[str, Any] | None:
     """Retrieve a single conversation audit by ID."""
     import json
     conn = get_connection()
@@ -1609,7 +1611,7 @@ def record_telegram_delivery(
     notification_type: str,
     chat_id: str,
     status: str = "DELIVERED",
-    payload: Optional[Dict[str, Any]] = None,
+    payload: dict[str, Any] | None = None,
 ) -> int:
     """Record a delivery event to Telegram to ensure strict idempotency."""
     import datetime
@@ -1633,13 +1635,13 @@ def record_telegram_delivery(
     return record_id
 
 
-def list_telegram_delivery_records(status: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+def list_telegram_delivery_records(status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
     """List telegram delivery records from database."""
     import json
     conn = get_connection()
     cur = conn.cursor()
     query = "SELECT id, delivery_key, notification_type, chat_id, delivered_at, status, payload FROM telegram_delivery_records"
-    params: List[Any] = []
+    params: list[Any] = []
     if status:
         query += " WHERE status = ?"
         params.append(str(status).strip())
@@ -1669,7 +1671,7 @@ def list_telegram_delivery_records(status: Optional[str] = None, limit: int = 10
     return result
 
 
-def update_telegram_delivery_status(record_id: int, status: str, payload_update: Optional[Dict[str, Any]] = None) -> bool:
+def update_telegram_delivery_status(record_id: int, status: str, payload_update: dict[str, Any] | None = None) -> bool:
     """Update status and payload for a telegram delivery record."""
     import json
     conn = get_connection()
@@ -1694,7 +1696,7 @@ def update_telegram_delivery_status(record_id: int, status: str, payload_update:
     return affected > 0
 
 
-def is_digest_delivered(vacancy_stable_id: str, canonical_id: Optional[str] = None) -> bool:
+def is_digest_delivered(vacancy_stable_id: str, canonical_id: str | None = None) -> bool:
     """Check if a vacancy has already been included in a successfully delivered Telegram digest."""
     if not vacancy_stable_id:
         return False
@@ -1714,7 +1716,7 @@ def is_digest_delivered(vacancy_stable_id: str, canonical_id: Optional[str] = No
 is_vacancy_delivered_in_digest = is_digest_delivered
 
 
-def compute_digest_batch_key(vacancy_ids: List[str]) -> str:
+def compute_digest_batch_key(vacancy_ids: list[str]) -> str:
     """Compute deterministic batch key from sorted vacancy IDs."""
     import hashlib
     clean_ids = sorted([str(vid).strip() for vid in vacancy_ids if vid and str(vid).strip()])
@@ -1723,7 +1725,7 @@ def compute_digest_batch_key(vacancy_ids: List[str]) -> str:
     return f"digest_batch:{h}"
 
 
-def record_digest_attempt(vacancy_ids: List[str], chat_id: str = "-1004399255305") -> Optional[str]:
+def record_digest_attempt(vacancy_ids: list[str], chat_id: str = "-1004399255305") -> str | None:
     """DURABLY record/acquire in-flight delivery attempt BEFORE external Telegram API side-effect.
     
     Returns batch_key if this process successfully claimed exclusive attempt permission.
@@ -1804,7 +1806,7 @@ def record_digest_attempt(vacancy_ids: List[str], chat_id: str = "-1004399255305
     return batch_key
 
 
-def mark_digest_delivered(vacancy_ids: List[str], batch_key: Optional[str] = None, chat_id: str = "-1004399255305") -> int:
+def mark_digest_delivered(vacancy_ids: list[str], batch_key: str | None = None, chat_id: str = "-1004399255305") -> int:
     """Atomically record successful digest delivery for vacancy stable_ids and associated batch."""
     if not vacancy_ids:
         return 0
@@ -1851,7 +1853,7 @@ def mark_digest_delivered(vacancy_ids: List[str], batch_key: Optional[str] = Non
     return count
 
 
-def record_digest_failed(vacancy_ids: List[str], batch_key: Optional[str] = None, chat_id: str = "-1004399255305", error: str = "") -> int:
+def record_digest_failed(vacancy_ids: list[str], batch_key: str | None = None, chat_id: str = "-1004399255305", error: str = "") -> int:
     """Record confirmed Telegram delivery failure so vacancies remain retryable."""
     if not vacancy_ids:
         return 0
@@ -1897,7 +1899,7 @@ def record_digest_failed(vacancy_ids: List[str], batch_key: Optional[str] = None
     return count
 
 
-def record_digest_ambiguous(vacancy_ids: List[str], batch_key: Optional[str] = None, chat_id: str = "-1004399255305", reason: str = "") -> int:
+def record_digest_ambiguous(vacancy_ids: list[str], batch_key: str | None = None, chat_id: str = "-1004399255305", reason: str = "") -> int:
     """Record ambiguous / interrupted attempt so vacancies are protected against duplicate send."""
     if not vacancy_ids:
         return 0
@@ -1943,10 +1945,11 @@ def record_digest_ambiguous(vacancy_ids: List[str], batch_key: Optional[str] = N
     return count
 
 
-def list_digest_attempts(limit: int = 50, now_dt: Optional[Any] = None) -> List[Dict[str, Any]]:
+def list_digest_attempts(limit: int = 50, now_dt: Any | None = None) -> list[dict[str, Any]]:
     """List digest delivery attempts from telegram_delivery_records with stale evaluation."""
-    from .config import DIGEST_ATTEMPT_STALE_MINUTES
     import datetime
+
+    from .config import DIGEST_ATTEMPT_STALE_MINUTES
     
     if now_dt is None:
         now_dt = datetime.datetime.now(datetime.timezone.utc)
@@ -2072,7 +2075,7 @@ def reconcile_digest_attempt(batch_key: str, new_status: str, chat_id: str = "-1
     return True
 
 
-def list_undigested_vacancies(limit: int = 5000) -> List[Any]:
+def list_undigested_vacancies(limit: int = 5000) -> list[Any]:
     """List fresh vacancies from state.db excluding legacy baseline and synthetic/test artifacts."""
     from .schema import is_genuine_production_vacancy
     init_db()
@@ -2093,10 +2096,11 @@ def list_undigested_vacancies(limit: int = 5000) -> List[Any]:
     return [v for v in vacancies if is_genuine_production_vacancy(v)[0]]
 
 
-def get_production_health(now_dt: Optional[Any] = None, storage_dir: Optional[str] = None) -> Dict[str, Any]:
+def get_production_health(now_dt: Any | None = None, storage_dir: str | None = None) -> dict[str, Any]:
     """Inspect production state and evaluate overall operational health (Stage 83)."""
-    from .config import DB_FILE, PRODUCTION_FAILURE_ALERT_THRESHOLD
     import datetime
+
+    from .config import DB_FILE, PRODUCTION_FAILURE_ALERT_THRESHOLD
     
     if now_dt is None:
         now_dt = datetime.datetime.now(datetime.timezone.utc)
@@ -2106,7 +2110,7 @@ def get_production_health(now_dt: Optional[Any] = None, storage_dir: Optional[st
         now_dt = now_dt.replace(tzinfo=datetime.timezone.utc)
 
     now_iso = now_dt.isoformat()
-    health_result: Dict[str, Any] = {
+    health_result: dict[str, Any] = {
         "db_path": DB_FILE,
         "db_accessible": False,
         "health": "HEALTHY",
@@ -2318,13 +2322,13 @@ def get_production_health(now_dt: Optional[Any] = None, storage_dir: Optional[st
 def record_telegram_feedback(
     vacancy_stable_id: str,
     action: str,
-    telegram_user_id: Optional[str] = None,
-    telegram_chat_id: Optional[str] = None,
-    callback_query_id: Optional[str] = None,
-    previous_status: Optional[str] = None,
-    new_status: Optional[str] = None,
-    payload_json: Optional[str] = None,
-    created_at: Optional[str] = None,
+    telegram_user_id: str | None = None,
+    telegram_chat_id: str | None = None,
+    callback_query_id: str | None = None,
+    previous_status: str | None = None,
+    new_status: str | None = None,
+    payload_json: str | None = None,
+    created_at: str | None = None,
 ) -> int:
     """Record a Telegram feedback callback event into the audit trail."""
     if is_dry_run():
@@ -2355,7 +2359,7 @@ def record_telegram_feedback(
     return rec_id
 
 
-def list_telegram_feedback(limit: int = 50, vacancy_stable_id: Optional[str] = None) -> List[Dict[str, Any]]:
+def list_telegram_feedback(limit: int = 50, vacancy_stable_id: str | None = None) -> list[dict[str, Any]]:
     """List recent Telegram feedback records."""
     init_db()
     conn = get_connection()
@@ -2394,7 +2398,7 @@ def list_telegram_feedback(limit: int = 50, vacancy_stable_id: Optional[str] = N
     return results
 
 
-def get_telegram_feedback_summary() -> Dict[str, Any]:
+def get_telegram_feedback_summary() -> dict[str, Any]:
     """Produce read-only aggregation of recorded Telegram feedback (Stage 89)."""
     init_db()
     conn = get_connection()
@@ -2435,7 +2439,7 @@ def get_telegram_feedback_summary() -> Dict[str, Any]:
     }
 
 
-def resolve_vacancy_by_hash_prefix(hash_prefix: str) -> Optional[str]:
+def resolve_vacancy_by_hash_prefix(hash_prefix: str) -> str | None:
     """Resolve a vacancy stable_id by its SHA256 hash prefix for compact Telegram callbacks.
     
     Fail-closed collision safety:
@@ -2464,7 +2468,7 @@ def resolve_vacancy_by_hash_prefix(hash_prefix: str) -> Optional[str]:
 get_vacancy = get_vacancy_by_id
 
 
-def get_system_setting(key: str, default: Optional[str] = None) -> Optional[str]:
+def get_system_setting(key: str, default: str | None = None) -> str | None:
     init_db()
     conn = get_connection()
     cursor = conn.cursor()
@@ -2524,10 +2528,10 @@ def acquire_submission_claim(
     vacancy_stable_id: str,
     application_id: str,
     worker_id: str = "default_worker",
-    claim_id: Optional[str] = None,
-    details: Optional[Dict[str, Any]] = None,
+    claim_id: str | None = None,
+    details: dict[str, Any] | None = None,
     allow_reclaim_failed_safe: bool = False,
-) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+) -> tuple[bool, str, dict[str, Any] | None]:
     """Atomically acquire an exclusive claim to submit a vacancy.
 
     Guarantees:
@@ -2641,7 +2645,7 @@ def acquire_submission_claim(
         conn.close()
 
 
-def get_submission_claim(vacancy_stable_id: str) -> Optional[Dict[str, Any]]:
+def get_submission_claim(vacancy_stable_id: str) -> dict[str, Any] | None:
     init_db()
     conn = get_connection()
     cur = conn.cursor()
@@ -2669,8 +2673,8 @@ def get_submission_claim(vacancy_stable_id: str) -> Optional[Dict[str, Any]]:
 def update_submission_claim(
     vacancy_stable_id: str,
     status: str,
-    claim_id: Optional[str] = None,
-    details: Optional[Dict[str, Any]] = None,
+    claim_id: str | None = None,
+    details: dict[str, Any] | None = None,
 ) -> bool:
     init_db()
     now = datetime.now(timezone.utc).isoformat()
@@ -2721,7 +2725,7 @@ def update_submission_claim(
         conn.close()
 
 
-def list_submission_claims(status: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+def list_submission_claims(status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
     init_db()
     conn = get_connection()
     cur = conn.cursor()

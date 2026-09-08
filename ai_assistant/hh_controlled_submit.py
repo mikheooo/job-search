@@ -20,7 +20,10 @@ from typing import Any, Callable, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from .hh_human_submission import confirm_human_submission, preflight_with_human_confirmation
+from .hh_human_submission import (
+    confirm_human_submission,
+    preflight_with_human_confirmation,
+)
 from .hh_submission import SubmissionStatus
 
 
@@ -42,20 +45,20 @@ class ControlledSubmitReport(BaseModel):
     vacancy_stable_id: str = ""
     review_id: str = ""
     fingerprint: str = ""
-    url_before: Optional[str] = None
-    url_after: Optional[str] = None
-    vacancy_before: Optional[str] = None
-    vacancy_after: Optional[str] = None
-    button_meta: Optional[Dict[str, Any]] = None
+    url_before: str | None = None
+    url_after: str | None = None
+    vacancy_before: str | None = None
+    vacancy_after: str | None = None
+    button_meta: dict[str, Any] | None = None
     navigation_count: int = 0
     click_count: int = 0
     submit_count: int = 0
     successful_submit: int = 0
     failed_submit: int = 0
-    mutations: List[TrackedMutation] = Field(default_factory=list)
-    errors: List[str] = Field(default_factory=list)
-    review_reasons: List[str] = Field(default_factory=list)
-    body_markers_found: List[str] = Field(default_factory=list)
+    mutations: list[TrackedMutation] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    review_reasons: list[str] = Field(default_factory=list)
+    body_markers_found: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 

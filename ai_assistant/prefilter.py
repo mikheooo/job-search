@@ -1,5 +1,7 @@
-from . import config
 import logging
+
+from . import config
+
 
 def check_vacancy(title: str, description: str, salary: int = None) -> tuple[bool, str]:
     """

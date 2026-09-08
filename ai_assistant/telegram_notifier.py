@@ -28,7 +28,7 @@ from ai_assistant import config, db
 logger = logging.getLogger(__name__)
 
 
-def verify_hh_chat_url(conversation_id: str, url: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+def verify_hh_chat_url(conversation_id: str, url: str | None = None) -> tuple[bool, str | None]:
     """Verify that an HH chat deep-link corresponds to a real numeric HH conversation ID.
 
     Rules:
@@ -59,9 +59,9 @@ class TelegramNotifier:
 
     def __init__(
         self,
-        bot_token: Optional[str] = None,
-        chat_id: Optional[str] = None,
-        transport_fn: Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]] = None,
+        bot_token: str | None = None,
+        chat_id: str | None = None,
+        transport_fn: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
     ):
         self.bot_token = bot_token if bot_token is not None else config.TELEGRAM_BOT_TOKEN
         self.chat_id = chat_id if chat_id is not None else config.TELEGRAM_CHAT_ID
@@ -74,11 +74,11 @@ class TelegramNotifier:
     def send_message(
         self,
         text: str,
-        chat_id: Optional[str] = None,
-        parse_mode: Optional[str] = None,
+        chat_id: str | None = None,
+        parse_mode: str | None = None,
         disable_web_page_preview: bool = True,
-        reply_markup: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        reply_markup: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Send a message via Telegram Bot API with error isolation."""
         target_chat = str(chat_id or self.chat_id or "").strip()
         if not self.bot_token or not target_chat:
@@ -135,9 +135,9 @@ class TelegramNotifier:
 
     def delete_message(
         self,
-        chat_id: Optional[str] = None,
-        message_id: Optional[int] = None,
-    ) -> Dict[str, Any]:
+        chat_id: str | None = None,
+        message_id: int | None = None,
+    ) -> dict[str, Any]:
         """Delete a message via Telegram Bot API with error isolation."""
         target_chat = str(chat_id or self.chat_id or "").strip()
         if not self.bot_token or not target_chat or message_id is None:
@@ -186,7 +186,7 @@ class TelegramNotifier:
         incoming_message: str,
         sent_reply: str,
         conversation_id: str = "",
-        hh_chat_url: Optional[str] = None,
+        hh_chat_url: str | None = None,
         status: str = "CONFIRMED",
     ) -> str:
         """Format RECRUITER_REPLY_SENT notification message with strict confirmation semantics and deep-link."""
@@ -211,7 +211,7 @@ class TelegramNotifier:
         incoming_message: str,
         generated_reply: str,
         conversation_id: str = "",
-        hh_chat_url: Optional[str] = None,
+        hh_chat_url: str | None = None,
     ) -> str:
         """Format REPLY GENERATED — NOT SENT notification message."""
         is_valid_url, verified_url = verify_hh_chat_url(conversation_id=conversation_id, url=hh_chat_url)
@@ -322,9 +322,9 @@ class TelegramNotifier:
     def deliver_notification(
         self,
         notif_type: str,
-        details: Dict[str, Any],
-        delivery_key: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        details: dict[str, Any],
+        delivery_key: str | None = None,
+    ) -> dict[str, Any]:
         """Deliver high-value notification to Telegram with strict idempotency protection."""
         # 1. Filter out routine events
         allowed_types = {
@@ -456,15 +456,15 @@ class TelegramNotifier:
     def answer_callback_query(
         self,
         callback_query_id: str,
-        text: Optional[str] = None,
+        text: str | None = None,
         show_alert: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Acknowledge a Telegram callback query with optional text/alert (Stage 89)."""
         cb_id = str(callback_query_id or "").strip()
         if not self.bot_token or not cb_id:
             return {"ok": False, "error": "Telegram Bot Token or callback_query_id not provided"}
 
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "callback_query_id": cb_id,
             "show_alert": show_alert,
         }
@@ -496,9 +496,9 @@ class TelegramNotifier:
             return {"ok": False, "error": str(e)}
 
     @staticmethod
-    def build_digest_inline_keyboard(vacancies: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def build_digest_inline_keyboard(vacancies: list[dict[str, Any]]) -> dict[str, Any]:
         """Build compact inline keyboard controls for delivered vacancies (Stage 89)."""
-        from .telegram_feedback import encode_callback_data, TelegramFeedbackAction
+        from .telegram_feedback import TelegramFeedbackAction, encode_callback_data
         keyboard = []
         for idx, vac in enumerate(vacancies, 1):
             vid = vac.get("id") or vac.get("stable_id") or ""
@@ -515,8 +515,8 @@ class TelegramNotifier:
 
 
 def cleanup_telegram_test_records(
-    notifier: Optional[TelegramNotifier] = None,
-) -> Dict[str, Any]:
+    notifier: TelegramNotifier | None = None,
+) -> dict[str, Any]:
     """Audit and safely clean up test/debug notifications from DB and Telegram."""
     notifier = notifier or get_telegram_notifier()
     records = db.list_telegram_delivery_records(limit=500)
@@ -575,7 +575,7 @@ def cleanup_telegram_test_records(
 
 
 # Global singleton instance
-_notifier_instance: Optional[TelegramNotifier] = None
+_notifier_instance: TelegramNotifier | None = None
 
 
 def get_telegram_notifier() -> TelegramNotifier:
@@ -595,8 +595,8 @@ def send_post_submit_notification(
     title: str,
     cover_letter: str,
     vacancy_url: str,
-    notifier: Optional[TelegramNotifier] = None,
-) -> Dict[str, Any]:
+    notifier: TelegramNotifier | None = None,
+) -> dict[str, Any]:
     """Send post-submit notification to Telegram with strict formatting and idempotency."""
     notif = notifier or get_telegram_notifier()
     return notif.deliver_notification(

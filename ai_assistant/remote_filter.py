@@ -12,7 +12,6 @@ from typing import Any, Dict, Optional, Tuple
 
 from .schema import Vacancy
 
-
 # Known sources that exclusively host remote positions (unless explicitly overridden by description)
 _EXCLUSIVELY_REMOTE_SOURCES = {"remoteok", "weworkremotely", "himalayas"}
 
@@ -172,11 +171,11 @@ def _sanitize_for_matching(text: str) -> str:
 def classify_work_format(
     title: str = "",
     description: str = "",
-    location: Optional[str] = None,
-    source: Optional[str] = None,
-    employment_type: Optional[str] = None,
-    raw_data: Optional[Dict[str, Any]] = None,
-) -> Tuple[bool, str]:
+    location: str | None = None,
+    source: str | None = None,
+    employment_type: str | None = None,
+    raw_data: dict[str, Any] | None = None,
+) -> tuple[bool, str]:
     """Classify work format with Strict Remote-Only guarantees.
 
     Returns:
@@ -227,7 +226,7 @@ def classify_work_format(
     return False, "Unknown/ambiguous work format: lack of confirmed remote-only evidence"
 
 
-def is_strictly_remote(vacancy: Vacancy) -> Tuple[bool, str]:
+def is_strictly_remote(vacancy: Vacancy) -> tuple[bool, str]:
     """Check if a Vacancy instance satisfies strict remote-only requirements."""
     if not isinstance(vacancy, Vacancy):
         return False, "Invalid vacancy instance"

@@ -1,24 +1,4 @@
-from __future__ import annotations
-
-import json
-import logging
-from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any, Tuple
-
-from pydantic import BaseModel, Field
-
-from . import config
-from .candidate_profile import CandidateProfile
-from .schema import Vacancy
-from .db import get_connection, init_db
-from .vacancy_identity import (
-    resolve_vacancy_identity,
-    get_canonical_by_normalized_url,
-    get_aliases_for_canonical,
-    MatchType,
-)
-
-logger = logging.getLogger(__name__)
+from __future__ import annotationsimport jsonimport loggingfrom datetime import datetime, timezonefrom typing import Any, Dict, List, Optional, Tuplefrom pydantic import BaseModel, Fieldfrom . import configfrom .candidate_profile import CandidateProfilefrom .db import get_connection, init_dbfrom .schema import Vacancyfrom .vacancy_identity import (    MatchType,    get_aliases_for_canonical,    get_canonical_by_normalized_url,    resolve_vacancy_identity,)logger = logging.getLogger(__name__)
 
 QUEUE_VERSION = "v2"
 
@@ -27,24 +7,24 @@ class QueueItem(BaseModel):
     canonical_id: str
     representative_vacancy_stable_id: str
     priority_score: int = Field(ge=0, le=100)
-    match_score: Optional[float] = None
-    deep_score: Optional[float] = None
-    company: Optional[str] = None
-    title: Optional[str] = None
-    source: Optional[str] = None
-    vacancy_url: Optional[str] = None
-    reasons: List[str] = Field(default_factory=list)
-    warnings: List[str] = Field(default_factory=list)
+    match_score: float | None = None
+    deep_score: float | None = None
+    company: str | None = None
+    title: str | None = None
+    source: str | None = None
+    vacancy_url: str | None = None
+    reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
     rank: int = Field(ge=0)
     # extra explainable components
-    components: Dict[str, Any] = Field(default_factory=dict)
-    application_strategy: Optional[str] = None
-    generated_at: Optional[str] = None
+    components: dict[str, Any] = Field(default_factory=dict)
+    application_strategy: str | None = None
+    generated_at: str | None = None
     queue_version: str = QUEUE_VERSION
 
     model_config = {"extra": "forbid"}
 
-def _parse_dt(value: Optional[str]) -> Optional[datetime]:
+def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
     # Vacancy fields are stored as iso string, but also may be datetime
@@ -67,7 +47,7 @@ def _parse_dt(value: Optional[str]) -> Optional[datetime]:
         pass
     return None
 
-def _freshness_score(vacancy: Vacancy) -> Tuple[int, str]:
+def _freshness_score(vacancy: Vacancy) -> tuple[int, str]:
     # Use published_at preferred, fallback first_seen_at, last_seen_at
     dt = None
     source = None
@@ -115,7 +95,7 @@ def _freshness_score(vacancy: Vacancy) -> Tuple[int, str]:
         reason = f"very stale {days}d"
     return score, reason
 
-def _salary_fit_score(vacancy: Vacancy, profile: CandidateProfile) -> Tuple[int, str]:
+def _salary_fit_score(vacancy: Vacancy, profile: CandidateProfile) -> tuple[int, str]:
     # 0-100, unknown -> 0 (not invented), but explain
     if profile.minimum_salary is None:
         return 50, "salary neutral (no profile requirement)"
@@ -139,7 +119,7 @@ def _salary_fit_score(vacancy: Vacancy, profile: CandidateProfile) -> Tuple[int,
     else:
         return 0, f"salary below minimum {top} < {p_min}"
 
-def _readiness_score(deep: Any, vacancy: Vacancy, profile: CandidateProfile) -> Tuple[int, List[str], List[str]]:
+def _readiness_score(deep: Any, vacancy: Vacancy, profile: CandidateProfile) -> tuple[int, list[str], list[str]]:
     # 0-100, based on deep
     reasons = []
     warnings = []
@@ -187,13 +167,13 @@ def _readiness_score(deep: Any, vacancy: Vacancy, profile: CandidateProfile) -> 
 def compute_priority(
     vacancy: Vacancy,
     profile: CandidateProfile,
-    match_score: Optional[float],
-    deep_score: Optional[float],
+    match_score: float | None,
+    deep_score: float | None,
     deep: Any = None,
-) -> Tuple[int, Dict[str, Any], List[str], List[str]]:
+) -> tuple[int, dict[str, Any], list[str], list[str]]:
     # Components 0-100 each, weighted
-    reasons: List[str] = []
-    warnings: List[str] = []
+    reasons: list[str] = []
+    warnings: list[str] = []
 
     # match 0.35
     m = int(match_score) if match_score is not None else 0
@@ -277,7 +257,7 @@ def compute_priority(
     # Adjust for REVIEW / stale etc already in readiness/freshness
     return priority_int, components, reasons, warnings
 
-def _select_representative(canonical_id: str, aliases: List[Dict[str, Any]], profile: CandidateProfile) -> Tuple[str, Dict[str, Any]]:
+def _select_representative(canonical_id: str, aliases: list[dict[str, Any]], profile: CandidateProfile) -> tuple[str, dict[str, Any]]:
     """
     Select the representative vacancy for a canonical ID.
     Priority:
@@ -287,12 +267,7 @@ def _select_representative(canonical_id: str, aliases: List[Dict[str, Any]], pro
     4. highest match_score
     5. stable_id alphabetical
     """
-    from .application_tracking import get_application_status, ApplicationStatus
-    from .db import get_vacancy_by_id
-    from .db import _row_to_vacancy
-    from .matcher import JobMatcher
-    from .db import get_deep_analysis
-    from .job_analyzer import DeepAnalysisResult
+    from .application_tracking import ApplicationStatus, get_application_status    from .db import _row_to_vacancy, get_deep_analysis, get_vacancy_by_id    from .job_analyzer import DeepAnalysisResult    from .matcher import JobMatcher
     
     best_alias = None
     best_score = None
@@ -334,26 +309,21 @@ def _select_representative(canonical_id: str, aliases: List[Dict[str, Any]], pro
 
 
 def build_queue_items(
-    vacancies: List[Vacancy],
+    vacancies: list[Vacancy],
     profile: CandidateProfile,
-    match_map: Dict[str, Any],  # stable_id -> MatchResult
-    deep_map: Dict[str, Any],  # stable_id -> DeepAnalysisResult
-) -> List[QueueItem]:
+    match_map: dict[str, Any],  # stable_id -> MatchResult
+    deep_map: dict[str, Any],  # stable_id -> DeepAnalysisResult
+) -> list[QueueItem]:
     """
     Build queue items with canonical identity deduplication.
     Only EXACT duplicates are grouped under one canonical_id.
     PROBABLE duplicates remain separate.
     """
-    from .vacancy_identity import (
-        normalize_url,
-        _generate_canonical_id,
-        normalize_company,
-        normalize_title,
-    )
+    from .vacancy_identity import (        _generate_canonical_id,        normalize_company,        normalize_title,        normalize_url,    )
     
     # Group vacancies by canonical group key
-    canonical_groups: Dict[str, List[Vacancy]] = {}
-    vacancy_to_canonical: Dict[str, str] = {}
+    canonical_groups: dict[str, list[Vacancy]] = {}
+    vacancy_to_canonical: dict[str, str] = {}
     
     for vac in vacancies:
         normalized_url = normalize_url(vac.job_url)
@@ -397,7 +367,7 @@ def build_queue_items(
             canonical_groups[group_key] = []
         canonical_groups[group_key].append(vac)
     
-    items: List[QueueItem] = []
+    items: list[QueueItem] = []
     
     for group_key, group in canonical_groups.items():
         # Select representative vacancy for this canonical group
@@ -448,7 +418,7 @@ def build_queue_items(
     return items
 
 
-def _select_representative_for_group(group: List[Vacancy], profile: CandidateProfile) -> Vacancy:
+def _select_representative_for_group(group: list[Vacancy], profile: CandidateProfile) -> Vacancy:
     """
     Select the representative vacancy for a canonical group.
     Priority:
@@ -458,7 +428,7 @@ def _select_representative_for_group(group: List[Vacancy], profile: CandidatePro
     3. highest match_score
     4. stable_id alphabetical
     """
-    from .application_tracking import get_application_status, ApplicationStatus
+    from .application_tracking import ApplicationStatus, get_application_status
     
     # First, find READY_TO_APPLY vacancies
     ready_vacancies = []
@@ -509,7 +479,7 @@ def save_queue_item(item: QueueItem) -> None:
     conn.close()
 
 
-def get_queue_item(vacancy_stable_id: str, queue_version: str | None = None) -> Optional[QueueItem]:
+def get_queue_item(vacancy_stable_id: str, queue_version: str | None = None) -> QueueItem | None:
     init_db()
     conn = get_connection()
     cur = conn.cursor()
@@ -527,7 +497,7 @@ def get_queue_item(vacancy_stable_id: str, queue_version: str | None = None) -> 
     return None
 
 
-def list_queue(limit: int = 50, queue_version: str | None = None) -> List[QueueItem]:
+def list_queue(limit: int = 50, queue_version: str | None = None) -> list[QueueItem]:
     init_db()
     conn = get_connection()
     cur = conn.cursor()
@@ -558,14 +528,8 @@ def clear_queue(queue_version: str | None = None) -> None:
     conn.close()
 
 
-def generate_queue(top_n: int = 20, profile_path: Optional[str] = None, status_filter: str = "READY_TO_APPLY") -> List[QueueItem]:
-    from .candidate_profile import load_candidate_profile
-    from .matcher import JobMatcher
-    from .db import list_vacancies
-    from .application_tracking import sync_application_tracking, list_applications, ApplicationStatus
-    from .job_analyzer import DeepAnalysisResult
-    from .config import BATCH_LIMIT, CANDIDATE_PROFILE_FILE
-    from .vacancy_identity import normalize_url
+def generate_queue(top_n: int = 20, profile_path: str | None = None, status_filter: str = "READY_TO_APPLY") -> list[QueueItem]:
+    from .application_tracking import (        ApplicationStatus,        list_applications,        sync_application_tracking,    )    from .candidate_profile import load_candidate_profile    from .config import BATCH_LIMIT, CANDIDATE_PROFILE_FILE    from .db import list_vacancies    from .job_analyzer import DeepAnalysisResult    from .matcher import JobMatcher    from .vacancy_identity import normalize_url
 
 
     # Ensure tracking is up to date
@@ -616,16 +580,14 @@ def generate_queue(top_n: int = 20, profile_path: Optional[str] = None, status_f
     # Need to fetch vacancies for those ids
     # Build map vacancy_stable_id -> Vacancy
     # list_vacancies may not contain all, so fetch via get_vacancy_by_id
-    from .db import get_vacancy_by_id
-    from .db import _row_to_vacancy
+    from .db import _row_to_vacancy, get_vacancy_by_id
 
-    vacancies: List[Vacancy] = []
-    match_map: Dict[str, Any] = {}
-    deep_map: Dict[str, Any] = {}
+    vacancies: list[Vacancy] = []
+    match_map: dict[str, Any] = {}
+    deep_map: dict[str, Any] = {}
 
     matcher = JobMatcher(profile)
-    from .eligibility import assess_vacancy_eligibility, EligibilityStatus
-    from .db import get_vacancy_eligibility, save_vacancy_eligibility
+    from .db import get_vacancy_eligibility, save_vacancy_eligibility    from .eligibility import EligibilityStatus, assess_vacancy_eligibility
 
     for sid in allowed_ids:
         row = get_vacancy_by_id(sid)
@@ -648,8 +610,7 @@ def generate_queue(top_n: int = 20, profile_path: Optional[str] = None, status_f
             continue
 
         # Defense-in-Depth: Hard constraints & strict remote filter
-        from .remote_filter import is_strictly_remote
-        from .matcher import _hard_constraints, _coerce_profile
+        from .matcher import _coerce_profile, _hard_constraints        from .remote_filter import is_strictly_remote
 
         if profile.remote_required:
             is_rem, _ = is_strictly_remote(vac)
@@ -710,8 +671,7 @@ def generate_queue(top_n: int = 20, profile_path: Optional[str] = None, status_f
                 continue
 
             # Defense-in-Depth: Hard constraints & strict remote filter
-            from .remote_filter import is_strictly_remote
-            from .matcher import _hard_constraints, _coerce_profile
+            from .matcher import _coerce_profile, _hard_constraints            from .remote_filter import is_strictly_remote
 
             if profile.remote_required:
                 is_rem, _ = is_strictly_remote(vac)

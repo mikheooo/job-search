@@ -54,21 +54,21 @@ class HHQuestionItem(BaseModel):
     text: str
     question_type: str = "text"
     required: bool = True
-    options: List[str] = Field(default_factory=list)
-    field_name: Optional[str] = None
-    answer: Optional[Any] = None
+    options: list[str] = Field(default_factory=list)
+    field_name: str | None = None
+    answer: Any | None = None
 
     model_config = {"extra": "forbid"}
 
 
 class HHQuestionnaire(BaseModel):
     questionnaire_id: str
-    vacancy_stable_id: Optional[str] = None
-    conversation_id: Optional[str] = None
-    title: Optional[str] = None
-    employer: Optional[str] = None
-    questions: List[HHQuestionItem] = Field(default_factory=list)
-    answers: Dict[str, Any] = Field(default_factory=dict)
+    vacancy_stable_id: str | None = None
+    conversation_id: str | None = None
+    title: str | None = None
+    employer: str | None = None
+    questions: list[HHQuestionItem] = Field(default_factory=list)
+    answers: dict[str, Any] = Field(default_factory=dict)
     status: str = HHQuestionStatus.NEEDS_HUMAN_REVIEW.value
     fingerprint: str = ""
     created_at: str = ""
@@ -81,9 +81,9 @@ class QuestionnaireValidationResult(BaseModel):
     ok: bool = False
     status: str = HHQuestionStatus.BLOCKED.value
     reason: str = ""
-    missing_required: List[str] = Field(default_factory=list)
-    invalid_options: List[str] = Field(default_factory=list)
-    unknown_questions: List[str] = Field(default_factory=list)
+    missing_required: list[str] = Field(default_factory=list)
+    invalid_options: list[str] = Field(default_factory=list)
+    unknown_questions: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -95,13 +95,13 @@ class QuestionnaireSubmitResult(BaseModel):
     status: str = HHQuestionStatus.BLOCKED.value
     reason: str = ""
     questionnaire_id: str = ""
-    vacancy_stable_id: Optional[str] = None
-    errors: List[str] = Field(default_factory=list)
+    vacancy_stable_id: str | None = None
+    errors: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
 
-def compute_questionnaire_fingerprint(questions: List[HHQuestionItem]) -> str:
+def compute_questionnaire_fingerprint(questions: list[HHQuestionItem]) -> str:
     """Compute a stable, collision-resistant SHA-256 fingerprint for a questionnaire structure."""
     normalized = []
     for q in sorted(questions, key=lambda x: str(x.question_id)):
@@ -179,18 +179,18 @@ _EXTRACT_QUESTIONNAIRE_JS = """(() => {
 
 
 def extract_hh_questionnaire_from_snapshot(
-    snapshot: Dict[str, Any],
-    vacancy_stable_id: Optional[str] = None,
-    conversation_id: Optional[str] = None,
-    title: Optional[str] = None,
-    employer: Optional[str] = None,
-) -> Optional[HHQuestionnaire]:
+    snapshot: dict[str, Any],
+    vacancy_stable_id: str | None = None,
+    conversation_id: str | None = None,
+    title: str | None = None,
+    employer: str | None = None,
+) -> HHQuestionnaire | None:
     """Extract an HHQuestionnaire from a DOM snapshot or structured questions list."""
     raw_questions = snapshot.get("questions") or []
     controls = snapshot.get("controls") or []
     q_groups = snapshot.get("question_groups") or []
     
-    extracted_items: List[HHQuestionItem] = []
+    extracted_items: list[HHQuestionItem] = []
     
     # 1. Process from controls / question groups if available
     if controls:
@@ -259,7 +259,7 @@ def extract_hh_questionnaire_from_snapshot(
 
 def format_hh_application_form_cli_output(
     vacancy_title: str,
-    quest: Optional[HHQuestionnaire] = None,
+    quest: HHQuestionnaire | None = None,
 ) -> str:
     """Format HH application form discovery output for CLI."""
     lines = [
@@ -340,8 +340,8 @@ def format_questionnaire_cli_output(q: HHQuestionnaire) -> str:
 
 def validate_human_answers(
     questionnaire: HHQuestionnaire,
-    human_answers: Dict[str, Any],
-    current_dom_fingerprint: Optional[str] = None,
+    human_answers: dict[str, Any],
+    current_dom_fingerprint: str | None = None,
 ) -> QuestionnaireValidationResult:
     """Validate provided human answers against the questionnaire rules and safety invariants.
 
@@ -430,7 +430,7 @@ _EXECUTE_SUBMIT_JS = """(() => {
 })()"""
 
 
-def _make_fill_and_submit_js(answers: Dict[str, Any]) -> str:
+def _make_fill_and_submit_js(answers: dict[str, Any]) -> str:
     escaped_answers = json.dumps(json.dumps(answers, ensure_ascii=False))
     return f"""(() => {{
         try {{
@@ -537,10 +537,10 @@ def _make_fill_and_submit_js(answers: Dict[str, Any]) -> str:
 
 def submit_questionnaire_response(
     questionnaire_id: str,
-    human_answers: Dict[str, Any],
-    evaluate_fn: Optional[Callable[[str], str]] = None,
+    human_answers: dict[str, Any],
+    evaluate_fn: Callable[[str], str] | None = None,
     confirm_submit: bool = False,
-    current_dom_fingerprint: Optional[str] = None,
+    current_dom_fingerprint: str | None = None,
 ) -> QuestionnaireSubmitResult:
     """Safely submit an application with validated human answers.
 
@@ -652,9 +652,9 @@ def submit_questionnaire_response(
 
 def generate_suggested_answers(
     questionnaire: HHQuestionnaire,
-    profile_data: Optional[Dict[str, Any]] = None,
-    vacancy_info: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    profile_data: dict[str, Any] | None = None,
+    vacancy_info: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Generate smart, tailored questionnaire answer suggestions from the candidate profile and vacancy context.
 
     Features:
@@ -673,7 +673,7 @@ def generate_suggested_answers(
     portfolio_url = profile.get("portfolio") or "https://mikheooo.github.io/portfolio/"
     remote_req = profile.get("remote_required", True)
 
-    suggested: Dict[str, Any] = {}
+    suggested: dict[str, Any] = {}
 
     for q in questionnaire.questions:
         q_text_lower = q.text.lower()

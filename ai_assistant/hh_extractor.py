@@ -69,24 +69,24 @@ class ApplicationQuestion(BaseModel):
     normalized_type: QuestionType = QuestionType.UNKNOWN
     # Tri-state: True/False = proven from DOM attributes; None = UNKNOWN
     # (HH questionnaires enforce requiredness client-side and expose nothing).
-    required: Optional[bool] = None
-    options: List[str] = Field(default_factory=list)
+    required: bool | None = None
+    options: list[str] = Field(default_factory=list)
     source: QuestionSource = QuestionSource.SCREENING
-    generated_answer: Optional[str] = None
-    answer_type: Optional[QuestionType] = None
+    generated_answer: str | None = None
+    answer_type: QuestionType | None = None
     confidence: float = 0.0
     requires_review: bool = True
     reason: str = ""
     # Stage 20C: id of the associated "Свой вариант" free-text textarea
     # (name = "<group>_text"), when provably linked in the DOM.
-    custom_option_text_id: Optional[str] = None
+    custom_option_text_id: str | None = None
 
     model_config = {"extra": "forbid"}
 
 
 class ApplicationAnswer(BaseModel):
     question_id: str
-    answer: Optional[str] = None
+    answer: str | None = None
     answer_type: QuestionType = QuestionType.UNKNOWN
     confidence: float = 0.0
     requires_review: bool = True
@@ -98,10 +98,10 @@ class ApplicationAnswer(BaseModel):
 class ApplicationForm(BaseModel):
     source: str = "hh"
     vacancy_stable_id: str = ""
-    canonical_id: Optional[str] = None
+    canonical_id: str | None = None
     application_type: ApplicationType = ApplicationType.unknown
-    questions: List[ApplicationQuestion] = Field(default_factory=list)
-    extraction_meta: Dict[str, Any] = Field(default_factory=dict)
+    questions: list[ApplicationQuestion] = Field(default_factory=list)
+    extraction_meta: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"extra": "forbid"}
 
@@ -118,7 +118,7 @@ OBSERVED_HH_QUESTION_SLUGS = [
 ]
 
 
-def _stable_id(label: str, slug: Optional[str]) -> str:
+def _stable_id(label: str, slug: str | None) -> str:
     """Deterministic, stable question id.
 
     Prefer the stable data-qa slug when present (HH provides it). Otherwise
@@ -131,7 +131,7 @@ def _stable_id(label: str, slug: Optional[str]) -> str:
     return f"hh__hash_{h}"
 
 
-def _control_stable_id(ctrl: Dict[str, Any], label: str) -> str:
+def _control_stable_id(ctrl: dict[str, Any], label: str) -> str:
     """Deterministic id for a real form control.
 
     Priority: data-qa > name > id > hash(label+type). Never random.
@@ -158,10 +158,10 @@ _INPUT_TYPE_MAP = {
 }
 
 
-def _coerce_options(options: Any) -> List[str]:
+def _coerce_options(options: Any) -> list[str]:
     """Options as plain strings. Accepts Stage 18 strings and Stage 20A rich
     dicts ({text, value, disabled}); never invents entries."""
-    out: List[str] = []
+    out: list[str] = []
     for o in options or []:
         if isinstance(o, dict):
             t = (o.get("text") or o.get("value") or "").strip()
@@ -174,7 +174,7 @@ def _coerce_options(options: Any) -> List[str]:
     return out
 
 
-def _tri_state_required(ctrl: Dict[str, Any]) -> Optional[bool]:
+def _tri_state_required(ctrl: dict[str, Any]) -> bool | None:
     """Tri-state required: True/False when provable from DOM, None when unknown.
 
     Backward compatible: legacy captures without `requiredAttr` fall back to
@@ -188,7 +188,7 @@ def _tri_state_required(ctrl: Dict[str, Any]) -> Optional[bool]:
     return bool(ctrl.get("required"))
 
 
-def _question_from_control(ctrl: Dict[str, Any]) -> Optional[ApplicationQuestion]:
+def _question_from_control(ctrl: dict[str, Any]) -> ApplicationQuestion | None:
     """Build an ApplicationQuestion from a REAL DOM control.
 
     Reads only what the DOM exposes: type, required attribute, options.
@@ -258,11 +258,11 @@ def _question_from_control(ctrl: Dict[str, Any]) -> Optional[ApplicationQuestion
     )
 
 
-def _choice_groups(controls: List[Dict[str, Any]], input_type: str) -> List[Dict[str, Any]]:
+def _choice_groups(controls: list[dict[str, Any]], input_type: str) -> list[dict[str, Any]]:
     """Group radio OR checkbox inputs by name into a single logical question
     with options built from the REAL labels of each member."""
-    groups: Dict[str, List[Dict[str, Any]]] = {}
-    order: List[str] = []
+    groups: dict[str, list[dict[str, Any]]] = {}
+    order: list[str] = []
     for c in controls:
         if (c.get("tag") or "").upper() == "INPUT" and (c.get("type") or "").lower() == input_type:
             key = (c.get("name") or c.get("dataQa") or c.get("id") or "").strip()
@@ -285,7 +285,7 @@ def _choice_groups(controls: List[Dict[str, Any]], input_type: str) -> List[Dict
         # None when no member carries an explicit DOM marker (HH case)
         reqs = [_tri_state_required(m) for m in members]
         if any(r is True for r in reqs):
-            group_required: Optional[bool] = True
+            group_required: bool | None = True
         elif all(r is False for r in reqs):
             group_required = False
         else:
@@ -304,21 +304,21 @@ def _choice_groups(controls: List[Dict[str, Any]], input_type: str) -> List[Dict
     return result
 
 
-def _radio_groups(controls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _radio_groups(controls: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Backward-compatible wrapper: radio-only grouping."""
     return _choice_groups(controls, "radio")
 
 
-def _checkbox_groups(controls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _checkbox_groups(controls: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Stage 20C: checkbox inputs grouped by name - one multi-select question
     with the REAL option labels (never one question per checkbox)."""
     return _choice_groups(controls, "checkbox")
 
 
 def build_questions_from_controls(
-    controls: List[Dict[str, Any]],
-    question_groups: Optional[List[Dict[str, Any]]] = None,
-) -> List[ApplicationQuestion]:
+    controls: list[dict[str, Any]],
+    question_groups: list[dict[str, Any]] | None = None,
+) -> list[ApplicationQuestion]:
     """Normalize REAL DOM controls into questions.
 
     - radio AND checkbox inputs are grouped by name (Stage 18 + Stage 20C):
@@ -332,19 +332,19 @@ def build_questions_from_controls(
       NOT emitted as an independent question;
     - standalone textareas keep their own (stem-derived) label when provable.
     """
-    qg_by_name: Dict[str, Dict[str, Any]] = {}
+    qg_by_name: dict[str, dict[str, Any]] = {}
     for g in question_groups or []:
         if g.get("name"):
             qg_by_name[g["name"]] = g
 
-    questions: List[ApplicationQuestion] = []
+    questions: list[ApplicationQuestion] = []
     consumed_textareas: set = set()
     seen_group_names: set = set()
 
     radio_groups = {g["name"]: g for g in _choice_groups(controls, "radio")}
     checkbox_groups = {g["name"]: g for g in _choice_groups(controls, "checkbox")}
 
-    def _emit_group(group: Dict[str, Any]) -> None:
+    def _emit_group(group: dict[str, Any]) -> None:
         name = group["name"]
         if name in seen_group_names:
             return
@@ -401,7 +401,7 @@ def _classify_known_slug(slug: str) -> ApplicationType:
     return ApplicationType.screening_questions
 
 
-def _detect_blocked(html: str, body_text: str) -> Dict[str, Any]:
+def _detect_blocked(html: str, body_text: str) -> dict[str, Any]:
     """Detect CAPTCHA / login / Cloudflare from real DOM markers.
 
     NOTE: on the real active vacancy, the string 'captcha' appears inside the
@@ -422,8 +422,8 @@ def _detect_blocked(html: str, body_text: str) -> Dict[str, Any]:
 def extract_application_form(
     vacancy_stable_id: str,
     url: str,
-    dom_snapshot: Dict[str, Any],
-    canonical_id: Optional[str] = None,
+    dom_snapshot: dict[str, Any],
+    canonical_id: str | None = None,
 ) -> ApplicationForm:
     """Normalize a real DOM snapshot into an ApplicationForm.
 
@@ -447,7 +447,7 @@ def extract_application_form(
     raw_controls = dom_snapshot.get("controls") or []
 
     raw_questions = dom_snapshot.get("questions") or []
-    questions: List[ApplicationQuestion] = []
+    questions: list[ApplicationQuestion] = []
 
     if raw_controls and not auth_form:
         # Stage 18/20C: authenticated (or otherwise exposed) form - real

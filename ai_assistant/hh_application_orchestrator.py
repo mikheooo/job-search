@@ -40,10 +40,10 @@ class SubmitApproval:
     """
     source: Literal["human", "policy"]
     policy_version: str = "v1"
-    checks_passed: List[str] = field(default_factory=list)
+    checks_passed: list[str] = field(default_factory=list)
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "source": self.source,
             "policy_version": self.policy_version,
@@ -57,8 +57,8 @@ from .hh_questionnaire import (
     HHQuestionnaire,
     HHQuestionStatus,
     compute_questionnaire_fingerprint,
-    validate_human_answers,
     submit_questionnaire_response,
+    validate_human_answers,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,7 +92,7 @@ class HHApplicationState(str, Enum):
 
 
 # Explicit map of legal transitions
-LEGAL_TRANSITIONS: Dict[str, Set[str]] = {
+LEGAL_TRANSITIONS: dict[str, set[str]] = {
     HHApplicationState.NEW.value: {
         HHApplicationState.DISCOVERED.value,
         HHApplicationState.MATCHED.value,
@@ -260,16 +260,16 @@ LEGAL_TRANSITIONS: Dict[str, Set[str]] = {
 
 class HHApplication(BaseModel):
     application_id: str
-    conversation_id: Optional[str] = None
-    vacancy_stable_id: Optional[str] = None
-    title: Optional[str] = None
-    employer: Optional[str] = None
+    conversation_id: str | None = None
+    vacancy_stable_id: str | None = None
+    title: str | None = None
+    employer: str | None = None
     state: str = HHApplicationState.NEW.value
-    draft: Optional[str] = None
-    questionnaire_id: Optional[str] = None
-    answers: Dict[str, Any] = Field(default_factory=dict)
-    error: Optional[str] = None
-    last_transition_reason: Optional[str] = None
+    draft: str | None = None
+    questionnaire_id: str | None = None
+    answers: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+    last_transition_reason: str | None = None
     created_at: str = ""
     updated_at: str = ""
 
@@ -282,8 +282,8 @@ class TransitionResult(BaseModel):
     from_state: str = ""
     to_state: str = ""
     reason: str = ""
-    transition_id: Optional[int] = None
-    error: Optional[str] = None
+    transition_id: int | None = None
+    error: str | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -291,12 +291,12 @@ class TransitionResult(BaseModel):
 class HHApplicationTransitionRecord(BaseModel):
     id: int
     application_id: str
-    conversation_id: Optional[str] = None
-    vacancy_stable_id: Optional[str] = None
+    conversation_id: str | None = None
+    vacancy_stable_id: str | None = None
     state: str
-    previous_state: Optional[str] = None
+    previous_state: str | None = None
     reason: str
-    evidence: Dict[str, Any] = Field(default_factory=dict)
+    evidence: dict[str, Any] = Field(default_factory=dict)
     created_at: str
 
     model_config = {"extra": "forbid"}
@@ -304,10 +304,10 @@ class HHApplicationTransitionRecord(BaseModel):
 
 def get_or_create_hh_application(
     application_id: str,
-    conversation_id: Optional[str] = None,
-    vacancy_stable_id: Optional[str] = None,
-    title: Optional[str] = None,
-    employer: Optional[str] = None,
+    conversation_id: str | None = None,
+    vacancy_stable_id: str | None = None,
+    title: str | None = None,
+    employer: str | None = None,
 ) -> HHApplication:
     """Retrieve an existing HHApplication or create an initial one in NEW state."""
     db.init_db()
@@ -344,10 +344,10 @@ def transition_application(
     application_id: str,
     to_state: HHApplicationState | str,
     reason: str,
-    evidence: Optional[Dict[str, Any]] = None,
-    expected_from_state: Optional[HHApplicationState | str] = None,
-    approval: Optional[SubmitApproval] = None,
-    confirm_submit: Optional[bool] = None,
+    evidence: dict[str, Any] | None = None,
+    expected_from_state: HHApplicationState | str | None = None,
+    approval: SubmitApproval | None = None,
+    confirm_submit: bool | None = None,
 ) -> TransitionResult:
     """Execute an explicit, audited state transition for an HH application.
 
@@ -602,14 +602,14 @@ class HHApplicationOrchestrator:
         message_id: str,
         sender: str,
         text: str,
-        sent_at: Optional[str] = None,
-        vacancy_stable_id: Optional[str] = None,
-        title: Optional[str] = None,
-        employer: Optional[str] = None,
-        classification: Optional[str] = None,
-        draft: Optional[str] = None,
-        validation_status: Optional[str] = None,
-        questionnaire_data: Optional[Dict[str, Any]] = None,
+        sent_at: str | None = None,
+        vacancy_stable_id: str | None = None,
+        title: str | None = None,
+        employer: str | None = None,
+        classification: str | None = None,
+        draft: str | None = None,
+        validation_status: str | None = None,
+        questionnaire_data: dict[str, Any] | None = None,
     ) -> HHApplication:
         """Process an incoming message event through the state machine pipeline.
 
@@ -722,8 +722,8 @@ class HHApplicationOrchestrator:
     def record_questionnaire_answers(
         self,
         application_id: str,
-        human_answers: Dict[str, Any],
-        current_dom_fingerprint: Optional[str] = None,
+        human_answers: dict[str, Any],
+        current_dom_fingerprint: str | None = None,
     ) -> TransitionResult:
         """Validate human questionnaire answers and transition to READY_TO_SUBMIT or STALE."""
         app = get_or_create_hh_application(application_id)
@@ -792,9 +792,9 @@ class HHApplicationOrchestrator:
         self,
         application_id: str,
         confirm_submit: bool = False,
-        evaluate_fn: Optional[Callable[[str], str]] = None,
-        current_dom_fingerprint: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        evaluate_fn: Callable[[str], str] | None = None,
+        current_dom_fingerprint: str | None = None,
+    ) -> dict[str, Any]:
         """Execute real/mock submission with full invariant enforcement.
 
         SAFETY INVARIANTS:

@@ -7,7 +7,7 @@ from typing import Any, Dict
 from .schema import Vacancy
 
 
-def normalize_salary_text(raw: Any) -> Dict[str, Any]:
+def normalize_salary_text(raw: Any) -> dict[str, Any]:
     text = str(raw or "").strip()
     cleaned = html.unescape(text)
     cleaned = cleaned.replace("—", "-").replace("–", "-")
@@ -70,7 +70,7 @@ def normalize_employment_type(raw: Any) -> str | None:
     return mapping.get(text.lower(), text)
 
 
-def normalize_vacancy(item: Dict[str, Any]) -> Vacancy:
+def normalize_vacancy(item: dict[str, Any]) -> Vacancy:
     return Vacancy(
         source=str(item.get("source", "")),
         source_job_id=str(item.get("source_job_id", "")),

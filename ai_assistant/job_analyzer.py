@@ -10,8 +10,8 @@ from pydantic import BaseModel, Field
 
 from . import config
 from .candidate_profile import CandidateProfile
-from .schema import Vacancy
 from .matcher import MatchResult
+from .schema import Vacancy
 
 try:
     from openai import OpenAI
@@ -24,17 +24,17 @@ ANALYZER_VERSION = "v1"
 class DeepAnalysisResult(BaseModel):
     fit_score: int = Field(..., ge=0, le=100, description="0-100 fit score")
     recommendation: Literal["APPLY", "REVIEW", "SKIP"] = Field(..., description="APPLY / REVIEW / SKIP")
-    why_fit: List[str] = Field(default_factory=list, description="Why candidate fits")
-    gaps: List[str] = Field(default_factory=list, description="Gaps vs requirements")
-    must_have_requirements: List[str] = Field(default_factory=list)
-    nice_to_have_requirements: List[str] = Field(default_factory=list)
-    matched_skills: List[str] = Field(default_factory=list)
-    missing_skills: List[str] = Field(default_factory=list)
+    why_fit: list[str] = Field(default_factory=list, description="Why candidate fits")
+    gaps: list[str] = Field(default_factory=list, description="Gaps vs requirements")
+    must_have_requirements: list[str] = Field(default_factory=list)
+    nice_to_have_requirements: list[str] = Field(default_factory=list)
+    matched_skills: list[str] = Field(default_factory=list)
+    missing_skills: list[str] = Field(default_factory=list)
     seniority_assessment: str = Field(default="", description="seniority match assessment")
     remote_assessment: str = Field(default="", description="remote/location assessment")
     salary_assessment: str = Field(default="", description="salary assessment")
     resume_adaptation_needed: bool = Field(default=False)
-    resume_adaptation_reasons: List[str] = Field(default_factory=list)
+    resume_adaptation_reasons: list[str] = Field(default_factory=list)
     application_strategy: str = Field(default="", description="short strategy")
 
     model_config = {"extra": "forbid"}
@@ -51,7 +51,7 @@ RESUME_CANDIDATES = [
 ]
 
 
-def get_resume_text(profile: Optional[CandidateProfile] = None) -> str:
+def get_resume_text(profile: CandidateProfile | None = None) -> str:
     for p in RESUME_CANDIDATES:
         if p.exists():
             try:
@@ -98,7 +98,7 @@ def _build_system_prompt() -> str:
     )
 
 
-def _build_user_prompt(vacancy: Vacancy, profile: CandidateProfile, resume_text: str, match: Optional[MatchResult]) -> str:
+def _build_user_prompt(vacancy: Vacancy, profile: CandidateProfile, resume_text: str, match: MatchResult | None) -> str:
     profile_json = json.dumps(profile.to_dict(), ensure_ascii=False, indent=2)
     vacancy_json = json.dumps(
         {
@@ -154,7 +154,7 @@ def _call_llm(system_prompt: str, user_prompt: str) -> str:
     return content
 
 
-def _fallback_analysis(vacancy: Vacancy, profile: CandidateProfile, match: Optional[MatchResult]) -> DeepAnalysisResult:
+def _fallback_analysis(vacancy: Vacancy, profile: CandidateProfile, match: MatchResult | None) -> DeepAnalysisResult:
     # Deterministic fallback that respects "do not invent" principle
     desc_lower = (vacancy.description or "").lower()
     title_lower = (vacancy.title or "").lower()
@@ -283,8 +283,8 @@ def _fallback_analysis(vacancy: Vacancy, profile: CandidateProfile, match: Optio
 def analyze_job_deep(
     vacancy: Vacancy,
     profile: CandidateProfile,
-    match_result: Optional[MatchResult] = None,
-    resume_text: Optional[str] = None,
+    match_result: MatchResult | None = None,
+    resume_text: str | None = None,
 ) -> DeepAnalysisResult:
     if resume_text is None:
         resume_text = get_resume_text(profile)

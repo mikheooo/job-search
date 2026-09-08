@@ -45,16 +45,16 @@ class QuestionnaireAuditItem(BaseModel):
     rationale: str
     is_confirmed_by_profile: bool
     verdict: AuditVerdict
-    notes: Optional[str] = None
+    notes: str | None = None
 
     model_config = {"extra": "forbid"}
 
 
 class QuestionnaireAuditReport(BaseModel):
-    application_id: Optional[str] = None
+    application_id: str | None = None
     questionnaire_id: str
-    vacancy_title: Optional[str] = None
-    items: List[QuestionnaireAuditItem] = Field(default_factory=list)
+    vacancy_title: str | None = None
+    items: list[QuestionnaireAuditItem] = Field(default_factory=list)
     overall: OverallAuditStatus = OverallAuditStatus.NEEDS_CORRECTION
     real_hh_submit: str = "NO"
     pipeline_py: str = "NOT RUN"
@@ -97,8 +97,8 @@ class QuestionnaireAuditReport(BaseModel):
 
 def audit_questionnaire(
     questionnaire_id: str,
-    application_id: Optional[str] = None,
-    profile: Optional[CandidateProfile] = None,
+    application_id: str | None = None,
+    profile: CandidateProfile | None = None,
 ) -> QuestionnaireAuditReport:
     """Run a thorough pre-submit audit of questionnaire answers against profile facts."""
     db.init_db()
@@ -114,7 +114,7 @@ def audit_questionnaire(
     prof = profile or load_candidate_profile()
     answers = quest.answers or {}
 
-    audit_items: List[QuestionnaireAuditItem] = []
+    audit_items: list[QuestionnaireAuditItem] = []
     all_pass = True
 
     # Pre-validate answers structurally against questionnaire schema

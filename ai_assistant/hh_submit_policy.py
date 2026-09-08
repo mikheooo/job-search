@@ -21,13 +21,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import config, db
-from .application_review import get_application_review, compute_review_fingerprint
+from .application_review import compute_review_fingerprint, get_application_review
 from .hh_application_orchestrator import (
     HHApplication,
     HHApplicationState,
     SubmitApproval,
-    transition_application,
     TransitionResult,
+    transition_application,
 )
 from .hh_questionnaire import HHQuestionnaire
 
@@ -56,13 +56,13 @@ UNCERTAIN_ANSWER_VALUES = {
 @dataclass
 class PolicyDecision:
     approve: bool
-    checks_passed: List[str] = field(default_factory=list)
-    checks_failed: List[str] = field(default_factory=list)
-    reasons: List[str] = field(default_factory=list)
-    approval: Optional[SubmitApproval] = None
-    fingerprint: Optional[str] = None
+    checks_passed: list[str] = field(default_factory=list)
+    checks_failed: list[str] = field(default_factory=list)
+    reasons: list[str] = field(default_factory=list)
+    approval: SubmitApproval | None = None
+    fingerprint: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "approve": self.approve,
             "checks_passed": list(self.checks_passed),
@@ -92,10 +92,10 @@ def detect_text_language(text: str) -> str:
 
 
 def evaluate(
-    application: Dict[str, Any] | HHApplication | str,
-    stop_file_path: Optional[str] = None,
-    max_per_hour: Optional[int] = None,
-    max_per_day: Optional[int] = None,
+    application: dict[str, Any] | HHApplication | str,
+    stop_file_path: str | None = None,
+    max_per_hour: int | None = None,
+    max_per_day: int | None = None,
 ) -> PolicyDecision:
     """Evaluate an application against all Phase 2 automated policy gates.
 
@@ -125,9 +125,9 @@ def evaluate(
     title = (app.get("title") or "").strip()
     qid = app.get("questionnaire_id")
 
-    checks_passed: List[str] = []
-    checks_failed: List[str] = []
-    reasons: List[str] = []
+    checks_passed: list[str] = []
+    checks_failed: list[str] = []
+    reasons: list[str] = []
 
     # -------------------------------------------------------------------------
     # Gate 1: Kill Switch
@@ -174,7 +174,7 @@ def evaluate(
     # -------------------------------------------------------------------------
     # Gate 3: Fingerprint Matching (Gate 3 Invariant)
     # -------------------------------------------------------------------------
-    resolved_fp: Optional[str] = None
+    resolved_fp: str | None = None
     pkg_row = db.get_application_package(vac_stable_id) if vac_stable_id else None
     pkg_data = None
     if pkg_row:
@@ -323,7 +323,7 @@ def evaluate(
     # Aggregate Decision
     # -------------------------------------------------------------------------
     approve = len(checks_failed) == 0
-    approval_obj: Optional[SubmitApproval] = None
+    approval_obj: SubmitApproval | None = None
 
     if approve:
         approval_obj = SubmitApproval(

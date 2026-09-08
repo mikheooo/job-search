@@ -496,7 +496,7 @@ def apply_schema(conn: sqlite3.Connection) -> None:
     cursor.execute('''CREATE INDEX IF NOT EXISTS idx_tg_feedback_created ON telegram_feedback_records(created_at)''')
     conn.commit()
 
-_FINGERPRINT: Optional[str] = None
+_FINGERPRINT: str | None = None
 
 
 def schema_fingerprint() -> str:

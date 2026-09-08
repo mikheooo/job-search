@@ -31,7 +31,7 @@ EXTERNAL_FORM_DOMAINS = [
 class ExternalFormQuestion(BaseModel):
     title: str
     field_type: str = "text"  # text, textarea, radio, checkbox, select
-    options: List[str] = Field(default_factory=list)
+    options: list[str] = Field(default_factory=list)
     raw_text: str = ""
 
 
@@ -40,12 +40,12 @@ class ExternalFormSubmissionResult(BaseModel):
     form_title: str = ""
     status: str = "PENDING"  # SUBMITTED, FAILED, SKIPPED
     questions_count: int = 0
-    filled_fields: List[Dict[str, Any]] = Field(default_factory=list)
+    filled_fields: list[dict[str, Any]] = Field(default_factory=list)
     confirmed: bool = False
-    error: Optional[str] = None
+    error: str | None = None
 
 
-def extract_external_form_urls(text: str) -> List[str]:
+def extract_external_form_urls(text: str) -> list[str]:
     """Extract external form / questionnaire URLs from message text."""
     urls = []
     url_pattern = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
@@ -57,7 +57,7 @@ def extract_external_form_urls(text: str) -> List[str]:
     return urls
 
 
-def solve_google_form_js(profile: Optional[CandidateProfile] = None) -> str:
+def solve_google_form_js(profile: CandidateProfile | None = None) -> str:
     """Generate JavaScript to fill all standard fields in a Google Form based on CandidateProfile."""
     if profile is None:
         profile = load_candidate_profile()

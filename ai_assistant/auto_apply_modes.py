@@ -52,22 +52,22 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from pydantic import BaseModel, Field
 
-from .hh_extractor import QuestionType
-from .prefill_plan import PrefillPlan, build_prefill_plan
-from .prefill_orchestrate import (
-    OperationStatus,
-    OrchestrationReport,
-    TrackedOperation,
-    prepare_and_execute_prefill,
-)
 from .application_review_gate import (
     GateStatus,
     HumanReviewGate,
     HumanReviewStore,
     build_review_gate,
 )
-from .hh_human_submission import confirm_human_submission
 from .hh_controlled_submit import controlled_real_submit
+from .hh_extractor import QuestionType
+from .hh_human_submission import confirm_human_submission
+from .prefill_orchestrate import (
+    OperationStatus,
+    OrchestrationReport,
+    TrackedOperation,
+    prepare_and_execute_prefill,
+)
+from .prefill_plan import PrefillPlan, build_prefill_plan
 
 
 class ApplyMode(str, Enum):
@@ -82,7 +82,7 @@ _ENV_MODE_VAR = "HH_APPLY_MODE"
 _AUTO_ALIASES = {"AUTO", "AUTO_APPLY", "AUTO_APPLY_MODE"}
 
 
-def resolve_mode(explicit: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> ApplyMode:
+def resolve_mode(explicit: str | None = None, env: dict[str, str] | None = None) -> ApplyMode:
     """Resolve the apply mode. Anything unrecognized falls back to REVIEW."""
     raw = (explicit or (env or os.environ).get(_ENV_MODE_VAR, "") or "").strip().upper()
     return ApplyMode.AUTO if raw in _AUTO_ALIASES else ApplyMode.REVIEW
@@ -109,14 +109,14 @@ V_INTERNAL = "BLOCKED_INTERNAL"
 
 # Vacancies with ANY submit attempt this session (one attempt per vacancy,
 # duplicates are blocked; SUBMISSION_UNKNOWN is never retried).
-_attempted_vacancies: Set[str] = set()
+_attempted_vacancies: set[str] = set()
 
 
 def clear_session_state() -> None:
     _attempted_vacancies.clear()
 
 
-def _letter_required_state(snapshot: Optional[Dict[str, Any]]) -> Optional[bool]:
+def _letter_required_state(snapshot: dict[str, Any] | None) -> bool | None:
     """Prove cover-letter requiredness from the captured DOM. No guessing.
 
     Returns:
@@ -160,7 +160,7 @@ def _strip_letter_answers(package: Any) -> None:
                        if getattr(a, "answer_type", None) is not QuestionType.COVER_LETTER]
 
 
-def classify_form(form: Any, snapshot: Optional[Dict[str, Any]] = None) -> FormKind:
+def classify_form(form: Any, snapshot: dict[str, Any] | None = None) -> FormKind:
     """DOM-provable form classification (no guessing).
 
     Priority:
@@ -215,8 +215,8 @@ class AutoApplyReport(BaseModel):
     mode: str = DEFAULT_MODE.value
     form_kind: str = ""
     vacancy_stable_id: str = ""
-    url: Optional[str] = None
-    title: Optional[str] = None
+    url: str | None = None
+    title: str | None = None
     verdict: str = V_INTERNAL
     stop_reason: str = ""
     generated_at: str = ""
@@ -225,10 +225,10 @@ class AutoApplyReport(BaseModel):
     fingerprint: str = ""
     review_status: str = ""
     cover_letter_len: int = 0
-    cover_letter_required: Optional[bool] = None
-    answers: List[Dict[str, str]] = Field(default_factory=list)
-    unresolved: List[str] = Field(default_factory=list)
-    review_reasons: List[str] = Field(default_factory=list)
+    cover_letter_required: bool | None = None
+    answers: list[dict[str, str]] = Field(default_factory=list)
+    unresolved: list[str] = Field(default_factory=list)
+    review_reasons: list[str] = Field(default_factory=list)
     # execution surface
     planned_operations: int = 0
     executed_operations: int = 0
@@ -240,16 +240,16 @@ class AutoApplyReport(BaseModel):
     submit_count: int = 0
     successful_submit: int = 0
     navigation_count: int = 0
-    url_before: Optional[str] = None
-    url_after: Optional[str] = None
-    submit_report: Optional[Dict[str, Any]] = None
+    url_before: str | None = None
+    url_after: str | None = None
+    submit_report: dict[str, Any] | None = None
     approved_by: str = ""  # "" | "policy:<form_kind>:<mode>"
 
     model_config = {"extra": "forbid"}
 
 
-def _answers_summary(pkg: Any) -> List[Dict[str, str]]:
-    out: List[Dict[str, str]] = []
+def _answers_summary(pkg: Any) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
     for a in sorted(getattr(pkg, "answers", []) or [], key=lambda x: x.question_id):
         if getattr(a, "requires_review", True) or not getattr(a, "answer", None):
             continue
@@ -257,7 +257,7 @@ def _answers_summary(pkg: Any) -> List[Dict[str, str]]:
     return out
 
 
-def _unresolved_reasons(plan: PrefillPlan) -> List[str]:
+def _unresolved_reasons(plan: PrefillPlan) -> list[str]:
     return [u.reason for u in (plan.unresolved or [])]
 
 
@@ -281,12 +281,12 @@ def _zero_op_orchestration(vacancy_stable_id: str, reason: str) -> Orchestration
 def run_auto_apply(
     package: Any,
     evaluate_fn: Callable[[str], str],
-    snapshot: Optional[Dict[str, Any]] = None,
+    snapshot: dict[str, Any] | None = None,
     *,
     form: Any = None,
-    mode: Optional[ApplyMode] = None,
-    expected_url_markers: Tuple[str, ...] = ("hh.ru", "applicant/vacancy_response"),
-    submitted_vacancies: Optional[Iterable[str]] = None,
+    mode: ApplyMode | None = None,
+    expected_url_markers: tuple[str, ...] = ("hh.ru", "applicant/vacancy_response"),
+    submitted_vacancies: Iterable[str] | None = None,
 ) -> AutoApplyReport:
     """Run one vacancy through the dual-mode pipeline. At most ONE submit.
 

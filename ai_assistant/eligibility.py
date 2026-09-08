@@ -15,12 +15,12 @@ with structured, granular explanation reasons.
 from __future__ import annotations
 
 import re
-from enum import Enum
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
-from .schema import Vacancy
 from .remote_filter import classify_work_format
+from .schema import Vacancy
 
 
 class RemoteMode(str, Enum):
@@ -84,13 +84,13 @@ class EligibilityAssessment:
     language_requirement: LanguageRequirement
     employment_scope: EmploymentScope
     eligibility: EligibilityStatus
-    eligibility_reasons: List[str] = field(default_factory=list)
-    matched_regions: List[str] = field(default_factory=list)
-    matched_countries: List[str] = field(default_factory=list)
-    timezone_details: Optional[str] = None
-    language_details: Optional[str] = None
+    eligibility_reasons: list[str] = field(default_factory=list)
+    matched_regions: list[str] = field(default_factory=list)
+    matched_countries: list[str] = field(default_factory=list)
+    timezone_details: str | None = None
+    language_details: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "remote_mode": self.remote_mode.value,
             "geo_scope": self.geo_scope.value,
@@ -139,7 +139,7 @@ _THAILAND_PATTERNS = [
     r"\bphuket\b",
 ]
 
-_COUNTRY_SPECIFIC_PATTERNS: Dict[str, List[str]] = {
+_COUNTRY_SPECIFIC_PATTERNS: dict[str, list[str]] = {
     "US": [
         r"\bus\s+only\b",
         r"\bu\.s\.\s+only\b",
@@ -184,7 +184,7 @@ _COUNTRY_SPECIFIC_PATTERNS: Dict[str, List[str]] = {
     ],
 }
 
-_REGIONAL_PATTERNS: Dict[str, List[str]] = {
+_REGIONAL_PATTERNS: dict[str, list[str]] = {
     "EU": [
         r"\beu\s+only\b",
         r"\beurope\s+only\b",
@@ -355,7 +355,7 @@ _EMP_LOCAL_ONLY_PATTERNS = [
 
 # --- CLASSIFIER IMPLEMENTATIONS ---
 
-def classify_remote_mode(title: str, description: str, location: Optional[str], source: Optional[str]) -> RemoteMode:
+def classify_remote_mode(title: str, description: str, location: str | None, source: str | None) -> RemoteMode:
     is_remote, reason = classify_work_format(title=title, description=description, location=location, source=source)
     if is_remote:
         return RemoteMode.REMOTE
@@ -371,10 +371,10 @@ def classify_remote_mode(title: str, description: str, location: Optional[str], 
 def classify_geo_scope(
     title: str,
     description: str,
-    location: Optional[str],
-    source: Optional[str],
-    country_restrictions: Optional[List[str]] = None,
-) -> Tuple[GeoScope, List[str], List[str]]:
+    location: str | None,
+    source: str | None,
+    country_restrictions: list[str] | None = None,
+) -> tuple[GeoScope, list[str], list[str]]:
     """Detects geo scope, matched countries and matched regions."""
     src = (source or "").strip().lower()
     loc = (location or "").strip()
@@ -397,7 +397,7 @@ def classify_geo_scope(
             return GeoScope.THAILAND, ["Thailand"], []
 
     # Check Country Specific
-    matched_countries: List[str] = []
+    matched_countries: list[str] = []
     for country, patterns in _COUNTRY_SPECIFIC_PATTERNS.items():
         for p in patterns:
             if re.search(p, combined, re.IGNORECASE):
@@ -408,7 +408,7 @@ def classify_geo_scope(
         return GeoScope.COUNTRY_SPECIFIC, matched_countries, []
 
     # Check Regional
-    matched_regions: List[str] = []
+    matched_regions: list[str] = []
     for region, patterns in _REGIONAL_PATTERNS.items():
         for p in patterns:
             if re.search(p, combined, re.IGNORECASE):
@@ -431,7 +431,7 @@ def classify_geo_scope(
     return GeoScope.UNKNOWN, [], []
 
 
-def classify_work_auth(title: str, description: str) -> Tuple[WorkAuthorization, Optional[str]]:
+def classify_work_auth(title: str, description: str) -> tuple[WorkAuthorization, str | None]:
     text = f"{title} {description}".lower()
 
     for p in _WORK_AUTH_COUNTRY_PATTERNS:
@@ -455,9 +455,9 @@ def classify_work_auth(title: str, description: str) -> Tuple[WorkAuthorization,
 def classify_timezone(
     title: str,
     description: str,
-    location: Optional[str],
-    timezone_restrictions: Optional[List[Any]] = None,
-) -> Tuple[TimezoneRequirement, Optional[str]]:
+    location: str | None,
+    timezone_restrictions: list[Any] | None = None,
+) -> tuple[TimezoneRequirement, str | None]:
     text = f"{title} {description} {location or ''}".lower()
 
     # Check structured tz restrictions
@@ -487,7 +487,7 @@ def classify_timezone(
     return TimezoneRequirement.UNKNOWN, None
 
 
-def classify_language(title: str, description: str) -> Tuple[LanguageRequirement, Optional[str]]:
+def classify_language(title: str, description: str) -> tuple[LanguageRequirement, str | None]:
     text = f"{title} {description}".lower()
 
     for p in _LANG_NATIVE_PATTERNS:
@@ -541,7 +541,7 @@ def classify_employment_scope(title: str, description: str) -> EmploymentScope:
 def assess_vacancy_eligibility(
     vacancy: Vacancy,
     candidate_country: str = "TH",
-    candidate_languages: Optional[List[str]] = None,
+    candidate_languages: list[str] | None = None,
 ) -> EligibilityAssessment:
     """Perform full multi-dimensional eligibility assessment for candidate in Thailand."""
     title = vacancy.title or ""
@@ -561,7 +561,7 @@ def assess_vacancy_eligibility(
     lang_req, lang_detail = classify_language(title, desc)
     emp_scope = classify_employment_scope(title, desc)
 
-    reasons: List[str] = []
+    reasons: list[str] = []
 
     # 2. Evaluate Remote Mode
     if remote_mode == RemoteMode.ONSITE:

@@ -37,18 +37,19 @@ from pydantic import BaseModel, Field
 # Reuse the common safe classification/truth primitives from HH Message Reply
 # where they are provider-agnostic (sensitive-topic blocking, language).
 from .hh_message_reply import (
-    MessageClassification,
-    _SENSITIVE_RE,
     _NO_REPLY_MARKERS,
     _REPLY_PROBE,
-    _load_profile,
-    _context_texts,
-    detect_language,
-    generate_reply as _hh_generate_reply,
+    _SENSITIVE_RE,
     HHDialog,
     HHMessage,
+    MessageClassification,
+    _context_texts,
+    _load_profile,
+    detect_language,
 )
-
+from .hh_message_reply import (
+    generate_reply as _hh_generate_reply,
+)
 
 DEFAULT_STATE_PATH = os.path.join("artifacts", "email_message_reply_state.json")
 
@@ -61,15 +62,15 @@ class EmailProvider(str, Enum):
 
 
 class EmailMessage(BaseModel):
-    message_id: Optional[str] = None
-    thread_id: Optional[str] = None
+    message_id: str | None = None
+    thread_id: str | None = None
     provider: str = EmailProvider.UNKNOWN.value
     sender_name: str = ""
     sender_email: str = ""
     subject: str = ""
-    timestamp: Optional[str] = None
+    timestamp: str | None = None
     body_text: str = ""
-    reply_to: Optional[str] = None
+    reply_to: str | None = None
     # True only when a real provider identifier was present; a False marks a
     # documented fallback (subject+sender fingerprint), never a fake provider ID.
     has_real_message_id: bool = False
@@ -85,7 +86,7 @@ class EmailMessage(BaseModel):
 
 class EmailContext(BaseModel):
     message: EmailMessage
-    thread_messages: List[EmailMessage] = Field(default_factory=list)
+    thread_messages: list[EmailMessage] = Field(default_factory=list)
     linked_company: str = ""
     linked_vacancy: str = ""
     linked_application: str = ""
@@ -115,8 +116,8 @@ def _email_fallback_id(msg: EmailMessage) -> str:
 # ---------------- discovery (read-only, provider-agnostic) -------------------
 
 def fetch_incoming_emails_readonly(
-    transport: Optional[Callable[[], List[Dict[str, Any]]]] = None,
-) -> Dict[str, Any]:
+    transport: Callable[[], list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
     """Read-only discovery of incoming emails via an injected transport.
 
     transport: callable returning a list of raw email dicts (provider adapter).
@@ -207,8 +208,8 @@ _RECRUITER_HINT_RE = re.compile(
 
 def link_email_to_vacancy(
     context: EmailContext,
-    profile: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Best-effort linkage to a known vacancy/company. Never guesses.
 
     Uses sender domain / subject / body keywords and existing project data
@@ -232,8 +233,8 @@ def link_email_to_vacancy(
 
 def generate_email_reply(
     context: EmailContext,
-    profile: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Short, natural, truth-only email reply. Only for safe JOB_RELATED."""
     cls = classify_email(context)
     if cls != EmailClassification.JOB_RELATED:
@@ -258,8 +259,8 @@ def generate_email_reply(
             "reason": "safe recruiter message; profile facts available"}
 
 
-def _email_truth_facts(profile: Dict[str, Any]) -> List[str]:
-    facts: List[str] = []
+def _email_truth_facts(profile: dict[str, Any]) -> list[str]:
+    facts: list[str] = []
     roles = profile.get("desired_roles") or []
     if roles:
         facts.append("roles: " + ", ".join(roles[:3]))
@@ -271,7 +272,7 @@ def _email_truth_facts(profile: Dict[str, Any]) -> List[str]:
 class EmailSendGate:
     """Email send is PHYSICALLY blocked in Stage 27 (REVIEW-only)."""
 
-    def send_email(self, context: EmailContext, text: str) -> Dict[str, Any]:
+    def send_email(self, context: EmailContext, text: str) -> dict[str, Any]:
         return {"ok": False, "blocked": True,
                 "reason": "EMAIL_REVIEW_ONLY_SEND_BLOCKED",
                 "send_action_count": 0}
@@ -286,10 +287,10 @@ class EmailSendGate:
 class EmailReplyStateStore:
     """File-backed dedup/state (artifacts/, gitignored). No DB schema change."""
 
-    def __init__(self, path: Optional[str] = None):
+    def __init__(self, path: str | None = None):
         # resolved at call time so tests can override DEFAULT_STATE_PATH after import
         self.path = path if path is not None else DEFAULT_STATE_PATH
-        self._records: Dict[str, Dict[str, Any]] = {}
+        self._records: dict[str, dict[str, Any]] = {}
         self._load()
 
     def _load(self) -> None:
@@ -324,8 +325,8 @@ class EmailReplyStateStore:
 
 class EmailReplyReport(BaseModel):
     provider: str = EmailProvider.UNKNOWN.value
-    message_id: Optional[str] = None
-    thread_id: Optional[str] = None
+    message_id: str | None = None
+    thread_id: str | None = None
     sender_name: str = ""
     sender_email: str = ""
     subject: str = ""
@@ -333,7 +334,7 @@ class EmailReplyReport(BaseModel):
     linked_company: str = ""
     linked_vacancy: str = ""
     generated_reply: str = ""
-    sources: List[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
     status: str = ""  # NEEDS_HUMAN_REVIEW | SKIPPED | EMAIL_ACCESS_BLOCKED | ...
     reason: str = ""
     dedup_key: str = ""
@@ -345,8 +346,8 @@ class EmailReplyReport(BaseModel):
 
 def process_incoming_email(
     context: EmailContext,
-    profile: Optional[Dict[str, Any]] = None,
-    state: Optional[EmailReplyStateStore] = None,
+    profile: dict[str, Any] | None = None,
+    state: EmailReplyStateStore | None = None,
 ) -> EmailReplyReport:
     """REVIEW-only processing of one incoming email. Never sends."""
     msg = context.message
@@ -372,7 +373,7 @@ def process_incoming_email(
     report.linked_vacancy = link.get("linked_vacancy", "")
 
     reply = ""
-    sources: List[str] = []
+    sources: list[str] = []
     if classification == EmailClassification.JOB_RELATED:
         gen = generate_email_reply(context, profile)
         reply = gen.get("reply", "")

@@ -27,8 +27,8 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from .hh_extractor import ApplicationForm, ApplicationType, QuestionType
-from .prefill_plan import PrefillPlan
 from .prefill_orchestrate import OrchestrationReport
+from .prefill_plan import PrefillPlan
 
 
 class GateStatus(str, Enum):
@@ -43,8 +43,8 @@ class ReviewQuestion(BaseModel):
     question_id: str
     question: str
     type: str
-    answer: Optional[str] = None
-    selected_options: List[str] = Field(default_factory=list)
+    answer: str | None = None
+    selected_options: list[str] = Field(default_factory=list)
     source: str = ""
     confidence: float = 0.0
 
@@ -54,8 +54,8 @@ class ReviewQuestion(BaseModel):
 class ReviewVerification(BaseModel):
     group_name: str
     target: str = ""
-    expected: List[str] = Field(default_factory=list)
-    actual: List[str] = Field(default_factory=list)
+    expected: list[str] = Field(default_factory=list)
+    actual: list[str] = Field(default_factory=list)
     verified: bool = False
 
     model_config = {"extra": "forbid"}
@@ -64,17 +64,17 @@ class ReviewVerification(BaseModel):
 class HumanReviewGate(BaseModel):
     review_id: str = ""
     status: GateStatus = GateStatus.BLOCKED
-    block_reasons: List[str] = Field(default_factory=list)
+    block_reasons: list[str] = Field(default_factory=list)
     vacancy_stable_id: str = ""
     application_type: str = ""
     resume_info: str = ""
     cover_letter: str = ""
-    screening_questions: List[ReviewQuestion] = Field(default_factory=list)
-    custom_text_notes: List[str] = Field(default_factory=list)
-    unresolved: List[str] = Field(default_factory=list)
-    review_reasons: List[str] = Field(default_factory=list)
-    warnings: List[str] = Field(default_factory=list)
-    verification: List[ReviewVerification] = Field(default_factory=list)
+    screening_questions: list[ReviewQuestion] = Field(default_factory=list)
+    custom_text_notes: list[str] = Field(default_factory=list)
+    unresolved: list[str] = Field(default_factory=list)
+    review_reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    verification: list[ReviewVerification] = Field(default_factory=list)
     fingerprint: str = ""
     generated_at: str = ""
 
@@ -85,11 +85,11 @@ def _canonical_json(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
-def _fingerprint(payload: Dict[str, Any]) -> str:
+def _fingerprint(payload: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
-def _review_payload(gate: "HumanReviewGate") -> Dict[str, Any]:
+def _review_payload(gate: "HumanReviewGate") -> dict[str, Any]:
     return {
         "vacancy": gate.vacancy_stable_id,
         "cover_letter": gate.cover_letter,
@@ -111,12 +111,12 @@ def build_review_gate(
     package: Any,
     plan: PrefillPlan,
     orchestration: OrchestrationReport,
-    final_snapshot: Dict[str, Any],
-    form: Optional[ApplicationForm] = None,
+    final_snapshot: dict[str, Any],
+    form: ApplicationForm | None = None,
 ) -> HumanReviewGate:
     """Build the human review gate. Pure/read-only; no browser, no DB."""
     # form can be passed explicitly (Stage 20C+) or derived from package
-    effective_form: Optional[ApplicationForm] = form
+    effective_form: ApplicationForm | None = form
     if effective_form is None:
         # backward compat: try package.form (populated by enrich_package_with_form)
         effective_form = getattr(package, "form", None)  # type: ignore[assignment]
@@ -126,7 +126,7 @@ def build_review_gate(
             source="hh", vacancy_stable_id=getattr(package, "vacancy_stable_id", "") or "",
             application_type=ApplicationType.unknown, questions=[])
     form = effective_form  # type: ignore[assignment]
-    block_reasons: List[str] = []
+    block_reasons: list[str] = []
 
     pkg_status = getattr(package, "validation_status", "") or ""
     if pkg_status != "VALID":
@@ -152,12 +152,12 @@ def build_review_gate(
         if not getattr(a, "requires_review", True) and getattr(a, "answer", None):
             answers_by_qid[a.question_id] = a
 
-    questions: List[ReviewQuestion] = []
-    custom_notes: List[str] = []
+    questions: list[ReviewQuestion] = []
+    custom_notes: list[str] = []
     for q in (form.questions or []):
         ans = answers_by_qid.get(q.id)
         answer_text = ans.answer if ans is not None else None
-        selected: List[str] = []
+        selected: list[str] = []
         if answer_text and q.normalized_type in (QuestionType.RADIO, QuestionType.SELECT,
                                                  QuestionType.CHECKBOX):
             selected = [p.strip() for p in answer_text.split(";") if p.strip()]
@@ -183,7 +183,7 @@ def build_review_gate(
                    "no resume selection control in captured form (HH uses account default resume)")
 
     # verification results from orchestration group checks
-    verification: List[ReviewVerification] = []
+    verification: list[ReviewVerification] = []
     for gc in (orchestration.group_checks or []):
         verification.append(ReviewVerification(
             group_name=gc.group_name,
@@ -219,7 +219,7 @@ class HumanReviewStore:
     """In-memory review store. NO DB, NO browser, NO network."""
 
     def __init__(self):
-        self._reviews: Dict[str, Dict[str, Any]] = {}
+        self._reviews: dict[str, dict[str, Any]] = {}
 
     def save(self, gate: HumanReviewGate) -> str:
         entry = {"gate": gate.model_dump(), "fingerprint": gate.fingerprint,
@@ -227,14 +227,14 @@ class HumanReviewStore:
         self._reviews[gate.review_id] = entry
         return gate.review_id
 
-    def get(self, review_id: str) -> Optional[Dict[str, Any]]:
+    def get(self, review_id: str) -> dict[str, Any] | None:
         return self._reviews.get(review_id)
 
-    def get_state(self, review_id: str) -> Optional[str]:
+    def get_state(self, review_id: str) -> str | None:
         entry = self._reviews.get(review_id)
         return entry["state"] if entry else None
 
-    def mark_waiting_for_human(self, review_id: str) -> Dict[str, Any]:
+    def mark_waiting_for_human(self, review_id: str) -> dict[str, Any]:
         entry = self._reviews.get(review_id)
         if entry is None:
             return {"ok": False, "state": None, "reason": "unknown review_id"}
@@ -244,7 +244,7 @@ class HumanReviewStore:
         entry["state"] = GateStatus.WAITING_FOR_HUMAN_APPROVAL.value
         return {"ok": True, "state": entry["state"], "reason": ""}
 
-    def approve_review(self, review_id: str, fingerprint: str) -> Dict[str, Any]:
+    def approve_review(self, review_id: str, fingerprint: str) -> dict[str, Any]:
         """Explicit human approval. Pure state transition - no browser actions."""
         entry = self._reviews.get(review_id)
         if entry is None:
@@ -262,7 +262,7 @@ class HumanReviewStore:
         entry["state"] = GateStatus.HUMAN_APPROVED.value
         return {"ok": True, "state": entry["state"], "reason": ""}
 
-    def invalidate_on_change(self, review_id: str, current_fingerprint: str) -> Dict[str, Any]:
+    def invalidate_on_change(self, review_id: str, current_fingerprint: str) -> dict[str, Any]:
         """If reviewed state changed -> INVALIDATED; a new review is required."""
         entry = self._reviews.get(review_id)
         if entry is None:
@@ -277,7 +277,7 @@ class HumanReviewStore:
         return {"ok": True, "state": entry["state"], "reason": "state unchanged"}
 
 
-def verify_review_fingerprint(gate: HumanReviewGate, current_fingerprint: str) -> Dict[str, Any]:
+def verify_review_fingerprint(gate: HumanReviewGate, current_fingerprint: str) -> dict[str, Any]:
     """Check reviewed_state == current_state. Pure function."""
     if gate.fingerprint != current_fingerprint:
         return {"ok": False, "reason": "REVIEW_STATE_CHANGED",
