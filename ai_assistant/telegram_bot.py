@@ -16,7 +16,8 @@ Security:
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from ai_assistant import config, db
 from ai_assistant.telegram_notifier import TelegramNotifier

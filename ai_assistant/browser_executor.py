@@ -2767,7 +2767,7 @@ def verify_submission_in_browser(
     submission_id: str,
     profile_path: str | None = None,
     adapter: BrowserAdapter | None = None,
-) -> 'SubmissionVerification':
+) -> SubmissionVerification:
     """Verify a submission by checking the application page for success/error/blocked signals.
     Does NOT re-submit the application - only reads the current page state.
     """

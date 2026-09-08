@@ -10,7 +10,8 @@ re-check, no navigation, no login, no DB writes.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from .hh_submission import (
     SubmissionReport,

@@ -52,7 +52,7 @@ class IntegrityIssue:
     message: str = ""
     evidence: dict[str, Any] = field(default_factory=dict)
 
-    def __lt__(self, other: "IntegrityIssue") -> bool:
+    def __lt__(self, other: IntegrityIssue) -> bool:
         o = {IntegritySeverity.ERROR: 0, IntegritySeverity.WARNING: 1, IntegritySeverity.INFO: 2}
         s1 = o.get(self.severity, 3)
         s2 = o.get(other.severity, 3)

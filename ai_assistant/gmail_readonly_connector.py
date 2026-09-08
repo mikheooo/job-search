@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import base64
 import re
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 # Gmail read-only scope - the MINIMAL scope that allows reading messages.
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
@@ -151,7 +152,7 @@ class GmailReadOnlyConnector:
         }
 
     @staticmethod
-    def _split_sender(sender: str) -> (str, str):
+    def _split_sender(sender: str) -> tuple[str, str]:
         m = re.search(r"([^<]*)\s*<([^>]+)>", sender or "")
         if m:
             return m.group(1).strip(' "\''), m.group(2).strip()

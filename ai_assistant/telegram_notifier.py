@@ -21,7 +21,8 @@ import os
 import re
 import urllib.parse
 import urllib.request
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from ai_assistant import config, db
 

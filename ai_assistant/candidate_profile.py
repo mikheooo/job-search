@@ -233,7 +233,7 @@ class CandidateProfile:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "CandidateProfile":
+    def from_dict(cls, data: dict[str, Any]) -> CandidateProfile:
         desired = data.get("desired_roles") or data.get("desiredRoles") or data.get("target_roles") or data.get("targetRoles") or []
         target = data.get("target_roles") or data.get("targetRoles") or desired
         alternative = data.get("alternative_roles") or data.get("alternativeRoles") or []
@@ -333,7 +333,7 @@ class CandidateProfile:
         )
 
     @classmethod
-    def from_json_file(cls, path: str | os.PathLike) -> "CandidateProfile":
+    def from_json_file(cls, path: str | os.PathLike) -> CandidateProfile:
         p = Path(path)
         if not p.exists():
             raise FileNotFoundError(f"Candidate profile file not found: {p}")

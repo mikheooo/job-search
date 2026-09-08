@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from pydantic import BaseModel, Field
 

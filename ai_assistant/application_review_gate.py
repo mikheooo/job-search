@@ -89,7 +89,7 @@ def _fingerprint(payload: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
-def _review_payload(gate: "HumanReviewGate") -> dict[str, Any]:
+def _review_payload(gate: HumanReviewGate) -> dict[str, Any]:
     return {
         "vacancy": gate.vacancy_stable_id,
         "cover_letter": gate.cover_letter,
