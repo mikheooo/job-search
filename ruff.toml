@@ -494,3 +494,29 @@ ignore = [
     # E741 (3): ambiguous variable name (l, I, O). Would need real renames.
     "E741",
 ]
+
+# ---------------------------------------------------------------------------
+# ZONE POLICY for broad exception handling (see docs/ble001_triage.md, step 3)
+# ---------------------------------------------------------------------------
+# Not every `except Exception` is a bug. A watcher loop that dies on the first
+# unexpected error is worse than one that logs and keeps polling. What matters
+# is WHERE the handler sits:
+#
+#   GREEN ZONE  - CLI entry points and long-running pollers. A broad catch is
+#                 the correct shape: the loop must survive one bad iteration.
+#                 BLE001 is therefore ignored here.
+#
+#   RED ZONE    - the submission path: anything that can put an application in
+#                 front of a real employer. Here a broad catch is a candidate
+#                 fail-open, so BLE001 stays ON and is tracked by a test
+#                 (tests/test_ble001_zone_policy.py) instead of being ignored.
+#
+# Deliberately NOT ignored anywhere: S110 (try-except-pass). Surviving a bad
+# iteration is fine; swallowing it in silence is not. Every zone still has to
+# log what it swallowed.
+[lint.per-file-ignores]
+"ai_assistant/cli.py" = ["BLE001"]
+"ai_assistant/runner.py" = ["BLE001"]
+"ai_assistant/watcher.py" = ["BLE001"]
+"ai_assistant/*_watcher.py" = ["BLE001"]
+"ai_assistant/hh_browser_launcher.py" = ["BLE001"]
