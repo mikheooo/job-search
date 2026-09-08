@@ -104,8 +104,20 @@ def preview_next_application() -> RunnerExecutionResult:
         try:
             audit_report = audit_questionnaire(target_app.questionnaire_id, application_id=app_id)
             audit_status = RunnerPreCheckStatus.PASS if audit_report.overall.value == "SAFE_TO_SUBMIT" else RunnerPreCheckStatus.FAIL
-        except Exception:
-            audit_status = RunnerPreCheckStatus.PASS if target_app.audit_state == "SAFE_TO_SUBMIT" else RunnerPreCheckStatus.FAIL
+        except Exception as e:
+            # Fail closed. This used to fall back to the *persisted* audit_state,
+            # which hh_application_queue.py could itself have invented when its
+            # own audit crashed - two layers that together turned an exception
+            # into permission to submit. We still log what the stored value said,
+            # so a disagreement is visible instead of silent.
+            # See docs/ble001_triage.md finding #2.
+            logger.warning(
+                "pre-submit audit failed for app %s (questionnaire %s): %s: %s; "
+                "not falling back to stored audit_state=%r",
+                app_id, target_app.questionnaire_id, type(e).__name__, e,
+                getattr(target_app, "audit_state", None),
+            )
+            audit_status = RunnerPreCheckStatus.FAIL
     else:
         audit_status = RunnerPreCheckStatus.PASS
 

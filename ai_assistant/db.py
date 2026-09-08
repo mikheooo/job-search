@@ -2046,8 +2046,19 @@ def reconcile_digest_attempt(batch_key: str, new_status: str, chat_id: str = "-1
         try:
             p = json.loads(row[0])
             vac_list = p.get("vacancies", [])
-        except Exception:
-            pass
+        except Exception as e:
+            # Fail closed. Continuing with an empty vac_list used to mark the
+            # batch reconciled AND overwrite its payload with an empty list -
+            # destroying the only record of which vacancies were in it, updating
+            # none of them, and still returning True.
+            # See docs/ble001_triage.md finding #3.
+            logger.exception(
+                "reconcile_digest_attempt: batch %s payload is not readable; "
+                "refusing to reconcile, no rows updated",
+                batch_key,
+            )
+            conn.close()
+            return False
 
     import datetime
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -2170,8 +2181,17 @@ def get_production_health(now_dt: Any | None = None, storage_dir: str | None = N
                 "timestamp": now_iso,
                 "diagnostics": [d[0] for d in dups[:5]],
             })
-    except Exception:
-        pass
+    except Exception as dup_err:
+        # A health check that reports HEALTHY when its own query crashed is worse
+        # than no health check at all - it is the only duplicate-key guard we have.
+        # UNKNOWN is not HEALTHY, so cli.py exits non-zero on it.
+        # See docs/ble001_triage.md finding #4.
+        health_result["health"] = "UNKNOWN"
+        health_result["alerts"].append({
+            "severity": "WARNING",
+            "message": f"Duplicate delivery key check failed, result is inconclusive: {dup_err}",
+            "timestamp": now_iso,
+        })
 
     # 3. Query attempt states
     attempts = list_digest_attempts(limit=50, now_dt=now_dt)

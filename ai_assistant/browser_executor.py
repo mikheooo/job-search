@@ -14,6 +14,8 @@ if TYPE_CHECKING:
 
 from pydantic import BaseModel, Field
 
+logger = logging.getLogger(__name__)
+
 from .candidate_profile import CandidateProfile
 from .db import get_connection, init_db
 from .schema import Vacancy
@@ -589,6 +591,22 @@ class MockBrowserAdapter(BrowserAdapter):
         return json.dumps({"ok": True, "url": target_url})
 
 
+# Returned when a page could not actually be read. Deliberately fail-closed:
+# "no form, no apply button" makes every caller BLOCK, instead of filling and
+# clicking a form we never saw. `captcha`/`login_required` stay False because a
+# read failure is not evidence of either - `form_detected: False` is what stops
+# the flow. Always hand out a copy so callers cannot mutate this constant.
+# See docs/ble001_triage.md finding #1.
+INSPECT_UNREADABLE: dict[str, Any] = {
+    "form_detected": False,
+    "fields": [],
+    "apply_button": False,
+    "captcha": False,
+    "login_required": False,
+    "inspection_failed": True,
+}
+
+
 class CDPBrowserAdapter(BrowserAdapter):
     """Direct CDP adapter over WebSocket / HTTP API (e.g. http://127.0.0.1:9222)."""
     def __init__(self, cdp_url: str = "http://127.0.0.1:9222"):
@@ -645,8 +663,17 @@ class CDPBrowserAdapter(BrowserAdapter):
             return {"final_url": url, "title": "", "site": "", "blocked": True, "reason": str(e)}
 
     def inspect_page(self) -> dict[str, Any]:
+        """Read-only page inspection over CDP.
+
+        Fail-closed by design: anything that prevents us from reading the page
+        (no ws_url, empty result, exception) yields INSPECT_UNREADABLE rather
+        than an optimistic "form found". Callers decide BLOCK vs proceed on
+        exactly these keys, so inventing a success here used to defeat captcha,
+        login and missing-form checks at once. See docs/ble001_triage.md.
+        """
         if not self.ws_url:
-            return {"form_detected": True, "fields": ["name", "email", "phone", "resume", "cover_letter", "linkedin"], "apply_button": True}
+            logger.warning("CDP inspect_page: no ws_url configured; reporting page as unreadable")
+            return dict(INSPECT_UNREADABLE)
         async def _inspect():
             import asyncio
             import json
@@ -679,9 +706,16 @@ class CDPBrowserAdapter(BrowserAdapter):
                 return data.get("result", {}).get("result", {}).get("value", {})
         try:
             res = self._sync_run(_inspect())
-            return res or {"form_detected": True, "fields": ["name", "email", "phone", "resume", "cover_letter", "linkedin"], "apply_button": True}
-        except Exception:
-            return {"form_detected": True, "fields": ["name", "email", "phone", "resume", "cover_letter", "linkedin"], "apply_button": True}
+            if not res:
+                logger.warning("CDP inspect_page: empty result; reporting page as unreadable")
+                return dict(INSPECT_UNREADABLE)
+            return res
+        except Exception as e:
+            logger.warning(
+                "CDP inspect_page failed (%s: %s); reporting page as unreadable",
+                type(e).__name__, e,
+            )
+            return dict(INSPECT_UNREADABLE)
 
     def inspect_apply_flow(self) -> dict[str, Any]:
         """Read-only inspection of apply buttons, hrefs, and form fields without clicking anything."""

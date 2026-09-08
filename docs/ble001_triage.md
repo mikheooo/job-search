@@ -1,0 +1,276 @@
+# BLE001 triage — 369 голых `except Exception`
+
+Дата: 2026-09-08. Цель: понять, где `except Exception` реально маскирует ошибку,
+а где это оправданный верхнеуровневый предохранитель. **Автофикса не было** —
+только оценка и план.
+
+> **Статус 2026-09-08:** шаги 0-2 плана выполнены (см. «План» внизу).
+> Создан `ruff.toml`, закрыты находки №1-6, добавлены регрессионные тесты
+> `tests/test_ble001_fail_closed.py` (8 штук). Полный сьют: **1531 passed**
+> (было 1523). Backlog ruff: **710 → 708** (S110 −2, BLE001 −2; LOG015 вернулся
+> к 42 после того, как новые логи перевели с root-логгера на модульный).
+> BLE001 остался 367 — правило срабатывает на сам `except Exception`, а мы
+> меняли не его, а поведение тела. Шаг 3 (политика на остальные ~190) не делался.
+
+## Метод
+
+Прогнали `ruff check ai_assistant/ --select BLE001` (369 находок), затем для
+каждого обработчика прочитали тело и задали один вопрос:
+
+> Сохраняет ли обработчик хоть какой-то след ошибки — лог, `raise`, или имя
+> исключения (`as e`), попавшее в отчёт/словарь/возвращаемое значение?
+
+Если нет — ошибка выброшена, и только там может прятаться настоящая дыра.
+(Первая версия эвристики считала «молчаливыми» все `except Exception as e:
+report.reason = f"...{e}"` — это была ошибка, текст там сохраняется. Версия 2
+это исправила.)
+
+## Итоговые цифры
+
+| Класс | Шт. | % | Что делать |
+|---|---:|---:|---|
+| **A** — ошибка сохранена (лог / `raise` / `e` попал в отчёт) | 166 | 45% | не трогать |
+| **B** — ошибка выброшена | 203 | 55% | разбирать |
+| из B: тело — только `pass` / `continue` | 80 | | подозрительно |
+| из B: голое `except Exception:` (объект даже не привязан) | 198 | | имя ошибки потеряно навсегда |
+| из B: `as e`, но `e` не используется | 5 | | просто мусор |
+| из B: подменяет ошибку фабрикованным дефолтом | 30 | | **главный источник дыр** |
+| из B: на критичном пути (submit/apply/send/gate/verify) | 11 | | **приоритет** |
+
+По файлам: `cli.py` 67, `browser_executor.py` 59, `db.py` 29, `hh_submission.py` 16,
+`watcher.py` 13, `hh_autonomous_agent.py` 12, `hh_message_watcher.py` 11,
+`hh_message_reply.py` 10, `runner.py` 10, `hh_browser_launcher.py` 9,
+`submission_recovery.py` 9, `application_queue.py` 8, `application_review.py` 8.
+
+---
+
+## Настоящие дыры
+
+### 1. `browser_executor.py:683` — фабрикует «форма найдена» (высокий)
+
+`CDPBrowserAdapter.inspect_page` при любом исключении возвращает:
+
+```python
+return {"form_detected": True, "fields": [..., "linkedin"], "apply_button": True}
+```
+
+То есть **признаётся в успехе на странице, которую не смог прочитать**.
+Хуже того: в словаре нет ключей `captcha` и `login_required`. А вызывающие
+(`browser_executor.py:1943-1976`, `2613-2637`, `2871-2872`) читают ровно эти ключи:
+
+```python
+form_detected = bool(inspect.get("form_detected") or flow_info.get("has_form"))
+...
+elif inspect.get("captcha") or flow_info.get("captcha"):   # -> None, falsy
+elif login_req and auth_state == "NOT_AUTHENTICATED":       # -> None, falsy
+elif inspect.get("login_required"):                         # -> None, falsy
+elif not form_detected:                                     # -> True, пропуск
+else:
+    status = BrowserStatus.FORM_DETECTED                    # <- сюда и попадаем
+```
+
+Итог: упавший CDP-осмотр проходит все проверки блокировки и сообщает
+`FORM_DETECTED` / пропускает «Submit button not found». Классический fail-open.
+`CDPBrowserAdapter` живой — инстанцируется в `browser_executor.py:2284`, `2845`
+и `cli.py:794`.
+
+Зеркальный случай `PlaywrightBrowserAdapter.inspect_page:1130` делает всё
+правильно — возвращает `form_detected: False` и честно блокируется.
+
+### 2. `hh_application_queue.py:251` + `hh_application_runner.py:107` — двухслойный fail-open (высокий)
+
+```python
+# hh_application_queue.py:251
+except Exception:
+    audit_state = "SAFE_TO_SUBMIT" if q_state in (READY_TO_SUBMIT, SUBMITTED) else "NEEDS_CORRECTION"
+
+# hh_application_runner.py:107
+except Exception:
+    audit_status = RunnerPreCheckStatus.PASS if target_app.audit_state == "SAFE_TO_SUBMIT" else FAIL
+```
+
+Первый слой: если аудит анкеты упал — пишем `SAFE_TO_SUBMIT` на основании
+*сохранённого* состояния. Второй слой: если живой аудит упал — берём
+*сохранённый* `audit_state` и превращаем его в `PASS`.
+
+То есть **значение, которое первый слой сфантазировал при своей ошибке, второй
+слой читает как истину и превращает в PASS**. Упавший аудит отмывается в
+разрешение на отправку. По отдельности каждый слой выглядит как «ну, деграднул
+аккуратно», вместе — дыра.
+
+### 3. `db.py:2049` — reconcile молча стирает список вакансий (высокий)
+
+`reconcile_digest_attempt`:
+
+```python
+try:
+    p = json.loads(row[0])
+    vac_list = p.get("vacancies", [])
+except Exception:
+    pass          # vac_list остаётся []
+...
+updated_payload = json.dumps({"vacancies": vac_list, "reconciled_to": new_status, ...})
+cur.execute("UPDATE ... SET status = ?, delivered_at = ?, payload = ?", (new_status, ..., updated_payload, ...))
+# вакансии из vac_list не обновляются — список пуст, цикл не выполняется
+return True
+```
+
+Если payload не распарсился: батч помечается новым статусом (в т.ч. доставленным),
+**payload перезаписывается пустым списком** — исходный список вакансий потерян
+безвозвратно, ни одна запись вакансии не обновлена, функция возвращает `True`.
+Тихая потеря данных плюс ложный успех.
+
+### 4. `db.py:2173` — health-check врёт, когда сам сломан (средне-высокий)
+
+```python
+try:
+    cur.execute("SELECT delivery_key, COUNT(*) ... HAVING COUNT(*) > 1")
+    dups = cur.fetchall()
+    if dups:
+        health_result["health"] = "UNHEALTHY"
+        ... CRITICAL alert "Duplicate delivery keys detected"
+except Exception:
+    pass
+```
+
+Проверка на дубликаты delivery_key — единственная в своём роде. Если запрос
+падает, `health` остаётся `HEALTHY` и алерта нет. **Метрика здоровья, которая
+показывает «здоров» именно когда не смогла проверить.** Соседние проверки
+(`2221`, `2228`, `2308`) грешат тем же, но их последствия мягче.
+
+### 5. `application_queue.py:1142` — опечатка в фильтре превращается в правдоподобный ответ (средний)
+
+```python
+try:
+    filt = ApplicationStatus(status_filter)
+except Exception:
+    filt = ApplicationStatus.READY_TO_APPLY
+```
+
+`prepare --status=GARBAGE` молча готовит READY_TO_APPLY вместо ошибки.
+Ничего не ломает, но выдаёт plausible-looking результат вместо
+«нет такого статуса». Ровно тот класс багов, который трудно заметить.
+
+### 6. `application_tracking.py:483` — отклонённый переход статуса теряется (средне-низкий)
+
+При неудачном `transition_application` деградирует до «обновить только оценки,
+статус не менять». Как деградация — разумно. Но туда же падают и *невалидные*
+переходы, т.е. ошибка в логике переходов будет молча игнорироваться вечно,
+без единого следа в логах.
+
+### 7. `browser_executor.py:1276` — пустой снапшот выглядит как чистая форма (требует проверки)
+
+`extract_application_form` при исключении возвращает пустой снапшот
+(`html: ""`, `questions: []`, `controls: []`, `auth_form: false`, `site: "hh.ru"`).
+`hh_extractor.extract_application_form` на таком входе получает
+`questions = []`, `blocked.captcha = false`, `app_type = unknown` —
+т.е. «форма без вопросов, ничто не блокирует». Похоже на fail-open, но
+`extraction_meta` содержит `observed_control_count: 0`, и downstream может на
+это опираться. **Нужно проверить, есть ли guarding на `observed_control_count`** —
+не утверждаю, что дыра, утверждаю, что надо посмотреть.
+
+---
+
+## Проверено и признано нормальным
+
+Чтобы не раздувать список:
+
+| Место | Почему ок |
+|---|---|
+| `browser_executor.py:1368` `pass  # Some submissions don't navigate` | успех определяется скан-контентом (`1377-1384`), а не фактом навигации. Съеденный таймаут ни на что не влияет. Стоит только сузить до `TimeoutError`. |
+| `db.py:240` (`save_vacancy_eligibility` при `save_vacancy`) | самовосстанавливается: `application_queue.py:599-603` при отсутствующей записи переоценивает eligibility на месте. |
+| `hh_submission.py:259`, `hh_human_submission.py:64` | `entry.get("gate") or {}` бросает только если `entry` вообще не dict; при пустом `gate_vacancy` вторая проверка-vs-approved просто пропускается, но **до** неё уже прошёл `gate_res` (`:250`). Теоретически fail-open, практически недостижимо. |
+| `browser_executor.py:150` | `urlparse(str).netloc.lower()` на строке не бросает. Пустой `apply_domain` → не совпадёт с доменом → fail *closed*. |
+| Класс A целиком (166 шт.) | текст ошибки сохранён — логи, `raise`, `f"...{e}"` в отчётах. |
+
+---
+
+## План
+
+### Шаг 0. Создать `ruff.toml` — его нет вообще — **СДЕЛАНО**
+
+Конфига действительно не было нигде: ни `ruff.toml`, ни `[tool.ruff]`, ни
+`~/.config/ruff`. Проверено `--isolated` — он даёт тот же результат, то есть
+710 ошибок были **дефолтом ruff 0.16.6**, а не чьим-то выбором. Это важно:
+дефолт 0.16.x сильно шире классического `E4,E7,E9,F` (в нём уже есть BLE, UP,
+SIM, RUF, PL, DTZ, LOG, TRY…), но в нём **нет** E501 и D. Backlog целиком
+зависел от версии ruff на машине.
+
+Создан `ruff.toml`: 413 правил выгружены из `--show-settings` и зафиксированы
+явно, `target-version = "py311"`, `exclude` для `baseline_stage14_snapshot` /
+`snapshot_stage15_current` / `graphify-out`. Четыре правила, которые появились
+только после явной фиксации версии, осознанно отключены в `ignore` с указанием
+причины: `UP017` (47), `E402` (27), `FURB162` (6), `E741` (3). После этого
+`ruff check ai_assistant/` даёт ровно **710** — baseline не сдвинут.
+
+### Шаг 1. Закрыть 4 fail-open (≈1 час, каждый правится отдельно) — **СДЕЛАНО**
+
+1. `browser_executor.py:683` — возвращать `form_detected: False, apply_button: False`
+   (как делает Playwright-вариант) + `logger.warning`. Словарь должен содержать
+   `captcha`/`login_required`, чтобы `.get()` не врал.
+2. `hh_application_queue.py:251` — при исключении ставить `NEEDS_CORRECTION`,
+   а не `SAFE_TO_SUBMIT`, и логировать.
+3. `hh_application_runner.py:107` — при исключении `RunnerPreCheckStatus.FAIL`
+   (или отдельный статус `ERROR`), но только не `PASS`.
+4. `db.py:2049` — при нераспарсенном payload возвращать `False` и **не**
+   перезаписывать payload.
+
+Каждое изменение — с тестом, который заставляет исключение произойти и
+проверяет, что результат fail-closed.
+
+### Шаг 2. Health-check и фильтры (≈30 мин) — **СДЕЛАНО**
+
+Реализовано иначе, чем планировалось, в одном месте: для `db.py:2173` введён
+`health = "UNKNOWN"` (а не `DEGRADED`), потому что проверка не «прошла с
+замечанием», а **не смогла пройти**. `cli.py:4034` трактует всё, кроме
+`HEALTHY`/`DEGRADED`, как код 2 — fail-closed сохранён.
+
+Также закрыта находка №6 (`application_tracking.py:483`): в файле не было
+логгера вообще, добавлен `logger = logging.getLogger(__name__)`.
+
+**Регрессионные тесты:** `tests/test_ble001_fail_closed.py`, 8 тестов. Каждый
+заставляет исключение произойти и проверяет fail-closed. Проверено, что тесты
+не декоративные: при возврате прежнего оптимистичного варианта
+`test_cdp_inspect_page_fails_closed_on_exception` падает.
+
+5. `db.py:2173` — при падении проверки ставить `health = "UNKNOWN"` и добавлять
+   алерт, а не оставлять `HEALTHY`.
+6. `application_queue.py:1142` — кидать `ValueError` на неизвестный статус
+   (или хотя бы логировать + возвращать пустой список).
+7. `application_tracking.py:483` — логировать `logger.warning` с номером
+   приложения и целевым статусом.
+8. `browser_executor.py:1276` — проверить guarding на `observed_control_count`,
+   по результату либо добавить ключ `error: true` в снапшот, либо закрыть.
+
+### Шаг 3. Политика на остальные ~190 (автофиксом **не** трогать)
+
+Механически превращать 200 обработчиков в «залогировать и пробросить» —
+плохая идея: треть из них верхнеуровневые watchdog-предохранители, где
+`pass` — это корректное поведение, и шум в логах вырастет радикально.
+
+Предлагаю вместо массовой правки ввести правило по файлам:
+
+- **Красная зона** (BLE001 запрещён, ruff ругается): всё, что может повлиять на
+  отправку или вердикт гейта — `hh_submission.py`, `hh_application_queue.py`,
+  `hh_application_runner.py`, `hh_application_orchestrator.py`,
+  `submission_*.py`, `prefill_execute.py`, `application_integrity.py`,
+  `application_qa.py`.
+- **Зелёная зона** (BLE001 в per-file-ignores): `cli.py`, `watcher.py`,
+  `runner.py`, `*_watcher.py`, `hh_browser_launcher.py` — там предохранитель
+  оправдан, ошибка всё равно уходит пользователю в вывод команды.
+
+Плюс маленький хелпер для тех 80 голых `pass`, чтобы не плодить копипасту:
+
+```python
+def swallow(logger, exc: BaseException, where: str) -> None:
+    """Явно помеченное «мы это гасим намеренно». BLE001 не срабатывает
+    на logging.*, но нам важнее, чтобы причина была записана."""
+    logger.debug("%s: %s: %s", where, type(exc).__name__, exc)
+```
+
+### Чего делать НЕ надо
+
+- Не включать BLE001 как error в CI до шагов 1-2 — 369 находок разом
+  парализуют любую правку.
+- Не автофиксить. У ruff нет фикса для BLE001, и слава богу: правильный ответ
+  зависит от того, fail-open это или fail-closed, а это машина не определит.

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from enum import Enum
 
 from pydantic import BaseModel
 
 from .db import get_connection, init_db
+
+logger = logging.getLogger(__name__)
 
 
 # Keep consistent with spec order
@@ -480,8 +483,21 @@ def sync_application_tracking(profile_path: str | None = None) -> dict[str, int]
                     # Already done via transition, but we should also update match/deep scores
                     set_application_status(sid, target, company=vac.company, title=vac.title, source=vac.source, vacancy_url=vac.job_url, match_score=match_score, deep_score=deep_score)
                     updated += 1
-                except Exception:
+                except Exception as e:
                     # if invalid, just update scores without status change
+                    #
+                    # Now logged, not silent: this branch also swallows genuinely
+                    # invalid transitions, which would otherwise be ignored
+                    # forever with no trace. See docs/ble001_triage.md finding #6.
+                    logger.warning(
+                        "application %s: transition %s -> %s failed (%s: %s); "
+                        "updating scores only, status left at %s",
+                        sid,
+                        getattr(cur_status, "value", cur_status),
+                        getattr(target, "value", target),
+                        type(e).__name__, e,
+                        getattr(cur_status, "value", cur_status),
+                    )
                     set_application_status(sid, cur_status, company=vac.company, title=vac.title, source=vac.source, vacancy_url=vac.job_url, match_score=match_score, deep_score=deep_score)
                     updated += 1
             else:

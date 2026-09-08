@@ -554,9 +554,17 @@ def generate_queue(top_n: int = 20, profile_path: str | None = None, status_filt
     if status_filter:
         try:
             filt = ApplicationStatus(status_filter)
-        except Exception:
-            filt = ApplicationStatus.READY_TO_APPLY
-        tracking_recs = list_applications(status=filt, limit=top_n*5)  # get more then filter
+        except Exception as e:
+            # Fail closed. An unrecognised --status used to silently become
+            # READY_TO_APPLY, so a typo produced a plausible-looking batch of
+            # applications instead of an error. Prepare nothing instead.
+            # See docs/ble001_triage.md finding #5.
+            logger.exception(
+                "Unknown status filter %r; refusing to prepare anything",
+                status_filter,
+            )
+            filt = None
+        tracking_recs = [] if filt is None else list_applications(status=filt, limit=top_n*5)  # get more then filter
     else:
         tracking_recs = list_applications(status=ApplicationStatus.READY_TO_APPLY, limit=top_n*5)
 

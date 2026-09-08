@@ -248,8 +248,19 @@ def get_controlled_application_queue(filter_mode: str | None = None) -> list[HHQ
                                 is_confirmed=item.is_confirmed_by_profile,
                             )
                         )
-                except Exception:
-                    audit_state = "SAFE_TO_SUBMIT" if q_state in (HHQuestionStatus.READY_TO_SUBMIT.value, HHQuestionStatus.SUBMITTED.value) else "NEEDS_CORRECTION"
+                except Exception as e:
+                    # Fail closed: an audit we could not run is not evidence of
+                    # safety. This used to fall back to SAFE_TO_SUBMIT whenever
+                    # q_state already looked ready, and hh_application_runner.py
+                    # reads that value straight back as PASS - so a crashed audit
+                    # got laundered into permission to submit.
+                    # See docs/ble001_triage.md finding #2.
+                    logger.warning(
+                        "audit_questionnaire failed for questionnaire %s (app %s): %s: %s; "
+                        "marking NEEDS_CORRECTION",
+                        qid, app_id, type(e).__name__, e,
+                    )
+                    audit_state = "NEEDS_CORRECTION"
             else:
                 q_state = "MISSING"
                 audit_state = "NEEDS_CORRECTION"
