@@ -454,6 +454,12 @@ class MockBrowserAdapter(BrowserAdapter):
             "final_url": sim.get("final_url") or self.opened_url or "",
             "title": sim.get("page_title") or "",
             "site": sim.get("site") or "hh.ru",
+            # BLE001 finding #7: a snapshot must say whether it is trustworthy.
+            # An empty-but-valid form and a failed extraction look identical
+            # (questions=[], controls=[], auth_form=False), so the failure case
+            # is marked explicitly. Downstream must fail closed on error=True.
+            "error": bool(sim.get("error", False)),
+            "error_reason": sim.get("error_reason"),
         }
 
     def inspect_apply_flow(self) -> dict[str, Any]:
@@ -1174,11 +1180,14 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
           - auth gate: div[data-qa='auth-form'] => answer controls hidden.
         """
         if not self.page:
+            # BLE001 finding #7: no page means nothing was read. Mark it as an
+            # error instead of returning an "empty clean form".
             return {
                 "html": "", "body_text": "", "questions": [], "controls": [],
                 "question_groups": [],
                 "auth_form": False,
                 "apply_link": None, "final_url": "", "title": "", "site": "",
+                "error": True, "error_reason": "page_not_open",
             }
         try:
             html = self.page.content()
@@ -1306,14 +1315,20 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
                 "final_url": self._final_url or "",
                 "title": self._title or "",
                 "site": (self._final_url or "").split("/")[2] if self._final_url else "hh.ru",
+                "error": False, "error_reason": None,
             }
-        except Exception:
+        except Exception as e:
+            # BLE001 finding #7: an exception mid-extraction produced an empty
+            # snapshot that was indistinguishable from a genuinely empty form,
+            # so every downstream "all questions resolved" gate passed on an
+            # empty set. Mark the failure explicitly.
             return {
                 "html": "", "body_text": "", "questions": [], "controls": [],
                 "question_groups": [],
                 "auth_form": False,
                 "apply_link": None, "final_url": self._final_url or "",
                 "title": self._title or "", "site": "hh.ru",
+                "error": True, "error_reason": f"extraction_failed: {type(e).__name__}",
             }
 
     def fill_field(self, selector: str, value: str) -> bool:

@@ -430,6 +430,14 @@ def prepare_package_with_form(
 
     meta = form.extraction_meta or {}
     gate_reasons: list[str] = []
+    if meta.get("error"):
+        # BLE001 finding #7: the page was never read. An empty question list
+        # here means "unknown", and every downstream gate ("all questions
+        # resolved") would trivially pass on an empty set. Fail closed.
+        gate_reasons.append(
+            f"Form extraction error: {meta.get('error_reason') or 'unknown'} - "
+            "DOM was not read, form contents are unknown (not empty)"
+        )
     if meta.get("captcha"):
         gate_reasons.append("CAPTCHA detected during extraction - manual required")
     if meta.get("cloudflare"):

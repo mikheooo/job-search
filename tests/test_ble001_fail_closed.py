@@ -210,3 +210,107 @@ def test_health_is_unknown_when_duplicate_check_itself_fails(monkeypatch):
     # inconclusive probe says so out loud.
     assert res["health"] != "HEALTHY", "a broken probe must not report HEALTHY"
     assert any("Duplicate delivery key check failed" in a["message"] for a in res["alerts"])
+
+
+# ---------------------------------------------------------------------------
+# Finding #7 - a failed extraction must not look like an empty clean form
+# ---------------------------------------------------------------------------
+# browser_executor.extract_application_form() used to return an empty snapshot
+# (questions=[], controls=[], auth_form=False) both when the page was read
+# successfully and when extraction blew up. Downstream gates ask "are all
+# questions resolved?", which is vacuously true on an empty set - so a crashed
+# extraction walked through them as a clean form. The snapshot now carries an
+# explicit error flag; these tests pin that flag on every path that produces it.
+
+def test_snapshot_without_page_is_marked_as_error():
+    adapter = be.PlaywrightBrowserAdapter()
+    res = adapter.extract_application_form()
+    assert res["questions"] == []
+    assert res["error"] is True
+    assert res["error_reason"] == "page_not_open"
+
+
+def test_snapshot_marks_error_when_extraction_raises():
+    adapter = be.PlaywrightBrowserAdapter()
+
+    class _DeadPage:
+        def content(self):
+            raise _Boom("page crashed")
+
+        def inner_text(self, selector):
+            raise _Boom("page crashed")
+
+    adapter.page = _DeadPage()
+    res = adapter.extract_application_form()
+    assert res["questions"] == []
+    assert res["error"] is True
+    assert "extraction_failed" in (res["error_reason"] or "")
+
+
+def test_mock_adapter_snapshot_is_not_marked_as_error():
+    adapter = be.MockBrowserAdapter(simulate={"questions": []})
+    assert adapter.extract_application_form()["error"] is False
+
+
+def test_mock_adapter_can_simulate_extraction_error():
+    adapter = be.MockBrowserAdapter(simulate={"error": True, "error_reason": "boom"})
+    res = adapter.extract_application_form()
+    assert res["error"] is True
+    assert res["error_reason"] == "boom"
+
+
+def test_extractor_propagates_error_flag_into_meta():
+    from ai_assistant.hh_extractor import extract_application_form
+
+    form = extract_application_form(
+        vacancy_stable_id="hh:1",
+        url="https://hh.ru/vacancy/1",
+        dom_snapshot={"error": True, "error_reason": "page_not_open"},
+    )
+    assert form.extraction_meta["error"] is True
+    assert form.extraction_meta["error_reason"] == "page_not_open"
+
+
+def test_extractor_meta_error_defaults_to_false():
+    from ai_assistant.hh_extractor import extract_application_form
+
+    form = extract_application_form(
+        vacancy_stable_id="hh:1",
+        url="https://hh.ru/vacancy/1",
+        dom_snapshot={"questions": []},
+    )
+    assert form.extraction_meta["error"] is False
+
+
+def test_review_gate_blocks_on_extraction_error():
+    from ai_assistant.application_review_gate import GateStatus, build_review_gate
+    from ai_assistant.hh_extractor import ApplicationForm, ApplicationType
+
+    pkg = SimpleNamespace(
+        validation_status="VALID", answers=[], cover_letter="",
+        review_reasons=[], warnings=[], vacancy_stable_id="hh:1",
+    )
+    plan = SimpleNamespace(status="VALID", unresolved=[])
+    orch = SimpleNamespace(
+        verdict="VERIFIED", failed_operations=0, skipped_operations=0,
+        errors=[], group_checks=[],
+    )
+
+    broken = ApplicationForm(
+        source="hh", vacancy_stable_id="hh:1",
+        application_type=ApplicationType.unknown, questions=[],
+        extraction_meta={"error": True, "error_reason": "page_not_open"},
+    )
+    gate = build_review_gate(pkg, plan, orch, {}, form=broken)
+    assert gate.status == GateStatus.BLOCKED
+    assert any("form extraction error" in r for r in gate.block_reasons)
+
+    # Sanity: an honestly empty form is NOT blocked by this rule. Otherwise the
+    # gate would just block everything and the test above would be decorative.
+    clean = ApplicationForm(
+        source="hh", vacancy_stable_id="hh:1",
+        application_type=ApplicationType.unknown, questions=[],
+    )
+    gate2 = build_review_gate(pkg, plan, orch, {}, form=clean)
+    assert not any("form extraction error" in r for r in gate2.block_reasons)
+    assert gate2.status == GateStatus.READY_FOR_HUMAN_REVIEW

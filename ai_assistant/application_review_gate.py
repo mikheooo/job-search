@@ -128,6 +128,16 @@ def build_review_gate(
     form = effective_form  # type: ignore[assignment]
     block_reasons: list[str] = []
 
+    # BLE001 finding #7: last line of defence before submission. An extraction
+    # error means the DOM was never read, so an empty question list means
+    # "unknown", not "nothing to fill" - block instead of passing vacuously.
+    form_meta = getattr(form, "extraction_meta", None) or {}
+    if form_meta.get("error"):
+        block_reasons.append(
+            f"form extraction error: {form_meta.get('error_reason') or 'unknown'} "
+            "- DOM was not read, form contents unknown"
+        )
+
     pkg_status = getattr(package, "validation_status", "") or ""
     if pkg_status != "VALID":
         block_reasons.append(f"package.validation_status is {pkg_status or 'UNKNOWN'} (must be VALID)")

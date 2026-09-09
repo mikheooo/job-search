@@ -518,6 +518,11 @@ def extract_application_form(
             "observed_slug_count": len(raw_questions),
             "observed_control_count": len(raw_controls),
             "controls_used": bool(raw_controls) and not auth_form,
+            # Propagated from the browser layer (BLE001 finding #7). True means
+            # the DOM was never read - an empty question list then means
+            # "unknown", not "no questions". Downstream must fail closed.
+            "error": bool(dom_snapshot.get("error", False)),
+            "error_reason": dom_snapshot.get("error_reason"),
         },
     )
     return form

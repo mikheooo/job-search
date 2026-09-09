@@ -17,6 +17,12 @@
 >   Backlog ruff: **708 → 599** — это BLE001, снятый с зелёной зоны.
 >   **S110 не игнорируется нигде**: пережить плохую итерацию можно, проглотить
 >   её молча — нет.
+>
+> - Находка №7 (`browser_executor.py`) проверена и закрыта: guarding на
+>   `observed_control_count` не существовало (ключ писался и не читался),
+>   упавшая экстракция проходила гейты как «чистая пустая форма». Снапшот
+>   получил явный `error` / `error_reason`, флаг доведён до review gate.
+>   Тестов в `tests/test_ble001_fail_closed.py` теперь 15.
 
 ## Метод
 
@@ -164,16 +170,49 @@ except Exception:
 переходы, т.е. ошибка в логике переходов будет молча игнорироваться вечно,
 без единого следа в логах.
 
-### 7. `browser_executor.py:1276` — пустой снапшот выглядит как чистая форма (требует проверки)
+### 7. `browser_executor.py:1276` — пустой снапшот выглядит как чистая форма — **ИСПРАВЛЕНО 2026-09-09**
 
-`extract_application_form` при исключении возвращает пустой снапшот
+`extract_application_form` при исключении возвращал пустой снапшот
 (`html: ""`, `questions: []`, `controls: []`, `auth_form: false`, `site: "hh.ru"`).
-`hh_extractor.extract_application_form` на таком входе получает
+`hh_extractor.extract_application_form` на таком входе получал
 `questions = []`, `blocked.captcha = false`, `app_type = unknown` —
-т.е. «форма без вопросов, ничто не блокирует». Похоже на fail-open, но
-`extraction_meta` содержит `observed_control_count: 0`, и downstream может на
-это опираться. **Нужно проверить, есть ли guarding на `observed_control_count`** —
-не утверждаю, что дыра, утверждаю, что надо посмотреть.
+т.е. «форма без вопросов, ничто не блокирует».
+
+**Проверка, которую я обещал, сделана, и худшее подтвердилось.** Guarding на
+`observed_control_count` не существует: ключ пишется в `hh_extractor.py:519`
+и **нигде не читается** — ни в коде, ни в тестах (единственные совпадения вне
+исходников: артефакт `artifacts/hh_manual_form_snapshot.json` и этот документ).
+Никакой downstream по нему не ветвится.
+
+Дальше по цепочке всё было вакуумно-истинным:
+
+- `application_qa.py` проверяет в `extraction_meta` только `captcha`,
+  `cloudflare`, `auth_form` — про «страницу не прочитали» там речи нет;
+- `build_review_gate` (`application_review_gate.py`) не считает пустую форму
+  причиной для блокировки;
+- гейт 8 `no_unknown_questions` (`hh_submission.py:397`) на пустом множестве
+  вопросов проходит trivially и рапортует `"All questions resolved"`.
+
+То есть упавшая экстракция шла по тому же пути, что и вакансия реально без
+вопросов, и все гейты её благополучно пропускали.
+
+**Что сделано (fail-closed, по тому же шаблону, что finding #1):**
+
+1. Снапшот получил явные поля `error: bool` и `error_reason: str | None`.
+   Проставлены во всех четырёх точках:
+   - `browser_executor.py:1190` — нет страницы → `error=True, "page_not_open"`;
+   - `browser_executor.py:1331` — исключение → `error=True, "extraction_failed: <Type>"`;
+   - `browser_executor.py:1318` — успех → `error=False`;
+   - `MockBrowserAdapter` (`:461`) — проксирует `simulate`, чтобы тест мог
+     симулировать и успех, и ошибку.
+2. `hh_extractor.py` прокидывает флаг в `extraction_meta["error"]`.
+3. `application_qa.py` добавляет `gate_reasons` при `meta["error"]`.
+4. `application_review_gate.build_review_gate` блокирует — последний рубеж
+   перед отправкой.
+
+Регрессионные тесты: `tests/test_ble001_fail_closed.py`, 7 штук. Тест на гейт
+содержит встречную проверку (честная пустая форма **не** блокируется), иначе
+он был бы декоративным.
 
 ---
 
@@ -245,8 +284,10 @@ SIM, RUF, PL, DTZ, LOG, TRY…), но в нём **нет** E501 и D. Backlog ц
    (или хотя бы логировать + возвращать пустой список).
 7. `application_tracking.py:483` — логировать `logger.warning` с номером
    приложения и целевым статусом.
-8. `browser_executor.py:1276` — проверить guarding на `observed_control_count`,
-   по результату либо добавить ключ `error: true` в снапшот, либо закрыть.
+8. ~~`browser_executor.py:1276` — проверить guarding на `observed_control_count`,
+   по результату либо добавить ключ `error: true` в снапшот, либо закрыть.~~
+   **СДЕЛАНО 2026-09-09.** Guarding нет (ключ нигде не читается) → добавлен
+   `error: true` в снапшот + прокинут до review gate. См. finding #7.
 
 ### Шаг 3. Политика на остальные ~190 (автофиксом **не** трогать) — **СДЕЛАНО**
 
