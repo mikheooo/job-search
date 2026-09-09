@@ -438,6 +438,14 @@ def prepare_package_with_form(
             f"Form extraction error: {meta.get('error_reason') or 'unknown'} - "
             "DOM was not read, form contents are unknown (not empty)"
         )
+    if meta.get("cdp_fallback"):
+        # BLE001 finding #10: the DOM was read, but by a headless Playwright
+        # browser that hh.ru can fingerprint, so what we got may be a bot page.
+        gate_reasons.append(
+            "Form read through a headless browser fallback "
+            f"({meta.get('cdp_fallback_reason') or 'CDP unreachable'}) - "
+            "contents are not trustworthy"
+        )
     if meta.get("captcha"):
         gate_reasons.append("CAPTCHA detected during extraction - manual required")
     if meta.get("cloudflare"):

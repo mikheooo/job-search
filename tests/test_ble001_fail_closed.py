@@ -11,6 +11,7 @@ survived review the first time.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import ClassVar
 
 from ai_assistant import browser_executor as be
 from ai_assistant import db
@@ -432,3 +433,289 @@ def test_non_hh_source_not_blocked_by_kill_switch_when_enabled(monkeypatch):
         "remoteok:123", confirm_submit=True, dry_run=False
     )
     assert "SUBMIT_ALLOWED" not in (res.error or "")
+
+
+# ---------------------------------------------------------------------------
+# Finding #10 - extraction silently degraded to a fingerprintable headless
+# ---------------------------------------------------------------------------
+# PlaywrightBrowserAdapter.open() tried connect_over_cdp(), and on ANY failure
+# quietly launched headless Playwright instead. Measured with
+# tools/browser_fingerprint_probe.py, that browser is trivially detectable:
+# navigator.webdriver = true, HeadlessChrome in the UA, zero plugins, a
+# SwiftShader (software) WebGL renderer. So hh.ru was being read by a browser
+# it can spot instantly - and nothing in the pipeline said a word about it,
+# because the flag did not exist. Submission ran through the real browser while
+# extraction ran through a bot; same pipeline, two different browsers.
+#
+# The fallback still exists (a hard failure would be worse), but it now leaves a
+# flag on the snapshot and in extraction_meta, and both gates fail closed on it.
+
+class _FakePage:
+    def __init__(self):
+        self.url = "https://hh.ru/vacancy/1"
+
+    def goto(self, url, wait_until=None, timeout=None):
+        return None
+
+    def title(self):
+        return "Vacancy"
+
+    def content(self):
+        return "<html><body>ok</body></html>"
+
+
+class _FakeContext:
+    def new_page(self):
+        return _FakePage()
+
+
+class _FakeBrowser:
+    contexts: ClassVar[list] = []
+
+    def new_context(self, **kwargs):
+        return _FakeContext()
+
+    def close(self):
+        pass
+
+
+def _patch_playwright(monkeypatch, *, cdp_works):
+    import playwright.sync_api as papi
+
+    class _Chromium:
+        def connect_over_cdp(self, url):
+            if not cdp_works:
+                raise RuntimeError("connect_over_cdp refused: connection refused")
+            return _FakeBrowser()
+
+        def launch(self, headless=True):
+            return _FakeBrowser()
+
+    class _PW:
+        def __init__(self):
+            self.chromium = _Chromium()
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(
+        papi, "sync_playwright",
+        lambda: type("SP", (), {"start": staticmethod(lambda: _PW())})(),
+    )
+
+
+def test_cdp_attach_failure_is_flagged_and_logged(monkeypatch, caplog):
+    """A silent fall back to headless is the bug. It must be visible twice:
+    once in the log, once on the returned snapshot."""
+    import logging
+
+    _patch_playwright(monkeypatch, cdp_works=False)
+    adapter = be.PlaywrightBrowserAdapter()
+    with caplog.at_level(logging.WARNING, logger="ai_assistant.browser_executor"):
+        res = adapter.open("https://hh.ru/vacancy/1")
+
+    assert res["cdp_fallback"] is True
+    assert "connect_over_cdp" in (res["cdp_fallback_reason"] or "")
+    assert any("headless" in r.getMessage().lower() for r in caplog.records)
+
+
+def test_successful_cdp_attach_leaves_fallback_flag_clear(monkeypatch):
+    """Counter-check: without it the test above would pass for every browser."""
+    _patch_playwright(monkeypatch, cdp_works=True)
+    adapter = be.PlaywrightBrowserAdapter()
+    res = adapter.open("https://hh.ru/vacancy/1")
+
+    assert res["cdp_fallback"] is False
+    assert res["cdp_fallback_reason"] is None
+
+
+def test_snapshot_exposes_cdp_fallback():
+    adapter = be.PlaywrightBrowserAdapter()
+    adapter._cdp_fallback_reason = "connect_over_cdp(http://127.0.0.1:9222) failed: OSError"
+    adapter.page = _FakePage()
+    res = adapter.extract_application_form()
+
+    # The flag rides on the snapshot regardless of how the read ended.
+    assert res["cdp_fallback"] is True
+    assert "connect_over_cdp" in res["cdp_fallback_reason"]
+
+
+def test_mock_adapter_has_no_cdp_fallback_by_default():
+    """The mock drives no browser, so it must never look degraded."""
+    res = be.MockBrowserAdapter(simulate={"questions": []}).extract_application_form()
+    assert res["cdp_fallback"] is False
+
+
+def test_mock_adapter_can_simulate_cdp_fallback():
+    res = be.MockBrowserAdapter(
+        simulate={"cdp_fallback": True, "cdp_fallback_reason": "boom"}
+    ).extract_application_form()
+    assert res["cdp_fallback"] is True
+    assert res["cdp_fallback_reason"] == "boom"
+
+
+def test_extractor_propagates_cdp_fallback_into_meta():
+    from ai_assistant.hh_extractor import extract_application_form
+
+    form = extract_application_form(
+        vacancy_stable_id="hh:1",
+        url="https://hh.ru/vacancy/1",
+        dom_snapshot={"cdp_fallback": True, "cdp_fallback_reason": "cdp dead"},
+    )
+    assert form.extraction_meta["cdp_fallback"] is True
+    assert form.extraction_meta["cdp_fallback_reason"] == "cdp dead"
+
+
+def test_extractor_meta_cdp_fallback_defaults_to_false():
+    from ai_assistant.hh_extractor import extract_application_form
+
+    form = extract_application_form(
+        vacancy_stable_id="hh:1",
+        url="https://hh.ru/vacancy/1",
+        dom_snapshot={"questions": []},
+    )
+    assert form.extraction_meta["cdp_fallback"] is False
+
+
+def test_review_gate_blocks_on_cdp_fallback():
+    from ai_assistant.application_review_gate import GateStatus, build_review_gate
+    from ai_assistant.hh_extractor import ApplicationForm, ApplicationType
+
+    pkg = SimpleNamespace(
+        validation_status="VALID", answers=[], cover_letter="",
+        review_reasons=[], warnings=[], vacancy_stable_id="hh:1",
+    )
+    plan = SimpleNamespace(status="VALID", unresolved=[])
+    orch = SimpleNamespace(
+        verdict="VERIFIED", failed_operations=0, skipped_operations=0,
+        errors=[], group_checks=[],
+    )
+
+    degraded = ApplicationForm(
+        source="hh", vacancy_stable_id="hh:1",
+        application_type=ApplicationType.unknown, questions=[],
+        extraction_meta={"cdp_fallback": True, "cdp_fallback_reason": "cdp dead"},
+    )
+    gate = build_review_gate(pkg, plan, orch, {}, form=degraded)
+    assert gate.status == GateStatus.BLOCKED
+    assert any("headless browser fallback" in r for r in gate.block_reasons)
+
+    # Sanity: a form read by the real browser is NOT blocked by this rule.
+    clean = ApplicationForm(
+        source="hh", vacancy_stable_id="hh:1",
+        application_type=ApplicationType.unknown, questions=[],
+    )
+    gate2 = build_review_gate(pkg, plan, orch, {}, form=clean)
+    assert not any("headless browser fallback" in r for r in gate2.block_reasons)
+    assert gate2.status == GateStatus.READY_FOR_HUMAN_REVIEW
+
+
+# ---------------------------------------------------------------------------
+# Finding #10, part 2 - one resolver, and a proxy must not fake a dead browser
+# ---------------------------------------------------------------------------
+# The launcher resolved CDP as "9222 -> HH_CDP_URL -> BrowserOS 9110" while
+# PlaywrightBrowserAdapter resolved "CDP_URL -> HH_CDP_URL -> 9222" with no
+# BrowserOS fallback at all. Two answers to one question. resolve_cdp_url() is
+# now the single source of truth for both.
+
+def test_resolve_cdp_url_prefers_cdp_url_env(monkeypatch):
+    from ai_assistant import hh_browser_launcher as hl
+
+    monkeypatch.setenv("CDP_URL", "http://127.0.0.1:7777")
+    monkeypatch.setenv("HH_CDP_URL", "http://127.0.0.1:8888")
+    assert hl.resolve_cdp_url(None, allow_browseros=False) == "http://127.0.0.1:7777"
+
+
+def test_resolve_cdp_url_falls_back_to_hh_cdp_url_env(monkeypatch):
+    from ai_assistant import hh_browser_launcher as hl
+
+    monkeypatch.delenv("CDP_URL", raising=False)
+    monkeypatch.setenv("HH_CDP_URL", "http://127.0.0.1:8888")
+    assert hl.resolve_cdp_url(None, allow_browseros=False) == "http://127.0.0.1:8888"
+
+
+def test_resolve_cdp_url_explicit_argument_wins(monkeypatch):
+    from ai_assistant import hh_browser_launcher as hl
+
+    monkeypatch.setenv("CDP_URL", "http://127.0.0.1:7777")
+    assert hl.resolve_cdp_url("http://127.0.0.1:6666", allow_browseros=False) == "http://127.0.0.1:6666"
+
+
+def test_resolve_cdp_url_treats_plain_default_as_no_decision(monkeypatch):
+    """Passing the default explicitly is not a decision - env still wins."""
+    from ai_assistant import hh_browser_launcher as hl
+
+    monkeypatch.delenv("CDP_URL", raising=False)
+    monkeypatch.setenv("HH_CDP_URL", "http://127.0.0.1:8888")
+    out = hl.resolve_cdp_url(hl.DEFAULT_HH_CDP_URL, allow_browseros=False)
+    assert out == "http://127.0.0.1:8888"
+
+
+def test_resolve_cdp_url_does_not_swap_when_env_pins_the_default(monkeypatch):
+    """Regression. `HH_CDP_URL=http://127.0.0.1:9222` is the operator saying
+    "use 9222", not silence. Probing anyway and hopping to BrowserOS because
+    9110 happens to be up would quietly override a deliberate choice - the same
+    fail-open this whole finding is about, just in the resolver itself."""
+    from ai_assistant import hh_browser_launcher as hl
+
+    monkeypatch.delenv("CDP_URL", raising=False)
+    monkeypatch.setenv("HH_CDP_URL", hl.DEFAULT_HH_CDP_URL)
+    # 9110 answers, 9222 does not: the tempting moment to swap.
+    monkeypatch.setattr(
+        hl, "is_cdp_reachable",
+        lambda url, timeout=1.5: url == hl.BROWSEROS_CDP_URL,
+    )
+    assert hl.resolve_cdp_url(None, allow_browseros=True) == hl.DEFAULT_HH_CDP_URL
+
+
+def test_resolve_cdp_url_logs_browseros_swap(monkeypatch, caplog):
+    """Swapping browsers swaps profiles. It must never happen quietly."""
+    import logging
+
+    from ai_assistant import hh_browser_launcher as hl
+
+    monkeypatch.delenv("CDP_URL", raising=False)
+    monkeypatch.delenv("HH_CDP_URL", raising=False)
+    monkeypatch.setattr(
+        hl, "is_cdp_reachable",
+        lambda url, timeout=1.5: url == hl.BROWSEROS_CDP_URL,
+    )
+    with caplog.at_level(logging.WARNING, logger="ai_assistant.hh_browser_launcher"):
+        out = hl.resolve_cdp_url(None, allow_browseros=True)
+
+    assert out == hl.BROWSEROS_CDP_URL
+    assert any("BrowserOS" in r.getMessage() for r in caplog.records)
+
+
+def test_is_cdp_reachable_ignores_proxy_env(monkeypatch):
+    """urllib honours http_proxy, so with a proxy set a live browser answered
+    "502 Bad Gateway" and read as dead - which then triggered the BrowserOS
+    swap for no reason. CDP is localhost: always talk to it directly."""
+    import http.server
+    import threading
+
+    from ai_assistant import hh_browser_launcher as hl
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b'{"Browser": "Chrome/1.2.3", "webSocketDebuggerUrl": "ws://x"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    port = srv.server_address[1]
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+        assert hl.is_cdp_reachable(f"http://127.0.0.1:{port}", timeout=3.0) is True
+    finally:
+        srv.shutdown()
+        srv.server_close()

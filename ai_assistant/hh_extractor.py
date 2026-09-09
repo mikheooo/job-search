@@ -523,6 +523,12 @@ def extract_application_form(
             # "unknown", not "no questions". Downstream must fail closed.
             "error": bool(dom_snapshot.get("error", False)),
             "error_reason": dom_snapshot.get("error_reason"),
+            # Propagated from the browser layer (BLE001 finding #10). True means
+            # the DOM was read by a headless Playwright launch because the real
+            # browser was unreachable, so hh.ru may well have served a bot page
+            # instead of the form. Fail closed on it.
+            "cdp_fallback": bool(dom_snapshot.get("cdp_fallback", False)),
+            "cdp_fallback_reason": dom_snapshot.get("cdp_fallback_reason"),
         },
     )
     return form

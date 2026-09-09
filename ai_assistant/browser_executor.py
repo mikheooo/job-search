@@ -460,6 +460,10 @@ class MockBrowserAdapter(BrowserAdapter):
             # is marked explicitly. Downstream must fail closed on error=True.
             "error": bool(sim.get("error", False)),
             "error_reason": sim.get("error_reason"),
+            # BLE001 finding #10: the mock drives no browser, so it never
+            # degrades to headless Playwright - but tests can simulate it.
+            "cdp_fallback": bool(sim.get("cdp_fallback", False)),
+            "cdp_fallback_reason": sim.get("cdp_fallback_reason"),
         }
 
     def inspect_apply_flow(self) -> dict[str, Any]:
@@ -615,8 +619,10 @@ INSPECT_UNREADABLE: dict[str, Any] = {
 
 class CDPBrowserAdapter(BrowserAdapter):
     """Direct CDP adapter over WebSocket / HTTP API (e.g. http://127.0.0.1:9222)."""
-    def __init__(self, cdp_url: str = "http://127.0.0.1:9222"):
-        self.cdp_url = cdp_url.rstrip("/")
+    def __init__(self, cdp_url: str | None = None):
+        from .hh_browser_launcher import resolve_cdp_url
+
+        self.cdp_url = resolve_cdp_url(cdp_url).rstrip("/")
         self.tab_id: str | None = None
         self.ws_url: str | None = None
         self._final_url: str | None = None
@@ -1090,8 +1096,15 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
     def __init__(self, headless: bool = True, storage_state: str | None = None, cdp_url: str | None = None):
         self.headless = headless
         self.storage_state = storage_state
-        self.cdp_url = cdp_url or os.getenv("CDP_URL") or os.getenv("HH_CDP_URL") or "http://127.0.0.1:9222"
+        # Same resolution the launcher uses, so extraction and submission can
+        # never end up driving two different browsers.
+        from .hh_browser_launcher import resolve_cdp_url
+
+        self.cdp_url = resolve_cdp_url(cdp_url)
         self._is_cdp = False
+        # Finding #10: set when we could not attach to the real browser and had
+        # to launch headless Playwright instead. Never silent - see open().
+        self._cdp_fallback_reason = None
         self.play = None
         self.browser = None
         self.context = None
@@ -1104,7 +1117,12 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
             from playwright.sync_api import sync_playwright
             self.play = sync_playwright().start()
 
-            # Prefer connecting to existing user CDP browser (e.g. port 9222)
+            # Prefer attaching to the user's real browser over CDP: a headless
+            # Playwright launch is trivially fingerprinted (navigator.webdriver
+            # = true, HeadlessChrome UA, SwiftShader renderer). If the attach
+            # fails we still fall back, but we say so out loud - finding #10,
+            # the fallback used to be silent and nobody noticed extraction was
+            # running in a browser hh.ru can spot instantly.
             if self.cdp_url:
                 try:
                     self.browser = self.play.chromium.connect_over_cdp(self.cdp_url)
@@ -1116,6 +1134,16 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
                     self.page = self.context.new_page()
                 except Exception as e:
                     self._is_cdp = False
+                    self._cdp_fallback_reason = (
+                        f"connect_over_cdp({self.cdp_url}) failed: {type(e).__name__}: {e}"
+                    )
+                    logger.warning(
+                        "Could not attach to CDP %s (%s: %s). Falling back to a "
+                        "headless Playwright launch, which is fingerprintable.",
+                        self.cdp_url,
+                        type(e).__name__,
+                        e,
+                    )
 
             if not self.page:
                 self.browser = self.play.chromium.launch(headless=self.headless)
@@ -1137,9 +1165,19 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
             else:
                 blocked = any(x in content for x in ["captcha", "cloudflare", "access denied", "login required"])
             site = url.split("/")[2] if "://" in url else ""
-            return {"final_url": self._final_url, "title": self._title, "site": site, "blocked": blocked}
+            return {
+                "final_url": self._final_url, "title": self._title, "site": site,
+                "blocked": blocked,
+                "cdp_fallback": bool(self._cdp_fallback_reason),
+                "cdp_fallback_reason": self._cdp_fallback_reason,
+            }
         except Exception as e:
-            return {"final_url": url, "title": "", "site": "", "blocked": True, "reason": str(e)}
+            return {
+                "final_url": url, "title": "", "site": "", "blocked": True,
+                "reason": str(e),
+                "cdp_fallback": bool(self._cdp_fallback_reason),
+                "cdp_fallback_reason": self._cdp_fallback_reason,
+            }
 
     def inspect_page(self) -> dict[str, Any]:
         if not self.page:
@@ -1188,6 +1226,8 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
                 "auth_form": False,
                 "apply_link": None, "final_url": "", "title": "", "site": "",
                 "error": True, "error_reason": "page_not_open",
+                "cdp_fallback": bool(self._cdp_fallback_reason),
+                "cdp_fallback_reason": self._cdp_fallback_reason,
             }
         try:
             html = self.page.content()
@@ -1316,6 +1356,8 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
                 "title": self._title or "",
                 "site": (self._final_url or "").split("/")[2] if self._final_url else "hh.ru",
                 "error": False, "error_reason": None,
+                "cdp_fallback": bool(self._cdp_fallback_reason),
+                "cdp_fallback_reason": self._cdp_fallback_reason,
             }
         except Exception as e:
             # BLE001 finding #7: an exception mid-extraction produced an empty
@@ -1329,6 +1371,8 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
                 "apply_link": None, "final_url": self._final_url or "",
                 "title": self._title or "", "site": "hh.ru",
                 "error": True, "error_reason": f"extraction_failed: {type(e).__name__}",
+                "cdp_fallback": bool(self._cdp_fallback_reason),
+                "cdp_fallback_reason": self._cdp_fallback_reason,
             }
 
     def fill_field(self, selector: str, value: str) -> bool:
@@ -2337,18 +2381,22 @@ def submit_application_in_browser(
 
     # Path A: If HeadHunter, route strictly through unified execute_hh_submission (Stage 41 / Remediation Phase 1.5)
     if vacancy_stable_id.startswith("hh:"):
-        from .hh_browser_launcher import DEFAULT_HH_CDP_URL, is_cdp_reachable
+        from .hh_browser_launcher import is_cdp_reachable, resolve_cdp_url
+
         if adapter is None:
-            if not is_cdp_reachable(DEFAULT_HH_CDP_URL):
+            # Resolve the same way the launcher does, otherwise a live BrowserOS
+            # on 9110 is invisible here and every submit blocks on a dead 9222.
+            resolved_cdp = resolve_cdp_url()
+            if not is_cdp_reachable(resolved_cdp):
                 return SubmitResult(
                     vacancy_stable_id=vacancy_stable_id,
                     submission_id=submission_id,
                     status="BLOCKED",
-                    error="CDP не доступен: запустите Chrome с --remote-debugging-port=9222",
+                    error=f"CDP не доступен по адресу {resolved_cdp}: запустите браузер с --remote-debugging-port",
                     executor_version="v1",
                     submit_count=0,
                 )
-            use_adapter = CDPBrowserAdapter(DEFAULT_HH_CDP_URL)
+            use_adapter = CDPBrowserAdapter(resolved_cdp)
             vac_id = vacancy_stable_id.split(":")[-1]
             use_adapter.open(f"https://hh.ru/vacancy/{vac_id}")
         else:

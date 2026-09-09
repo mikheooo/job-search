@@ -30,11 +30,50 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HH_CDP_PORT = 9222
 DEFAULT_HH_CDP_URL = os.getenv("HH_CDP_URL", f"http://127.0.0.1:{DEFAULT_HH_CDP_PORT}")
+
+BROWSEROS_CDP_PORT = 9110
+BROWSEROS_CDP_URL = f"http://127.0.0.1:{BROWSEROS_CDP_PORT}"
 DEFAULT_HH_PROFILE_DIR = os.getenv(
     "HH_CHROME_PROFILE",
     r"C:\Users\Misha\chrome-cdp-profile",
 )
 DEFAULT_HH_URL = os.getenv("HH_URL", "https://hh.ru/chat")
+
+# CDP is a localhost protocol. urllib honours http_proxy/HTTP_PROXY, so with a
+# proxy configured in the environment a perfectly alive browser answers
+# "502 Bad Gateway" and reads as dead - which then trips the BrowserOS swap
+# below and silently switches browser profiles. Always talk to the debugging
+# port directly.
+_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def resolve_cdp_url(preferred: str | None = None, allow_browseros: bool = True) -> str:
+    """Single source of truth for "which browser are we driving".
+
+    Deterministic part (no I/O): explicit argument -> CDP_URL -> HH_CDP_URL ->
+    DEFAULT_HH_CDP_URL. An argument or env var that merely repeats the default
+    is not treated as a decision (it is usually a default passed through), but
+    any *other* value is binding and stops the probing below.
+
+    The BrowserOS probe only runs when nothing was configured at all, and it is
+    always logged: swapping browsers means swapping profiles, and a profile
+    without an hh.ru session reads a completely different (logged-out) form.
+    """
+    explicit = preferred if preferred and preferred != DEFAULT_HH_CDP_URL else None
+    env_cdp = os.getenv("CDP_URL") or os.getenv("HH_CDP_URL")
+    if explicit or env_cdp:
+        return explicit or env_cdp
+    if not allow_browseros:
+        return DEFAULT_HH_CDP_URL
+    if not is_cdp_reachable(DEFAULT_HH_CDP_URL, timeout=0.3) and is_cdp_reachable(BROWSEROS_CDP_URL, timeout=0.3):
+        logger.warning(
+            "CDP %s is unreachable; switching to BrowserOS on %s. This is a "
+            "different browser profile - verify it is logged into hh.ru.",
+            DEFAULT_HH_CDP_URL,
+            BROWSEROS_CDP_URL,
+        )
+        return BROWSEROS_CDP_URL
+    return DEFAULT_HH_CDP_URL
 
 
 def find_chrome_executable() -> str | None:
@@ -78,7 +117,7 @@ def is_cdp_reachable(cdp_url: str = DEFAULT_HH_CDP_URL, timeout: float = 1.5) ->
     try:
         url = cdp_url.rstrip("/") + "/json/version"
         req = urllib.request.Request(url, headers={"User-Agent": "job-search-watcher"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _NO_PROXY_OPENER.open(req, timeout=timeout) as resp:
             if resp.status == 200:
                 data = json.loads(resp.read().decode("utf-8"))
                 return bool(data.get("Browser") or data.get("webSocketDebuggerUrl"))
@@ -92,7 +131,7 @@ def get_cdp_version_info(cdp_url: str = DEFAULT_HH_CDP_URL, timeout: float = 2.0
     try:
         url = cdp_url.rstrip("/") + "/json/version"
         req = urllib.request.Request(url, headers={"User-Agent": "job-search-watcher"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _NO_PROXY_OPENER.open(req, timeout=timeout) as resp:
             if resp.status == 200:
                 return json.loads(resp.read().decode("utf-8"))
     except Exception:
@@ -105,7 +144,7 @@ def get_cdp_targets(cdp_url: str = DEFAULT_HH_CDP_URL, timeout: float = 2.0) -> 
     try:
         url = cdp_url.rstrip("/") + "/json/list"
         req = urllib.request.Request(url, headers={"User-Agent": "job-search-watcher"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _NO_PROXY_OPENER.open(req, timeout=timeout) as resp:
             if resp.status == 200:
                 return json.loads(resp.read().decode("utf-8"))
     except Exception:
@@ -119,13 +158,13 @@ def open_cdp_tab(cdp_url: str = DEFAULT_HH_CDP_URL, url_to_open: str = DEFAULT_H
         url = f"{cdp_url.rstrip('/')}/json/new?{url_to_open}"
         req = urllib.request.Request(url, method="PUT", headers={"User-Agent": "job-search-watcher"})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _NO_PROXY_OPENER.open(req, timeout=timeout) as resp:
                 if resp.status == 200:
                     return json.loads(resp.read().decode("utf-8"))
         except Exception:
             # Fallback to GET for older Chromium endpoints
             req_get = urllib.request.Request(url, method="GET", headers={"User-Agent": "job-search-watcher"})
-            with urllib.request.urlopen(req_get, timeout=timeout) as resp:
+            with _NO_PROXY_OPENER.open(req_get, timeout=timeout) as resp:
                 if resp.status == 200:
                     return json.loads(resp.read().decode("utf-8"))
     except Exception as e:

@@ -137,6 +137,13 @@ def build_review_gate(
             f"form extraction error: {form_meta.get('error_reason') or 'unknown'} "
             "- DOM was not read, form contents unknown"
         )
+    if form_meta.get("cdp_fallback"):
+        # BLE001 finding #10: last line of defence. The form was read through a
+        # headless fallback browser, so we cannot trust what it contains.
+        block_reasons.append(
+            "form read through headless browser fallback: "
+            f"{form_meta.get('cdp_fallback_reason') or 'CDP unreachable'}"
+        )
 
     pkg_status = getattr(package, "validation_status", "") or ""
     if pkg_status != "VALID":

@@ -451,6 +451,92 @@ if vacancy_stable_id.startswith("hh:"):
 `if explicit:` на `if False:` падают ровно 3 — два встречных, как и задумано,
 проходят.
 
+>
+> - Находка №10 закрыта. **Extraction молча деградировал в паливный headless.**
+>   `PlaywrightBrowserAdapter.open()` пробовал `connect_over_cdp()` и при любой
+>   неудаче молча поднимал `launch(headless=True)`. Замерено
+>   `tools/browser_fingerprint_probe.py` (не на слово): Playwright headless —
+>   `DETECTED` (`navigator.webdriver=true`, `HeadlessChrome` в UA, 0 плагинов,
+>   SwiftShader), живой Хром и BrowserOS — чистые. Итого submit шёл через
+>   настоящий браузер, а extract — через бота. Фолбэк остался (жёсткий отказ
+>   хуже), но стал громким: warning в лог + флаг `cdp_fallback` в снапшоте и в
+>   `extraction_meta`, оба гейта на нём закрываются. Плюс один резолвер CDP
+>   (`resolve_cdp_url`) вместо двух, и `is_cdp_reachable` больше не ходит через
+>   `http_proxy`. Тестов в файле теперь 35.
+
+### 10. Extraction молча деградировал в паливный headless (высокий) — **ИСПРАВЛЕНО 2026-09-09**
+
+Найдено не статикой, а замером. `PlaywrightBrowserAdapter.open()`:
+
+```python
+# ai_assistant/browser_executor.py:1108 (было)
+if self.cdp_url:
+    try:
+        self.browser = self.play.chromium.connect_over_cdp(self.cdp_url)
+        self._is_cdp = True
+        ...
+    except Exception as e:
+        self._is_cdp = False        # ← и всё. Ни лога, ни флага.
+
+if not self.page:
+    self.browser = self.play.chromium.launch(headless=self.headless)
+```
+
+Классический BLE001: исключение проглочено, выполнение продолжается по ветке
+«всё нормально». Что именно терялось, стало видно только после замера
+отпечатка (`tools/browser_fingerprint_probe.py`, CDP + Playwright):
+
+| браузер                | вердикт    | `navigator.webdriver` | WebGL-рендерер  | плагины |
+|------------------------|------------|-----------------------|-----------------|---------|
+| Chrome 152 (CDP)       | SUSPICIOUS | false                 | Intel Iris Xe   | 5       |
+| BrowserOS 148 (CDP)    | CLEAN      | false                 | Intel Iris Xe   | 5       |
+| Playwright headless    | DETECTED   | **true**              | **SwiftShader** | **0**   |
+
+Плюс `HeadlessChrome` в User-Agent и отсутствующий `window.chrome.loadTimes`.
+То есть страницу hh.ru читал браузер, который hh.ru опознаёт за миллисекунды —
+а пайплайн об этом не знал, потому что флага не существовало. Хуже того, submit
+шёл через живой браузер по CDP: **один отклик, два разных браузера.**
+
+Две причины, почему это было не видно:
+
+1. Фолбэк был беззвучным — не тот ли случай, который BLE001 и ловит.
+2. Адаптер резолвил CDP как `CDP_URL | HH_CDP_URL | 9222`, а лаунчер — как
+   `9222 | HH_CDP_URL | BrowserOS 9110`. Fallback на BrowserOS был только в
+   лаунчере, так что при мёртвом 9222 адаптер гарантированно уходил в headless.
+
+**Грабли замера, они же — отдельная находка.** `is_cdp_reachable` использовал
+`urllib.request.urlopen`, а тот honour-ит `http_proxy`. С прокси в окружении
+живой браузер отвечает `502 Bad Gateway` вместо `connection refused` и читается
+как мёртвый — что включает молчаливую подмену браузера. **Достаточно выставить
+переменную окружения, чтобы пайплайн поехал на другом профиле.**
+
+**Исправлено:**
+
+- `open()` пишет warning и кладёт `cdp_fallback` / `cdp_fallback_reason` в
+  результат; флаг едет в снапшот `extract_application_form()` и в
+  `extraction_meta` (как `error` в находке №7).
+- `application_qa` и `build_review_gate` закрываются на `cdp_fallback`: форма,
+  прочитанная паливным браузером, может оказаться бот-страницей.
+- `resolve_cdp_url()` в `hh_browser_launcher` — единственный источник правды
+  для лаунчера, `PlaywrightBrowserAdapter` и `CDPBrowserAdapter`. Подмена на
+  BrowserOS логируется: это смена профиля, а профиль без сессии hh.ru читает
+  совсем другую форму.
+  Оговорка, стоившая полчаса: `resolve_cdp_url()` срабатывает **только если не
+  задано вообще ничего**. Первая версия проверяла `chosen != DEFAULT_HH_CDP_URL`
+  и поэтому считала `HH_CDP_URL=http://127.0.0.1:9222` «не решением» — и всё
+  равно прыгала на BrowserOS, если 9110 отвечал. Тот же fail-open, который
+  Finding и чинил, только внутри самого фикса. Поймал не новый тест, а старый
+  `test_ensure_hh_browser_starts_chrome_when_missing`: его мок скриптует
+  `is_cdp_reachable` как `[False, True]`, и лишние два вызова из резолвера
+  съели последовательность.
+- `hh_browser_launcher` ходит в CDP через opener с `ProxyHandler({})`.
+
+Регрессионные тесты: 15 штук на №10 (всего в файле 35). Проверено на
+недекоративность мутациями: запись флага → `None` ломает
+`test_cdp_attach_failure_is_flagged_and_logged`, выключение гейта ломает
+`test_review_gate_blocks_on_cdp_fallback`; встречные проверки (успешный CDP,
+честная пустая форма) при этом проходят.
+
 ### Чего делать НЕ надо
 
 - Не включать BLE001 как error в CI до шагов 1-2 — 369 находок разом

@@ -520,3 +520,7 @@ ignore = [
 "ai_assistant/watcher.py" = ["BLE001"]
 "ai_assistant/*_watcher.py" = ["BLE001"]
 "ai_assistant/hh_browser_launcher.py" = ["BLE001"]
+# BLE001 (6): the fingerprint probe talks to endpoints it does not control - a
+#   dead port, a half-open WebSocket, a browser that hangs mid-eval. Catching
+#   broadly IS the point: one bad endpoint must not abort the whole comparison.
+"tools/browser_fingerprint_probe.py" = ["BLE001"]
