@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -723,10 +722,11 @@ class HHSubmissionGates:
         gate_results: dict[str, dict[str, Any]] = {}
 
         # Gate 1: GATE_SUBMIT_ALLOWED (kill-switch safety latch)
-        submit_allowed = (
-            os.getenv("SUBMIT_ALLOWED", "").strip().lower() in ("1", "true", "yes")
-            or bool(getattr(config, "SUBMIT_ALLOWED", False))
-        )
+        # BLE001 finding #8: this used to be `env OR config`, and config froze
+        # the .env value at import time, so `SUBMIT_ALLOWED=false` in the real
+        # environment could never turn submission off. config.submit_allowed()
+        # re-reads at call time and lets an explicit "off" win.
+        submit_allowed = bool(config.submit_allowed())
         is_paused = False
         try:
             from . import db

@@ -2242,6 +2242,24 @@ def submit_application_in_browser(
             error="Submit confirmation required. Use --confirm-submit to proceed.",
             executor_version="v1",
         )
+
+    # BLE001 finding #9: Path A below (vacancy ids starting with "hh:") runs the
+    # full 11-gate check inside execute_hh_submission, but every other source
+    # (habr_career, himalayas, remoteok, weworkremotely, ...) fell through to
+    # the legacy branch, which calls adapter.submit_application() directly with
+    # no gates at all - not even the kill-switch. Check it here, for all
+    # sources, before anything can touch the browser.
+    if not dry_run:
+        from .config import submit_allowed as _submit_allowed
+
+        if not _submit_allowed():
+            return SubmitResult(
+                vacancy_stable_id=vacancy_stable_id,
+                submission_id="",
+                status="BLOCKED",
+                error="Submission is disabled by SUBMIT_ALLOWED configuration",
+                executor_version="v1",
+            )
     
     init_db()
     

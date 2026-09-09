@@ -1,5 +1,11 @@
 import os
 
+# Kill-switch snapshot, taken BEFORE load_dotenv(..., override=True) below.
+# That call overwrites a real environment variable with the value from .env, so
+# `SUBMIT_ALLOWED=false python -m ai_assistant.cli ...` used to be silently
+# re-armed by a stale `SUBMIT_ALLOWED=true` sitting in .env (BLE001 finding #8).
+_OPERATOR_SUBMIT_ALLOWED = os.getenv("SUBMIT_ALLOWED")
+
 try:
     from dotenv import load_dotenv
 
@@ -59,7 +65,35 @@ except Exception:
     PREFERENCE_MIN_EVIDENCE_THRESHOLD = 5
 
 LOGS_DIR = os.getenv("LOGS_DIR") or os.path.join(PROJECT_ROOT, "logs", "job_search")
-SUBMIT_ALLOWED = os.getenv("SUBMIT_ALLOWED", "false").strip().lower() in ("1", "true", "yes")
+def _parse_bool_env(raw: object) -> bool:
+    return str(raw or "").strip().lower() in ("1", "true", "yes")
+
+
+SUBMIT_ALLOWED = _parse_bool_env(
+    _OPERATOR_SUBMIT_ALLOWED
+    if _OPERATOR_SUBMIT_ALLOWED is not None and str(_OPERATOR_SUBMIT_ALLOWED).strip()
+    else os.getenv("SUBMIT_ALLOWED", "false")
+)
+
+
+def submit_allowed() -> bool:
+    """Effective kill-switch state, re-evaluated at call time.
+
+    Precedence, most specific first:
+      1. the real environment as it was before .env could clobber it;
+      2. the current environment (tests and late `export`s land here);
+      3. the value resolved from .env at import time.
+
+    Any explicitly-set source that says "off" disables submission. The
+    kill-switch must never be silently re-armed by a stale value in .env.
+    """
+    explicit = [
+        v for v in (_OPERATOR_SUBMIT_ALLOWED, os.getenv("SUBMIT_ALLOWED"))
+        if v is not None and str(v).strip()
+    ]
+    if explicit:
+        return all(_parse_bool_env(v) for v in explicit)
+    return bool(SUBMIT_ALLOWED)
 DASHBOARD_TOKEN = os.getenv("DASHBOARD_TOKEN", "").strip()
 
 

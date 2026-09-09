@@ -314,3 +314,121 @@ def test_review_gate_blocks_on_extraction_error():
     gate2 = build_review_gate(pkg, plan, orch, {}, form=clean)
     assert not any("form extraction error" in r for r in gate2.block_reasons)
     assert gate2.status == GateStatus.READY_FOR_HUMAN_REVIEW
+
+
+# ---------------------------------------------------------------------------
+# Finding #8 - the kill-switch must be turnable OFF from the environment
+# ---------------------------------------------------------------------------
+# config.py did `load_dotenv(..., override=True)` at import, which overwrites a
+# real environment variable with the .env value. The gate then read
+# `env OR config.SUBMIT_ALLOWED`, and config had already frozen .env's value -
+# so `SUBMIT_ALLOWED=false` in the shell could never disarm an armed .env.
+# config.submit_allowed() re-reads at call time and lets an explicit "off" win.
+
+def test_submit_allowed_off_from_env_disables(monkeypatch):
+    from ai_assistant import config
+
+    monkeypatch.setenv("SUBMIT_ALLOWED", "false")
+    assert config.submit_allowed() is False
+
+
+def test_submit_allowed_on_from_env_enables(monkeypatch):
+    from ai_assistant import config
+
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
+    assert config.submit_allowed() is True
+
+
+def test_submit_allowed_off_wins_over_stale_dotenv_value(monkeypatch):
+    """An operator's 'false' must not be re-armed by a stale .env 'true'."""
+    from ai_assistant import config
+
+    monkeypatch.setenv("SUBMIT_ALLOWED", "false")
+    monkeypatch.setattr(config, "SUBMIT_ALLOWED", True, raising=False)
+    assert config.submit_allowed() is False
+
+
+# ---------------------------------------------------------------------------
+# Finding #9 - non-HH sources bypassed every gate, including the kill-switch
+# ---------------------------------------------------------------------------
+# submit_application_in_browser routes only "hh:*" ids through
+# execute_hh_submission (the 11 gates). Every other source - habr_career,
+# himalayas, remoteok, weworkremotely - fell through to the legacy branch and
+# called adapter.submit_application() directly. The kill-switch is now checked
+# for all sources, before anything touches the browser.
+
+def test_non_hh_source_is_blocked_by_kill_switch(monkeypatch):
+    monkeypatch.setenv("SUBMIT_ALLOWED", "false")
+    res = be.submit_application_in_browser(
+        "remoteok:123", confirm_submit=True, dry_run=False
+    )
+    assert res.status == "BLOCKED"
+    assert "SUBMIT_ALLOWED" in (res.error or "")
+
+
+def test_non_hh_source_not_blocked_by_kill_switch_when_enabled(monkeypatch):
+    """Counter-check: with the switch on we must NOT trip this specific gate."""
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
+    res = be.submit_application_in_browser(
+        "remoteok:123", confirm_submit=True, dry_run=False
+    )
+    assert "SUBMIT_ALLOWED" not in (res.error or "")
+
+
+# ---------------------------------------------------------------------------
+# Finding #8 - the kill-switch must be turnable OFF from the environment
+# ---------------------------------------------------------------------------
+# config.py did `load_dotenv(..., override=True)` at import, which overwrites a
+# real environment variable with the .env value. The gate then read
+# `env OR config.SUBMIT_ALLOWED`, and config had already frozen .env's value -
+# so `SUBMIT_ALLOWED=false` in the shell could never disarm an armed .env.
+# config.submit_allowed() re-reads at call time and lets an explicit "off" win.
+
+def test_submit_allowed_off_from_env_disables(monkeypatch):
+    from ai_assistant import config
+
+    monkeypatch.setenv("SUBMIT_ALLOWED", "false")
+    assert config.submit_allowed() is False
+
+
+def test_submit_allowed_on_from_env_enables(monkeypatch):
+    from ai_assistant import config
+
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
+    assert config.submit_allowed() is True
+
+
+def test_submit_allowed_off_wins_over_stale_dotenv_value(monkeypatch):
+    """An operator's 'false' must not be re-armed by a stale .env 'true'."""
+    from ai_assistant import config
+
+    monkeypatch.setenv("SUBMIT_ALLOWED", "false")
+    monkeypatch.setattr(config, "SUBMIT_ALLOWED", True, raising=False)
+    assert config.submit_allowed() is False
+
+
+# ---------------------------------------------------------------------------
+# Finding #9 - non-HH sources bypassed every gate, including the kill-switch
+# ---------------------------------------------------------------------------
+# submit_application_in_browser routes only "hh:*" ids through
+# execute_hh_submission (the 11 gates). Every other source - habr_career,
+# himalayas, remoteok, weworkremotely - fell through to the legacy branch and
+# called adapter.submit_application() directly. The kill-switch is now checked
+# for all sources, before anything touches the browser.
+
+def test_non_hh_source_is_blocked_by_kill_switch(monkeypatch):
+    monkeypatch.setenv("SUBMIT_ALLOWED", "false")
+    res = be.submit_application_in_browser(
+        "remoteok:123", confirm_submit=True, dry_run=False
+    )
+    assert res.status == "BLOCKED"
+    assert "SUBMIT_ALLOWED" in (res.error or "")
+
+
+def test_non_hh_source_not_blocked_by_kill_switch_when_enabled(monkeypatch):
+    """Counter-check: with the switch on we must NOT trip this specific gate."""
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
+    res = be.submit_application_in_browser(
+        "remoteok:123", confirm_submit=True, dry_run=False
+    )
+    assert "SUBMIT_ALLOWED" not in (res.error or "")
