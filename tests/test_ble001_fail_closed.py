@@ -677,14 +677,73 @@ def test_resolve_cdp_url_logs_browseros_swap(monkeypatch, caplog):
     monkeypatch.delenv("CDP_URL", raising=False)
     monkeypatch.delenv("HH_CDP_URL", raising=False)
     monkeypatch.setattr(
-        hl, "is_cdp_reachable",
-        lambda url, timeout=1.5: url == hl.BROWSEROS_CDP_URL,
+        hl, "probe_cdp",
+        lambda url, timeout=1.5: hl.CDP_ALIVE if url == hl.BROWSEROS_CDP_URL else hl.CDP_DEAD,
     )
     with caplog.at_level(logging.WARNING, logger="ai_assistant.hh_browser_launcher"):
         out = hl.resolve_cdp_url(None, allow_browseros=True)
 
     assert out == hl.BROWSEROS_CDP_URL
     assert any("BrowserOS" in r.getMessage() for r in caplog.records)
+
+
+def test_resolve_cdp_url_does_not_hop_on_slow_chrome(monkeypatch, caplog):
+    """Finding #13. A timeout is not an absence.
+
+    Measured: /json/version answers in 0.6-17 ms, but a busy Chrome misses a
+    300 ms deadline often enough that the resolver was hopping to BrowserOS -
+    a different profile, normally without the hh.ru session - purely at random.
+    Slow must mean "stay", only a refused connection means "hop".
+    """
+    import logging
+
+    from ai_assistant import hh_browser_launcher as hl
+
+    monkeypatch.delenv("CDP_URL", raising=False)
+    monkeypatch.delenv("HH_CDP_URL", raising=False)
+    monkeypatch.setattr(
+        hl, "probe_cdp",
+        lambda url, timeout=1.5: hl.CDP_TIMEOUT if url == hl.DEFAULT_HH_CDP_URL else hl.CDP_ALIVE,
+    )
+    with caplog.at_level(logging.WARNING, logger="ai_assistant.hh_browser_launcher"):
+        out = hl.resolve_cdp_url(None, allow_browseros=True)
+
+    assert out == hl.DEFAULT_HH_CDP_URL, "a slow Chrome must not cost us the profile"
+    assert not any("BrowserOS" in r.getMessage() for r in caplog.records)
+
+
+def test_probe_cdp_distinguishes_timeout_from_dead(monkeypatch):
+    """probe_cdp() is the routing signal, so its three answers must be distinct.
+
+    is_cdp_reachable() deliberately collapses TIMEOUT into False - fine for a
+    health check, wrong for choosing a browser. This pins the third state.
+    """
+    import urllib.error
+
+    from ai_assistant import hh_browser_launcher as hl
+
+    class _Opener:
+        def __init__(self, exc):
+            self.exc = exc
+
+        def open(self, *a, **kw):
+            raise self.exc
+
+    # Nothing listening -> definitively dead.
+    monkeypatch.setattr(
+        hl, "_NO_PROXY_OPENER",
+        _Opener(urllib.error.URLError(ConnectionRefusedError(10061, "refused"))),
+    )
+    assert hl.probe_cdp("http://127.0.0.1:1", timeout=0.1) == hl.CDP_DEAD
+    assert hl.is_cdp_reachable("http://127.0.0.1:1", timeout=0.1) is False
+
+    # Listening but slow -> timeout, NOT dead.
+    monkeypatch.setattr(
+        hl, "_NO_PROXY_OPENER",
+        _Opener(urllib.error.URLError(TimeoutError("timed out"))),
+    )
+    assert hl.probe_cdp("http://127.0.0.1:1", timeout=0.1) == hl.CDP_TIMEOUT
+    assert hl.is_cdp_reachable("http://127.0.0.1:1", timeout=0.1) is False
 
 
 def test_is_cdp_reachable_ignores_proxy_env(monkeypatch):
@@ -719,3 +778,114 @@ def test_is_cdp_reachable_ignores_proxy_env(monkeypatch):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+# ---------------------------------------------------------------------------
+# Finding #11 - "blocked" was true on every hh.ru page
+# ---------------------------------------------------------------------------
+
+# A trimmed copy of what hh.ru actually serves: the i18n bundle contains the
+# captcha error string on EVERY response, challenge or not.
+_HH_I18N_HTML = (
+    '<html><body><h1>Вакансия Python developer</h1>'
+    '<script>window.i18n={"error.postlogon.hidden":"работодатель скрыт",'
+    '"error.signup.captcha.invalid":"пожалуйста, подтвердите, что вы не робот"}'
+    '</script></body></html>'
+)
+
+
+def test_blocked_check_ignores_i18n_captcha_string():
+    """Finding #11. Grepping raw HTML for 'captcha' flagged every hh.ru page.
+
+    Measured on https://hh.ru/vacancy/134835019: the only match was at byte
+    1908203, inside `error.signup.captcha.invalid`. So `blocked` was True for a
+    perfectly readable vacancy - and `blocked` drives real branching
+    (browser_executor ~2026/2668/2966), not just logging.
+    """
+    from ai_assistant import browser_executor as be
+
+    assert be._detect_page_blocked(
+        _HH_I18N_HTML, "Вакансия Python developer", "Вакансия Python developer"
+    ) is False
+
+
+def test_blocked_check_still_flags_a_real_captcha():
+    """The fix must not turn into a fail-open: a live challenge still blocks."""
+    from ai_assistant import browser_executor as be
+
+    challenge = '<div data-qa="captcha" class="bloko-modal">Подтвердите</div>'
+    assert be._detect_page_blocked(challenge, "Подтвердите", "hh.ru") is True
+
+
+def test_blocked_check_still_flags_cloudflare_and_404():
+    from ai_assistant import browser_executor as be
+
+    assert be._detect_page_blocked('<div class="cf-challenge">x</div>', "x", "hh") is True
+    assert be._detect_page_blocked("<html></html>", "not found", "404 Not Found") is True
+
+
+def test_blocked_check_flags_visible_access_denied_only():
+    """Text markers are matched against visible body text, never raw HTML.
+
+    'access denied' buried in a script must not block; the same words rendered
+    on screen must.
+    """
+    from ai_assistant import browser_executor as be
+
+    hidden = "<script>var m='access denied';</script>"
+    assert be._detect_page_blocked(hidden, "Вакансия", "Вакансия") is False
+    assert be._detect_page_blocked("<html></html>", "Access Denied", "hh") is True
+
+
+# ---------------------------------------------------------------------------
+# Finding #12 - CDPBrowserAdapter still talked to CDP through the proxy
+# ---------------------------------------------------------------------------
+
+def test_cdp_adapter_open_uses_proxy_free_opener(monkeypatch):
+    """Finding #9/#12. CDPBrowserAdapter.open() called urllib.request.urlopen,
+    which honours http_proxy: with a proxy in the environment the submission
+    path got '502 Bad Gateway' from a healthy browser and reported blocked.
+    Same bug as the launcher, same fix - one opener, no proxy."""
+    import json as _json
+
+    from ai_assistant import browser_executor as be
+    from ai_assistant import hh_browser_launcher as hl
+
+    opened: list[str] = []
+
+    class _Resp:
+        def read(self):
+            return _json.dumps({
+                "id": "TAB1",
+                "webSocketDebuggerUrl": "ws://127.0.0.1/devtools/page/TAB1",
+            }).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _Opener:
+        def open(self, req, timeout=None):
+            opened.append(getattr(req, "full_url", str(req)))
+            return _Resp()
+
+    monkeypatch.setattr(hl, "_NO_PROXY_OPENER", _Opener())
+    monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
+    # A proxy that would eat the request if urlopen() were still used.
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("CDP_URL", "http://127.0.0.1:9222")
+
+    ad = be.CDPBrowserAdapter("http://127.0.0.1:9222")
+
+    def _run(coro):
+        coro.close()  # never awaited on purpose; we only stub the result
+        return {"url": "https://hh.ru/vacancy/1", "title": "Python developer"}
+
+    monkeypatch.setattr(ad, "_sync_run", _run)
+    res = ad.open("https://hh.ru/vacancy/1")
+
+    assert opened, "open() must go through the proxy-free opener"
+    assert res.get("blocked") is False, f"proxy leaked into the CDP call: {res}"

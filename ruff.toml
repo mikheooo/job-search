@@ -524,3 +524,8 @@ ignore = [
 #   dead port, a half-open WebSocket, a browser that hangs mid-eval. Catching
 #   broadly IS the point: one bad endpoint must not abort the whole comparison.
 "tools/browser_fingerprint_probe.py" = ["BLE001"]
+# BLE001 (4): the end-to-end probe drives a live browser against a live site -
+#   a page can refuse to render, a selector can vanish between runs. Aborting
+#   the whole probe on the first surprise throws away the diagnosis, which is
+#   the only thing this tool exists to produce. Each catch prints what it ate.
+"tools/e2e_pipeline_probe.py" = ["BLE001"]

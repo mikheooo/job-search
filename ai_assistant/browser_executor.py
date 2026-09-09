@@ -644,10 +644,14 @@ class CDPBrowserAdapter(BrowserAdapter):
     def open(self, url: str) -> dict[str, Any]:
         import json
         import urllib.request
+        from .hh_browser_launcher import _NO_PROXY_OPENER
         try:
             new_url = f"{self.cdp_url}/json/new?{url}"
             req = urllib.request.Request(new_url, method="PUT")
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            # Finding #9/#12: urlopen() honours http_proxy, which turns a live
+            # localhost browser into a "502 Bad Gateway" and makes the
+            # submission path report blocked. Use the proxy-free opener.
+            with _NO_PROXY_OPENER.open(req, timeout=10) as resp:
                 tab = json.loads(resp.read().decode("utf-8"))
             self.tab_id = tab.get("id")
             self.ws_url = tab.get("webSocketDebuggerUrl")
@@ -1038,8 +1042,10 @@ class CDPBrowserAdapter(BrowserAdapter):
     def close(self) -> None:
         if self.tab_id:
             try:
-                import urllib.request
-                urllib.request.urlopen(f"{self.cdp_url}/json/close/{self.tab_id}", timeout=5)
+                # Same proxy trap as open() - see finding #9/#12.
+                from .hh_browser_launcher import _NO_PROXY_OPENER
+
+                _NO_PROXY_OPENER.open(f"{self.cdp_url}/json/close/{self.tab_id}", timeout=5)
             except Exception:
                 pass
             self.tab_id = None
@@ -1089,6 +1095,36 @@ class CDPBrowserAdapter(BrowserAdapter):
             return self._sync_run(_eval())
         except Exception as e:
             return json.dumps({"error": str(e)})
+
+
+# Visible-text markers that only a real block page shows. Deliberately NOT
+# matched against raw HTML - see _detect_page_blocked.
+_BLOCK_TEXT_MARKERS = ("access denied", "login required")
+
+
+def _detect_page_blocked(html: str, body_text: str, title: str) -> bool:
+    """Is this page actually a block page? (BLE001 finding #11)
+
+    The check this replaced grepped the raw HTML for "captcha". hh.ru ships an
+    i18n bundle on EVERY response containing "error.signup.captcha.invalid",
+    so every page - including a perfectly readable vacancy - came back
+    blocked=True, and `blocked` is consumed for real branching decisions
+    (see lines ~2026/2668/2966).
+
+    hh_extractor._detect_blocked already documents the trap and encodes the
+    correct rule: a captcha only counts when it sits in an active challenge
+    container. Reuse it rather than keeping a second, wronger copy.
+    """
+    from .hh_extractor import _detect_blocked
+
+    low_title = (title or "").lower()
+    if "404" in low_title or "page not found" in low_title:
+        return True
+    dom = _detect_blocked(html or "", body_text or "")
+    if dom.get("captcha") or dom.get("cloudflare"):
+        return True
+    low_body = (body_text or "").lower()
+    return any(m in low_body for m in _BLOCK_TEXT_MARKERS)
 
 
 # Playwright adapter if available (optional, not required for tests)
@@ -1156,14 +1192,14 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
             self.page.goto(url, wait_until="domcontentloaded", timeout=15000)
             self._final_url = self.page.url
             self._title = self.page.title()
-            # Check for blocked
-            content = self.page.content().lower()
-            title_lower = (self._title or "").lower()
-            # Detect 404 / not found as blocked
-            if "404" in title_lower or "page not found" in title_lower or "page not found" in content:
-                blocked = True
-            else:
-                blocked = any(x in content for x in ["captcha", "cloudflare", "access denied", "login required"])
+            # Check for blocked. Finding #11: never substring-match raw HTML
+            # for "captcha" - it is in hh.ru's i18n bundle on every page.
+            html = self.page.content()
+            try:
+                body_text = self.page.inner_text("body") or ""
+            except Exception:  # noqa: BLE001 - an unreadable body is not a block
+                body_text = ""
+            blocked = _detect_page_blocked(html, body_text, self._title or "")
             site = url.split("/")[2] if "://" in url else ""
             return {
                 "final_url": self._final_url, "title": self._title, "site": site,

@@ -46,6 +46,11 @@ DEFAULT_HH_URL = os.getenv("HH_URL", "https://hh.ru/chat")
 # port directly.
 _NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
+# Probing budget for resolve_cdp_url(). Short enough to stay off the hot path,
+# long enough that a busy Chrome is not mistaken for a dead one.
+_RESOLVE_PROBE_TIMEOUT = 0.5
+_RESOLVE_PROBE_RETRY_TIMEOUT = 2.0
+
 
 def resolve_cdp_url(preferred: str | None = None, allow_browseros: bool = True) -> str:
     """Single source of truth for "which browser are we driving".
@@ -65,9 +70,16 @@ def resolve_cdp_url(preferred: str | None = None, allow_browseros: bool = True) 
         return explicit or env_cdp
     if not allow_browseros:
         return DEFAULT_HH_CDP_URL
-    if not is_cdp_reachable(DEFAULT_HH_CDP_URL, timeout=0.3) and is_cdp_reachable(BROWSEROS_CDP_URL, timeout=0.3):
+    # Finding #13: hop only when 9222 is *definitively* gone. A timeout just
+    # means Chrome is busy, and hopping swaps profiles - which usually costs us
+    # the hh.ru session. Give it a second, generous deadline before believing
+    # the browser is really not there.
+    state = probe_cdp(DEFAULT_HH_CDP_URL, timeout=_RESOLVE_PROBE_TIMEOUT)
+    if state == CDP_TIMEOUT:
+        state = probe_cdp(DEFAULT_HH_CDP_URL, timeout=_RESOLVE_PROBE_RETRY_TIMEOUT)
+    if state == CDP_DEAD and probe_cdp(BROWSEROS_CDP_URL, timeout=_RESOLVE_PROBE_TIMEOUT) == CDP_ALIVE:
         logger.warning(
-            "CDP %s is unreachable; switching to BrowserOS on %s. This is a "
+            "CDP %s is not listening; switching to BrowserOS on %s. This is a "
             "different browser profile - verify it is logged into hh.ru.",
             DEFAULT_HH_CDP_URL,
             BROWSEROS_CDP_URL,
@@ -112,18 +124,53 @@ def find_chrome_executable() -> str | None:
     return None
 
 
-def is_cdp_reachable(cdp_url: str = DEFAULT_HH_CDP_URL, timeout: float = 1.5) -> bool:
-    """Check if CDP `/json/version` endpoint responds with valid JSON."""
+CDP_ALIVE = "alive"
+CDP_DEAD = "dead"
+CDP_TIMEOUT = "timeout"
+
+
+def probe_cdp(cdp_url: str = DEFAULT_HH_CDP_URL, timeout: float = 1.5) -> str:
+    """Three-way CDP health: CDP_ALIVE / CDP_DEAD / CDP_TIMEOUT.
+
+    A plain bool collapses "too slow" into "not there". Fine for a health
+    check, wrong for a routing decision (BLE001 finding #13): the resolver
+    used to hop to BrowserOS whenever /json/version missed its 300 ms
+    deadline, and BrowserOS is a *different Chrome profile* - usually not
+    logged into hh.ru. Measured here: a busy Chrome answers in 0.6-17 ms, but
+    it still misses 300 ms often enough to swap profiles at random, which then
+    reads a logged-out form while submission uses the logged-in browser.
+
+    A slow Chrome is still the right browser. Only a refused connection means
+    the profile we actually need is gone.
+    """
+    url = cdp_url.rstrip("/") + "/json/version"
+    req = urllib.request.Request(url, headers={"User-Agent": "job-search-watcher"})
     try:
-        url = cdp_url.rstrip("/") + "/json/version"
-        req = urllib.request.Request(url, headers={"User-Agent": "job-search-watcher"})
         with _NO_PROXY_OPENER.open(req, timeout=timeout) as resp:
-            if resp.status == 200:
-                data = json.loads(resp.read().decode("utf-8"))
-                return bool(data.get("Browser") or data.get("webSocketDebuggerUrl"))
-    except Exception:
-        pass
-    return False
+            if resp.status != 200:
+                return CDP_DEAD
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError:
+        return CDP_DEAD
+    except urllib.error.URLError as e:
+        # urlopen wraps the socket error in .reason; a timeout there means
+        # "something is listening and busy", not "nothing is listening".
+        return CDP_TIMEOUT if isinstance(e.reason, TimeoutError) else CDP_DEAD
+    except TimeoutError:
+        return CDP_TIMEOUT
+    except (OSError, ValueError):
+        # ValueError covers /json/version answering with something non-JSON.
+        return CDP_DEAD
+    return CDP_ALIVE if (data.get("Browser") or data.get("webSocketDebuggerUrl")) else CDP_DEAD
+
+
+def is_cdp_reachable(cdp_url: str = DEFAULT_HH_CDP_URL, timeout: float = 1.5) -> bool:
+    """Check if CDP `/json/version` endpoint responds with valid JSON.
+
+    Delegates to probe_cdp() so "slow" and "absent" cannot be told apart by
+    accident in two different implementations.
+    """
+    return probe_cdp(cdp_url, timeout) == CDP_ALIVE
 
 
 def get_cdp_version_info(cdp_url: str = DEFAULT_HH_CDP_URL, timeout: float = 2.0) -> dict[str, Any] | None:
