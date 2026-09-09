@@ -402,10 +402,11 @@ def select_best_hh_target(targets: list[dict[str, Any]], url_substring: str) -> 
 def make_cdp_evaluate(cdp_url: str, url_substring: str):
     """Return evaluate_fn(expression)->str bound to the already-open tab whose
     URL contains url_substring. Read-only transport (Runtime.evaluate)."""
-    import urllib.request
+    # Finding #9/#12: CDP is localhost - never go through http_proxy.
+    from .hh_browser_launcher import _NO_PROXY_OPENER
 
     def _list_targets():
-        with urllib.request.urlopen(cdp_url.rstrip("/") + "/json/list", timeout=10) as r:
+        with _NO_PROXY_OPENER.open(cdp_url.rstrip("/") + "/json/list", timeout=10) as r:
             return json.loads(r.read().decode("utf-8"))
 
     targets = _list_targets()
@@ -555,9 +556,10 @@ async def _cdp_evaluate_in_frame(ws_url: str, frame_substrings, expression: str)
 
 def _cdp_list_targets(cdp_url: str):
     """Return the CDP /json/list target array for cdp_url."""
-    import urllib.request
+    # Finding #9/#12: CDP is localhost - never go through http_proxy.
+    from .hh_browser_launcher import _NO_PROXY_OPENER
 
-    with urllib.request.urlopen(cdp_url.rstrip("/") + "/json/list", timeout=10) as r:
+    with _NO_PROXY_OPENER.open(cdp_url.rstrip("/") + "/json/list", timeout=10) as r:
         return json.loads(r.read().decode("utf-8"))
 
 

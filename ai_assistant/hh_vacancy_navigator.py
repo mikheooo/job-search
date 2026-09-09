@@ -166,10 +166,15 @@ def ensure_open_vacancy_tab(cdp_url: str, target: str | dict[str, Any]) -> str |
     import time
     import urllib.request
 
+    # Finding #9/#12: urlopen() honours http_proxy, so with a proxy configured
+    # a live localhost browser answers "502 Bad Gateway" and reads as absent.
+    # CDP is always local - talk to the debugging port directly.
+    from .hh_browser_launcher import _NO_PROXY_OPENER
+
     base_url = cdp_url.rstrip("/")
     # 1. List targets
     try:
-        with urllib.request.urlopen(f"{base_url}/json/list", timeout=5) as r:
+        with _NO_PROXY_OPENER.open(f"{base_url}/json/list", timeout=5) as r:
             targets = json.loads(r.read().decode("utf-8"))
     except Exception as e:
         logger.debug(f"Could not list CDP targets: {e}")
@@ -186,11 +191,11 @@ def ensure_open_vacancy_tab(cdp_url: str, target: str | dict[str, Any]) -> str |
     new_url = f"{base_url}/json/new?{target_url}"
     try:
         req = urllib.request.Request(new_url, method="PUT")
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with _NO_PROXY_OPENER.open(req, timeout=10) as r:
             logger.info(f"Opened new tab via CDP: {target_url}")
     except Exception:
         try:
-            with urllib.request.urlopen(new_url, timeout=10) as r:
+            with _NO_PROXY_OPENER.open(new_url, timeout=10) as r:
                 logger.info(f"Opened new tab via CDP (GET): {target_url}")
         except Exception as e:
             logger.debug(f"Failed to open new tab via /json/new: {e}")

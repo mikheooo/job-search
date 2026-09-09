@@ -889,3 +889,37 @@ def test_cdp_adapter_open_uses_proxy_free_opener(monkeypatch):
 
     assert opened, "open() must go through the proxy-free opener"
     assert res.get("blocked") is False, f"proxy leaked into the CDP call: {res}"
+
+
+def test_no_cdp_call_goes_through_urlopen():
+    """Finding #9/#12 as a class, not as five separate fixes.
+
+    urllib.request.urlopen() honours http_proxy, so any CDP call made with it
+    turns a live localhost browser into "502 Bad Gateway" and reads as absent.
+    Fixed in browser_executor, hh_vacancy_navigator and prefill_execute - this
+    pins that it stays fixed, including in code nobody has written yet.
+
+    One deliberate exception: telegram_notifier talks to api.telegram.org, an
+    external host, where honouring a proxy is the correct behaviour. The second
+    assertion keeps that exception from rotting once it stops applying.
+    """
+    import pathlib
+
+    pkg = pathlib.Path(__file__).resolve().parents[1] / "ai_assistant"
+    telegram = pkg / "telegram_notifier.py"
+
+    assert "urllib.request.urlopen" in telegram.read_text(encoding="utf-8"), (
+        "the telegram_notifier exception is stale - it no longer uses urlopen, "
+        "so drop it from the allowlist instead of keeping a hole open"
+    )
+
+    offenders = [
+        p.name
+        for p in sorted(pkg.glob("*.py"))
+        if p.name != "telegram_notifier.py"
+        and "urllib.request.urlopen" in p.read_text(encoding="utf-8")
+    ]
+    assert not offenders, (
+        "CDP is localhost - use hh_browser_launcher._NO_PROXY_OPENER instead of "
+        f"urllib.request.urlopen: {offenders}"
+    )
