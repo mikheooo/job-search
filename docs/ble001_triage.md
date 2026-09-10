@@ -817,7 +817,51 @@ live_result = check_live_page(evaluate_fn, expected_vacancy_id=vacancy_stable_id
 
 Побочно вылез соседний fail-open того же класса — см. раздел 16.
 
-Тестов в файле теперь 53.
+Тестов в файле теперь 55.
+
+### 16. Гейт жёстких ограничений пропускался, если вакансии нет в БД (высокий) — **ИСПРАВЛЕНО 2026-09-10**
+
+```python
+# ai_assistant/browser_executor.py:2365 (было)
+row = get_vacancy_by_id(vacancy_stable_id)
+vac = _row_to_vacancy(row) if row else None
+...
+# Defense-in-Depth Hard Constraint Gate
+if vac:                      # <-- нет строки == нет проверок
+    if getattr(profile, "remote_required", False):
+        is_rem, rem_reason = is_strictly_remote(vac)
+        ...
+    hard_reject, hard_reason = _hard_constraints(...)
+```
+
+Если строки в `vacancies` нет, `remote_required` и все хард-констрейнты не
+проверяются вообще — отправка едет дальше, к браузеру. Это ровно тот класс
+ошибки, что и №15: «не знаем — считаем, что всё хорошо».
+
+Хуже то, что в **том же файле** соседняя точка входа (`submit_application`,
+строка ~2516) на это же условие отвечает иначе:
+
+```python
+if not row:
+    return SubmitResult(..., status="BLOCKED", error="Vacancy not found")
+```
+
+Две противоположные политики на один и тот же случай, в одном модуле.
+
+**Исправление:** `submit_application_in_browser()` отказывает так же —
+`BLOCKED`, `Vacancy not found in DB: <id>`. Гейт больше не под `if vac:`.
+
+Мутация дала наглядное доказательство: с откатом правки тест
+`test_submit_application_refuses_when_the_vacancy_row_is_missing` падает не
+на ассерте, а на
+
+```
+RuntimeError: SAFETY VIOLATION: unmocked socket connection attempted
+during pytest: ('127.0.0.1', 9222)
+```
+
+То есть без правки код реально полез соединяться с браузером по поводу
+вакансии, которой нет в базе.
 
 ## E2E-проба: `tools/e2e_pipeline_probe.py`
 

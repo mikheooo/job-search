@@ -1202,3 +1202,45 @@ def test_submit_still_inspects_the_page_when_the_vacancy_is_known(monkeypatch):
     assert seen.get("vid") == "hh:999000222", seen
     # Blocked by the stub, not by the "cannot identify" refusal.
     assert res.reason == "stub stop", res.reason
+
+
+# ---------------------------------------------------------------------------
+# Finding #16 - the hard-constraint gate was skipped for an unknown vacancy
+# ---------------------------------------------------------------------------
+
+def test_submit_application_refuses_when_the_vacancy_row_is_missing():
+    """`submit_application_in_browser` read the row as
+    `vac = _row_to_vacancy(row) if row else None` and then wrapped the whole
+    hard-constraint gate in `if vac:` - so a vacancy that is not in the DB
+    skipped remote_required and every hard constraint and still went to the
+    browser. The sibling entry point in the same module already refused with
+    "Vacancy not found"; now both do.
+    """
+    res = be.submit_application_in_browser("hh:999000333", dry_run=True)
+    assert res.status == "BLOCKED", res.error
+    assert "Vacancy not found in DB" in (res.error or ""), res.error
+
+
+def test_submit_application_proceeds_past_the_row_check():
+    """Counter-check: the refusal must not swallow everything. A known vacancy
+    gets past it and reaches the hard-constraint gate, which is the point."""
+    from ai_assistant.schema import Vacancy
+
+    db.save_vacancy(
+        Vacancy(
+            source="hh",
+            source_job_id="999000444",
+            title="Python Developer",
+            company="TestCo",
+            description="Office-based Python job",
+            job_url="https://hh.ru/vacancy/999000444",
+            location="Moscow",
+        )
+    )
+    res = be.submit_application_in_browser("hh:999000444", dry_run=True)
+    assert "Vacancy not found in DB" not in (res.error or ""), res.error
+
+
+# ---------------------------------------------------------------------------
+# Finding #16 - the hard-constraint gate was skipped for an unknown vacancy
+# ---------------------------------------------------------------------------

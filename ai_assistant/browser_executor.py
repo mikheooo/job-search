@@ -2359,10 +2359,23 @@ def submit_application_in_browser(
             executor_version="v1",
         )
 
-    # Load vacancy
+    # Load vacancy. BLE001 finding #16: this used to be
+    # `vac = _row_to_vacancy(row) if row else None`, and the hard-constraint
+    # gate below was wrapped in `if vac:` - so a vacancy missing from the DB
+    # skipped remote_required and every hard constraint and still flew on to
+    # the browser. The sibling entry point in this same file already refuses
+    # with "Vacancy not found"; refuse the same way here.
     from .db import _row_to_vacancy, get_vacancy_by_id
     row = get_vacancy_by_id(vacancy_stable_id)
-    vac = _row_to_vacancy(row) if row else None
+    if not row:
+        return SubmitResult(
+            vacancy_stable_id=vacancy_stable_id,
+            submission_id=submission_id,
+            status="BLOCKED",
+            error=f"Vacancy not found in DB: {vacancy_stable_id}",
+            executor_version="v1",
+        )
+    vac = _row_to_vacancy(row)
 
     # Load profile
     from .candidate_profile import load_candidate_profile
@@ -2380,30 +2393,29 @@ def submit_application_in_browser(
             profile = load_candidate_profile()
 
     # Defense-in-Depth Hard Constraint Gate
-    if vac:
-        from .matcher import _coerce_profile, _hard_constraints
-        from .remote_filter import is_strictly_remote
+    from .matcher import _coerce_profile, _hard_constraints
+    from .remote_filter import is_strictly_remote
 
-        if getattr(profile, "remote_required", False):
-            is_rem, rem_reason = is_strictly_remote(vac)
-            if not is_rem:
-                return SubmitResult(
-                    vacancy_stable_id=vacancy_stable_id,
-                    submission_id=submission_id,
-                    status="BLOCKED",
-                    error=f"Submit blocked by remote_required hard constraint: {rem_reason}",
-                    executor_version="v1",
-                )
-
-        hard_reject, hard_reason = _hard_constraints(_coerce_profile(profile), vac)
-        if hard_reject:
+    if getattr(profile, "remote_required", False):
+        is_rem, rem_reason = is_strictly_remote(vac)
+        if not is_rem:
             return SubmitResult(
                 vacancy_stable_id=vacancy_stable_id,
                 submission_id=submission_id,
                 status="BLOCKED",
-                error=f"Submit blocked by hard constraint gate: {hard_reason}",
+                error=f"Submit blocked by remote_required hard constraint: {rem_reason}",
                 executor_version="v1",
             )
+
+    hard_reject, hard_reason = _hard_constraints(_coerce_profile(profile), vac)
+    if hard_reject:
+        return SubmitResult(
+            vacancy_stable_id=vacancy_stable_id,
+            submission_id=submission_id,
+            status="BLOCKED",
+            error=f"Submit blocked by hard constraint gate: {hard_reason}",
+            executor_version="v1",
+        )
 
     sess = get_browser_session(vacancy_stable_id)
     if sess and sess.status == BrowserStatus.BLOCKED:
