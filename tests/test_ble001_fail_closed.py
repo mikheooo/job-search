@@ -1551,3 +1551,143 @@ def test_auto_apply_still_clicks_when_both_switches_allow_it():
     )
     assert rep.verdict == "SUBMITTED", rep.stop_reason
     assert dom.clicks == 1
+
+# ---------------------------------------------------------------------------
+# Finding #20 - the second kill switch was absent from every click path
+# ---------------------------------------------------------------------------
+# There are two emergency stops: SUBMIT_ALLOWED (config/env) and the
+# `submit_paused` row in system_settings - the one the Telegram "stop" command
+# writes. Finding #9 wired the first one into submit_application_in_browser for
+# non-hh sources; the second was never checked anywhere on that path.
+#
+# Measured with everything else valid and submit_paused=1: the function walked
+# the whole way to the adapters and clicked - status=SUBMITTED, and
+# adapter.submit_application() called once.
+#
+# This is the #19 shape again: not a check that lies, a check that is missing.
+# execute_hh_submission has both; the "hh:" branch delegates to it and inherits
+# them, every other source lands on the legacy branch and had only one.
+
+def _save_non_hh_vacancy(job_id: str) -> None:
+    """Everything the legacy branch demands before it will click.
+
+    A vacancy row (finding #16), an APPROVED review, a READY_FOR_REVIEW
+    browser session, READY_TO_APPLY tracking, a queue item and a package.
+    Without all of it the test stops on one of those gates and never reaches
+    the kill switch - a green test that proves nothing about the stop.
+    """
+    import json
+    from datetime import datetime, timezone
+
+    from ai_assistant.application_queue import QueueItem, save_queue_item
+    from ai_assistant.application_review import (
+        ApplicationReview,
+        ReviewStatus,
+        save_application_review,
+    )
+    from ai_assistant.application_tracking import (
+        ApplicationStatus,
+        set_application_status,
+    )
+    from ai_assistant.schema import Vacancy
+
+    sid = f"remoteok:{job_id}"
+    url = f"https://remoteok.com/remote-jobs/{job_id}"
+    db.save_vacancy(
+        Vacancy(
+            source="remoteok",
+            source_job_id=job_id,
+            title="Python Developer",
+            company="TestCo",
+            description="A perfectly ordinary remote job description",
+            job_url=url,
+            location="Remote",
+        )
+    )
+    save_application_review(
+        ApplicationReview(
+            vacancy_stable_id=sid,
+            status=ReviewStatus.APPROVED,
+            form_fingerprint="fp_killswitch",
+            review_id=f"rev_{job_id}",
+        )
+    )
+    set_application_status(sid, ApplicationStatus.READY_TO_APPLY)
+    save_queue_item(
+        QueueItem(
+            vacancy_stable_id=sid,
+            canonical_id=sid,
+            representative_vacancy_stable_id=sid,
+            priority_score=80,
+            rank=1,
+            source="remoteok",
+            title="Python Developer",
+            vacancy_url=url,
+        )
+    )
+    db.save_application_package(
+        sid,
+        "killswitch_test",
+        json.dumps(
+            {
+                "cover_letter": "A perfectly good cover letter for this role",
+                "answers": [],
+                "questions": [],
+            }
+        ),
+    )
+    from ai_assistant import browser_executor as _be
+
+    _be.save_browser_session(
+        _be.BrowserApplicationSession(
+            vacancy_stable_id=sid,
+            url=url,
+            status=_be.BrowserStatus.READY_FOR_REVIEW,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            updated_at=datetime.now(timezone.utc).isoformat(),
+            form_detected=True,
+        )
+    )
+
+
+def test_non_hh_source_is_blocked_by_the_db_kill_switch(monkeypatch):
+    # Finding #16 refuses an unknown vacancy before the kill switch is even
+    # reached. Save the row, so this test fails on the stop and nothing else.
+    _save_non_hh_vacancy("777")
+    _set_submit_allowed(True)
+    db.set_submit_paused(True)
+    try:
+        res = be.submit_application_in_browser(
+            "remoteok:777", confirm_submit=True, dry_run=False
+        )
+    finally:
+        db.set_submit_paused(False)
+    assert res.status == "BLOCKED", res.error
+    assert "kill switch" in (res.error or "").lower()
+
+
+def test_non_hh_source_is_not_blocked_when_the_kill_switch_is_off(monkeypatch):
+    """Counter-check: this must not become a gate that always trips."""
+    _save_non_hh_vacancy("778")
+    _set_submit_allowed(True)
+    db.set_submit_paused(False)
+    res = be.submit_application_in_browser(
+        "remoteok:778", confirm_submit=True, dry_run=False
+    )
+    assert "kill switch" not in (res.error or "").lower()
+
+
+def test_non_hh_source_fails_closed_when_the_kill_switch_cannot_be_read(monkeypatch):
+    """Finding #18 on this same call site: unreadable is not 'not engaged'."""
+    _save_non_hh_vacancy("779")
+    _set_submit_allowed(True)
+
+    def boom():
+        raise _Boom("database is locked")
+
+    monkeypatch.setattr(db, "is_submit_paused", boom)
+    res = be.submit_application_in_browser(
+        "remoteok:779", confirm_submit=True, dry_run=False
+    )
+    assert res.status == "BLOCKED", res.error
+    assert "kill switch" in (res.error or "").lower()

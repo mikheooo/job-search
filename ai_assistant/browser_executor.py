@@ -2329,6 +2329,19 @@ def submit_application_in_browser(
     # the legacy branch, which calls adapter.submit_application() directly with
     # no gates at all - not even the kill-switch. Check it here, for all
     # sources, before anything can touch the browser.
+    # BLE001 finding #20: the check above covers SUBMIT_ALLOWED only. Its
+    # twin - the `submit_paused` row in system_settings, which is what the
+    # Telegram "stop" command writes - was not consulted anywhere on this
+    # path, nor on any other path that clicks. Measured: with submit_paused=1
+    # and everything else valid, this function reached the adapters and
+    # clicked (status=SUBMITTED, adapter.submit_application called once).
+    #
+    # Why: execute_hh_submission checks both switches, and the "hh:" branch
+    # here delegates to it. Every other source skips that and lands on the
+    # legacy branch below. Finding #9 caught the first switch for that
+    # branch; the second one was missed.
+    #
+    # Finding #18 applies: a stop we cannot read is not a stop we checked.
     if not dry_run:
         from .config import submit_allowed as _submit_allowed
 
@@ -2338,6 +2351,35 @@ def submit_application_in_browser(
                 submission_id="",
                 status="BLOCKED",
                 error="Submission is disabled by SUBMIT_ALLOWED configuration",
+                executor_version="v1",
+            )
+
+        from . import db as _db
+
+        try:
+            _paused = _db.is_submit_paused()
+        except Exception as e:  # noqa: BLE001
+            logger.error(
+                "cannot read the submission kill switch for %s - failing closed: %s",
+                vacancy_stable_id,
+                e,
+            )
+            return SubmitResult(
+                vacancy_stable_id=vacancy_stable_id,
+                submission_id="",
+                status="BLOCKED",
+                error=(
+                    "Cannot read the submission kill switch - refusing to "
+                    f"submit: {type(e).__name__}: {e}"
+                ),
+                executor_version="v1",
+            )
+        if _paused:
+            return SubmitResult(
+                vacancy_stable_id=vacancy_stable_id,
+                submission_id="",
+                status="BLOCKED",
+                error="Submission paused by kill switch (system_settings.submit_paused=1)",
                 executor_version="v1",
             )
     
