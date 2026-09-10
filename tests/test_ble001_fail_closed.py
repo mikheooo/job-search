@@ -923,3 +923,126 @@ def test_no_cdp_call_goes_through_urlopen():
         "CDP is localhost - use hh_browser_launcher._NO_PROXY_OPENER instead of "
         f"urllib.request.urlopen: {offenders}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Finding #14 - cli.py resolved "which browser" its own way
+# ---------------------------------------------------------------------------
+
+def test_cli_cdp_default_follows_the_resolver(monkeypatch):
+    """cli.py used to read only HH_CDP_URL, once, at import time. That is a
+    second copy of resolve_cdp_url() and it disagreed: with CDP_URL set the
+    constant said 9110 while every adapter said the pinned value. Two browsers
+    means two Chrome profiles, and the submit path was driving the one that is
+    not logged into hh.ru.
+    """
+    from ai_assistant import cli
+    from ai_assistant import hh_browser_launcher as hl
+
+    monkeypatch.setenv("CDP_URL", "http://127.0.0.1:9223")
+    monkeypatch.setenv("HH_CDP_URL", "http://127.0.0.1:9110")
+
+    assert cli._default_hh_cdp_url() == "http://127.0.0.1:9223"
+    assert cli._default_hh_cdp_url() == hl.resolve_cdp_url()
+
+
+def test_resolve_hh_evaluate_uses_the_resolved_endpoint(monkeypatch):
+    """The same claim one level down: what actually reaches make_cdp_evaluate
+    must be the resolved endpoint, not a frozen snapshot."""
+    from ai_assistant import cli
+
+    monkeypatch.setenv("CDP_URL", "http://127.0.0.1:9223")
+    seen = []
+
+    def _fake_make(cdp, sub):
+        seen.append((cdp, sub))
+        return lambda *a, **k: None
+
+    monkeypatch.setattr(cli, "make_cdp_evaluate", _fake_make)
+    cli._resolve_hh_evaluate(None, "hh.ru")
+
+    assert seen, "_resolve_hh_evaluate built no evaluate_fn"
+    assert seen[0][0] == "http://127.0.0.1:9223", f"stale endpoint reached CDP: {seen[0]}"
+
+
+def test_no_second_copy_of_cdp_resolution():
+    """Finding #14 as a class. hh_browser_launcher.resolve_cdp_url() owns the
+    question "which browser are we driving"; any other module reading the CDP
+    environment itself is a copy that can disagree. One owner, allowed:
+    the launcher.
+    """
+    import ast
+    import pathlib
+
+    def _reads_cdp_env(path: pathlib.Path) -> bool:
+        """Substring matching would fire on this very comment, so walk the AST
+        and look for the actual call: os.getenv("HH_CDP_URL", ...)."""
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            parts, cur = [], node.func
+            while isinstance(cur, ast.Attribute):
+                parts.append(cur.attr)
+                cur = cur.value
+            if not isinstance(cur, ast.Name):
+                continue
+            parts.append(cur.id)
+            if ".".join(reversed(parts)) not in ("os.getenv", "os.environ.get"):
+                continue
+            if any(
+                isinstance(a, ast.Constant) and a.value in ("HH_CDP_URL", "CDP_URL")
+                for a in node.args
+            ):
+                return True
+        return False
+
+    pkg = pathlib.Path(__file__).resolve().parents[1] / "ai_assistant"
+    offenders = [
+        path.name
+        for path in sorted(pkg.glob("*.py"))
+        if path.name != "hh_browser_launcher.py" and _reads_cdp_env(path)
+    ]
+    assert not offenders, (
+        "ask hh_browser_launcher.resolve_cdp_url() instead of reading the env: "
+        f"{offenders}"
+    )
+
+
+def test_nothing_reads_the_frozen_cdp_constant():
+    """cli._DEFAULT_HH_CDP_URL was a module-level snapshot and four modules
+    imported it (hh_application_runner, hh_message_watcher,
+    hh_post_submit_verifier, cli itself). It is gone. Keep it gone: re-adding
+    the name re-adds a second, divergent answer.
+    """
+    import pathlib
+
+    pkg = pathlib.Path(__file__).resolve().parents[1] / "ai_assistant"
+    offenders = [
+        path.name
+        for path in sorted(pkg.glob("*.py"))
+        if "_DEFAULT_HH_CDP_URL" in path.read_text(encoding="utf-8")
+    ]
+    assert not offenders, f"use cli._default_hh_cdp_url(): {offenders}"
+
+
+def test_cdp_adapter_is_built_from_the_resolver():
+    """`submit --adapter cdp` hardcoded DEFAULT_HH_CDP_URL, i.e. 9222 no matter
+    what .env says, so the submit path drove a different profile than everyone
+    else. The call site must ask the resolver like the rest of the code.
+    """
+    import pathlib
+
+    pkg = pathlib.Path(__file__).resolve().parents[1] / "ai_assistant"
+    cli_src = (pkg / "cli.py").read_text(encoding="utf-8")
+
+    assert "CDPBrowserAdapter(DEFAULT_HH_CDP_URL)" not in cli_src, (
+        "hardcoded 9222 in the submit path - it ignores .env and CDP_URL"
+    )
+    assert "CDPBrowserAdapter(_default_hh_cdp_url())" in cli_src, (
+        "the submit path must ask the resolver, same as every adapter"
+    )
+
+    for name in ("hh_application_runner.py", "hh_message_watcher.py", "hh_post_submit_verifier.py"):
+        text = (pkg / name).read_text(encoding="utf-8")
+        assert "_default_hh_cdp_url()" in text, f"{name} still uses a frozen endpoint"

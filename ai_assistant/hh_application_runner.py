@@ -306,14 +306,14 @@ def run_application(
     # Attach evaluate_fn to the target vacancy tab if evaluate_fn is not provided
     if evaluate_fn is None:
         try:
-            from .cli import _DEFAULT_HH_CDP_URL, _resolve_hh_evaluate
+            from .cli import _default_hh_cdp_url, _resolve_hh_evaluate
             from .hh_browser_launcher import ensure_hh_browser
             from .hh_vacancy_navigator import (
                 ensure_open_vacancy_tab,
                 extract_hh_numeric_id,
             )
             ensure_hh_browser()
-            endpoint = cdp_url or _DEFAULT_HH_CDP_URL
+            endpoint = cdp_url or _default_hh_cdp_url()
             if target_url:
                 ensure_open_vacancy_tab(endpoint, target_url)
             vac_num = vac_id or extract_hh_numeric_id(str(target_url or ""))

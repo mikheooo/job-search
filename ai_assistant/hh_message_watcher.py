@@ -188,8 +188,8 @@ def run_message_watcher_cycle(
     ev = config.custom_evaluate_fn or evaluate_fn
     if ev is None:
         from .cli import (
-            _DEFAULT_HH_CDP_URL,
             _DEFAULT_HH_MESSAGES_URL_SUBSTRING,
+            _default_hh_cdp_url,
             _resolve_hh_evaluate,
         )
         from .hh_browser_launcher import (
@@ -197,7 +197,7 @@ def run_message_watcher_cycle(
             ensure_hh_browser,
         )
 
-        cdp = config.cdp_url or _DEFAULT_HH_CDP_URL
+        cdp = config.cdp_url or _default_hh_cdp_url()
         sub = config.url_substring or _DEFAULT_HH_MESSAGES_URL_SUBSTRING
 
         # Auto-ensure browser is running

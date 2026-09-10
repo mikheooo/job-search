@@ -55,6 +55,13 @@
 >   CDP-вызовов через прокси (`hh_vacancy_navigator` — навигация на вакансию,
 >   `prefill_execute` — префилл формы). Плюс статический гард-тест на весь
 >   класс. Тестов в файле теперь 43.
+>
+> - Находка №14 закрыта (2026-09-10): `cli.py` отвечал на вопрос «каким
+>   браузером едем» сам — модульной константой, замороженной на импорте. Это
+>   вторая, ослабленная копия `resolve_cdp_url()`. Замерено: с заданным
+>   `CDP_URL` CLI ехал на 9110, а адаптеры — на прибитый порт. Два браузера
+>   это два профиля Chrome, и путь отправки вёл тот, где нет сессии hh.ru.
+>   Тестов в файле теперь 48.
 
 ## Метод
 
@@ -655,6 +662,59 @@ check это терпимо, для маршрутизации — нет: Brows
 в E2E-пробе это учитывает: если CDP прибит env, она проверяет, что резолвер
 его уважает, а не «должен быть 9222».
 
+### 14. `cli.py` решал «каким браузером едем» самостоятельно (высокий) — **ИСПРАВЛЕНО 2026-09-10**
+
+```python
+# ai_assistant/cli.py:1531 (было)
+_DEFAULT_HH_CDP_URL = os.getenv("HH_CDP_URL", "http://127.0.0.1:9222")
+```
+
+Это вторая копия `hh_browser_launcher.resolve_cdp_url()`, только слабее, и
+несовпадения между ними — не теория, а замер:
+
+```
+env CDP_URL='http://127.0.0.1:9223' HH_CDP_URL='http://127.0.0.1:9110'
+cli._DEFAULT_HH_CDP_URL = http://127.0.0.1:9110
+resolve_cdp_url()       = http://127.0.0.1:9223          <-- DIVERGED
+```
+
+Три причины расхождения, все реальные:
+
+1. Значение frozen на моменте импорта — то есть до того, как `.env`
+   гарантированно загружен (сегодня совпадает только потому, что `cli.py`
+   импортирует `.config`, а тот зовёт `load_dotenv`; убери этот импорт — и
+   порядок сломается).
+2. Читается только `HH_CDP_URL`, а `resolve_cdp_url()` сначала смотрит
+   `CDP_URL` — задокументированную переменную.
+3. Константа никогда не узнает, что 9222 мёртв, а BrowserOS отвечает.
+
+Чем это грозит, видно на третьем месте в том же файле:
+
+```python
+# ai_assistant/cli.py:794 (было) — путь РЕАЛЬНОЙ отправки
+adapter = CDPBrowserAdapter(DEFAULT_HH_CDP_URL)   # 9222, независимо от .env
+```
+
+`--adapter cdp` ехал в профиль, в котором сессии hh.ru может и не быть, в то
+время как вся остальная экстракция шла в 9110. Ровно баг №10, только наоборот
+направленный: не «паливный headless вместо настоящего», а «другой настоящий».
+
+**Исправление.** Константа заменена на `_default_hh_cdp_url()`, которая
+зовёт `resolve_cdp_url()`. Кэша нет намеренно: оператор (или тест) может
+поменять окружение посереди процесса, а устаревший endpoint здесь — это и
+есть удаляемый баг. Проба происходит только когда ничего не прибито.
+
+Sweep по классу: тот же замороженный endpoint импортировали ещё три модуля —
+`hh_application_runner` (очередь заявок), `hh_message_watcher` (вотчер
+сообщений), `hh_post_submit_verifier` (проверка после отправки). Все переведены
+на резолвер. Побочно ушёл ставший ненужным модульный `import os` в `cli.py`.
+
+Пин: `test_no_second_copy_of_cdp_resolution` (AST-обход: вне
+`hh_browser_launcher` никто не читает `HH_CDP_URL`/`CDP_URL` сам),
+`test_nothing_reads_the_frozen_cdp_constant`,
+`test_cdp_adapter_is_built_from_the_resolver`. AST, а не подстрока: гард по
+подстроке срабатывал на собственный комментарий с этим кодом внутри.
+
 ## Наблюдение, не закрытое: `apply_link` не находит кнопку отклика
 
 `extract_application_form()` ищет `a[data-qa='vacancy-response-link-top']`.
@@ -681,7 +741,7 @@ check это терпимо, для маршрутизации — нет: Brows
 Запуск: `.venv/Scripts/python.exe tools/e2e_pipeline_probe.py`, exit 0 = всё
 прошло.
 
-### Регрессии на №11-13 проверены мутациями
+### Регрессии на №11-14 проверены мутациями
 
 Тест, который нельзя сломать, — декор. Каждую правку откатывали и смотрели,
 что именно падает:
@@ -691,6 +751,10 @@ check это терпимо, для маршрутизации — нет: Brows
 | №11: вернуть поиск `captcha` по сырому HTML | `test_blocked_check_ignores_i18n_captcha_string`, `test_blocked_check_flags_visible_access_denied_only` | реальный `data-qa="captcha`, Cloudflare и 404 по-прежнему блокируют → фикс не стал fail-open |
 | №12: вернуть `urllib.request.urlopen` | `test_cdp_adapter_open_uses_proxy_free_opener` | — |
 | №13: таймаут снова считать «мёртв» | `test_resolve_cdp_url_does_not_hop_on_slow_chrome` | `test_resolve_cdp_url_logs_browseros_swap` проходит → честный DEAD всё ещё прыгает |
+| №14: вернуть frozen-константу `os.getenv("HH_CDP_URL", ...)` | `test_cli_cdp_default_follows_the_resolver`, `test_resolve_hh_evaluate_uses_the_resolved_endpoint` | оба падают именно на `CDP_URL`, а не на `HH_CDP_URL` → ловят именно расхождение |
+| №14: `CDPBrowserAdapter(DEFAULT_HH_CDP_URL)` обратно | `test_cdp_adapter_is_built_from_the_resolver` | — |
+| №14: вотчер снова импортирует `_DEFAULT_HH_CDP_URL` | `test_nothing_reads_the_frozen_cdp_constant` | — |
+| №14: модуль читает `HH_CDP_URL` сам | `test_no_second_copy_of_cdp_resolution` | комментарий с этим же текстом гард **не** задевает → он по AST |
 
 Плюс `test_probe_cdp_distinguishes_timeout_from_dead` фиксирует, что три
 состояния `probe_cdp()` действительно различимы, а `is_cdp_reachable()` при

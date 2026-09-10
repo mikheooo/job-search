@@ -1,4 +1,4 @@
-from __future__ import annotationsimport argparseimport jsonimport loggingimport osimport reimport sysfrom typing import Anyfrom collections.abc import Callablelogger = logging.getLogger(__name__)
+from __future__ import annotationsimport argparseimport jsonimport loggingimport reimport sysfrom typing import Anyfrom collections.abc import Callablelogger = logging.getLogger(__name__)
 
 from . import (    email_message_reply,    gmail_readonly_connector,    hh_message_reply,    prefill_execute,)from .adapters.habr_career import HabrCareerAdapterfrom .adapters.himalayas import HimalayasAdapterfrom .adapters.remoteok import RemoteOkAdapterfrom .adapters.weworkremotely import WeWorkRemotelyAdapterfrom .application_dashboard import (    build_dashboard,    get_dashboard_actions_only,    get_dashboard_history,    get_dashboard_queue,    get_dashboard_show,)from .application_integrity import (    IntegritySeverity,    run_integrity_audit,)from .application_review import (    approve_review,    create_application_review,    get_application_review,    list_application_reviews,    reject_review,)from .application_tracking import (    verify_and_apply,)from .application_tracking import (    get_application_history as _get_app_history,)from .application_tracking import (    get_application_status as _get_app_status,)from .application_tracking import (    list_applications as _list_apps,)from .application_tracking import (    sync_application_tracking as _sync_tracking,)from .application_tracking import (    transition_application as _transition_app,)from .candidate_profile import load_candidate_profilefrom .config import CANDIDATE_PROFILE_FILEfrom .db import (    _row_to_vacancy,    get_application_package,    get_deep_analysis,    get_production_health,    get_submission,    get_vacancy_by_id,    get_verification,    init_db,    list_digest_attempts,    list_submissions,    list_undigested_vacancies,    list_vacancies,    list_verifications,    mark_digest_delivered,    reconcile_digest_attempt,    save_application_package,    save_deep_analysis,    save_vacancy,)from .matcher import JobMatcherfrom .normalizer import normalize_vacancyfrom .prefill_execute import make_cdp_evaluate, make_isolated_world_evaluatefrom .submission_verifier import verify_submission as _verify_submissionfrom .vacancy_identity import (    MatchType,    get_aliases_for_canonical,    get_all_canonical_vacancies,    get_canonical_by_id,    normalize_company,    normalize_title,    normalize_url,    resolve_vacancy_identity,    sync_identity_from_vacancies,)SOURCES = {
     "himalayas": HimalayasAdapter(),
@@ -790,8 +790,10 @@ def submit_vacancy(
     if adapter_name == "mock":
         adapter = MockBrowserAdapter()
     elif adapter_name == "cdp":
-        from .hh_browser_launcher import DEFAULT_HH_CDP_URL
-        adapter = CDPBrowserAdapter(DEFAULT_HH_CDP_URL)
+        # Finding #14: DEFAULT_HH_CDP_URL is 9222 regardless of .env, so
+        # `--adapter cdp` used to drive a *different profile* than every
+        # other path. Ask the resolver, same as everyone else.
+        adapter = CDPBrowserAdapter(_default_hh_cdp_url())
     elif adapter_name == "playwright":
         adapter = PlaywrightBrowserAdapter()
 
@@ -1528,7 +1530,25 @@ def dashboard_show_canonical(canonical_id: str) -> int:
 # evaluate_fn / transport / status_fn (fakes in tests; a live CDP/Gmail in use).
 # ---------------------------------------------------------------------------
 
-_DEFAULT_HH_CDP_URL = os.getenv("HH_CDP_URL", "http://127.0.0.1:9222")
+# BLE001 finding #14: this used to be a module-level constant reading
+# os.getenv("HH_CDP_URL", "http://127.0.0.1:9222") at import time. That is a
+# second, weaker copy of hh_browser_launcher.resolve_cdp_url(): it is frozen
+# before .env is necessarily loaded, it ignores CDP_URL, and it never notices
+# that 9222 is dead while BrowserOS is answering. Measured: with CDP_URL set,
+# this resolved to 9110 while every adapter resolved to the pinned value - two
+# different browsers, i.e. two different Chrome profiles, and the one driving
+# the submit flow was the one without the hh.ru session.
+
+# Resolve on use instead. Deliberately not cached: an operator (or a test) can
+# change the environment mid-process, and a stale endpoint here is exactly the
+# bug being removed. Probing only happens when nothing is pinned.
+
+def _default_hh_cdp_url() -> str:
+    """Which browser are we driving? Delegates to the single source of truth."""
+    from .hh_browser_launcher import resolve_cdp_url
+
+    return resolve_cdp_url()
+
 _DEFAULT_HH_MESSAGES_URL_SUBSTRING = "hh.ru"
 # Stage 30C-2: substrings used to locate the chatik iframe (the cross-origin
 # frame that actually renders the HH conversation) inside the hh.ru tab.
@@ -1541,7 +1561,7 @@ def _resolve_hh_evaluate(cdp_url=None, url_substring=None, evaluate_fn=None):
     if evaluate_fn is not None:
         return evaluate_fn
     sub = url_substring or _DEFAULT_HH_MESSAGES_URL_SUBSTRING
-    cdp = cdp_url or _DEFAULT_HH_CDP_URL
+    cdp = cdp_url or _default_hh_cdp_url()
     return make_cdp_evaluate(cdp, sub)
 
 
@@ -1555,7 +1575,7 @@ def _resolve_chatik_evaluate(cdp_url=None, url_substring=None, evaluate_fn=None,
     if evaluate_fn is not None:
         return evaluate_fn
     sub = url_substring or _DEFAULT_HH_MESSAGES_URL_SUBSTRING
-    cdp = cdp_url or _DEFAULT_HH_CDP_URL
+    cdp = cdp_url or _default_hh_cdp_url()
     isubs = list(isolate_substrings) if isolate_substrings else _DEFAULT_CHATIK_FRAME_SUBSTRINGS
     return make_isolated_world_evaluate(cdp, sub, isubs)
 
@@ -2706,7 +2726,7 @@ def hh_message_diagnose(
 ) -> int:
     """Stage 30D: Probe HH tab, messages page, chatik frame, isolated world, and conversation DOM.
     Strictly READ-ONLY: no clicks, no sends, no navigation, no DB writes."""
-    cdp = cdp_url or _DEFAULT_HH_CDP_URL
+    cdp = cdp_url or _default_hh_cdp_url()
     url_sub = url_substring or _DEFAULT_HH_MESSAGES_URL_SUBSTRING
     if isinstance(frame_substrings, str):
         f_subs = [s.strip() for s in frame_substrings.split(",") if s.strip()]
@@ -3377,14 +3397,14 @@ def questionnaire_submit_cmd(
         try:
             from .hh_browser_launcher import ensure_hh_browser            from .hh_vacancy_navigator import ensure_open_vacancy_tab
             ensure_hh_browser()
-            ensure_open_vacancy_tab(_DEFAULT_HH_CDP_URL, quest.vacancy_stable_id or quest.questionnaire_id)
+            ensure_open_vacancy_tab(_default_hh_cdp_url(), quest.vacancy_stable_id or quest.questionnaire_id)
         except Exception as e:
             logger.debug(f"ensure_open_vacancy_tab error: {e}")
         
         vac_sub = quest.vacancy_stable_id.split(":")[-1] if quest.vacancy_stable_id else "vacancy"
-        evaluate_fn = _resolve_hh_evaluate(_DEFAULT_HH_CDP_URL, vac_sub)
+        evaluate_fn = _resolve_hh_evaluate(_default_hh_cdp_url(), vac_sub)
         if not evaluate_fn:
-            evaluate_fn = _resolve_hh_evaluate(_DEFAULT_HH_CDP_URL, "hh.ru")
+            evaluate_fn = _resolve_hh_evaluate(_default_hh_cdp_url(), "hh.ru")
 
     res = submit_questionnaire_response(
         questionnaire_id=quest.questionnaire_id,
@@ -3493,7 +3513,7 @@ def application_submit_cmd(
     if cid:
         from .hh_message_reply import send_hh_reply_confirmed
         if evaluate_fn is None:
-            evaluate_fn = _resolve_hh_evaluate(_DEFAULT_HH_CDP_URL, _DEFAULT_HH_MESSAGES_URL_SUBSTRING)
+            evaluate_fn = _resolve_hh_evaluate(_default_hh_cdp_url(), _DEFAULT_HH_MESSAGES_URL_SUBSTRING)
         if not evaluate_fn:
             print("Error: Could not connect to HH Chrome CDP", file=sys.stderr)
             transition_application(app_id, HHApplicationState.FAILED, reason="cdp_connection_failed")
@@ -3707,7 +3727,7 @@ def application_runner_cmd(
                 try:
                     from .hh_browser_launcher import ensure_hh_browser
                     ensure_hh_browser()
-                    evaluate_fn = _resolve_hh_evaluate(_DEFAULT_HH_CDP_URL, "hh.ru")
+                    evaluate_fn = _resolve_hh_evaluate(_default_hh_cdp_url(), "hh.ru")
                 except Exception:
                     evaluate_fn = None
             res = run_next_application(confirm_submit=confirm_submit, auto=auto, evaluate_fn=evaluate_fn, dry_run=dry_run)

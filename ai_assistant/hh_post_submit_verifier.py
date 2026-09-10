@@ -146,10 +146,10 @@ def verify_hh_submitted_application(
     # 2. Resolve evaluate_fn if not provided
     if evaluate_fn is None:
         try:
-            from .cli import _DEFAULT_HH_CDP_URL, _resolve_hh_evaluate
+            from .cli import _default_hh_cdp_url, _resolve_hh_evaluate
             from .hh_browser_launcher import ensure_hh_browser
             ensure_hh_browser()
-            endpoint = cdp_url or _DEFAULT_HH_CDP_URL
+            endpoint = cdp_url or _default_hh_cdp_url()
             ensure_open_vacancy_tab(endpoint, target_url)
             vac_num = extract_hh_numeric_id(target_url) or "vacancy"
             evaluate_fn = _resolve_hh_evaluate(endpoint, vac_num)
