@@ -256,14 +256,31 @@ def check_live_page(
         res.reason = "Login / authentication required to view or apply to vacancy"
         return res
 
-    # 7. Title similarity check
+    # 7. Title similarity check.
+    #
+    # BLE001 finding #17, two holes in the old expression:
+    #
+    #   if exp_words and any(...) or sim >= 0.6 or not exp_words:
+    #
+    # (a) `or not exp_words` switched the check OFF for any title whose words
+    #     are all 4 characters or shorter. Measured: expected "Go Dev" against
+    #     a page titled "Уборщица" scored title_matched = True at similarity
+    #     0.00. Two different jobs, and the only check that can catch a
+    #     substitution said yes.
+    #
+    # (b) When nothing matched but similarity landed in [0.3, 0.6), the branch
+    #     logged a warning and fell through - `is_ok` stayed True and the page
+    #     was accepted. Measured: "HR Generalist" vs "HR Manager" (0.52), no
+    #     shared word: a failed check that silently passed.
+    #
+    # Now: a title that does not match fails closed, at any similarity.
     if expected_title and current_title:
         res.title_similarity = difflib.SequenceMatcher(
             None, expected_title.lower().strip(), current_title.lower().strip()
         ).ratio()
         exp_words = [w.lower() for w in re.findall(r"\w+", expected_title) if len(w) > 3]
         curr_l = current_title.lower()
-        if exp_words and any(w in curr_l for w in exp_words) or res.title_similarity >= 0.6 or not exp_words:
+        if (exp_words and any(w in curr_l for w in exp_words)) or res.title_similarity >= 0.6:
             res.title_matched = True
         else:
             logger.warning(
@@ -272,12 +289,11 @@ def check_live_page(
                 expected_title,
                 current_title,
             )
-            if res.title_similarity < 0.3:
-                res.is_ok = False
-                res.status = "MISMATCH"
-                res.error_reason = "WRONG_PAGE"
-                res.reason = f"Title mismatch (similarity {res.title_similarity:.2f}): expected '{expected_title}', got '{current_title}'"
-                return res
+            res.is_ok = False
+            res.status = "MISMATCH"
+            res.error_reason = "WRONG_PAGE"
+            res.reason = f"Title mismatch (similarity {res.title_similarity:.2f}): expected '{expected_title}', got '{current_title}'"
+            return res
 
     else:
         res.title_matched = True

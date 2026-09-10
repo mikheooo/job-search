@@ -1205,6 +1205,80 @@ def test_submit_still_inspects_the_page_when_the_vacancy_is_known(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Finding #17 - the title check accepted a page whose title did not match
+# ---------------------------------------------------------------------------
+
+def _page(title: str) -> dict:
+    return {
+        "ok": True,
+        "url": "https://hh.ru/vacancy/128659037",
+        "title": title,
+        "has_submit_btn": True,
+        "has_apply_btn": True,
+    }
+
+
+def test_live_page_blocks_a_title_that_did_not_match():
+    """Measured: expected "HR Generalist" against a page titled "HR Manager"
+    scores similarity 0.52 with no shared word. The old code logged a warning
+    and fell through with is_ok still True - a failed check that passed.
+
+    These are two different jobs, and the numeric id does not help: it is read
+    from the URL we just opened, so it matches by construction.
+    """
+    import json
+
+    from ai_assistant.hh_live_page_checks import check_live_page
+
+    res = check_live_page(
+        lambda js: json.dumps(_page("HR Manager")),
+        expected_vacancy_id="hh:128659037",
+        expected_title="HR Generalist",
+    )
+    assert res.is_ok is False, "a non-matching title must not be submittable"
+    assert res.error_reason == "WRONG_PAGE", res.reason
+    assert res.title_matched is False
+
+
+def test_live_page_still_checks_short_titles():
+    """Measured: "Go Dev" has no word longer than 3 characters, so exp_words was
+    empty and `or not exp_words` made the check answer True - at similarity
+    0.00, against a page titled "Уборщица". A short title switched the only
+    substitution check off completely.
+    """
+    import json
+
+    from ai_assistant.hh_live_page_checks import check_live_page
+
+    res = check_live_page(
+        lambda js: json.dumps(_page("Уборщица")),
+        expected_vacancy_id="hh:128659037",
+        expected_title="Go Dev",
+    )
+    assert res.is_ok is False, "a short title must not disable the title check"
+    assert res.error_reason == "WRONG_PAGE", res.reason
+
+
+def test_live_page_accepts_the_same_title_with_a_city_suffix():
+    """Counter-check: tightening the rule must not lock out real pages. hh.ru
+    routinely appends the address, and "Продавец" vs "Продавец (Чебоксары,
+    Гагарина Ю., 17)" is only 0.36 similar - it passes on the shared word, as
+    it must.
+    """
+    import json
+
+    from ai_assistant.hh_live_page_checks import check_live_page
+
+    res = check_live_page(
+        lambda js: json.dumps(_page("Продавец (Чебоксары, Гагарина Ю., 17)")),
+        expected_vacancy_id="hh:128659037",
+        expected_title="Продавец",
+    )
+    assert res.is_ok is True, f"the right page must stay submittable: {res.reason}"
+    assert res.title_matched is True
+
+
+# ---------------------------------------------------------------------------
 # Finding #16 - the hard-constraint gate was skipped for an unknown vacancy
 # ---------------------------------------------------------------------------
 
