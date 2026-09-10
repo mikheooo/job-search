@@ -974,14 +974,55 @@ def execute_hh_submission(
     # /vacancy/135489102 is actually "Продавец (Чебоксары)"). Those three are
     # archived today, so the archive check happens to catch them; a live one
     # would not be caught by anything. See docs/ble001_triage.md, finding #15.
-    expected_title = None
+    # Fail closed. This is reachable in production, not theoretical:
+    # browser_executor's submit path reads the row as
+    # `vac = _row_to_vacancy(row) if row else None` and then skips the
+    # hard-constraint gate entirely (`if vac:`), so a vacancy that is not
+    # in the DB today flies through every check blind - remote_required and
+    # all. Blocking here matches that module's own `Vacancy not found`
+    # BLOCKED result in the other submit entry point.
     vacancy_row = db.get_vacancy_by_id(vacancy_stable_id)
+    expected_title = None
     if vacancy_row:
         expected_title = db._row_to_vacancy(vacancy_row).title or None
     if not expected_title:
-        logger.warning(
-            "no expected title for %s - submitting without the wrong-page check",
+        # `vacancies` is not the only place a title lives: the runner and
+        # the state machine carry it on the application record, and for an
+        # application created straight from a URL that record is the only
+        # copy. Measured: the stage46/47/50 runner paths have no row in
+        # `vacancies` at all and would otherwise be refused here.
+        app_row = get_hh_application(vacancy_stable_id) or get_hh_application_by_vacancy(
+            vacancy_stable_id
+        )
+        if app_row:
+            expected_title = (app_row.get("title") or "").strip() or None
+    if not expected_title:
+        # `vacancies` is not the only place a title lives: the runner and
+        # the state machine carry it on the application record, and for an
+        # application created straight from a URL that record is the only
+        # copy. Measured: the stage46/47/50 runner paths have no row in
+        # `vacancies` at all and would otherwise be refused here.
+        app_row = get_hh_application(vacancy_stable_id) or get_hh_application_by_vacancy(
+            vacancy_stable_id
+        )
+        if app_row:
+            expected_title = (app_row.get("title") or "").strip() or None
+    if not expected_title:
+        logger.error(
+            "refusing to submit %s: no vacancy title in the DB, so the "
+            "wrong-page check cannot run",
             vacancy_stable_id,
+        )
+        return SubmissionExecutionResult(
+            ok=False,
+            status="BLOCKED",
+            reason=(
+                f"No vacancy row/title for {vacancy_stable_id} - refusing "
+                "to submit to a page we cannot identify"
+            ),
+            vacancy_stable_id=vacancy_stable_id,
+            submit_count=0,
+            submission_id=sub_id,
         )
     live_result = check_live_page(
         evaluate_fn,

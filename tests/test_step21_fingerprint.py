@@ -12,12 +12,13 @@ from ai_assistant.application_review import (
 )
 from ai_assistant.application_tracking import ApplicationStatus, set_application_status
 from ai_assistant.candidate_profile import CandidateProfile
-from ai_assistant.db import init_db, save_application_package
+from ai_assistant.db import init_db, save_application_package, save_vacancy
 from ai_assistant.hh_submission import (
     GateName,
     HHSubmissionGates,
     clear_submitted_reviews,
 )
+from ai_assistant.schema import Vacancy
 
 
 @pytest.fixture(autouse=True)
@@ -209,6 +210,23 @@ def test_gate3_tampering_package_answers_after_approval_breaks_gate(monkeypatch)
     monkeypatch.setenv("SUBMIT_ALLOWED", "true")
     sid = "hh:55555"
     url = "https://hh.ru/vacancy/55555"
+
+    # A package without a vacancy row is not a state that exists in
+    # production: the vacancy is saved long before anything is prepared for
+    # it. Since finding #15 the submit path refuses to touch a page it
+    # cannot identify, so the fixture must supply the title the live-page
+    # check compares against - hence 'HH Vacancy', matching the mock below.
+    save_vacancy(
+        Vacancy(
+            source="hh",
+            source_job_id="55555",
+            title="HH Vacancy",
+            company="TestCo",
+            description="Test vacancy for the fingerprint gate",
+            job_url=url,
+            location="Remote",
+        )
+    )
     set_application_status(sid, ApplicationStatus.READY_TO_APPLY)
 
     # 1. Prepare initial package and approve

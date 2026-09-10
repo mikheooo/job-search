@@ -1131,3 +1131,74 @@ def test_production_passes_expected_title_to_the_live_page_check():
         "check_live_page() without expected_title skips the wrong-vacancy "
         f"check entirely: {offenders}"
     )
+
+
+def test_submit_refuses_when_the_vacancy_is_unknown(monkeypatch):
+    """No row -> no expected title -> check_live_page() skips its title step ->
+    whatever page happens to be open passes every check. Refuse instead.
+
+    Reachable in production, not theoretical: browser_executor's submit path
+    reads the row as `vac = _row_to_vacancy(row) if row else None` and then
+    skips the hard-constraint gate entirely (`if vac:`), so a vacancy missing
+    from the DB also skips remote_required today.
+    """
+    from ai_assistant import hh_live_page_checks
+    from ai_assistant.hh_submission import execute_hh_submission
+
+    seen = {}
+    monkeypatch.setattr(db, "get_vacancy_by_id", lambda vid: None)
+    monkeypatch.setattr(
+        hh_live_page_checks,
+        "check_live_page",
+        lambda *a, **kw: seen.setdefault("called", True),
+    )
+
+    res = execute_hh_submission(
+        "hh:999000111",
+        evaluate_fn=lambda js: "{}",
+        dry_run=True,
+    )
+    assert res.status == "BLOCKED", res.reason
+    assert res.submit_count == 0
+    assert "999000111" in res.reason
+    # The point: we never even looked at the page, because we would not have
+    # been able to tell whether it was the right one.
+    assert not seen, "must refuse before inspecting a page it cannot identify"
+
+
+def test_submit_still_inspects_the_page_when_the_vacancy_is_known(monkeypatch):
+    """Counter-check: the refusal must not become a new way to block
+    everything. A known vacancy still gets its title through to the check."""
+
+    from ai_assistant import hh_live_page_checks
+    from ai_assistant.hh_submission import execute_hh_submission
+
+    seen = {}
+    monkeypatch.setattr(db, "get_vacancy_by_id", lambda vid: ("row",))
+    monkeypatch.setattr(
+        db, "_row_to_vacancy", lambda row: SimpleNamespace(title="Python Developer")
+    )
+
+    def fake_check(evaluate_fn, expected_vacancy_id=None, expected_title=None, **kw):
+        seen["title"] = expected_title
+        seen["vid"] = expected_vacancy_id
+        return SimpleNamespace(
+            is_ok=False,
+            already_applied=False,
+            error_reason="STUB",
+            reason="stub stop",
+            current_url="",
+            title_matched=False,
+        )
+
+    monkeypatch.setattr(hh_live_page_checks, "check_live_page", fake_check)
+
+    res = execute_hh_submission(
+        "hh:999000222",
+        evaluate_fn=lambda js: "{}",
+        dry_run=True,
+    )
+    assert seen.get("title") == "Python Developer", seen
+    assert seen.get("vid") == "hh:999000222", seen
+    # Blocked by the stub, not by the "cannot identify" refusal.
+    assert res.reason == "stub stop", res.reason
