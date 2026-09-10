@@ -10,6 +10,7 @@ survived review the first time.
 """
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 from typing import ClassVar
 
@@ -1415,3 +1416,138 @@ def test_gates_still_block_when_the_kill_switch_is_engaged(monkeypatch):
     assert res.passed is False
     assert res.failed_gate == GateName.GATE_SUBMIT_ALLOWED
     assert "kill switch" in res.reason.lower()
+
+# ---------------------------------------------------------------------------
+# Finding #19 - the auto-apply click path ignored both kill switches
+# ---------------------------------------------------------------------------
+# Three entry points physically click the real hh.ru submit button:
+# submit_application(), hh_controlled_submit.controlled_real_submit() and the
+# auto-apply runner. All three delegate their gatekeeping to preflight_submission
+# - and none of them checked the emergency stop.
+#
+# Why it was invisible: that path delegates further to check_readonly_gates(),
+# which is gates 2-10. Gate 1 (the kill switch and SUBMIT_ALLOWED) lives in
+# check_all_gates(), and this path never calls it. So both switches guarded
+# execute_hh_submission() and nothing else.
+#
+# Measured before the fix, with SUBMIT_ALLOWED=false AND
+# system_settings.submit_paused=1 - exactly what the Telegram "stop" command
+# writes:
+#
+#     verdict      : SUBMITTED
+#     submit_count : 1
+#     click_count  : 1
+#     dom.clicks   : 1
+#
+# Found while sweeping HHSubmissionGates.check_all_gates after finding #18.
+
+def _set_submit_allowed(value: bool) -> None:
+    """Flip SUBMIT_ALLOWED for the duration of a single test.
+
+    monkeypatch.setenv is not enough here: `config.submit_allowed()` gives
+    precedence to the value snapshot at import time (_OPERATOR_SUBMIT_ALLOWED),
+    so an explicit "false" from the surrounding shell outranks anything a test
+    sets later. Measured: with SUBMIT_ALLOWED=false exported,
+    `monkeypatch.setenv("SUBMIT_ALLOWED", "true")` still evaluates to False.
+    Patch every source the function consults, and the frozen module constant
+    it falls back to.
+    """
+    from ai_assistant import config
+
+    text = "true" if value else "false"
+    os.environ["SUBMIT_ALLOWED"] = text
+    config._OPERATOR_SUBMIT_ALLOWED = text
+    config.SUBMIT_ALLOWED = value
+
+
+def _fresh_apply_session():
+    """Auto-apply is one-shot per vacancy for the whole process.
+
+    Without this the later tests in this block return BLOCKED_DUPLICATE before
+    they ever reach the kill switch, and pass for the wrong reason.
+    """
+    from ai_assistant.auto_apply_modes import clear_session_state
+    from ai_assistant.hh_human_submission import clear_all_submission_state
+
+    clear_session_state()
+    clear_all_submission_state()
+
+
+def test_auto_apply_does_not_click_while_submission_is_paused():
+    """The paused flag is what the Telegram stop command sets."""
+    _fresh_apply_session()
+    from ai_assistant.auto_apply_modes import ApplyMode, run_auto_apply
+    from tests.test_stage21_auto_apply import FakeHH, _pkg, _simple_form
+
+    _set_submit_allowed(True)
+    db.set_submit_paused(True)
+    try:
+        dom = FakeHH(markers=["Вы откликнулись"])
+        rep = run_auto_apply(
+            _pkg(), dom.evaluate, {}, form=_simple_form(), mode=ApplyMode.REVIEW
+        )
+    finally:
+        db.set_submit_paused(False)
+
+    assert rep.submit_count == 0, rep.stop_reason
+    assert rep.click_count == 0, rep.stop_reason
+    assert dom.clicks == 0
+    assert "kill switch" in (rep.stop_reason or "").lower()
+
+
+def test_auto_apply_does_not_click_when_submit_allowed_is_off():
+    """Counterpart: the second switch, on its own, must block too."""
+    _fresh_apply_session()
+    from ai_assistant.auto_apply_modes import ApplyMode, run_auto_apply
+    from tests.test_stage21_auto_apply import FakeHH, _pkg, _simple_form
+
+    db.set_submit_paused(False)
+    _set_submit_allowed(False)
+    try:
+        dom = FakeHH(markers=["Вы откликнулись"])
+        rep = run_auto_apply(
+            _pkg(), dom.evaluate, {}, form=_simple_form(), mode=ApplyMode.REVIEW
+        )
+    finally:
+        _set_submit_allowed(True)
+
+    assert rep.submit_count == 0, rep.stop_reason
+    assert dom.clicks == 0
+    assert "SUBMIT_ALLOWED" in (rep.stop_reason or "")
+
+
+def test_auto_apply_fails_closed_when_the_kill_switch_cannot_be_read(monkeypatch):
+    """Finding #18, applied to the same call on this path."""
+    _fresh_apply_session()
+    from ai_assistant.auto_apply_modes import ApplyMode, run_auto_apply
+    from tests.test_stage21_auto_apply import FakeHH, _pkg, _simple_form
+
+    _set_submit_allowed(True)
+
+    def boom():
+        raise _Boom("database is locked")
+
+    monkeypatch.setattr(db, "is_submit_paused", boom)
+    dom = FakeHH(markers=["Вы откликнулись"])
+    rep = run_auto_apply(
+        _pkg(), dom.evaluate, {}, form=_simple_form(), mode=ApplyMode.REVIEW
+    )
+    assert rep.submit_count == 0, rep.stop_reason
+    assert dom.clicks == 0
+    assert "kill switch" in (rep.stop_reason or "").lower()
+
+
+def test_auto_apply_still_clicks_when_both_switches_allow_it():
+    """Counter-check: the new gate must not block a legitimately armed submit."""
+    _fresh_apply_session()
+    from ai_assistant.auto_apply_modes import ApplyMode, run_auto_apply
+    from tests.test_stage21_auto_apply import FakeHH, _pkg, _simple_form
+
+    _set_submit_allowed(True)
+    db.set_submit_paused(False)
+    dom = FakeHH(markers=["Вы откликнулись"])
+    rep = run_auto_apply(
+        _pkg(), dom.evaluate, {}, form=_simple_form(), mode=ApplyMode.REVIEW
+    )
+    assert rep.verdict == "SUBMITTED", rep.stop_reason
+    assert dom.clicks == 1

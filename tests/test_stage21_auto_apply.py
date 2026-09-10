@@ -233,7 +233,12 @@ def _qa(qid, answer, qtype, review=False):
 
 
 @pytest.fixture(autouse=True)
-def _clean():
+def _clean(monkeypatch):
+    # BLE001 finding #19: the submit path now honours SUBMIT_ALLOWED and the
+    # DB kill switch. These tests assert that a real click happened, so they
+    # have to switch submission on explicitly - the library default is off,
+    # and that default is what finding #19 was about.
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
     clear_session_state()
     from ai_assistant.hh_human_submission import clear_all_submission_state
     clear_all_submission_state()

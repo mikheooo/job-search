@@ -65,6 +65,15 @@ from ai_assistant import cli
 # Test Helpers & Fixtures
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _submits_enabled(monkeypatch):
+    # BLE001 finding #19: the submit path now honours SUBMIT_ALLOWED and the
+    # DB kill switch. These tests assert that a real click happened, so they
+    # have to switch submission on explicitly - the library default is off,
+    # and that default is what finding #19 was about.
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
+
+
 class MockAdapter:
     def __init__(self, vacancies: list[dict]):
         self._vacancies = vacancies

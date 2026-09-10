@@ -169,6 +169,49 @@ def preflight_submission(
         review_id=review_id, fingerprint=fingerprint,
         generated_at=datetime.utcnow().isoformat())
 
+    # Gate 0 - the kill switch and SUBMIT_ALLOWED.
+    #
+    # BLE001 finding #19: every path that physically clicks the real HH submit
+    # button delegates its gatekeeping to this function - submit_application(),
+    # hh_controlled_submit.controlled_real_submit() and the auto-apply runner -
+    # and none of them checked the emergency stop. Measured: with
+    # SUBMIT_ALLOWED=false AND system_settings.submit_paused=1 (exactly what
+    # the Telegram "stop" command writes), run_auto_apply still clicked:
+    # verdict=SUBMITTED, submit_count=1, dom.clicks=1.
+    #
+    # Why it was invisible: this path delegates further to
+    # check_readonly_gates(), which is gates 2-10 only. Gate 1 lives in
+    # check_all_gates(), which this path never calls. So both kill switches
+    # guarded execute_hh_submission() and nothing else.
+    #
+    # Finding #18: a kill-switch read that raises must not be read as "off".
+    submit_allowed = bool(config.submit_allowed())
+    try:
+        from . import db
+
+        is_paused = db.is_submit_paused()
+    except Exception as e:  # noqa: BLE001
+        logger.error(
+            "cannot read the submission kill switch during preflight - "
+            "failing closed: %s",
+            e,
+        )
+        report.status = SubmissionStatus.FAIL_CLOSED
+        report.reason = (
+            f"Cannot read the submission kill switch - refusing to submit: "
+            f"{type(e).__name__}: {e}"
+        )
+        return report
+
+    if is_paused:
+        report.status = SubmissionStatus.BLOCKED
+        report.reason = "Submission paused by kill switch (system_settings.submit_paused=1)"
+        return report
+    if not submit_allowed:
+        report.status = SubmissionStatus.BLOCKED
+        report.reason = "Submission is disabled by SUBMIT_ALLOWED configuration"
+        return report
+
     # Gate 1-2: review + fingerprint via store.
     entry = review_store.get(review_id) if hasattr(review_store, "get") else None
     if entry is None:

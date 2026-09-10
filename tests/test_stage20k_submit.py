@@ -153,7 +153,12 @@ def _approved_setup():
 
 
 @pytest.fixture(autouse=True)
-def _clear():
+def _clear(monkeypatch):
+    # BLE001 finding #19: the submit path now honours SUBMIT_ALLOWED and the
+    # DB kill switch. These tests assert that a real click happened, so they
+    # have to switch submission on explicitly - the library default is off,
+    # and that default is what finding #19 was about.
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
     from ai_assistant.hh_human_submission import clear_all_submission_state
     clear_all_submission_state()
     yield
@@ -329,6 +334,11 @@ def test_no_db_writes(monkeypatch):
     def forbidden(*a, **k):
         raise AssertionError("DB access during submission")
 
+    # BLE001 finding #19: the submit path now reads the DB kill switch before
+    # clicking. That is the one DB read it is allowed to make - stub it, so
+    # this test keeps proving what it is actually about: nothing else in the
+    # submit path opens a connection.
+    monkeypatch.setattr(db, "is_submit_paused", lambda: False)
     monkeypatch.setattr(db, "get_connection", forbidden)
     gate, plan, orch, pkg, store, rid = _approved_setup()
     dom = FakeCDP(body_markers=["Вы откликнулись"])
