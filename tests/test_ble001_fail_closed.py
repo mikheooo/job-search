@@ -377,65 +377,6 @@ def test_non_hh_source_not_blocked_by_kill_switch_when_enabled(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Finding #8 - the kill-switch must be turnable OFF from the environment
-# ---------------------------------------------------------------------------
-# config.py did `load_dotenv(..., override=True)` at import, which overwrites a
-# real environment variable with the .env value. The gate then read
-# `env OR config.SUBMIT_ALLOWED`, and config had already frozen .env's value -
-# so `SUBMIT_ALLOWED=false` in the shell could never disarm an armed .env.
-# config.submit_allowed() re-reads at call time and lets an explicit "off" win.
-
-def test_submit_allowed_off_from_env_disables(monkeypatch):
-    from ai_assistant import config
-
-    monkeypatch.setenv("SUBMIT_ALLOWED", "false")
-    assert config.submit_allowed() is False
-
-
-def test_submit_allowed_on_from_env_enables(monkeypatch):
-    from ai_assistant import config
-
-    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
-    assert config.submit_allowed() is True
-
-
-def test_submit_allowed_off_wins_over_stale_dotenv_value(monkeypatch):
-    """An operator's 'false' must not be re-armed by a stale .env 'true'."""
-    from ai_assistant import config
-
-    monkeypatch.setenv("SUBMIT_ALLOWED", "false")
-    monkeypatch.setattr(config, "SUBMIT_ALLOWED", True, raising=False)
-    assert config.submit_allowed() is False
-
-
-# ---------------------------------------------------------------------------
-# Finding #9 - non-HH sources bypassed every gate, including the kill-switch
-# ---------------------------------------------------------------------------
-# submit_application_in_browser routes only "hh:*" ids through
-# execute_hh_submission (the 11 gates). Every other source - habr_career,
-# himalayas, remoteok, weworkremotely - fell through to the legacy branch and
-# called adapter.submit_application() directly. The kill-switch is now checked
-# for all sources, before anything touches the browser.
-
-def test_non_hh_source_is_blocked_by_kill_switch(monkeypatch):
-    monkeypatch.setenv("SUBMIT_ALLOWED", "false")
-    res = be.submit_application_in_browser(
-        "remoteok:123", confirm_submit=True, dry_run=False
-    )
-    assert res.status == "BLOCKED"
-    assert "SUBMIT_ALLOWED" in (res.error or "")
-
-
-def test_non_hh_source_not_blocked_by_kill_switch_when_enabled(monkeypatch):
-    """Counter-check: with the switch on we must NOT trip this specific gate."""
-    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
-    res = be.submit_application_in_browser(
-        "remoteok:123", confirm_submit=True, dry_run=False
-    )
-    assert "SUBMIT_ALLOWED" not in (res.error or "")
-
-
-# ---------------------------------------------------------------------------
 # Finding #10 - extraction silently degraded to a fingerprintable headless
 # ---------------------------------------------------------------------------
 # PlaywrightBrowserAdapter.open() tried connect_over_cdp(), and on ANY failure
@@ -1316,5 +1257,161 @@ def test_submit_application_proceeds_past_the_row_check():
 
 
 # ---------------------------------------------------------------------------
-# Finding #16 - the hard-constraint gate was skipped for an unknown vacancy
+# Finding #18 - an unreadable kill-switch answered "not paused"
 # ---------------------------------------------------------------------------
+# Gate 1 read the kill switch as
+#
+#     try:
+#         is_paused = db.is_submit_paused()
+#     except Exception:
+#         pass
+#
+# so a lookup that raised left is_paused False: an emergency stop that could
+# not be read counted as "not engaged". Worse, the audit record still said
+# "SUBMIT_ALLOWED enabled", which is indistinguishable from a real pass -
+# nobody reading the log can tell the latch was never checked. Measured: with
+# is_submit_paused() raising, check_all_gates returned passed=True, "All 11
+# gates passed successfully".
+#
+# The same module treats this exact call as fatal 400 lines below: the
+# pre-click check `if db.is_submit_paused():` has no guard at all, so there a
+# read failure aborts the submission. Same call, opposite policy.
+
+def _gate18_inputs(vid: str = "999000555"):
+    """A vacancy that clears every gate except gate 1."""
+    from ai_assistant.application_review import (
+        ApplicationReview,
+        ReviewStatus,
+        save_application_review,
+    )
+    from ai_assistant.application_tracking import (
+        ApplicationStatus,
+        set_application_status,
+    )
+    from ai_assistant.candidate_profile import CandidateProfile
+    from ai_assistant.hh_submission import clear_submitted_reviews
+
+    clear_submitted_reviews()
+    db.init_db()
+    sid = f"hh:{vid}"
+    save_application_review(
+        ApplicationReview(
+            vacancy_stable_id=sid,
+            status=ReviewStatus.APPROVED,
+            form_fingerprint=f"fp_{vid}",
+            review_id=f"rev_{vid}",
+        )
+    )
+    set_application_status(sid, ApplicationStatus.READY_TO_APPLY)
+    snapshot = {
+        "fingerprint": f"fp_{vid}",
+        "cover_letter": "A perfectly good cover letter for this vacancy",
+    }
+    profile = CandidateProfile(
+        desired_roles=["Python Developer"],
+        alternative_roles=[],
+        skills=["Python"],
+        preferred_seniority=[],
+        remote_required=False,
+        allowed_locations=["Remote"],
+        allowed_timezones=[],
+        languages=["Russian"],
+        employment_types=["Full-time"],
+        minimum_salary=3000,
+        salary_currency="USD",
+        excluded_roles=[],
+        excluded_companies=[],
+        excluded_countries=[],
+        excluded_industries=[],
+    )
+    return sid, f"https://hh.ru/vacancy/{vid}", snapshot, profile
+
+
+def test_gates_refuse_when_the_kill_switch_cannot_be_read(monkeypatch):
+    """A kill switch we cannot read is not a kill switch we have checked."""
+    from ai_assistant.hh_submission import GateName, HHSubmissionGates
+
+    sid, url, snapshot, profile = _gate18_inputs()
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
+
+    def boom():
+        raise _Boom("no such table: system_settings")
+
+    monkeypatch.setattr(db, "is_submit_paused", boom)
+
+    res = HHSubmissionGates.check_all_gates(
+        sid,
+        url,
+        snapshot,
+        human_confirmed=True,
+        dry_run=False,
+        candidate_profile=profile,
+    )
+    assert res.passed is False, res.reason
+    assert res.failed_gate == GateName.GATE_SUBMIT_ALLOWED
+    assert "kill switch" in res.reason.lower()
+
+
+def test_gates_do_not_report_an_unread_kill_switch_as_enabled(monkeypatch):
+    """The audit trail used to say 'SUBMIT_ALLOWED enabled' either way."""
+    from ai_assistant.hh_submission import GateName, HHSubmissionGates
+
+    sid, url, snapshot, profile = _gate18_inputs("999000556")
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
+
+    def boom():
+        raise _Boom("database is locked")
+
+    monkeypatch.setattr(db, "is_submit_paused", boom)
+
+    res = HHSubmissionGates.check_all_gates(
+        sid,
+        url,
+        snapshot,
+        human_confirmed=True,
+        dry_run=False,
+        candidate_profile=profile,
+    )
+    record = res.gate_results[GateName.GATE_SUBMIT_ALLOWED.value]
+    assert record["passed"] is False
+    assert "SUBMIT_ALLOWED enabled" not in record["reason"]
+
+
+def test_gates_still_pass_when_the_kill_switch_reads_clean(monkeypatch):
+    """Counter-check: gate 1 must not simply always fail."""
+    from ai_assistant.hh_submission import HHSubmissionGates
+
+    sid, url, snapshot, profile = _gate18_inputs("999000557")
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
+    monkeypatch.setattr(db, "is_submit_paused", lambda: False)
+
+    res = HHSubmissionGates.check_all_gates(
+        sid,
+        url,
+        snapshot,
+        human_confirmed=True,
+        dry_run=False,
+        candidate_profile=profile,
+    )
+    assert res.passed is True, res.reason
+
+
+def test_gates_still_block_when_the_kill_switch_is_engaged(monkeypatch):
+    """Counter-check: a genuinely engaged kill switch still blocks, same gate."""
+    from ai_assistant.hh_submission import GateName, HHSubmissionGates
+
+    sid, url, snapshot, profile = _gate18_inputs("999000558")
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
+    monkeypatch.setattr(db, "is_submit_paused", lambda: True)
+
+    res = HHSubmissionGates.check_all_gates(
+        sid,
+        url,
+        snapshot,
+        human_confirmed=True,
+        dry_run=False,
+        candidate_profile=profile,
+    )
+    assert res.passed is False
+    assert res.failed_gate == GateName.GATE_SUBMIT_ALLOWED
+    assert "kill switch" in res.reason.lower()

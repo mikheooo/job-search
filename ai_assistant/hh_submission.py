@@ -727,14 +727,40 @@ class HHSubmissionGates:
         # environment could never turn submission off. config.submit_allowed()
         # re-reads at call time and lets an explicit "off" win.
         submit_allowed = bool(config.submit_allowed())
+        # BLE001 finding #18: this used to be `except Exception: pass`, which
+        # left is_paused False when the kill-switch lookup raised. So an
+        # emergency stop that could not be read was treated as "not paused",
+        # and the audit record below still said "SUBMIT_ALLOWED enabled" -
+        # indistinguishable from a real pass. Measured: with is_submit_paused()
+        # raising, check_all_gates returned passed=True, "All 11 gates passed
+        # successfully".
+        #
+        # The same module already treats this exact call as fatal 400 lines
+        # below: the pre-click check at `if db.is_submit_paused():` has no
+        # guard at all, so there a read failure aborts the submission. Same
+        # call, opposite policy, one screen apart. A latch whose failure mode
+        # is "submit anyway" is not a latch - fail closed, and say why.
         is_paused = False
+        kill_switch_error = None
         try:
             from . import db
-            is_paused = db.is_submit_paused()
-        except Exception:
-            pass
 
-        if is_paused:
+            is_paused = db.is_submit_paused()
+        except Exception as e:  # noqa: BLE001
+            kill_switch_error = f"{type(e).__name__}: {e}"
+            logger.error(
+                "cannot read the submission kill switch for %s - failing closed: %s",
+                vacancy_stable_id,
+                kill_switch_error,
+            )
+
+        if kill_switch_error:
+            g1_pass = False
+            g1_reason = (
+                "Cannot read the submission kill switch - refusing to submit: "
+                f"{kill_switch_error}"
+            )
+        elif is_paused:
             g1_pass = False
             g1_reason = "Submission paused by kill switch (system_settings.submit_paused=1)"
         else:
@@ -858,7 +884,7 @@ class HHSubmissionGates:
 
         # Sequential fail-closed evaluation preserving priority order
         if not g1_pass:
-            return GateCheckResult(passed=False, failed_gate=GateName.GATE_SUBMIT_ALLOWED, reason="Submission is disabled by SUBMIT_ALLOWED configuration", details={"SUBMIT_ALLOWED": submit_allowed, "dry_run": dry_run}, gate_results=gate_results)
+            return GateCheckResult(passed=False, failed_gate=GateName.GATE_SUBMIT_ALLOWED, reason=g1_reason, details={"SUBMIT_ALLOWED": submit_allowed, "dry_run": dry_run, "kill_switch_error": kill_switch_error}, gate_results=gate_results)
         if rev_err:
             return GateCheckResult(passed=False, failed_gate=rev_err.failed_gate, reason=rev_err.reason, details=rev_err.details, gate_results=gate_results)
         if fp_err:
@@ -985,17 +1011,6 @@ def execute_hh_submission(
     expected_title = None
     if vacancy_row:
         expected_title = db._row_to_vacancy(vacancy_row).title or None
-    if not expected_title:
-        # `vacancies` is not the only place a title lives: the runner and
-        # the state machine carry it on the application record, and for an
-        # application created straight from a URL that record is the only
-        # copy. Measured: the stage46/47/50 runner paths have no row in
-        # `vacancies` at all and would otherwise be refused here.
-        app_row = get_hh_application(vacancy_stable_id) or get_hh_application_by_vacancy(
-            vacancy_stable_id
-        )
-        if app_row:
-            expected_title = (app_row.get("title") or "").strip() or None
     if not expected_title:
         # `vacancies` is not the only place a title lives: the runner and
         # the state machine carry it on the application record, and for an
