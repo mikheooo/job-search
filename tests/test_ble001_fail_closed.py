@@ -1046,3 +1046,88 @@ def test_cdp_adapter_is_built_from_the_resolver():
     for name in ("hh_application_runner.py", "hh_message_watcher.py", "hh_post_submit_verifier.py"):
         text = (pkg / name).read_text(encoding="utf-8")
         assert "_default_hh_cdp_url()" in text, f"{name} still uses a frozen endpoint"
+
+
+# ---------------------------------------------------------------------------
+# Finding #15 - the "is this the right vacancy?" check was never wired up
+# ---------------------------------------------------------------------------
+
+def test_live_page_blocks_a_different_vacancy():
+    """Real evidence, not a synthetic case: vacancies.json advertises
+    /vacancy/135489102 as "Инженер по автоматизации процессов (AI Agents /
+    n8n / Python)", and hh.ru actually serves "Продавец (Чебоксары)".
+
+    The numeric id cannot catch this - it is read from the URL we just opened,
+    so it matches by construction. Only the title can.
+    """
+    import json
+
+    from ai_assistant.hh_live_page_checks import check_live_page
+
+    payload = {
+        "ok": True,
+        "url": "https://hh.ru/vacancy/135489102",
+        "title": "Продавец (Чебоксары, Гагарина Ю., 17)",
+        "has_submit_btn": True,
+        "has_apply_btn": True,
+    }
+    res = check_live_page(
+        lambda js: json.dumps(payload),
+        expected_vacancy_id="hh:135489102",
+        expected_title="Инженер по автоматизации процессов (AI Agents / n8n / Python)",
+    )
+    assert res.is_ok is False, "a live page for a different job must not be submittable"
+    assert res.error_reason == "WRONG_PAGE", res.reason
+
+
+def test_live_page_accepts_the_matching_vacancy():
+    """Counter-check: the same check must not become a new way to block
+    everything - a page that really is the vacancy still passes."""
+    import json
+
+    from ai_assistant.hh_live_page_checks import check_live_page
+
+    payload = {
+        "ok": True,
+        "url": "https://hh.ru/vacancy/128659037",
+        "title": "QA Automation Engineer (Java)",
+        "has_submit_btn": True,
+        "has_apply_btn": True,
+    }
+    res = check_live_page(
+        lambda js: json.dumps(payload),
+        expected_vacancy_id="hh:128659037",
+        expected_title="QA Automation Engineer (Java)",
+    )
+    assert res.is_ok is True, f"the right page must stay submittable: {res.reason}"
+    assert res.title_matched is True
+
+
+def test_production_passes_expected_title_to_the_live_page_check():
+    """check_live_page() silently skips the title step when expected_title is
+    None (`else: res.title_matched = True`), and the only production call site
+    never passed it - so the wrong-vacancy check existed, was tested, and still
+    protected nothing.
+
+    AST, not substring: a substring version would be satisfied by the tests
+    above, which is exactly how this stayed invisible.
+    """
+    import ast
+    import pathlib
+
+    pkg = pathlib.Path(__file__).resolve().parents[1] / "ai_assistant"
+    offenders = []
+    for path in sorted(pkg.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if name != "check_live_page":
+                continue
+            if not any(k.arg == "expected_title" for k in node.keywords):
+                offenders.append(path.name)
+    assert not offenders, (
+        "check_live_page() without expected_title skips the wrong-vacancy "
+        f"check entirely: {offenders}"
+    )

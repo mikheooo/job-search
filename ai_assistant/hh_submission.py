@@ -965,8 +965,29 @@ def execute_hh_submission(
             submission_id=sub_id,
         )
 
-    # 1. Live page inspection
-    live_result = check_live_page(evaluate_fn, expected_vacancy_id=vacancy_stable_id)
+    # 1. Live page inspection. The expected title is not decoration: when it is
+    # None, check_live_page() skips the title-similarity step entirely, and then
+    # a URL that points at a *different but live* vacancy passes every check -
+    # the numeric id it compares is read from the URL we just opened, so it
+    # matches by construction. Verified on a live page: three URLs in
+    # vacancies.json resolve to unrelated jobs (an AI role advertised at
+    # /vacancy/135489102 is actually "Продавец (Чебоксары)"). Those three are
+    # archived today, so the archive check happens to catch them; a live one
+    # would not be caught by anything. See docs/ble001_triage.md, finding #15.
+    expected_title = None
+    vacancy_row = db.get_vacancy_by_id(vacancy_stable_id)
+    if vacancy_row:
+        expected_title = db._row_to_vacancy(vacancy_row).title or None
+    if not expected_title:
+        logger.warning(
+            "no expected title for %s - submitting without the wrong-page check",
+            vacancy_stable_id,
+        )
+    live_result = check_live_page(
+        evaluate_fn,
+        expected_vacancy_id=vacancy_stable_id,
+        expected_title=expected_title,
+    )
     if not live_result.is_ok:
         if live_result.already_applied or live_result.error_reason == "ALREADY_APPLIED":
             # Synchronize state: already applied on HH

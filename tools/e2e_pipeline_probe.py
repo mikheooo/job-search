@@ -55,20 +55,30 @@ def check(label: str, ok: bool, detail: str = "") -> bool:
 
 
 def candidate_vacancies(limit: int = 6) -> list[tuple[str, str]]:
-    """Real hh.ru vacancy URLs from the local DB. Read-only."""
+    """Real hh.ru vacancy URLs from the local DB, not answered yet. Read-only.
+
+    Skipping answered vacancies is not cosmetic: hh.ru replaces the
+    "Откликнуться" button with a "Чат" button once you have responded, so a
+    probe that picks an already-answered vacancy concludes the apply selector
+    is broken. It did - see docs/ble001_triage.md, "apply_link".
+    """
     db = os.path.join(ROOT, "state.db")
     if not os.path.exists(db):
         return []
     con = sqlite3.connect(db)
     try:
+        answered = {r[0] for r in con.execute(
+            "select vacancy_stable_id from application_submissions")}
+        answered |= {r[0] for r in con.execute(
+            "select vacancy_stable_id from hh_applications")}
         rows = con.execute(
             "select stable_id, job_url from vacancies "
             "where job_url like '%hh.ru/vacancy%' order by last_seen_at desc limit ?",
-            (limit,),
+            (limit * 4,),
         ).fetchall()
     finally:
         con.close()
-    return [(r[0], r[1]) for r in rows]
+    return [(r[0], r[1]) for r in rows if r[0] not in answered][:limit]
 
 
 def looks_logged_in(body: str) -> bool:

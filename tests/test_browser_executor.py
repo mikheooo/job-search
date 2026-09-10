@@ -743,7 +743,14 @@ def test_stage30t_remote_vacancy_passes_gate():
         save_queue_item(QueueItem(vacancy_stable_id=vac.stable_id(), canonical_id=vac.stable_id(), representative_vacancy_stable_id=vac.stable_id(), priority_score=95, rank=1))
         db.save_application_package(vac.stable_id(), "v1", json.dumps(pkg_data))
 
-        mock = be.MockBrowserAdapter(simulate={"fields": ["name", "email", "resume", "cover_letter"], "apply_button": True})
+        # page_title must be the vacancy's own title: the live-page check
+        # compares it against the DB row, and a mock claiming to be some
+        # unrelated page is exactly the wrong-vacancy case it exists to block.
+        mock = be.MockBrowserAdapter(simulate={
+            "fields": ["name", "email", "resume", "cover_letter"],
+            "apply_button": True,
+            "page_title": "AI Builder",
+        })
         prep_res = be.prepare_application_in_browser(vac.stable_id(), adapter=mock, force=True)
         assert prep_res.status == be.BrowserStatus.READY_FOR_REVIEW
 
