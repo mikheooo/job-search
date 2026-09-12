@@ -2021,3 +2021,221 @@ def test_leak_guard_step_2_sees_the_value_restored():
         "SUBMIT_ALLOWED leaked out of a test in this file; the autouse "
         "_restore_submit_allowed fixture is not doing its job"
     )
+
+# ---------------------------------------------------------------------------
+# Finding #22 - the CDP adapter reported success without a click, and the
+# legacy branch recorded SUBMITTED on that word alone
+# ---------------------------------------------------------------------------
+# Two layers, each of which looks reasonable alone:
+#
+#   layer 1  CDPBrowserAdapter.submit_application() sent the click script,
+#            read the answer into `res`, and then returned
+#            {"success": True, "details": res} - unconditionally. The JS
+#            answers {clicked: false, error: "button not found"} on a page
+#            with no apply button. Nobody read it.
+#
+#   layer 2  submit_application_in_browser() legacy branch checked only
+#            submit_result["success"], then wrote a submissions row with
+#            status='SUBMITTED', moved tracking to SUBMITTED, and returned
+#            status=SUBMITTED. It had `details` in hand and ignored it.
+#
+# Measured before the fix, adapter returning the CDP answer for a missing
+# button:
+#
+#   SubmitResult.status              : SUBMITTED
+#   DB submissions row               : (..., '{"success": true, "details":
+#                                       {"clicked": false, "error": "button
+#                                       not found"}}', 'SUBMITTED', ...)
+#   tracking status                  : SUBMITTED
+#   is_already_applied (blocks retry): True
+#
+# Nothing was clicked, the system said it was, and the duplicate guard then
+# refused a real retry forever. The evidence that no click happened was stored
+# in the same row that claimed success.
+#
+# This is finding #2's shape again - two layers that degrade "gracefully" and
+# together turn an exception-shaped failure into permission - and finding #1's
+# asymmetry: the Playwright adapter reads its own result and only reports
+# success after finding a confirmation; CDP did not.
+
+class _ScriptedAdapter:
+    """Minimal adapter whose submit_application() returns a scripted answer."""
+
+    def __init__(self, submit_answer: dict):
+        self._submit_answer = submit_answer
+        self.submit_calls = 0
+        self._url = "https://remoteok.com/remote-jobs/999"
+
+    def open(self, url):
+        self._url = url
+        return {"url": url, "title": "Python Developer", "site": "remoteok"}
+
+    def inspect_page(self):
+        return {"form_detected": True, "fields": [], "apply_button": True}
+
+    def evaluate(self, js):
+        import json as _json
+
+        if "hh_live_page_inspect" in js:
+            return _json.dumps({
+                "ok": True, "url": self._url, "title": "Python Developer",
+                "is_404": False, "is_captcha": False, "login_required": False,
+                "body_text": "Apply now",
+            })
+        if "document.body" in js:
+            return _json.dumps({"text": "Apply now"})
+        return _json.dumps({"ok": True})
+
+    def get_current_url(self):
+        return self._url
+
+    def get_title(self):
+        return "Python Developer"
+
+    def screenshot(self, path):
+        return None
+
+    def close(self):
+        return None
+
+    def submit_application(self):
+        self.submit_calls += 1
+        return dict(self._submit_answer)
+
+
+# --- layer 1: the CDP adapter itself ----------------------------------------
+
+def _cdp_adapter_with_js_reply(reply: dict):
+    """A CDPBrowserAdapter whose websocket answers with `reply`."""
+    import json as _json
+    import sys as _sys
+    import types as _types
+
+    from ai_assistant.browser_executor import CDPBrowserAdapter
+
+    class _WS:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def send(self, payload):
+            return None
+
+        async def recv(self):
+            return _json.dumps({"result": {"result": {"value": reply}}})
+
+    mod = _types.ModuleType("websockets")
+    mod.connect = lambda *a, **k: _WS()
+    saved = _sys.modules.get("websockets")
+    _sys.modules["websockets"] = mod
+
+    adapter = CDPBrowserAdapter("http://127.0.0.1:9222")
+    adapter.ws_url = "ws://127.0.0.1:9222/devtools/page/1"
+    return adapter, saved
+
+
+def _restore_websockets(saved):
+    import sys as _sys
+
+    if saved is None:
+        _sys.modules.pop("websockets", None)
+    else:
+        _sys.modules["websockets"] = saved
+
+
+def test_cdp_adapter_does_not_report_success_when_the_button_was_missing():
+    """Measured before the fix: success=True while clicked=False."""
+    adapter, saved = _cdp_adapter_with_js_reply(
+        {"clicked": False, "error": "button not found"}
+    )
+    try:
+        res = adapter.submit_application()
+    finally:
+        _restore_websockets(saved)
+
+    assert res.get("success") is False, res
+    assert "button not found" in (res.get("error") or "")
+
+
+def test_cdp_adapter_still_reports_success_when_the_click_happened():
+    """Counter-check: the honest answer must survive."""
+    adapter, saved = _cdp_adapter_with_js_reply(
+        {"clicked": True, "text": "Откликнуться"}
+    )
+    try:
+        res = adapter.submit_application()
+    finally:
+        _restore_websockets(saved)
+
+    assert res.get("success") is True, res
+
+
+def test_cdp_adapter_refuses_success_on_an_unreadable_answer():
+    """A reply that is not a dict is not a click either."""
+    adapter, saved = _cdp_adapter_with_js_reply(None)
+    try:
+        res = adapter.submit_application()
+    finally:
+        _restore_websockets(saved)
+
+    assert res.get("success") is False, res
+
+
+# --- layer 2: the legacy branch ---------------------------------------------
+
+def test_legacy_branch_refuses_to_record_submitted_without_a_click():
+    """Measured before the fix: SUBMITTED recorded, retry blocked forever."""
+    _save_non_hh_vacancy("991")
+    _set_submit_allowed(True)
+    adapter = _ScriptedAdapter(
+        {"success": True, "details": {"clicked": False, "error": "button not found"}}
+    )
+
+    res = be.submit_application_in_browser(
+        "remoteok:991", confirm_submit=True, dry_run=False, adapter=adapter
+    )
+
+    assert res.status == "FAILED", res.status
+    assert "click" in (res.error or "").lower()
+    assert db.get_submission("remoteok:991") is None
+
+    from ai_assistant.submission_state import get_submission_evidence
+
+    evidence = get_submission_evidence("remoteok:991")
+    assert evidence.is_already_applied is False, evidence.blocked_reasons
+
+
+def test_legacy_branch_still_records_submitted_when_the_click_happened():
+    """Counter-check: an adapter that did click must still be believed."""
+    _save_non_hh_vacancy("992")
+    _set_submit_allowed(True)
+    adapter = _ScriptedAdapter(
+        {"success": True, "details": {"clicked": True, "text": "Apply"}}
+    )
+
+    res = be.submit_application_in_browser(
+        "remoteok:992", confirm_submit=True, dry_run=False, adapter=adapter
+    )
+
+    assert res.status == "SUBMITTED", (res.status, res.error)
+    assert db.get_submission("remoteok:992") is not None
+
+
+def test_legacy_branch_still_believes_an_adapter_without_click_details():
+    """Counter-check for the honest adapters that report no `details`.
+
+    PlaywrightBrowserAdapter returns {"success": True, "before_screenshot": ...,
+    "after_screenshot": ...} - no `details` key at all, because it verified the
+    confirmation text itself. The new guard must not touch that path.
+    """
+    _save_non_hh_vacancy("993")
+    _set_submit_allowed(True)
+    adapter = _ScriptedAdapter({"success": True, "message": "confirmed on page"})
+
+    res = be.submit_application_in_browser(
+        "remoteok:993", confirm_submit=True, dry_run=False, adapter=adapter
+    )
+
+    assert res.status == "SUBMITTED", (res.status, res.error)

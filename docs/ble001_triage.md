@@ -1199,6 +1199,136 @@ SUBMIT_ALLOWED configuration». Каждый из этих файлов **по �
 фикстурой валит оба: и гард, и `test_step25`.
 
 
+### 22. CDP-адаптер докладывал успех без клика, а ветка записывала SUBMITTED (критический) — **ИСПРАВЛЕНО 2026-09-12**
+
+Нашлось после №21, когда пошёл проверять не «есть ли проверка», а **кто зовёт
+защитные функции вообще**. AST-скан «функции с защитными именами без вызовов вне
+тестов» дал восемь кандидатов; эта дыра вылезла по дороге.
+
+**Слой 1 — адаптер.** `CDPBrowserAdapter.submit_application()`:
+
+```python
+await ws.send(... click_script ...)
+res = json.loads(raw).get("result", {}).get("result", {}).get("value", {})
+await asyncio.sleep(2)
+return {"success": True, "details": res}      # <- безусловно
+```
+
+JS честно отвечает, кликнул ли он: `{clicked: true, text: ...}` или
+`{clicked: false, error: "button not found"}`. Ответ читается в `res` и
+**выбрасывается**: успех возвращается независимо от него.
+
+Замер (поддельный websocket отдаёт ответ «кнопки нет»):
+
+```
+JS said        : {'clicked': False, 'error': 'button not found'}
+adapter returns: {'success': True, 'details': {'clicked': False, 'error': 'button not found'}}
+reported success: True
+actually clicked: False
+RESULT: *** SUCCESS REPORTED, NOTHING CLICKED ***
+```
+
+`PlaywrightBrowserAdapter.submit_application` устроен правильно: ищет
+подтверждение в тексте страницы и возвращает `success=False` с
+«No success confirmation found after submit». CDP — выпадающий, ровно как в №1.
+
+**Слой 2 — ветка.** `submit_application_in_browser`, legacy-ветка:
+
+```python
+if not submit_result.get("success"):
+    return FAILED
+# success -> пишем в БД, двигаем трекинг, отдаём SUBMITTED
+```
+
+Замер полного пути с адаптером, отдающим ответ CDP для отсутствующей кнопки:
+
+```
+SubmitResult.status              : SUBMITTED
+SubmitResult.error               : None
+DB submissions row               : (..., '{"success": true, "details":
+                                    {"clicked": false, "error": "button not
+                                    found"}}', 'SUBMITTED', ...)
+tracking status                  : SUBMITTED
+is_already_applied (blocks retry): True
+```
+
+Клика не было. Система сказала, что он был. И в **той же строке БД**, которую
+она пометила `SUBMITTED`, лежит доказательство обратного — `"clicked": false`.
+Плюс `is_already_applied=True` навсегда закрывает повторную попытку: заявка,
+которую на самом деле не отправили, больше не будет отправлена никогда.
+
+Это форма №2 (два слоя, каждый по отдельности «деградировал аккуратно», вместе
+дыра) плюс асимметрия №1 (CDP против Playwright).
+
+**Исправление, оба слоя.**
+
+1. Адаптер читает ответ: если `clicked` не `True` — `success=False` и причина
+   из ответа. Нечитаемый ответ тоже не успех.
+2. Ветка больше не верит слову: если в `details` пришло `clicked: false`, она
+   отказывается записывать `SUBMITTED` и возвращает `FAILED`. Оба слоя чинятся
+   потому, что третий адаптер может повторить форму №2.
+
+Замер после правки:
+
+```
+adapter returns  : {'success': False, 'error': 'Submit click did not happen: button not found', ...}
+SubmitResult.status              : FAILED
+DB submissions row               : None
+tracking status                  : READY_TO_APPLY
+is_already_applied (blocks retry): False
+```
+
+**Мутации — по слоям, чтобы вина была однозначной.**
+
+| Откат | Падает |
+|---|---|
+| слой 1: вернуть безусловный `success` | `test_cdp_adapter_does_not_report_success_when_the_button_was_missing`, `test_cdp_adapter_refuses_success_on_an_unreadable_answer` |
+| слой 2: выключить проверку `clicked` | `test_legacy_branch_refuses_to_record_submitted_without_a_click` |
+
+**Встречные проверки** (зелёные в обеих мутациях):
+`test_cdp_adapter_still_reports_success_when_the_click_happened`,
+`test_legacy_branch_still_records_submitted_when_the_click_happened`,
+`test_legacy_branch_still_believes_an_adapter_without_click_details` — последний
+важен: честные адаптеры (`Playwright`) вообще не отдают ключ `details`, и новая
+проверка их не задевает.
+
+Тестов в файле теперь 89.
+
+### 23. Уведомление о заблокированной анкете — мёртвый код (средний) — **НАЙДЕНО, НЕ ИСПРАВЛЕНО**
+
+Не починено сознательно: правка означает, что бот начнёт слать сообщения в
+Telegram. Это внешнее действие, нужно решение Миши.
+
+Тот же AST-скан дал восемь «сирот» — функций с защитными именами, которых никто
+не зовёт вне тестов. Семь из них безобидны: мёртвые алиасы
+(`verify_submission_in_browser` → `verify_submission`), неиспользуемые геттеры,
+`blocked_reasons` — вообще `property`, а не функция (ложное срабатывание сканера).
+
+Восьмая — настоящая. `NotificationDispatcher.notify_blocking_question()` —
+единственное место, которое пишет уведомление типа `UNANSWERED_QUESTION_BLOCKED`
+и доставляет его в Telegram:
+
+| метод | вызовов в продакшне | в тестах |
+|---|---:|---:|
+| `notify_interview` | 1 | 1 |
+| `notify_reply_sent` | 1 | 1 |
+| `notify_external_questionnaire` | 1 | 1 |
+| `notify_test_task` | 1 | 1 |
+| `notify_blocking_question` | **0** | 3 |
+
+Причём `save_autonomous_notification()` вызывается **только** из этих пяти
+методов. То есть когда анкета встаёт на неизвестном вопросе и заявка паркуется в
+`NEEDS_HUMAN_REVIEW`, оператор не получает ничего — а текст самого уведомления
+обещает «Application paused in NEEDS_HUMAN_REVIEW».
+
+Инварианты самой анкеты при этом честные (в `hh_questionnaire.py` все восемь
+пунктов про «Submit = 0»). Дыра не в безопасности, а в наблюдаемости: заявка
+тихо стоит, и узнать об этом можно только заглянув в CLI или БД.
+
+Три теста (`test_stage54_live_autonomous_run.py` и др.) зовут метод напрямую —
+механизм рабочий, вызова с боевого пути нет. Это форма №15/№19/№20/№21,
+применённая к уведомлениям.
+
 ## E2E-проба: `tools/e2e_pipeline_probe.py`
 
 Зелёные тесты — это не «работает». Проба гонит настоящий пайплайн по

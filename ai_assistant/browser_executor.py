@@ -1032,6 +1032,25 @@ class CDPBrowserAdapter(BrowserAdapter):
                 raw = await asyncio.wait_for(ws.recv(), timeout=10)
                 res = json.loads(raw).get("result", {}).get("result", {}).get("value", {})
                 await asyncio.sleep(2)
+                # BLE001 finding #22: this used to return success unconditionally,
+                # so a page with no apply button - the JS answers
+                # {clicked: false, error: "button not found"} - was reported as a
+                # successful submission. The answer was right there in `res` and
+                # nobody read it. Measured: success=True, clicked=False.
+                #
+                # The Playwright adapter below does read its own result and only
+                # reports success after finding a confirmation. CDP was the
+                # outlier, the same asymmetry as finding #1.
+                if not isinstance(res, dict) or res.get("clicked") is not True:
+                    why = res.get("error") if isinstance(res, dict) else None
+                    return {
+                        "success": False,
+                        "error": (
+                            "Submit click did not happen: "
+                            + (str(why) if why else "no click confirmation from the page")
+                        ),
+                        "details": res,
+                    }
                 return {"success": True, "details": res}
         try:
             res = self._sync_run(_submit())
@@ -2893,6 +2912,33 @@ def submit_application_in_browser(
             submission_id=submission_id,
             status="FAILED",
             error=submit_result.get("error", "Submit failed"),
+            executor_version="v1",
+            before_screenshot=before_screenshot,
+            after_screenshot=after_screenshot,
+        )
+
+    # BLE001 finding #22, layer 2: the adapter's word is not evidence, and this
+    # branch had the evidence in hand and ignored it. Measured before the fix:
+    # an adapter returning {"success": True, "details": {"clicked": False,
+    # "error": "button not found"}} produced status=SUBMITTED, a submissions row
+    # with status='SUBMITTED' whose payload literally contained "clicked": false,
+    # tracking moved to SUBMITTED, and is_already_applied=True - so a real retry
+    # was refused forever. Nothing was clicked and the system said it was.
+    #
+    # Layer 1 (the CDP adapter) is fixed too. This guard stays because the shape
+    # that caused it - two layers each looking reasonable, together a hole - is
+    # exactly finding #2, and a third adapter could repeat it.
+    _click_evidence = submit_result.get("details")
+    if isinstance(_click_evidence, dict) and _click_evidence.get("clicked") is False:
+        return SubmitResult(
+            vacancy_stable_id=vacancy_stable_id,
+            submission_id=submission_id,
+            status="FAILED",
+            error=(
+                "Adapter reported success but its own click evidence says no click "
+                "happened: "
+                + str(_click_evidence.get("error") or "clicked=false")
+            ),
             executor_version="v1",
             before_screenshot=before_screenshot,
             after_screenshot=after_screenshot,
