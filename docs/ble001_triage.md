@@ -1329,6 +1329,74 @@ Telegram. Это внешнее действие, нужно решение Ми
 механизм рабочий, вызова с боевого пути нет. Это форма №15/№19/№20/№21,
 применённая к уведомлениям.
 
+### 24. Перепроверка сканера сирот: два класса ложных срабатываний и пять мёртвых предохранителей (низкий) — **ИЗМЕРЕНО, НЕ ДЫРА**
+
+Сканер `scan_orphan_guards.py` отдавал 8 кандидатов. Прежде чем записывать их
+в «мёртвый код», я открыл каждого руками — и обнаружил, что два из восьми
+вообще не сироты, а ошибки самого сканера:
+
+1. **Алиасный импорт.** `from .submission_verifier import verify_submission as
+   _verify_submission`, вызов — `_verify_submission(...)` (`cli.py:1083`).
+   Сканер индексировал вызовы по имени на месте вызова, поэтому определение
+   `verify_submission` оставалось «сиротой», хотя зовут его из CLI.
+2. **`@property`.** `evidence.blocked_reasons` (`browser_executor.py:2396`,
+   `2559`) — это `ast.Attribute` в контексте `Load`, а не `ast.Call`.
+   Свойство используется, но в индексе вызовов его не было.
+
+Оба класса лечились в сканере: таблица `asname -> original` для `ImportFrom`
+и индексация `Attribute` не только как `Call`. Результат: **8 -> 6**.
+
+Классификация оставшихся шести (каждый открыт руками):
+
+| Функция | Вердикт |
+|---|---|
+| `notify_blocking_question()` (`hh_autonomous_agent.py:443`) | **настоящая находка, №23** |
+| `verify_review_fingerprint()` (`application_review_gate.py:297`) | мёртвый код |
+| `invalidate_on_change()` (`application_review_gate.py:282`) | мёртвый код |
+| `run_apply_flow_audit()` (`browser_executor.py:3140`) | ручной диагностический инструмент |
+| `verify_submission_in_browser()` (`browser_executor.py:2993`) | мёртвая обёртка; CLI зовёт `submission_verifier.verify_submission` напрямую |
+| `get_conversation_audit()` (`db.py:1553`) | мёртвый геттер |
+
+Почему первые две мертвы: `HumanReviewStore.__init__` создаёт **новый пустой**
+словарь, а `auto_apply_modes.py` делает `store = HumanReviewStore()` ->
+`store.save(gate)` -> выбрасывает store на выходе из функции. Состояние
+одобрения не переживает собственный вызов, поэтому свежесть одобрения здесь
+не проверяется вовсе. В живом пути её проверяет другое: `hh_submission` /
+`hh_submit_policy` сверяют `ApplicationReview.form_fingerprint` из БД с
+**пересчитанным** `compute_review_fingerprint(...)` (`hh_submission.py:557`).
+
+#### Побочно измерено: две целые ветки отправки без единого вызывающего в проде
+
+- `run_auto_apply()` (`auto_apply_modes.py:279`) — зовут только тесты.
+- `execute_confirmed_submit()` (`hh_application_orchestrator.py:792`) — зовут
+  только тесты.
+
+Обе содержат политическое/человеческое одобрение и настоящий клик. Обе
+проходят через `preflight_submission()` (то есть стопы спрашивают — №21 их
+покрыл). Это не дыра сегодня, но это вторая и третья реализации одного и того
+же предохранителя, которые могут разойтись с живой.
+
+#### Проверено и признано НЕ дырой: синтезированный fingerprint
+
+В `hh_submission.py:1436` fingerprint для доказательства перехода в SUBMITTED
+имеет фолбэк-константу:
+
+    sub_fp = actual_pkg_fp or (form_snapshot.get("fingerprint") if form_snapshot else "") or "submission_verified_fp"
+
+Оркестратор (`hh_application_orchestrator.py:484`) проверяет только наличие
+непустой строки, так что константа его устраивает. Похожий фолбэк есть и в
+`execute_confirmed_submit`: `f"confirmed_submit_fp_{application_id}"`.
+
+Но это **не дыра**, и вот почему, по замеру: переход происходит *после* клика
+и после пост-проверки. Предполётный гейт `_check_fingerprint_gate`
+(`hh_submission.py:557`) устроен fail-closed —
+
+    if not expected_fp or not actual_fp or expected_fp != actual_fp: -> passed=False
+
+— то есть отклик без fingerprint до клика не доходит, и фолбэк недостижим.
+Это порча audit-записи, а не fail-open. Записано, чтобы следующий проход не
+копал здесь второй раз.
+
 ## E2E-проба: `tools/e2e_pipeline_probe.py`
 
 Зелёные тесты — это не «работает». Проба гонит настоящий пайплайн по
