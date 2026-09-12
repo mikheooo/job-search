@@ -10,6 +10,7 @@ survived review the first time.
 """
 from __future__ import annotations
 
+import json
 import os
 from types import SimpleNamespace
 from typing import ClassVar
@@ -20,6 +21,7 @@ from ai_assistant import browser_executor as be
 from ai_assistant import db
 from ai_assistant import hh_application_queue as hq
 from ai_assistant import hh_application_runner as hr
+from ai_assistant.hh_questionnaire import submit_questionnaire_response
 
 
 class _Boom(RuntimeError):
@@ -2239,3 +2241,269 @@ def test_legacy_branch_still_believes_an_adapter_without_click_details():
     )
 
     assert res.status == "SUBMITTED", (res.status, res.error)
+
+
+# ---------------------------------------------------------------------------
+# Finding #23: a questionnaire that parked the application told nobody
+#
+# Measured before the fix: submit_questionnaire_response() stopped before
+# submit (submit_count 0) and created ZERO rows in autonomous_notifications.
+# The notification existed and was tested - nothing in production called it.
+# ---------------------------------------------------------------------------
+
+def _save_questionnaire(
+    qid: str,
+    questions: list[dict] | None = None,
+    *,
+    vacancy_stable_id: str | None = "hh:135112049",
+) -> str:
+    from ai_assistant.hh_questionnaire import HHQuestionStatus
+
+    db.init_db()
+    db.save_hh_questionnaire({
+        "questionnaire_id": qid,
+        "vacancy_stable_id": vacancy_stable_id,
+        "title": "Python Developer",
+        "employer": "TestCo",
+        "questions": questions if questions is not None else [
+            {"question_id": "q_personal", "text": "Ваш ИНН?", "question_type": "text",
+             "required": True, "options": []},
+        ],
+        "answers": {},
+        "status": HHQuestionStatus.NEEDS_HUMAN_REVIEW.value,
+    })
+    return qid
+
+
+def _notifications_of_type(kind: str) -> list[dict]:
+    return [n for n in db.list_autonomous_notifications(limit=200)
+            if n.get("notification_type") == kind]
+
+
+def _silence_telegram(monkeypatch) -> list[dict]:
+    """Catch the delivery instead of letting it reach the network."""
+    from ai_assistant import telegram_notifier
+
+    sent: list[dict] = []
+
+    class _Stub:
+        def deliver_notification(self, notif_type, details, delivery_key=None):
+            sent.append({"type": notif_type, "details": details, "key": delivery_key})
+            return True
+
+    monkeypatch.setattr(telegram_notifier, "get_telegram_notifier", lambda: _Stub())
+    return sent
+
+
+def _questionnaire_executor(*, click_ok: bool = True, reason: str = ""):
+    """Mirrors FakeSubmitCDP in test_stage34: {'ok': true} for every other call."""
+
+    def _evaluate(expr: str) -> str:
+        if "click" in expr or "vacancy-response-submit" in expr:
+            if click_ok:
+                return json.dumps({"ok": True})
+            return json.dumps({"ok": False, "reason": reason or "Submit button disabled"})
+        return json.dumps({"ok": True})
+
+    return _evaluate
+
+
+def test_questionnaire_blocked_by_a_missing_answer_notifies_the_human(monkeypatch):
+    """Measured before the fix: submit_count 0 and ZERO notification rows."""
+    sent = _silence_telegram(monkeypatch)
+    qid = _save_questionnaire("q23_missing")
+
+    res = submit_questionnaire_response(
+        questionnaire_id=qid, human_answers={}, confirm_submit=True)
+
+    assert res.submit_count == 0, "the stop must survive the notification"
+    rows = _notifications_of_type("UNANSWERED_QUESTION_BLOCKED")
+    assert len(rows) == 1, "the human was never told the application was parked"
+    assert "q_personal" in rows[0]["message"]
+    assert rows[0]["title"].startswith("MANUAL QUESTION REQUIRED")
+    assert [s["type"] for s in sent] == ["UNANSWERED_QUESTION_BLOCKED"], sent
+
+
+def test_questionnaire_changed_on_the_page_notifies_the_human(monkeypatch):
+    """Changed DOM is the other case a human has to act on."""
+    _silence_telegram(monkeypatch)
+    qid = _save_questionnaire("q23_changed")
+
+    res = submit_questionnaire_response(
+        questionnaire_id=qid, human_answers={"q_personal": "123456789012"},
+        confirm_submit=True, current_dom_fingerprint="a_different_fingerprint")
+
+    assert res.submit_count == 0
+    assert res.status == "NEEDS_HUMAN_REVIEW"
+    assert len(_notifications_of_type("UNANSWERED_QUESTION_BLOCKED")) == 1
+
+
+def test_unknown_question_id_is_a_caller_bug_and_notifies_nobody(monkeypatch):
+    """Counter-check: a bad key in the answers dict is not a question a human
+    can answer - waking someone up for it would be noise, not signal."""
+    sent = _silence_telegram(monkeypatch)
+    qid = _save_questionnaire("q23_unknown_qid")
+
+    res = submit_questionnaire_response(
+        questionnaire_id=qid, human_answers={"q_nonexistent": "x"}, confirm_submit=True)
+
+    assert res.submit_count == 0
+    assert _notifications_of_type("UNANSWERED_QUESTION_BLOCKED") == []
+    assert sent == []
+
+
+def test_a_valid_questionnaire_notifies_nobody(monkeypatch):
+    """Counter-check: the notification is not a wall - a clean questionnaire
+    submits and stays quiet."""
+    sent = _silence_telegram(monkeypatch)
+    qid = _save_questionnaire("q23_valid")
+
+    res = submit_questionnaire_response(
+        questionnaire_id=qid, human_answers={"q_personal": "123456789012"},
+        confirm_submit=True, evaluate_fn=_questionnaire_executor())
+
+    assert res.verdict == "SUBMITTED"
+    assert _notifications_of_type("UNANSWERED_QUESTION_BLOCKED") == []
+    assert sent == []
+
+
+def test_a_broken_notifier_does_not_break_the_stop(monkeypatch):
+    """The notification is best-effort; the safety outcome is not."""
+    from ai_assistant import telegram_notifier
+
+    qid = _save_questionnaire("q23_broken_notifier")
+
+    def _explode(*_a, **_k):
+        raise _Boom("telegram is down")
+
+    monkeypatch.setattr(telegram_notifier, "get_telegram_notifier", _explode)
+
+    res = submit_questionnaire_response(
+        questionnaire_id=qid, human_answers={}, confirm_submit=True)
+
+    assert res.submit_count == 0
+    assert res.status == "BLOCKED"
+    # the record is written before delivery, so the audit trail survives
+    assert len(_notifications_of_type("UNANSWERED_QUESTION_BLOCKED")) == 1
+
+
+# ---------------------------------------------------------------------------
+# Finding #25: the questionnaire reported SUBMITTED with no click at all
+#
+# Measured before the fix, with evaluate_fn=None (no browser):
+#   verdict SUBMITTED, submit_count 1, click_count 1, status SUBMITTED in the DB
+# - the click count was simply invented, and the one-shot invariant then
+# refused every later attempt for that vacancy.
+# ---------------------------------------------------------------------------
+
+def test_questionnaire_without_an_executor_never_reports_submitted():
+    qid = _save_questionnaire("q25_no_executor")
+
+    res = submit_questionnaire_response(
+        questionnaire_id=qid, human_answers={"q_personal": "123456789012"},
+        confirm_submit=True, evaluate_fn=None)
+
+    assert res.verdict != "SUBMITTED", res.verdict
+    assert res.submit_count == 0
+    assert res.click_count == 0
+    assert res.status == "READY_TO_SUBMIT"
+    assert (db.get_hh_questionnaire(qid) or {}).get("status") != "SUBMITTED"
+
+
+def test_a_missing_executor_does_not_brick_the_one_shot_invariant():
+    """The old bug marked the questionnaire SUBMITTED, and the one-shot
+    invariant then refused every later attempt forever."""
+    qid = _save_questionnaire("q25_not_bricked")
+    answers = {"q_personal": "123456789012"}
+
+    submit_questionnaire_response(
+        questionnaire_id=qid, human_answers=answers,
+        confirm_submit=True, evaluate_fn=None)
+
+    res = submit_questionnaire_response(
+        questionnaire_id=qid, human_answers=answers,
+        confirm_submit=True, evaluate_fn=_questionnaire_executor())
+
+    assert res.verdict == "SUBMITTED", res.reason
+    assert res.submit_count == 1
+
+
+def test_questionnaire_still_submits_when_the_click_happened():
+    """Counter-check: the guard is not a wall."""
+    qid = _save_questionnaire("q25_click_ok")
+
+    res = submit_questionnaire_response(
+        questionnaire_id=qid, human_answers={"q_personal": "123456789012"},
+        confirm_submit=True, evaluate_fn=_questionnaire_executor())
+
+    assert res.verdict == "SUBMITTED"
+    assert res.submit_count == 1
+    assert res.click_count == 1
+    assert (db.get_hh_questionnaire(qid) or {}).get("status") == "SUBMITTED"
+
+
+def test_questionnaire_refuses_submitted_when_the_page_says_no_click():
+    qid = _save_questionnaire("q25_no_click")
+
+    res = submit_questionnaire_response(
+        questionnaire_id=qid, human_answers={"q_personal": "123456789012"},
+        confirm_submit=True,
+        evaluate_fn=_questionnaire_executor(click_ok=False,
+                                            reason="Submit button not found"))
+
+    assert res.verdict == "BLOCKED"
+    assert res.submit_count == 0
+    assert (db.get_hh_questionnaire(qid) or {}).get("status") != "SUBMITTED"
+    assert "Submit button not found" in res.reason
+
+
+def test_the_blocked_question_type_is_actually_routed_to_telegram():
+    """Counter-check on the wiring, not on the notification call.
+
+    The tests above stub the notifier out, so they would stay green if
+    UNANSWERED_QUESTION_BLOCKED were dropped from the notifier's allowlist -
+    the notification would be saved and then silently filtered as "routine",
+    which is the very failure #23 was about. This calls the REAL notifier; the
+    network is blocked by conftest, so nothing leaves the machine.
+    """
+    from ai_assistant.telegram_notifier import get_telegram_notifier
+
+    try:
+        res = get_telegram_notifier().deliver_notification(
+            notif_type="UNANSWERED_QUESTION_BLOCKED",
+            details={"company": "TestCo", "vacancy_title": "Python Developer",
+                     "unanswered_question": "Ваш ИНН?", "application_id": None},
+            delivery_key="q23_routing_probe",
+        )
+    except Exception as e:  # noqa: BLE001 - the network is blocked on purpose
+        res = {"delivered": False, "reason": f"raised: {type(e).__name__}"}
+
+    reason = str(res.get("reason", ""))
+    assert "routine" not in reason, res
+    assert "not routed" not in reason, res
+
+
+def test_the_blocked_question_type_is_actually_routed_to_telegram():
+    """Counter-check on the wiring, not on the notification call.
+
+    The tests above stub the notifier out, so they would stay green if
+    UNANSWERED_QUESTION_BLOCKED were dropped from the notifier's allowlist -
+    the notification would be saved and then silently filtered as "routine",
+    which is the very failure #23 was about. This calls the REAL notifier; the
+    network is blocked by conftest, so nothing leaves the machine.
+    """
+    from ai_assistant.telegram_notifier import get_telegram_notifier
+
+    try:
+        res = get_telegram_notifier().deliver_notification(
+            notif_type="UNANSWERED_QUESTION_BLOCKED",
+            details={"company": "TestCo", "vacancy_title": "Python Developer",
+                     "unanswered_question": "Ваш ИНН?", "application_id": None},
+            delivery_key="q23_routing_probe",
+        )
+    except Exception as e:  # noqa: BLE001 - the network is blocked on purpose
+        res = {"delivered": False, "reason": f"raised: {type(e).__name__}"}
+
+    reason = str(res.get("reason", ""))
+    assert "routine" not in reason, res
+    assert "not routed" not in reason, res

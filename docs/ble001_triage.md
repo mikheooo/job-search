@@ -1294,19 +1294,23 @@ is_already_applied (blocks retry): False
 
 Тестов в файле теперь 89.
 
-### 23. Уведомление о заблокированной анкете — мёртвый код (средний) — **НАЙДЕНО, НЕ ИСПРАВЛЕНО**
+### 23. Уведомление о заблокированной анкете — мёртвый код (средний) — **ИСПРАВЛЕНО 2026-09-12**
 
-Не починено сознательно: правка означает, что бот начнёт слать сообщения в
-Telegram. Это внешнее действие, нужно решение Миши.
+Замер до правки (анкета с обязательным неотвеченным вопросом):
 
-Тот же AST-скан дал восемь «сирот» — функций с защитными именами, которых никто
-не зовёт вне тестов. Семь из них безобидны: мёртвые алиасы
-(`verify_submission_in_browser` → `verify_submission`), неиспользуемые геттеры,
-`blocked_reasons` — вообще `property`, а не функция (ложное срабатывание сканера).
+    verdict      : BLOCKED
+    status       : BLOCKED
+    submit_count : 0
+    reason       : Required question(s) without answer: q_personal
+    уведомлений до / после : 0 / 0
 
-Восьмая — настоящая. `NotificationDispatcher.notify_blocking_question()` —
-единственное место, которое пишет уведомление типа `UNANSWERED_QUESTION_BLOCKED`
-и доставляет его в Telegram:
+То есть заявка встала и **никто об этом не узнал**. Инварианты самой анкеты при
+этом честные (в `hh_questionnaire.py` все восемь пунктов про «Submit = 0»). Дыра
+не в безопасности, а в наблюдаемости: заявка тихо стоит, и узнать об этом можно
+только заглянув в CLI или БД.
+
+`NotificationDispatcher.notify_blocking_question()` — единственное место, которое
+пишет уведомление типа `UNANSWERED_QUESTION_BLOCKED` и доставляет его в Telegram:
 
 | метод | вызовов в продакшне | в тестах |
 |---|---:|---:|
@@ -1317,17 +1321,55 @@ Telegram. Это внешнее действие, нужно решение Ми
 | `notify_blocking_question` | **0** | 3 |
 
 Причём `save_autonomous_notification()` вызывается **только** из этих пяти
-методов. То есть когда анкета встаёт на неизвестном вопросе и заявка паркуется в
-`NEEDS_HUMAN_REVIEW`, оператор не получает ничего — а текст самого уведомления
-обещает «Application paused in NEEDS_HUMAN_REVIEW».
+методов.
 
-Инварианты самой анкеты при этом честные (в `hh_questionnaire.py` все восемь
-пунктов про «Submit = 0»). Дыра не в безопасности, а в наблюдаемости: заявка
-тихо стоит, и узнать об этом можно только заглянув в CLI или БД.
+#### Куда именно его подключать — и почему не в «очевидное» место
 
-Три теста (`test_stage54_live_autonomous_run.py` и др.) зовут метод напрямую —
-механизм рабочий, вызова с боевого пути нет. Это форма №15/№19/№20/№21,
-применённая к уведомлениям.
+Очевидный адрес — `solve_questionnaire_autonomously()`: она и возвращает
+`unanswered`, и текст уведомления говорит про «unknown personal question». Но у
+неё **тоже ноль вызовов в проде** — только тесты. Их убили вместе, поэтому
+пропажу уведомления никто и не заметил: подключить уведомление в мёртвой функции
+означало бы не подключить ничего.
+
+Боевой путь другой: `hh_application_runner` → `submit_questionnaire_response()`.
+Именно там анкета паркуется, и именно там известна **причина** — чего не хватает
+и нужен ли человек вообще. Правка:
+
+- новый `_notify_human_question_blocked(quest, val)` в `hh_questionnaire.py`;
+- вызов из ветки провала валидации, перед `return report`.
+
+Уведомляем только о том, на что человек может повлиять: `missing_required`,
+`invalid_options` и смена DOM. Не уведомляем про `unknown_questions` — это
+опечатка вызывающего кода, а не вопрос, на который человек может ответить;
+будить человека ради этого было бы шумом.
+
+Уведомление best-effort: обёрнуто в `try/except` и при падении пишет
+`logger.warning`. Предохранитель важнее уведомления — `submit_count` остаётся 0
+в любом случае.
+
+#### Мутация
+
+| Откат | Падает |
+|---|---|
+| убрать вызов `_notify_human_question_blocked` | `test_questionnaire_blocked_by_a_missing_answer_notifies_the_human`, `test_questionnaire_changed_on_the_page_notifies_the_human`, `test_a_broken_notifier_does_not_break_the_stop` |
+
+Встречные проверки при этом остаются зелёными:
+`test_unknown_question_id_is_a_caller_bug_and_notifies_nobody` и
+`test_a_valid_questionnaire_notifies_nobody` — уведомление не стена.
+
+#### Вторая проверка: доходит ли тип до Telegram
+
+Мои тесты подменяют нотификатор целиком, поэтому маршрутизацию они не покрывают.
+А у `deliver_notification()` есть allowlist (`telegram_notifier.py:331`), и тип,
+которого там нет, **молча** возвращает `"is routine and not routed to Telegram"` —
+уведомление сохранилось бы в БД и никого не побеспокоило. Ровно та же форма
+провала, что и №23, только этажом ниже.
+
+Проверено: `UNANSWERED_QUESTION_BLOCKED` в allowlist есть. Плюс добавлен
+`test_the_blocked_question_type_is_actually_routed_to_telegram`, который зовёт
+**настоящий** нотификатор (сеть блокирует conftest, наружу ничего не уходит) и
+падает, если тип убрать из списка. Мутация подтвердила: убрать строку из
+allowlist → тест падает.
 
 ### 24. Перепроверка сканера сирот: два класса ложных срабатываний и пять мёртвых предохранителей (низкий) — **ИЗМЕРЕНО, НЕ ДЫРА**
 
@@ -1396,6 +1438,56 @@ Telegram. Это внешнее действие, нужно решение Ми
 — то есть отклик без fingerprint до клика не доходит, и фолбэк недостижим.
 Это порча audit-записи, а не fail-open. Записано, чтобы следующий проход не
 копал здесь второй раз.
+
+### 25. Анкета докладывала SUBMITTED и писала это в БД вообще без клика (критический) — **ИСПРАВЛЕНО 2026-09-12**
+
+Нашлось при правке №23 — рядом с местом, которое я открыл по делу. В
+`submit_questionnaire_response()` шаг 3 был обёрнут в `if evaluate_fn is not None:`,
+а блок успеха стоял **снаружи**:
+
+    # 3. If evaluate_fn is provided, perform single click submit
+    if evaluate_fn is not None:
+        ... клик ...
+    # Single click executed successfully
+    report.submit_count = 1
+    report.click_count = 1
+    report.verdict = "SUBMITTED"
+
+`evaluate_fn=None` означает «браузера нет». Замер до правки:
+
+    verdict      : SUBMITTED
+    submit_count : 1
+    click_count  : 1
+    status       : SUBMITTED
+    reason       : Questionnaire answers submitted successfully with explicit human confirmation
+    статус анкеты в БД: SUBMITTED
+
+`click_count=1` при полном отсутствии клика — не погрешность, а выдуманное
+доказательство. Дальше срабатывает one-shot инвариант («already submitted»), и
+вакансия **навсегда** перестаёт быть отправляемой: настоящий отклик уже не пройдёт.
+
+Достижимо ли: да. `hh_application_runner` пытается добыть исполнителя сам
+(строки 306-324) и при неудаче оставляет `evaluate_fn=None`; CLI зовёт
+`run_next_application(..., evaluate_fn=None, ...)` напрямую. А раннер считает
+успех по `q_res.verdict in ("SUBMITTED", ...) or q_res.submit_count > 0` — то есть
+докладывает `real_hh_submit`.
+
+Правка: без исполнителя отправки нет. Ранний `return` со статусом
+`READY_TO_SUBMIT` — ответы валидны и подтверждены, но не отправлены; `verdict`
+остаётся `BLOCKED`, `submit_count` и `click_count` — 0. Это зеркалит
+существующую ветку `confirm_submit=False`, где сделано ровно так же.
+
+Заодно закрыт родственный случай: `if not res.get("ok")` падало с
+`AttributeError`, если страница вернула не словарь; теперь `not isinstance(res, dict)`
+проверяется явно, и причина отказа попадает в `reason`.
+
+| Откат | Падает |
+|---|---|
+| вернуть старую форму (`if evaluate_fn is not None` + безусловный успех) | `test_questionnaire_without_an_executor_never_reports_submitted`, `test_a_missing_executor_does_not_brick_the_one_shot_invariant` |
+
+Встречные проверки остаются зелёными:
+`test_questionnaire_still_submits_when_the_click_happened` (с рабочим исполнителем
+отправка проходит) и `test_questionnaire_refuses_submitted_when_the_page_says_no_click`.
 
 ## E2E-проба: `tools/e2e_pipeline_probe.py`
 

@@ -421,6 +421,60 @@ def validate_human_answers(
     return res
 
 
+def _notify_human_question_blocked(
+    quest: HHQuestionnaire,
+    val: QuestionnaireValidationResult,
+) -> None:
+    """Tell a human that a questionnaire parked the application.
+
+    BLE001 finding #23: the questionnaire stopped before submit and nobody was
+    told - the notification existed, but nothing called it. Only the cases a
+    human can act on are reported; an unknown question_id means the *caller*
+    passed a bad key, which is a bug, not a question to answer.
+
+    Best-effort by design: a broken notifier must never change the safety
+    outcome of submit_questionnaire_response() - Submit stays 0 either way.
+    """
+    human_must_act = bool(val.missing_required or val.invalid_options) or (
+        val.status == HHQuestionStatus.NEEDS_HUMAN_REVIEW.value
+    )
+    if not human_must_act:
+        return
+
+    unanswered = (
+        ", ".join(val.missing_required)
+        or ", ".join(val.invalid_options)
+        or val.reason
+        or "questionnaire structure changed on the page"
+    )
+
+    application_id = None
+    if quest.vacancy_stable_id:
+        try:
+            app = db.get_hh_application_by_vacancy(quest.vacancy_stable_id)
+            application_id = (app or {}).get("application_id")
+        except Exception as e:  # noqa: BLE001
+            logger.debug("cannot resolve application_id for %s: %s",
+                         quest.vacancy_stable_id, e)
+
+    try:
+        from .hh_autonomous_agent import NotificationDispatcher
+        NotificationDispatcher.notify_blocking_question(
+            company=quest.employer or "HeadHunter Employer",
+            vacancy_title=quest.title or "Python Role",
+            unanswered_question=unanswered,
+            vacancy_url=(f"https://hh.ru/vacancy/{quest.vacancy_stable_id}"
+                         if quest.vacancy_stable_id else None),
+            application_id=application_id,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "cannot notify about the blocked questionnaire %s - the application is "
+            "still parked, the human just will not be told: %s",
+            quest.questionnaire_id, e,
+        )
+
+
 # JS: Click submit button (gated execution)
 _EXECUTE_SUBMIT_JS = """(() => {
     const el = document.querySelector('[data-qa*="vacancy-response-submit-popup"], [data-qa*="response-submit"], [data-qa*="submit-popup"], button[type="submit"], input[type="submit"]');
@@ -583,6 +637,9 @@ def submit_questionnaire_response(
         report.errors.append(val.reason)
         # Update status in DB
         db.update_hh_questionnaire_answers(questionnaire_id, human_answers, new_status=val.status)
+        # BLE001 finding #23: parking the application is exactly the moment a
+        # human has to be told. Previously nothing was sent at all.
+        _notify_human_question_blocked(quest, val)
         return report
 
     # 2. Check explicit human confirmation
@@ -615,29 +672,43 @@ def submit_questionnaire_response(
             report.status = HHQuestionStatus.BLOCKED.value
             return report
 
-    # 3. If evaluate_fn is provided, perform single click submit
-    if evaluate_fn is not None:
-        try:
-            import time
-            submit_script = _make_fill_and_submit_js(human_answers) if human_answers else _EXECUTE_SUBMIT_JS
+    # 3. The click IS the submission. No executor -> no click -> no submit.
+    # BLE001 finding #25: this used to fall through to SUBMITTED with a
+    # click_count of 1 and persist SUBMITTED in the DB without touching a page,
+    # which also tripped the one-shot invariant and blocked every later attempt.
+    if evaluate_fn is None:
+        report.reason = ("No browser executor available (evaluate_fn is None) - "
+                         "questionnaire NOT submitted; answers stored and ready")
+        report.errors.append(report.reason)
+        report.status = HHQuestionStatus.READY_TO_SUBMIT.value
+        db.update_hh_questionnaire_answers(
+            questionnaire_id, human_answers,
+            new_status=HHQuestionStatus.READY_TO_SUBMIT.value)
+        return report
+
+    # 3. Perform the single click submit
+    try:
+        import time
+        submit_script = _make_fill_and_submit_js(human_answers) if human_answers else _EXECUTE_SUBMIT_JS
+        raw = evaluate_fn(submit_script)
+        res = json.loads(raw) if isinstance(raw, str) else raw
+
+        if isinstance(res, dict) and res.get("navigated_to_apply"):
+            time.sleep(2.5)
             raw = evaluate_fn(submit_script)
             res = json.loads(raw) if isinstance(raw, str) else raw
 
-            if isinstance(res, dict) and res.get("navigated_to_apply"):
-                time.sleep(2.5)
-                raw = evaluate_fn(submit_script)
-                res = json.loads(raw) if isinstance(raw, str) else raw
-
-            if not res.get("ok"):
-                report.reason = f"DOM Submit click failed: {res.get('reason', 'unknown error')}"
-                report.errors.append(report.reason)
-                report.status = HHQuestionStatus.BLOCKED.value
-                return report
-        except Exception as e:
-            report.reason = f"CDP evaluate error during submit: {e}"
+        if not isinstance(res, dict) or not res.get("ok"):
+            why = res.get("reason") if isinstance(res, dict) else res
+            report.reason = f"DOM Submit click failed: {why or 'no click confirmation from the page'}"
             report.errors.append(report.reason)
             report.status = HHQuestionStatus.BLOCKED.value
             return report
+    except Exception as e:
+        report.reason = f"CDP evaluate error during submit: {e}"
+        report.errors.append(report.reason)
+        report.status = HHQuestionStatus.BLOCKED.value
+        return report
 
     # Single click executed successfully
     report.submit_count = 1
