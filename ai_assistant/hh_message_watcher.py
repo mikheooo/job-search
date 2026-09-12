@@ -232,14 +232,32 @@ def run_message_watcher_cycle(
         # Verify session authentication
         try:
             auth_info = check_hh_session_authenticated(ev)
-            if not auth_info.get("authenticated", True):
-                err_msg = f"BLOCKED: HH session not authenticated ({auth_info.get('reason', 'Login required')}). Please log in to HeadHunter."
-                logger.warning(err_msg)
-                result.errors.append(err_msg)
-                result.blocked += 1
-                return result
         except Exception as e:
-            logger.debug(f"Auth check notice: {e}")
+            # BLE001 finding #28: this used to be a debug log with no return.
+            # The cycle then carried on and reported "0 conversations, 0
+            # errors", which is indistinguishable from "no new employer
+            # messages". A check that cannot run must stop the cycle.
+            auth_info = {
+                "authenticated": False,
+                "verified": False,
+                "reason": f"auth check raised {type(e).__name__}: {e}",
+            }
+
+        # Fail-closed read (BLE001 finding #28): a missing key is not a pass.
+        if not auth_info.get("authenticated", False):
+            reason = auth_info.get("reason") or "Login required"
+            if auth_info.get("verified", True):
+                err_msg = f"BLOCKED: HH session not authenticated ({reason}). Please log in to HeadHunter."
+            else:
+                err_msg = (
+                    f"BLOCKED: could not verify the HH session ({reason}). "
+                    "Refusing to report this cycle as 'no new messages' - "
+                    "fix the browser/CDP connection and retry."
+                )
+            logger.warning(err_msg)
+            result.errors.append(err_msg)
+            result.blocked += 1
+            return result
 
     # 3. Discover conversations
     try:

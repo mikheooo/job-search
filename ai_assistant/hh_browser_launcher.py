@@ -224,6 +224,16 @@ def check_hh_session_authenticated(evaluate_fn: Callable[[str], str]) -> dict[st
 
     Read-only DOM check: verifies absence of mandatory login redirects/buttons
     and presence of applicant profile elements or cookies.
+
+    Fail-closed contract (BLE001 finding #28). The result carries two flags:
+
+    * ``authenticated`` - may this session be used? Anything that stops the
+      check from *telling* is reported as ``False``. "Cannot tell" must never
+      read as "fine".
+    * ``verified`` - was the answer based on real page evidence? ``False``
+      means the check itself failed, so the cause is an unreadable page, not
+      an expired login. Callers use this only to word their message honestly;
+      the block decision is driven by ``authenticated`` alone.
     """
     check_js = """(() => {
         try {
@@ -250,15 +260,39 @@ def check_hh_session_authenticated(evaluate_fn: Callable[[str], str]) -> dict[st
             }
             return JSON.stringify({authenticated: true, reason: "Session active (no login prompt)", url: href});
         } catch (e) {
-            return JSON.stringify({authenticated: true, reason: 'Check fallback: ' + e.message, url: location.href});
+            // BLE001 finding #28: this used to answer "authenticated: true"
+            // with the reason 'Check fallback'. A check that answers "yes"
+            // when it broke is not a check.
+            return JSON.stringify({authenticated: false, verified: false, reason: 'session check failed in the page: ' + e.message, url: location.href});
         }
     })()"""
     try:
         raw = evaluate_fn(check_js)
         data = json.loads(raw) if isinstance(raw, str) else raw
-        return data
     except Exception as e:
-        return {"authenticated": True, "reason": f"DOM evaluation error, assuming session active: {e}"}
+        # BLE001 finding #28: this used to return authenticated=True,
+        # "assuming session active". The watcher then reported a clean cycle -
+        # 0 conversations, 0 errors - while actually blind, which is exactly
+        # what "no new employer messages" looks like. Silence must not be
+        # produced by a failure to look.
+        return {
+            "authenticated": False,
+            "verified": False,
+            "reason": f"the page could not be read: {type(e).__name__}: {e}",
+        }
+
+    if not isinstance(data, dict) or "authenticated" not in data:
+        # A page that navigated mid-check (or a JS branch that forgot the key)
+        # returns something unrelated. Refusing to guess is the whole point.
+        return {
+            "authenticated": False,
+            "verified": False,
+            "reason": f"the page returned something unrelated to the session check: {str(data)[:200]}",
+        }
+    # Every branch above that *did* read the page declares its own answer, so
+    # the default is safe here: it only softens wording, never the block.
+    data.setdefault("verified", True)
+    return data
 
 
 def ensure_hh_browser(

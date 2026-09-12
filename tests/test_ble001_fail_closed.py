@@ -2483,27 +2483,229 @@ def test_the_blocked_question_type_is_actually_routed_to_telegram():
     assert "not routed" not in reason, res
 
 
-def test_the_blocked_question_type_is_actually_routed_to_telegram():
-    """Counter-check on the wiring, not on the notification call.
+# ---------------------------------------------------------------------------
+# Finding #28: the HH session check answered "authenticated" when it could not
+# tell, and the message watcher read "cannot tell" as "no new messages".
+# ---------------------------------------------------------------------------
 
-    The tests above stub the notifier out, so they would stay green if
-    UNANSWERED_QUESTION_BLOCKED were dropped from the notifier's allowlist -
-    the notification would be saved and then silently filtered as "routine",
-    which is the very failure #23 was about. This calls the REAL notifier; the
-    network is blocked by conftest, so nothing leaves the machine.
+_AUTH_JS_MARKER = "account/login"  # unique to the in-page auth-check script
+_EMPTY_CHAT_LIST = json.dumps({
+    "url": "https://hh.ru/applicant/negotiations",
+    "title": "Чаты",
+    "conversations": [],
+})
+
+
+def _auth_ev(auth_reply, *, list_reply=None):
+    """An evaluate_fn that answers the auth script and the chat list apart.
+
+    Only the auth script is forced to misbehave, so a cycle that survives it
+    still has a working page underneath - which is exactly the situation the
+    old fail-open turned into a clean, blind report.
     """
-    from ai_assistant.telegram_notifier import get_telegram_notifier
+    def ev(js):
+        if _AUTH_JS_MARKER in js:
+            return auth_reply()
+        return list_reply if list_reply is not None else _EMPTY_CHAT_LIST
+    return ev
 
-    try:
-        res = get_telegram_notifier().deliver_notification(
-            notif_type="UNANSWERED_QUESTION_BLOCKED",
-            details={"company": "TestCo", "vacancy_title": "Python Developer",
-                     "unanswered_question": "Ваш ИНН?", "application_id": None},
-            delivery_key="q23_routing_probe",
-        )
-    except Exception as e:  # noqa: BLE001 - the network is blocked on purpose
-        res = {"delivered": False, "reason": f"raised: {type(e).__name__}"}
 
-    reason = str(res.get("reason", ""))
-    assert "routine" not in reason, res
-    assert "not routed" not in reason, res
+def _watch_cycle(monkeypatch, ev):
+    """Run a real watcher cycle down the production path.
+
+    The watcher resolves its own CDP evaluate function only when none is
+    passed, and that is the only path that runs the session check at all -
+    so the check can only be exercised from here, not from the unit level.
+    """
+    from ai_assistant import cli
+    from ai_assistant import hh_browser_launcher as hbl
+    from ai_assistant.hh_message_watcher import (
+        HHMessageWatcherConfig,
+        run_message_watcher_cycle,
+    )
+
+    monkeypatch.setattr(cli, "_resolve_hh_evaluate", lambda **kw: ev)
+    monkeypatch.setattr(hbl, "ensure_hh_browser", lambda **kw: {"ok": True})
+    cfg = HHMessageWatcherConfig(
+        cdp_url="http://127.0.0.1:9222",
+        auto_start_browser=False,
+        batch_limit=5,
+    )
+    return run_message_watcher_cycle(cfg)
+
+
+def _boom():
+    raise _Boom("CDP target closed")
+
+
+# --- the check itself -----------------------------------------------------
+
+def test_auth_check_that_cannot_read_the_page_never_claims_authenticated():
+    """The old code returned authenticated=True 'assuming session active'."""
+    from ai_assistant.hh_browser_launcher import check_hh_session_authenticated
+
+    info = check_hh_session_authenticated(_auth_ev(_boom))
+
+    assert info["authenticated"] is False, info
+    assert info["verified"] is False, info
+
+
+def test_auth_check_refuses_a_payload_that_does_not_answer_the_question():
+    """A page that navigated mid-check replies with something unrelated."""
+    from ai_assistant.hh_browser_launcher import check_hh_session_authenticated
+
+    info = check_hh_session_authenticated(
+        _auth_ev(lambda: json.dumps({"url": "https://hh.ru/x"})))
+
+    assert info["authenticated"] is False, info
+    assert info["verified"] is False, info
+    assert "unrelated" in info["reason"], info
+
+
+def test_auth_check_refuses_an_unparseable_reply():
+    from ai_assistant.hh_browser_launcher import check_hh_session_authenticated
+
+    info = check_hh_session_authenticated(_auth_ev(lambda: "<html>login</html>"))
+
+    assert info["authenticated"] is False, info
+    assert info["verified"] is False, info
+
+
+def test_auth_check_marks_honest_answers_as_verified():
+    """`verified` drives the wording of the block, so it must be set."""
+    from ai_assistant.hh_browser_launcher import check_hh_session_authenticated
+
+    ok = check_hh_session_authenticated(
+        _auth_ev(lambda: json.dumps({"authenticated": True, "reason": "profile found"})))
+    out = check_hh_session_authenticated(
+        _auth_ev(lambda: json.dumps({"authenticated": False, "reason": "login page"})))
+
+    assert ok["verified"] is True, ok
+    assert out["verified"] is True, out
+
+
+def test_auth_check_still_reports_a_real_login_page():
+    """Counter-check: a genuine logout must keep its own, actionable message."""
+    from ai_assistant.hh_browser_launcher import check_hh_session_authenticated
+
+    info = check_hh_session_authenticated(_auth_ev(
+        lambda: json.dumps({"authenticated": False, "reason": "Browser is on HH login page"})))
+
+    assert info["authenticated"] is False
+    assert info["verified"] is True
+    assert "login page" in info["reason"]
+
+
+def test_auth_check_still_passes_a_healthy_session():
+    """Counter-check: the guard is not a wall."""
+    from ai_assistant.hh_browser_launcher import check_hh_session_authenticated
+
+    for reason in ("Applicant profile navigation element found",
+                   "Session active (no login prompt)"):
+        info = check_hh_session_authenticated(
+            _auth_ev(lambda r=reason: json.dumps({"authenticated": True, "reason": r})))
+        assert info["authenticated"] is True, (reason, info)
+
+
+# --- what a whole cycle reports -------------------------------------------
+
+def test_watcher_reports_an_unverifiable_session_as_blocked(monkeypatch):
+    """Measured before the fix: checked=0, blocked=0, errors=0."""
+    res = _watch_cycle(monkeypatch, _auth_ev(_boom))
+
+    assert res.blocked == 1, res
+    assert len(res.errors) == 1, res
+    assert "could not verify" in res.errors[0], res.errors
+
+
+def test_watcher_does_not_call_a_blind_cycle_clean(monkeypatch):
+    res = _watch_cycle(monkeypatch, _auth_ev(
+        lambda: json.dumps({"url": "https://hh.ru/x"})))
+
+    assert res.blocked == 1, res
+    assert res.conversations_checked == 0
+
+
+def test_watcher_does_not_swallow_an_auth_check_that_raises(monkeypatch):
+    """The watcher used to debug-log this and carry on with a clean report."""
+    from ai_assistant import hh_browser_launcher as hbl
+
+    def explode(_ev):
+        raise _Boom("check itself is broken")
+
+    monkeypatch.setattr(hbl, "check_hh_session_authenticated", explode)
+    res = _watch_cycle(monkeypatch, _auth_ev(lambda: json.dumps({"authenticated": True})))
+
+    assert res.blocked == 1, res
+    assert "could not verify" in res.errors[0], res.errors
+
+
+def test_watcher_still_blocks_a_genuinely_logged_out_session(monkeypatch):
+    """Counter-check: the real logout path keeps its own wording."""
+    res = _watch_cycle(monkeypatch, _auth_ev(
+        lambda: json.dumps({"authenticated": False, "reason": "Browser is on HH login page"})))
+
+    assert res.blocked == 1
+    assert "Please log in to HeadHunter" in res.errors[0], res.errors
+
+
+def test_watcher_still_processes_a_healthy_session(monkeypatch):
+    """Counter-check: the fix must not make the watcher block a good session."""
+    convs = json.dumps({
+        "url": "https://hh.ru/applicant/negotiations",
+        "title": "Чаты",
+        "conversations": [{
+            "conversation_id": "c28_ok",
+            "title": "Python Developer",
+            "employer": "TechCorp",
+            "snippet": "Здравствуйте! Когда вы готовы начать?",
+            "is_selected": False,
+        }],
+    })
+    res = _watch_cycle(monkeypatch, _auth_ev(
+        lambda: json.dumps({"authenticated": True, "reason": "profile found"}),
+        list_reply=convs))
+
+    assert res.blocked == 0, res.errors
+    assert res.errors == [], res.errors
+    assert res.conversations_checked == 1, res
+
+
+def test_the_in_page_auth_script_fails_closed_on_its_own_error():
+    """Pin the JS branch, which Python cannot execute (it needs a browser).
+
+    The catch block inside check_js is the other half of finding #28 - it used
+    to answer authenticated:true with the reason "Check fallback". A real JS
+    engine check lives in docs/ble001_triage.md #28; this keeps the contract
+    from silently regressing in CI, where no browser is available.
+    """
+    import inspect
+
+    from ai_assistant.hh_browser_launcher import check_hh_session_authenticated
+
+    src = inspect.getsource(check_hh_session_authenticated)
+    catch_branch = src.split("} catch (e) {", 1)[1].split("}", 1)[0]
+    # Strip comments: the explanatory comment quotes the OLD literal on purpose,
+    # so a naive text search over the whole branch matches its own documentation.
+    body = " ".join(
+        line.strip() for line in catch_branch.splitlines()
+        if line.strip() and not line.strip().startswith("//")
+    )
+
+    assert "authenticated: false" in body, body
+    assert "authenticated: true" not in body, body
+
+
+def test_watcher_treats_a_key_less_auth_answer_as_not_authenticated(monkeypatch):
+    """The watcher read `auth_info.get("authenticated", True)` - a missing key
+    was a pass. Nothing returns a key-less dict today, so this pins the default
+    itself rather than waiting for a future caller to trip over it."""
+    from ai_assistant import hh_browser_launcher as hbl
+
+    monkeypatch.setattr(hbl, "check_hh_session_authenticated",
+                        lambda _ev: {"reason": "no answer in this dict"})
+
+    res = _watch_cycle(monkeypatch, _auth_ev(lambda: json.dumps({"authenticated": True})))
+
+    assert res.blocked == 1, res
+    assert len(res.errors) == 1, res
