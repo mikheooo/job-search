@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -149,6 +150,57 @@ def clear_submitted_reviews() -> None:
     _submitted_reviews.clear()
 
 
+def _stop_file_paths() -> list[str]:
+    return [
+        os.environ.get("STOP_SUBMITS_FILE"),
+        "data/STOP_SUBMITS",
+        "STOP_SUBMITS",
+    ]
+
+
+def submission_halt_reason(include_submit_allowed: bool = True) -> str | None:
+    """Return why submissions must not proceed, or None if they may.
+
+    The single authority for the three emergency stops: SUBMIT_ALLOWED,
+    the database submit_paused flag, and the STOP_SUBMITS stop files.
+
+    BLE001 finding #21: the stop file was honoured only by
+    hh_submit_policy.evaluate(), which is gates for the autonomous runner.
+    Nothing on the click paths looked at it, so `touch data/STOP_SUBMITS`
+    stopped the autonomous runner and nothing else - while every other stop
+    in this module was spelled `db.is_submit_paused()`. An emergency stop
+    that only covers one of four entry points is not an emergency stop.
+
+    Fail-closed by construction: if the database lookup raises, that is a
+    refusal, not a pass. The previous shape (`is_paused = "PAUSED" in
+    claim_reason`) reported a read failure as "not paused".
+
+    On include_submit_allowed: the three stops are not the same kind of
+    thing. `submit_paused` and the stop file are stop *orders* - the operator
+    said stop, so everything stops, including a dry run. SUBMIT_ALLOWED is a
+    release *condition* - it answers "may this system submit at all" and is
+    deliberately bypassable in dry-run mode, which is a documented and tested
+    contract (Step 2.4, README). Callers on the dry-run path pass False for
+    it; callers that may actually click leave the default.
+    """
+    if any(p and os.path.exists(p) for p in _stop_file_paths()):
+        return "Submission paused by kill switch (STOP_SUBMITS file present)"
+    try:
+        from . import db
+
+        if db.is_submit_paused():
+            return "Submission paused by kill switch (system_settings.submit_paused=1)"
+    except Exception as e:  # noqa: BLE001
+        logger.error("cannot read the submission kill switch - failing closed: %s", e)
+        return (
+            "Cannot read the submission kill switch - refusing to submit: "
+            f"{type(e).__name__}: {e}"
+        )
+    if include_submit_allowed and not config.submit_allowed():
+        return "Submission is disabled by SUBMIT_ALLOWED configuration"
+    return None
+
+
 def preflight_submission(
     review_store: Any,
     review_id: str,
@@ -185,31 +237,15 @@ def preflight_submission(
     # guarded execute_hh_submission() and nothing else.
     #
     # Finding #18: a kill-switch read that raises must not be read as "off".
-    submit_allowed = bool(config.submit_allowed())
-    try:
-        from . import db
-
-        is_paused = db.is_submit_paused()
-    except Exception as e:  # noqa: BLE001
-        logger.error(
-            "cannot read the submission kill switch during preflight - "
-            "failing closed: %s",
-            e,
-        )
-        report.status = SubmissionStatus.FAIL_CLOSED
-        report.reason = (
-            f"Cannot read the submission kill switch - refusing to submit: "
-            f"{type(e).__name__}: {e}"
-        )
-        return report
-
-    if is_paused:
-        report.status = SubmissionStatus.BLOCKED
-        report.reason = "Submission paused by kill switch (system_settings.submit_paused=1)"
-        return report
-    if not submit_allowed:
-        report.status = SubmissionStatus.BLOCKED
-        report.reason = "Submission is disabled by SUBMIT_ALLOWED configuration"
+    # BLE001 finding #21: this used to check only SUBMIT_ALLOWED and
+    # submit_paused. The stop file was invisible here, so a submit with
+    # data/STOP_SUBMITS present clicked the real button. All three stops now
+    # come from one predicate, so they cannot drift apart again.
+    halt_reason = submission_halt_reason()
+    if halt_reason:
+        refused = halt_reason.startswith("Cannot read")
+        report.status = SubmissionStatus.FAIL_CLOSED if refused else SubmissionStatus.BLOCKED
+        report.reason = halt_reason
         return report
 
     # Gate 1-2: review + fingerprint via store.
@@ -783,29 +819,25 @@ class HHSubmissionGates:
         # guard at all, so there a read failure aborts the submission. Same
         # call, opposite policy, one screen apart. A latch whose failure mode
         # is "submit anyway" is not a latch - fail closed, and say why.
-        is_paused = False
-        kill_switch_error = None
-        try:
-            from . import db
-
-            is_paused = db.is_submit_paused()
-        except Exception as e:  # noqa: BLE001
-            kill_switch_error = f"{type(e).__name__}: {e}"
-            logger.error(
-                "cannot read the submission kill switch for %s - failing closed: %s",
-                vacancy_stable_id,
-                kill_switch_error,
-            )
-
-        if kill_switch_error:
+        # BLE001 finding #21: gate 1 covered only two of the three stops. The
+        # stop file is listed first in hh_submit_policy.evaluate()'s stop
+        # sources; here it did not exist at all.
+        #
+        # What is deliberately NOT changed: dry_run still bypasses
+        # SUBMIT_ALLOWED. That is a documented, tested contract - Step 2.4
+        # ("исправлен баг блокировки при dry_run=True") and README both say a
+        # dry run must pass with the latch off, because a dry run performs
+        # zero browser mutations. The first draft of this fix made the stops
+        # outrank dry_run and broke two tests; that was the wrong call. A dry
+        # run mutates nothing, so what it does is not what the stops guard.
+        #
+        # The two real stops are different: the operator's Telegram "stop"
+        # and the stop file are not "is submitting allowed", they are "stop",
+        # so they outrank even a dry run. Only SUBMIT_ALLOWED is bypassable.
+        stop_reason = submission_halt_reason(include_submit_allowed=False)
+        if stop_reason:
             g1_pass = False
-            g1_reason = (
-                "Cannot read the submission kill switch - refusing to submit: "
-                f"{kill_switch_error}"
-            )
-        elif is_paused:
-            g1_pass = False
-            g1_reason = "Submission paused by kill switch (system_settings.submit_paused=1)"
+            g1_reason = stop_reason
         else:
             g1_pass = submit_allowed or dry_run
             g1_reason = "SUBMIT_ALLOWED enabled" if submit_allowed else ("Bypassed (dry-run mode)" if dry_run else "Submission is disabled by SUBMIT_ALLOWED configuration")
@@ -927,7 +959,7 @@ class HHSubmissionGates:
 
         # Sequential fail-closed evaluation preserving priority order
         if not g1_pass:
-            return GateCheckResult(passed=False, failed_gate=GateName.GATE_SUBMIT_ALLOWED, reason=g1_reason, details={"SUBMIT_ALLOWED": submit_allowed, "dry_run": dry_run, "kill_switch_error": kill_switch_error}, gate_results=gate_results)
+            return GateCheckResult(passed=False, failed_gate=GateName.GATE_SUBMIT_ALLOWED, reason=g1_reason, details={"SUBMIT_ALLOWED": submit_allowed, "dry_run": dry_run, "halt_reason": stop_reason}, gate_results=gate_results)
         if rev_err:
             return GateCheckResult(passed=False, failed_gate=rev_err.failed_gate, reason=rev_err.reason, details=rev_err.details, gate_results=gate_results)
         if fp_err:
@@ -1191,12 +1223,13 @@ def execute_hh_submission(
         )
 
     # 5.1 Final pre-click check: kill switch check immediately before irreversible browser action
-    if db.is_submit_paused():
+    _pre_click_halt = submission_halt_reason()
+    if _pre_click_halt:
         db.update_submission_claim(
             vacancy_stable_id,
             status="FAILED_SAFE",
             claim_id=sub_id,
-            details={"reason": "kill_switch_activated_before_click"},
+            details={"reason": "kill_switch_activated_before_click", "halt_reason": _pre_click_halt},
         )
         save_submission(
             vacancy_stable_id,
@@ -1207,7 +1240,7 @@ def execute_hh_submission(
         return SubmissionExecutionResult(
             ok=False,
             status="BLOCKED",
-            reason="Submission blocked by kill switch immediately before click",
+            reason=f"Submission blocked by kill switch immediately before click: {_pre_click_halt}",
             vacancy_stable_id=vacancy_stable_id,
             submit_count=0,
             gate_check_result=gate_result,

@@ -14,6 +14,8 @@ import os
 from types import SimpleNamespace
 from typing import ClassVar
 
+import pytest
+
 from ai_assistant import browser_executor as be
 from ai_assistant import db
 from ai_assistant import hh_application_queue as hq
@@ -22,6 +24,52 @@ from ai_assistant import hh_application_runner as hr
 
 class _Boom(RuntimeError):
     """Stands in for any failure inside the audited call."""
+
+
+_SESSION_SUBMIT_ALLOWED: tuple | None = None
+
+
+@pytest.fixture(autouse=True)
+def _restore_submit_allowed():
+    """Undo whatever _set_submit_allowed() did, after every test in this file.
+
+    That helper writes straight into os.environ and into config - it cannot use
+    monkeypatch, because config.submit_allowed() prefers the value snapshotted
+    at import time (finding #8). That also makes it a permanent write: without
+    this fixture the last test to call it decides SUBMIT_ALLOWED for the rest
+    of the session.
+
+    Measured: adding tests that call _set_submit_allowed(False) turned 74 tests
+    in later files (test_step24, test_step25, test_submission_verifier) red
+    with 'Submission is disabled by SUBMIT_ALLOWED configuration' - tests that
+    pass when run on their own. A leak, not a regression in the product code.
+
+    The baseline is captured ONCE per session, not per test. Capturing it on
+    entry looks equivalent and is not: if one test leaks `False`, every later
+    test captures `False` as its own baseline and faithfully restores the leak.
+    Measured - the two-step leak guard below passed with this fixture disabled
+    in a full-file run, because by then the leaked value had become the
+    baseline. A repair that adopts the damage is not a repair.
+    """
+    global _SESSION_SUBMIT_ALLOWED
+    from ai_assistant import config
+
+    if _SESSION_SUBMIT_ALLOWED is None:
+        _SESSION_SUBMIT_ALLOWED = (
+            os.environ.get("SUBMIT_ALLOWED"),
+            getattr(config, "_OPERATOR_SUBMIT_ALLOWED", None),
+            getattr(config, "SUBMIT_ALLOWED", None),
+        )
+    try:
+        yield
+    finally:
+        saved_env, saved_operator, saved_flag = _SESSION_SUBMIT_ALLOWED
+        if saved_env is None:
+            os.environ.pop("SUBMIT_ALLOWED", None)
+        else:
+            os.environ["SUBMIT_ALLOWED"] = saved_env
+        config._OPERATOR_SUBMIT_ALLOWED = saved_operator
+        config.SUBMIT_ALLOWED = saved_flag
 
 
 # ---------------------------------------------------------------------------
@@ -1691,3 +1739,285 @@ def test_non_hh_source_fails_closed_when_the_kill_switch_cannot_be_read(monkeypa
     )
     assert res.status == "BLOCKED", res.error
     assert "kill switch" in (res.error or "").lower()
+
+# ---------------------------------------------------------------------------
+# Finding #21 - the third kill switch was honoured by one function only
+# ---------------------------------------------------------------------------
+# There are three emergency stops in this codebase:
+#   1. SUBMIT_ALLOWED (config/env)
+#   2. system_settings.submit_paused (the Telegram "stop" command)
+#   3. the STOP_SUBMITS file, listed FIRST in hh_submit_policy.evaluate()'s
+#      stop sources.
+#
+# Findings #9, #18, #19 and #20 chased the first two across every click path.
+# The third one was checked in exactly one place - hh_submit_policy.evaluate(),
+# which is autonomous-runner gates - and by nothing else. Every other stop in
+# every other path was spelled `db.is_submit_paused()`.
+#
+# Measured before the fix: with data/STOP_SUBMITS present and everything else
+# valid, submit_application() walked all the way to the real submit button and
+# clicked - clicked=True, status SUBMISSION_UNKNOWN.
+#
+# The cause is not a missing `if`. It is that four call sites each spelled out
+# their own list of stops, so adding a stop meant editing four places and the
+# one that got missed was invisible. Fix: one predicate,
+# hh_submission.submission_halt_reason(), owns all three stops and fails closed
+# on a read error. Every killing path asks it and nothing spells out its own.
+
+def _stop_file_cwd(tmp_path):
+    """A working directory holding data/STOP_SUBMITS - the file's real location.
+
+    The relative paths "data/STOP_SUBMITS" and "STOP_SUBMITS" resolve against
+    the process CWD, which is how the file is meant to be used (touch it next
+    to the app). Tests therefore chdir, and tmp_path makes that safe.
+    """
+    (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "data" / "STOP_SUBMITS").write_text("STOP", encoding="utf-8")
+    return tmp_path
+
+
+def test_halt_reason_is_none_when_no_stop_is_engaged(monkeypatch, tmp_path):
+    """Counter-check: the predicate must not become a latch that always trips."""
+    from ai_assistant import config
+    from ai_assistant.hh_submission import submission_halt_reason
+
+    monkeypatch.chdir(tmp_path)
+    _set_submit_allowed(True)
+    monkeypatch.setattr(db, "is_submit_paused", lambda: False)
+    assert config.submit_allowed() is True
+    assert submission_halt_reason() is None
+
+
+def test_halt_reason_reports_the_stop_file(monkeypatch, tmp_path):
+    from ai_assistant.hh_submission import submission_halt_reason
+
+    monkeypatch.chdir(_stop_file_cwd(tmp_path))
+    _set_submit_allowed(True)
+    monkeypatch.setattr(db, "is_submit_paused", lambda: False)
+    reason = submission_halt_reason()
+    assert reason is not None
+    assert "STOP_SUBMITS" in reason
+
+
+def test_halt_reason_reports_the_db_flag(monkeypatch, tmp_path):
+    from ai_assistant.hh_submission import submission_halt_reason
+
+    monkeypatch.chdir(tmp_path)
+    _set_submit_allowed(True)
+    monkeypatch.setattr(db, "is_submit_paused", lambda: True)
+    assert "submit_paused" in (submission_halt_reason() or "")
+
+
+def test_halt_reason_reports_submit_allowed_off(monkeypatch, tmp_path):
+    from ai_assistant.hh_submission import submission_halt_reason
+
+    monkeypatch.chdir(tmp_path)
+    _set_submit_allowed(False)
+    monkeypatch.setattr(db, "is_submit_paused", lambda: False)
+    assert "SUBMIT_ALLOWED" in (submission_halt_reason() or "")
+
+
+def test_halt_reason_fails_closed_when_the_db_cannot_be_read(monkeypatch, tmp_path):
+    """Finding #18's rule applies to the shared predicate too."""
+    from ai_assistant.hh_submission import submission_halt_reason
+
+    monkeypatch.chdir(tmp_path)
+    _set_submit_allowed(True)
+
+    def boom():
+        raise _Boom("database is locked")
+
+    monkeypatch.setattr(db, "is_submit_paused", boom)
+    reason = submission_halt_reason()
+    assert reason is not None
+    assert "Cannot read" in reason
+
+
+def test_check_all_gates_refuses_while_the_stop_file_is_present(monkeypatch, tmp_path):
+    """Gate 1 knew two stops. The file was not one of them."""
+    from ai_assistant.hh_submission import HHSubmissionGates
+
+    monkeypatch.chdir(_stop_file_cwd(tmp_path))
+    _set_submit_allowed(True)
+    monkeypatch.setattr(db, "is_submit_paused", lambda: False)
+
+    res = HHSubmissionGates.check_all_gates(
+        vacancy_stable_id="hh:999000123",
+        current_url="https://hh.ru/applicant/vacancy_response?vacancyId=999000123",
+        form_snapshot={"fingerprint": "x", "cover_letter": "y"},
+        human_confirmed=True,
+        dry_run=False,
+    )
+    assert res.passed is False
+    assert "STOP_SUBMITS" in res.reason
+
+
+def test_gates_still_pass_with_clean_switches(monkeypatch, tmp_path):
+    """Counter-check: adding the stop must not turn gate 1 into a wall."""
+    from ai_assistant.hh_submission import HHSubmissionGates
+
+    monkeypatch.chdir(tmp_path)
+    _set_submit_allowed(True)
+    monkeypatch.setattr(db, "is_submit_paused", lambda: False)
+
+    res = HHSubmissionGates.check_all_gates(
+        vacancy_stable_id="hh:999000123",
+        current_url="https://hh.ru/applicant/vacancy_response?vacancyId=999000123",
+        form_snapshot={"fingerprint": "x", "cover_letter": "y"},
+        human_confirmed=True,
+        dry_run=True,
+    )
+    assert "STOP_SUBMITS" not in (res.reason or "")
+
+
+def test_non_hh_source_is_blocked_by_the_stop_file(monkeypatch, tmp_path):
+    """The non-hh branch went through SUBMIT_ALLOWED and submit_paused only."""
+    _save_non_hh_vacancy("881")
+    monkeypatch.chdir(_stop_file_cwd(tmp_path))
+    _set_submit_allowed(True)
+    monkeypatch.setattr(db, "is_submit_paused", lambda: False)
+
+    res = be.submit_application_in_browser(
+        "remoteok:881", confirm_submit=True, dry_run=False
+    )
+    assert res.status == "BLOCKED", res.error
+    assert "STOP_SUBMITS" in (res.error or "")
+
+def test_stop_order_blocks_even_a_dry_run(monkeypatch, tmp_path):
+    """A dry run mutates nothing, so it may skip SUBMIT_ALLOWED - not a stop order.
+
+    README and Step 2.4 ("исправлен баг блокировки при dry_run=True") both
+    document that a dry run passes with SUBMIT_ALLOWED off. The first draft of
+    this fix made every stop outrank dry_run and broke two tests; the stop file
+    and the Telegram pause are a different thing from the release latch, and
+    they do outrank it.
+    """
+    from ai_assistant.hh_submission import HHSubmissionGates
+
+    monkeypatch.chdir(_stop_file_cwd(tmp_path))
+    _set_submit_allowed(False)
+    monkeypatch.setattr(db, "is_submit_paused", lambda: False)
+
+    res = HHSubmissionGates.check_all_gates(
+        vacancy_stable_id="hh:999000123",
+        current_url="https://hh.ru/applicant/vacancy_response?vacancyId=999000123",
+        form_snapshot={"fingerprint": "x", "cover_letter": "y"},
+        human_confirmed=True,
+        dry_run=True,
+    )
+    assert res.passed is False
+    assert "STOP_SUBMITS" in res.reason
+
+
+def test_db_stop_order_blocks_even_a_dry_run(monkeypatch, tmp_path):
+    from ai_assistant.hh_submission import HHSubmissionGates
+
+    monkeypatch.chdir(tmp_path)
+    _set_submit_allowed(False)
+    monkeypatch.setattr(db, "is_submit_paused", lambda: True)
+
+    res = HHSubmissionGates.check_all_gates(
+        vacancy_stable_id="hh:999000123",
+        current_url="https://hh.ru/applicant/vacancy_response?vacancyId=999000123",
+        form_snapshot={"fingerprint": "x", "cover_letter": "y"},
+        human_confirmed=True,
+        dry_run=True,
+    )
+    assert res.passed is False
+    assert "submit_paused" in res.reason
+
+
+def test_submit_allowed_is_still_bypassed_by_a_dry_run(monkeypatch, tmp_path):
+    """Counter-check on the documented contract this fix must not break.
+
+    Pinned by tests/test_hh_submission_gates.py::test_gate_submit_allowed and
+    README line 83. If someone later makes SUBMIT_ALLOWED outrank dry_run, this
+    fails and tells them why before they ship it.
+
+    Asserts on gate 1 alone, not on the overall verdict: this vacancy has no
+    review in the database, so `passed` would be False for a reason that has
+    nothing to do with the release latch. A red test must be red about its own
+    subject (finding #20's lesson, third time).
+    """
+    from ai_assistant.hh_submission import HHSubmissionGates
+
+    monkeypatch.chdir(tmp_path)
+    _set_submit_allowed(False)
+    monkeypatch.setattr(db, "is_submit_paused", lambda: False)
+
+    res = HHSubmissionGates.check_all_gates(
+        vacancy_stable_id="hh:999000123",
+        current_url="https://hh.ru/applicant/vacancy_response?vacancyId=999000123",
+        form_snapshot={"fingerprint": "x", "cover_letter": "y"},
+        human_confirmed=True,
+        dry_run=True,
+    )
+    gate1 = res.gate_results["submit_allowed"]
+    assert gate1["passed"] is True, gate1["reason"]
+    assert "dry-run" in gate1["reason"]
+
+
+def test_halt_reason_can_ignore_the_release_latch(monkeypatch, tmp_path):
+    """include_submit_allowed=False is what the dry-run path asks for."""
+    from ai_assistant.hh_submission import submission_halt_reason
+
+    monkeypatch.chdir(tmp_path)
+    _set_submit_allowed(False)
+    monkeypatch.setattr(db, "is_submit_paused", lambda: False)
+
+    assert submission_halt_reason() is not None
+    assert submission_halt_reason(include_submit_allowed=False) is None
+
+
+_LEAK_GUARD_BASELINE = None
+
+
+def test_leak_guard_step_1_leaves_submit_allowed_off():
+    """Step 1 of 2. Regression guard for a leak that turned 74 tests red.
+
+    _set_submit_allowed() writes into os.environ and into config on purpose -
+    config.submit_allowed() prefers the value snapshotted at import time
+    (finding #8), so monkeypatch.setenv alone does nothing and the helper has
+    to patch all three. The cost is that the write is permanent: whichever test
+    runs last decides SUBMIT_ALLOWED for every test file after it.
+
+    Measured without the autouse fixture: 74 failures in test_step24,
+    test_step25 and test_submission_verifier, all reporting
+    'Submission is disabled by SUBMIT_ALLOWED configuration' - and all green
+    when those files run on their own. A leak, not a product bug, and an easy
+    one to blame on the product.
+
+    This step deliberately ENDS with the latch off and does not clean up. Step
+    2 is what proves the fixture puts it back.
+
+    It also FORCES the latch on before measuring. Reading the baseline instead
+    looked fine and was useless: with the fixture disabled the leak has already
+    happened by the time this test runs, so the leaked `False` becomes the
+    baseline and step 2 compares False with False and passes. Measured - the
+    mutation run showed exactly that. Force the known-good state first, then
+    the comparison means something.
+    """
+    global _LEAK_GUARD_BASELINE
+    from ai_assistant import config
+
+    _set_submit_allowed(True)
+    _LEAK_GUARD_BASELINE = config.submit_allowed()
+    assert _LEAK_GUARD_BASELINE is True
+
+    _set_submit_allowed(False)
+    assert config.submit_allowed() is False
+
+
+def test_leak_guard_step_2_sees_the_value_restored():
+    """Step 2 of 2: must run right after step 1, and must see the latch back on.
+
+    If the autouse fixture is dropped, step 1's `False` is still in place here
+    and this fails. Ordering matters, hence the step_1/step_2 names.
+    """
+    from ai_assistant import config
+
+    assert _LEAK_GUARD_BASELINE is True, "step 1 did not run"
+    assert config.submit_allowed() is True, (
+        "SUBMIT_ALLOWED leaked out of a test in this file; the autouse "
+        "_restore_submit_allowed fixture is not doing its job"
+    )

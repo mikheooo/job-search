@@ -466,6 +466,8 @@ def run_application(
         submit_approval = SubmitApproval(source="human", policy_version="legacy_confirm")
 
     # Step 5: Execute Exactly ONE Submit with confirmation
+    from .hh_submission import submission_halt_reason
+
     real_submit_count = 0
     if qid:
         # Acquire exclusive submission claim for questionnaire submit
@@ -493,11 +495,19 @@ def run_application(
                 reason=f"Submission claim rejected: {claim_reason}",
             )
 
-        if db.is_submit_paused():
+        # BLE001 finding #21: this latch knew two stops; the STOP_SUBMITS file
+        # was not one of them. Now it asks the same authority as the other
+        # click paths, so the runner cannot be "stopped" while a manual
+        # questionnaire submit sails through.
+        _pre_click_halt = submission_halt_reason()
+        if _pre_click_halt:
             db.update_submission_claim(
                 vac_stable_id or f"hh:{vac_id}",
                 status="FAILED_SAFE",
-                details={"reason": "kill_switch_activated_before_questionnaire_click"},
+                details={
+                    "reason": "kill_switch_activated_before_questionnaire_click",
+                    "halt_reason": _pre_click_halt,
+                },
             )
             return RunnerExecutionResult(
                 application_id=app_id,

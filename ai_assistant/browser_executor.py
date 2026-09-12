@@ -2342,44 +2342,21 @@ def submit_application_in_browser(
     # branch; the second one was missed.
     #
     # Finding #18 applies: a stop we cannot read is not a stop we checked.
+    # BLE001 finding #21: this block used to spell out SUBMIT_ALLOWED and
+    # submit_paused by hand. The third stop - the STOP_SUBMITS file - was
+    # missing again, and hand-spelling is exactly why it keeps going missing.
+    # All three stops now come from hh_submission.submission_halt_reason(),
+    # so a new stop is added in one place and reaches every click path.
     if not dry_run:
-        from .config import submit_allowed as _submit_allowed
+        from .hh_submission import submission_halt_reason
 
-        if not _submit_allowed():
+        _halt = submission_halt_reason()
+        if _halt:
             return SubmitResult(
                 vacancy_stable_id=vacancy_stable_id,
                 submission_id="",
                 status="BLOCKED",
-                error="Submission is disabled by SUBMIT_ALLOWED configuration",
-                executor_version="v1",
-            )
-
-        from . import db as _db
-
-        try:
-            _paused = _db.is_submit_paused()
-        except Exception as e:  # noqa: BLE001
-            logger.error(
-                "cannot read the submission kill switch for %s - failing closed: %s",
-                vacancy_stable_id,
-                e,
-            )
-            return SubmitResult(
-                vacancy_stable_id=vacancy_stable_id,
-                submission_id="",
-                status="BLOCKED",
-                error=(
-                    "Cannot read the submission kill switch - refusing to "
-                    f"submit: {type(e).__name__}: {e}"
-                ),
-                executor_version="v1",
-            )
-        if _paused:
-            return SubmitResult(
-                vacancy_stable_id=vacancy_stable_id,
-                submission_id="",
-                status="BLOCKED",
-                error="Submission paused by kill switch (system_settings.submit_paused=1)",
+                error=_halt,
                 executor_version="v1",
             )
     

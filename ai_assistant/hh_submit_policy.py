@@ -132,15 +132,27 @@ def evaluate(
     # -------------------------------------------------------------------------
     # Gate 1: Kill Switch
     # -------------------------------------------------------------------------
-    stop_paths = [
-        stop_file_path,
-        "data/STOP_SUBMITS",
-        "STOP_SUBMITS",
-    ]
-    is_stopped_file = any(p and os.path.exists(p) for p in stop_paths)
-    is_paused_db = db.is_submit_paused()
+    # BLE001 finding #21: this was the ONLY consumer of the STOP_SUBMITS file
+    # and the only place that spelled out all three stops. Every other path
+    # checked two of them, so the stop file stopped the autonomous runner and
+    # nothing else. It now asks the shared predicate like everybody else -
+    # and keeps the caller-supplied stop_file_path, which the predicate does
+    # not know about, by exporting it for the duration of the call.
+    _prev_stop_file = os.environ.get("STOP_SUBMITS_FILE")
+    if stop_file_path:
+        os.environ["STOP_SUBMITS_FILE"] = stop_file_path
+    try:
+        from .hh_submission import submission_halt_reason
 
-    if is_stopped_file or is_paused_db:
+        halt_reason = submission_halt_reason()
+    finally:
+        if stop_file_path:
+            if _prev_stop_file is None:
+                os.environ.pop("STOP_SUBMITS_FILE", None)
+            else:
+                os.environ["STOP_SUBMITS_FILE"] = _prev_stop_file
+
+    if halt_reason:
         checks_failed.append("kill_switch")
         reasons.append("paused")
     else:
