@@ -609,7 +609,41 @@ def run_application(
                 )
             real_submit_count = exec_res.submit_count
         else:
-            real_submit_count = 1
+            # BLE001 finding #29: this used to be `real_submit_count = 1` - a
+            # fabricated counter for a run that had no executor at all, so no
+            # click and no submit. Step 6 then classified the *page*, not this
+            # run: on a vacancy whose page already showed a chat it wrote
+            # SUBMITTED, reported "Application submitted and verified on
+            # HeadHunter", sent the post-submit Telegram notification, and the
+            # duplicate guard skipped that vacancy forever. On a fresh vacancy
+            # it still reported REAL HH SUBMIT: 1 and "Submit executed but
+            # post-submit verification ambiguous".
+            #
+            # The CLI reaches this branch for real: application_runner_cmd
+            # drops evaluate_fn to None when ensure_hh_browser() fails, i.e.
+            # whenever Chrome is not up. No executor -> no submission.
+            return RunnerExecutionResult(
+                application_id=app_id,
+                vacancy_id=vac_id,
+                vacancy_title=vac_title,
+                company=company,
+                queue_ready_count=queue_ready_count,
+                queue_review_count=queue_review_count,
+                queue_submitted_count=queue_submitted_count,
+                selected_application=selected_app_label,
+                pre_submit_audit=audit_status,
+                navigation=nav_status,
+                questionnaire=quest_status,
+                submit_confirmation=False,
+                real_hh_submit=0,
+                post_submit_verification=RunnerPreCheckStatus.NOT_RUN,
+                final_application_state=current_state,
+                next_application_executed=False,
+                pipeline_py="NOT RUN",
+                reason=("No browser executor available (evaluate_fn is None) - application NOT "
+                        "submitted. Nothing was clicked and no state was changed; start the HH "
+                        "Chrome and run again."),
+            )
 
     # Step 6: Post-Submit Verification
     import time

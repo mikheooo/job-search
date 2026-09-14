@@ -2709,3 +2709,189 @@ def test_watcher_treats_a_key_less_auth_answer_as_not_authenticated(monkeypatch)
 
     assert res.blocked == 1, res
     assert len(res.errors) == 1, res
+
+
+# ---------------------------------------------------------------------------
+# Finding #29: the runner reported REAL HH SUBMIT: 1 for a run that had no
+# executor at all, and post-submit verification then classified the PAGE, not
+# this run - writing SUBMITTED and announcing it when nothing had been clicked.
+# ---------------------------------------------------------------------------
+
+def _runner_ready_app(vid: str = "135112049"):
+    """A vacancy + package + review + application that can_submit() accepts."""
+    from ai_assistant.application_review import (
+        ApplicationReview,
+        ReviewStatus,
+        compute_review_fingerprint,
+        save_application_review,
+    )
+    from ai_assistant.application_tracking import ApplicationStatus, set_application_status
+    from ai_assistant.schema import Vacancy
+
+    sid = f"hh:{vid}"
+    app_id = f"app_{vid}"
+    letter = ("Здравствуйте! Меня заинтересовала позиция. Обладаю многолетним опытом "
+              "разработки сервисов на Python, PostgreSQL, FastAPI и Docker, готов к интервью.")
+    db.init_db()
+    db.save_vacancy(Vacancy(
+        source="hh", source_job_id=vid, title="Старший разработчик Python",
+        company="TechCorp Solutions",
+        description="Разработка нагруженных сервисов на Python, PostgreSQL, FastAPI, Docker.",
+        job_url=f"https://hh.ru/vacancy/{vid}", location="Remote",
+    ))
+    pkg = {"vacancy_stable_id": sid, "cover_letter": letter,
+           "title": "Старший разработчик Python", "employer": "TechCorp Solutions",
+           "validation_status": "VALID"}
+    db.save_application_package(sid, "v1", json.dumps(pkg))
+    save_application_review(ApplicationReview(
+        vacancy_stable_id=sid, status=ReviewStatus.APPROVED,
+        form_fingerprint=compute_review_fingerprint(sid, pkg), review_id=f"rev_{vid}",
+    ))
+    db.save_hh_application({
+        "application_id": app_id, "vacancy_stable_id": sid, "vacancy_id": vid,
+        "title": "Старший разработчик Python", "employer": "TechCorp Solutions",
+        "draft": letter, "state": "READY_TO_SUBMIT",
+    })
+    set_application_status(sid, ApplicationStatus.READY_TO_APPLY)
+    return app_id, sid
+
+
+def _no_executor_but_verifier_sees_a_page(monkeypatch, *, page_shows_chat: bool):
+    """No executor for the runner, yet the verifier's own retry reads a page.
+
+    This is the divergence the old code turned into a fake submission: the
+    runner asks for the *vacancy* tab and gets nothing, while the verifier falls
+    back to any hh.ru tab and succeeds.
+    """
+    from ai_assistant import cli, hh_browser_launcher, hh_vacancy_navigator, telegram_notifier
+
+    notifications: list[str] = []
+
+    def fake_ev(script):
+        return json.dumps({
+            "url": "https://hh.ru/vacancy/135112049", "title": "Старший разработчик Python",
+            "is_chat": page_shows_chat, "has_responded_success": False,
+            "has_submit_btn": False, "has_apply_btn": False,
+        })
+
+    def resolve(endpoint, target=None, *a, **kw):
+        return fake_ev if target == "hh.ru" else None
+
+    monkeypatch.setattr(cli, "_default_hh_cdp_url", lambda: "http://127.0.0.1:9222")
+    monkeypatch.setattr(cli, "_resolve_hh_evaluate", resolve)
+    monkeypatch.setattr(hh_browser_launcher, "ensure_hh_browser", lambda **kw: {"ok": True})
+    monkeypatch.setattr(hh_vacancy_navigator, "ensure_open_vacancy_tab", lambda *a, **kw: None)
+    monkeypatch.setattr(telegram_notifier, "send_post_submit_notification",
+                        lambda **kw: notifications.append(kw.get("title", "?")))
+    return notifications
+
+
+def test_runner_without_an_executor_reports_zero_real_submits(monkeypatch):
+    """Measured before the fix: REAL HH SUBMIT: 1 with no click and no submit."""
+    from ai_assistant.hh_application_runner import run_application
+
+    app_id, _sid = _runner_ready_app()
+    _set_submit_allowed(True)
+    _no_executor_but_verifier_sees_a_page(monkeypatch, page_shows_chat=False)
+
+    res = run_application(app_id, confirm_submit=True, evaluate_fn=None)
+
+    assert res.real_hh_submit == 0, res
+    assert "NOT submitted" in res.reason, res.reason
+
+
+def test_runner_without_an_executor_does_not_mark_the_vacancy_submitted(monkeypatch):
+    """The worst variant: the page already shows a chat, so the old code wrote
+    SUBMITTED - and the duplicate guard then skipped that vacancy forever."""
+    from ai_assistant.hh_application_runner import run_application
+
+    app_id, sid = _runner_ready_app()
+    _set_submit_allowed(True)
+    _no_executor_but_verifier_sees_a_page(monkeypatch, page_shows_chat=True)
+
+    res = run_application(app_id, confirm_submit=True, evaluate_fn=None)
+
+    assert res.final_application_state != "SUBMITTED", res
+    assert (db.get_hh_application(app_id) or {}).get("state") != "SUBMITTED"
+    assert db.get_submission_claim(sid) is None or db.get_submission_claim(sid)["status"] != "SUBMITTED"
+
+
+def test_runner_without_an_executor_sends_no_submission_notification(monkeypatch):
+    """The old code sent "Application submitted" to Telegram for a run that
+    never touched a browser. This is an outward claim, so it gets its own test."""
+    from ai_assistant.hh_application_runner import run_application
+
+    app_id, _sid = _runner_ready_app()
+    _set_submit_allowed(True)
+    notifications = _no_executor_but_verifier_sees_a_page(monkeypatch, page_shows_chat=True)
+
+    run_application(app_id, confirm_submit=True, evaluate_fn=None)
+
+    assert notifications == [], notifications
+
+
+def test_runner_without_an_executor_does_not_verify_a_submit_it_never_made(monkeypatch):
+    """Step 6 used to run anyway, which is the mechanism that produced SUBMITTED."""
+    from ai_assistant.hh_application_runner import run_application
+
+    app_id, _sid = _runner_ready_app()
+    _set_submit_allowed(True)
+    _no_executor_but_verifier_sees_a_page(monkeypatch, page_shows_chat=True)
+
+    res = run_application(app_id, confirm_submit=True, evaluate_fn=None)
+
+    assert res.post_submit_verification.value == "NOT_RUN", res
+    assert res.navigation.value == "PASS"  # the dry URL check still ran
+
+
+def test_runner_with_an_executor_still_reaches_verification(monkeypatch):
+    """Counter-check: the new guard must not fire when a browser exists."""
+    from types import SimpleNamespace
+
+    from ai_assistant import hh_application_runner as hr
+    from ai_assistant import hh_submission
+
+    app_id, _sid = _runner_ready_app("135112050")
+    _set_submit_allowed(True)
+    # The navigation pre-check is not what this test is about; the runner
+    # imports it at module level, so patch it there.
+    monkeypatch.setattr(
+        hr, "verify_and_navigate_hh_vacancy",
+        lambda **kw: SimpleNamespace(ok=True, status="OK", reason="nav ok"))
+    monkeypatch.setattr(
+        hh_submission, "execute_hh_submission",
+        lambda **kw: SimpleNamespace(status="OK", submit_count=1, reason="submitted",
+                                     gate_check_result=None))
+    monkeypatch.setattr(
+        hr, "verify_hh_submitted_application",
+        lambda *a, **kw: SimpleNamespace(
+            verification_verdict="PASS", evidence_text="responded-success", hh_status="responded-success",
+            vacancy_url="https://hh.ru/vacancy/135112050", timestamp="2026-09-14T00:00:00", reason="ok"))
+
+    res = hr.run_application(app_id, confirm_submit=True, evaluate_fn=lambda js: "{}")
+
+    assert "No browser executor" not in res.reason, res.reason
+    assert res.real_hh_submit == 1, res
+
+
+def test_questionnaire_already_responded_does_not_invent_a_submit_count(monkeypatch):
+    """Sibling of #29: the ALREADY_RESPONDED path claimed submit_count = 1 while
+    click_count stayed 0 - a submit with no click."""
+    from types import SimpleNamespace
+
+    from ai_assistant import hh_vacancy_navigator
+    from ai_assistant.hh_questionnaire import submit_questionnaire_response
+
+    monkeypatch.setattr(
+        hh_vacancy_navigator, "verify_and_navigate_hh_vacancy",
+        lambda **kw: SimpleNamespace(ok=False, status="ALREADY_RESPONDED",
+                                     reason="Application already sent"))
+
+    qid = _save_questionnaire("q29_already_responded")
+    res = submit_questionnaire_response(
+        questionnaire_id=qid, human_answers={"q_personal": "123456789012"},
+        confirm_submit=True, evaluate_fn=lambda js: "{}")
+
+    assert res.verdict == "ALREADY_SUBMITTED", res
+    assert res.submit_count == 0, res
+    assert res.click_count == 0, res

@@ -664,7 +664,12 @@ def submit_questionnaire_response(
                 report.reason = f"Application already submitted on HeadHunter: {nav_res.reason}"
                 report.status = HHQuestionStatus.SUBMITTED.value
                 report.verdict = "ALREADY_SUBMITTED"
-                report.submit_count = 1
+                # BLE001 finding #29 (sibling): this used to claim
+                # submit_count = 1 while click_count stayed 0 - a submit with
+                # no click, in a run that clicked nothing. The verdict and the
+                # SUBMITTED status already say the application is on HH; the
+                # counter is read by a human as "Real Submit Count" and must
+                # count THIS run.
                 db.update_hh_questionnaire_answers(questionnaire_id, human_answers, new_status=HHQuestionStatus.SUBMITTED.value)
                 return report
             report.reason = f"Vacancy pre-submit check failed: {nav_res.reason}"
