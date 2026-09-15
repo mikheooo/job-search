@@ -3247,3 +3247,115 @@ def test_preflight_tolerates_a_review_that_never_had_gate_data(monkeypatch, tmp_
     rep = _ble32_preflight(monkeypatch, tmp_path, None)
 
     assert rep.status == SubmissionStatus.READY_TO_SUBMIT
+
+
+# ---------------------------------------------------------------------------
+# BLE001 finding #33: an application_queue row whose JSON cannot be parsed was
+# invisible to everything. list_queue() dropped it with a bare `continue`,
+# get_queue_item() answered None - the same answer as "not in the queue" - and
+# the integrity audit, which validates verification JSON for exactly this
+# reason, had no equivalent check for the queue. Measured on a 2-row queue with
+# one corrupt row: audit errors 0 -> 1, while the report's own queue_items
+# count said 2 and the audit had only been able to read 1.
+# ---------------------------------------------------------------------------
+
+_BLE33_GOOD = "hh:999000311"
+_BLE33_BAD = "hh:999000312"
+
+
+def _ble33_queue_item(vac, rank):
+    from ai_assistant.application_queue import QUEUE_VERSION, QueueItem
+
+    return QueueItem(
+        vacancy_stable_id=vac,
+        canonical_id=f"canon_{vac}",
+        representative_vacancy_stable_id=vac,
+        priority_score=80,
+        rank=rank,
+        company="Acme",
+        title="Dev",
+        source="hh",
+        queue_version=QUEUE_VERSION,
+    )
+
+
+def _ble33_seed(monkeypatch, tmp_path, *, corrupt=True):
+    """A two-row v2 queue, optionally with one row's JSON corrupted."""
+    from ai_assistant import config
+    from ai_assistant.application_queue import QUEUE_VERSION, save_queue_item
+
+    monkeypatch.setattr(config, "DB_FILE", str(tmp_path / "ble33.db"), raising=False)
+    db.init_db()
+    save_queue_item(_ble33_queue_item(_BLE33_GOOD, 0))
+    save_queue_item(_ble33_queue_item(_BLE33_BAD, 1))
+    if corrupt:
+        conn = db.get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE application_queue SET queue_json=? WHERE vacancy_stable_id=?",
+            ("{'broken': ", _BLE33_BAD),
+        )
+        conn.commit()
+        conn.close()
+    return QUEUE_VERSION
+
+
+def test_list_queue_names_the_row_it_could_not_read(monkeypatch, tmp_path, caplog):
+    import logging
+
+    from ai_assistant.application_queue import list_queue
+
+    version = _ble33_seed(monkeypatch, tmp_path)
+    with caplog.at_level(logging.WARNING, logger="ai_assistant.application_queue"):
+        items = list_queue(queue_version=version)
+
+    # The readable rows still come back...
+    assert [i.vacancy_stable_id for i in items] == [_BLE33_GOOD]
+    # ...and the dropped one is named instead of vanishing in silence.
+    assert _BLE33_BAD in caplog.text
+    assert "could not be read" in caplog.text
+
+
+def test_get_queue_item_says_so_when_the_row_is_unreadable(monkeypatch, tmp_path, caplog):
+    import logging
+
+    from ai_assistant.application_queue import get_queue_item
+
+    version = _ble33_seed(monkeypatch, tmp_path)
+    with caplog.at_level(logging.WARNING, logger="ai_assistant.application_queue"):
+        item = get_queue_item(_BLE33_BAD, version)
+
+    assert item is None
+    assert _BLE33_BAD in caplog.text
+    assert "unreadable" in caplog.text
+
+
+def test_integrity_audit_reports_unreadable_queue_json(monkeypatch, tmp_path):
+    from ai_assistant.application_integrity import run_integrity_audit
+
+    _ble33_seed(monkeypatch, tmp_path)
+    rep = run_integrity_audit(scope="full")
+
+    bad = [i for i in rep.issues if i.code == "INVALID_QUEUE_JSON"]
+    assert [i.vacancy_stable_id for i in bad] == [_BLE33_BAD]
+    assert rep.error_count >= 1
+
+
+def test_integrity_audit_is_quiet_on_a_healthy_queue(monkeypatch, tmp_path):
+    """Counter-check: readable rows must not produce this issue."""
+    from ai_assistant.application_integrity import run_integrity_audit
+
+    _ble33_seed(monkeypatch, tmp_path, corrupt=False)
+    rep = run_integrity_audit(scope="full")
+
+    assert [i for i in rep.issues if i.code == "INVALID_QUEUE_JSON"] == []
+
+
+def test_list_queue_still_returns_every_readable_row(monkeypatch, tmp_path):
+    """Counter-check: the reader is not allowed to become stricter."""
+    from ai_assistant.application_queue import list_queue
+
+    version = _ble33_seed(monkeypatch, tmp_path, corrupt=False)
+    items = list_queue(queue_version=version)
+
+    assert {i.vacancy_stable_id for i in items} == {_BLE33_GOOD, _BLE33_BAD}

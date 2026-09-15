@@ -492,7 +492,16 @@ def get_queue_item(vacancy_stable_id: str, queue_version: str | None = None) -> 
     if row and row[0]:
         try:
             return QueueItem.model_validate_json(row[0])
-        except Exception:
+        except Exception as e:
+            # BLE001 finding #33: returning None here is indistinguishable from
+            # "this vacancy is not in the queue" - the row exists and could not
+            # be read. Say which one, so the failure leaves a trace; the
+            # integrity audit reports it as INVALID_QUEUE_JSON.
+            logger.warning(
+                "application_queue: queue_json for %s is unreadable (%s: %s); "
+                "the item is treated as absent",
+                vacancy_stable_id, type(e).__name__, e,
+            )
             return None
     return None
 
@@ -502,17 +511,27 @@ def list_queue(limit: int = 50, queue_version: str | None = None) -> list[QueueI
     conn = get_connection()
     cur = conn.cursor()
     if queue_version:
-        cur.execute("SELECT queue_json FROM application_queue WHERE queue_version=? ORDER BY rank ASC LIMIT ?", (queue_version, limit))
+        cur.execute("SELECT queue_json, vacancy_stable_id FROM application_queue WHERE queue_version=? ORDER BY rank ASC LIMIT ?", (queue_version, limit))
     else:
-        cur.execute("SELECT queue_json FROM application_queue ORDER BY rank ASC LIMIT ?", (limit,))
+        cur.execute("SELECT queue_json, vacancy_stable_id FROM application_queue ORDER BY rank ASC LIMIT ?", (limit,))
     rows = cur.fetchall()
     conn.close()
     res = []
+    skipped: list[str] = []
     for r in rows:
         try:
             res.append(QueueItem.model_validate_json(r[0]))
-        except Exception:
-            continue
+        except Exception as e:
+            # BLE001 finding #33: a row that cannot be read used to disappear
+            # from this list without a word, so every caller - including the
+            # integrity audit, whose job is to notice exactly this - saw a
+            # shorter queue that looked perfectly plausible.
+            skipped.append(f"{r[1]} ({type(e).__name__}: {e})")
+    if skipped:
+        logger.warning(
+            "application_queue: %d of %d queue row(s) could not be read: %s",
+            len(skipped), len(rows), "; ".join(skipped),
+        )
     return res
 
 

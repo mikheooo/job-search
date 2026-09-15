@@ -315,6 +315,40 @@ class IntegrityAuditor:
                     {"submission_id": sub_id, "version": version, "status": status, "error": str(exc)},
                 )
 
+    def _check_queue_json_records(self, tracked_sids: set[str]):
+        """Validate persisted queue JSON independently of the model getters.
+
+        BLE001 finding #33: list_queue() drops a row it cannot parse and
+        get_queue_item() answers None for it, so every queue check in this
+        auditor was blind to exactly the rows that are broken - while
+        queue_items counted them by SQL, so the report looked consistent.
+        Verifications already had this check (INVALID_VERIFICATION_JSON);
+        the queue did not.
+        """
+        from .application_queue import QueueItem
+
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT vacancy_stable_id, canonical_id, queue_json FROM application_queue")
+        rows = cur.fetchall()
+        conn.close()
+        for sid, cid, raw in rows:
+            if self.scope == "tracked" and sid not in tracked_sids:
+                continue
+            try:
+                payload = json.loads(raw) if raw else None
+                parsed = QueueItem.model_validate(payload)
+                if parsed.vacancy_stable_id != sid:
+                    raise ValueError("JSON vacancy_stable_id does not match the indexed column")
+            except Exception as exc:
+                self._err(
+                    "INVALID_QUEUE_JSON",
+                    sid,
+                    cid,
+                    "Queue item has unreadable persisted JSON",
+                    {"error": str(exc)},
+                )
+
     def _check_orphan_artifacts(self, cid: str, aliases: list[tuple[Any, str]]):
         for _, sid in aliases:
             tr = get_application_status(sid)
@@ -449,6 +483,7 @@ class IntegrityAuditor:
         if self.scope == "full":
             self._check_global_orphans()
         self._check_verification_json_records(tracked_sids)
+        self._check_queue_json_records(tracked_sids)
         self.issues.sort()
         err = sum(1 for i in self.issues if i.severity == IntegritySeverity.ERROR)
         warn = sum(1 for i in self.issues if i.severity == IntegritySeverity.WARNING)
