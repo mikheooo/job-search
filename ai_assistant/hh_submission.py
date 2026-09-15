@@ -1021,7 +1021,18 @@ class HHSubmissionGates:
         if not g11_pass:
             return GateCheckResult(passed=False, failed_gate=GateName.GATE_HUMAN_CONFIRMED, reason="Explicit human confirmation (--confirm-submit) required", gate_results=gate_results)
 
-        return GateCheckResult(passed=True, reason="All 11 gates passed successfully", gate_results=gate_results)
+        # BLE001 finding #36: this message used to be the constant "All 11 gates
+        # passed successfully". Measured on a green path, gate_results held
+        # exactly the 11 members of GateName, so the sentence was true - but
+        # nothing tied the number to the results, and a gate declared in
+        # GateName and never evaluated would still be reported as passed. The
+        # count is now read off the results, and the test below refuses to let
+        # the two disagree.
+        return GateCheckResult(
+            passed=True,
+            reason=f"All {len(gate_results)} gates passed successfully",
+            gate_results=gate_results,
+        )
 
 
 @dataclass

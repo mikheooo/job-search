@@ -3666,3 +3666,36 @@ def test_check_live_page_carries_the_control_counts_into_its_result():
     # The page itself is still the right page: this is data, not a verdict.
     assert res.is_ok is True
     assert res.status == "READY"
+
+
+# ---------------------------------------------------------------------------
+# Finding #36 - the pass message claimed a number it never counted
+# ---------------------------------------------------------------------------
+# "All 11 gates passed successfully" was a constant. Measured on a green path:
+# gate_results held exactly the 11 members of GateName, so the sentence was
+# true - but nothing tied the number to the results, and a gate declared in
+# GateName and never evaluated would still have been reported as passed. Same
+# question as #34, one level up: is this number a count, or a claim?
+
+def test_the_pass_message_counts_the_gates_that_actually_ran(monkeypatch):
+    from ai_assistant.hh_submission import GateName, HHSubmissionGates
+
+    sid, url, snapshot, profile = _gate18_inputs("999000806")
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
+    monkeypatch.setattr(db, "is_submit_paused", lambda: False)
+
+    res = HHSubmissionGates.check_all_gates(
+        sid, url, snapshot, human_confirmed=True, dry_run=False,
+        candidate_profile=profile,
+    )
+
+    assert res.passed is True, res.reason
+    declared = {g.value for g in GateName}
+    assert set(res.gate_results) == declared, (
+        "a gate declared in GateName was never evaluated, so the pass message "
+        "would claim more than was checked. Missing: "
+        f"{sorted(declared - set(res.gate_results))}"
+    )
+    # Derived from the results, not typed in: adding a 12th gate without
+    # evaluating it breaks the line above, and evaluating it moves this number.
+    assert res.reason == f"All {len(res.gate_results)} gates passed successfully", res.reason
