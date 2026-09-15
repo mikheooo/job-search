@@ -330,12 +330,26 @@ def preflight_submission(
         return report
 
     # Also check against the review's vacancy (the approved one).
-    gate_vacancy = ""
-    try:
-        gate_data = entry.get("gate") or {}
-        gate_vacancy = gate_data.get("vacancy_stable_id") or ""
-    except Exception:
+    #
+    # BLE001 finding #32: this used to be a try/except that fell back to "",
+    # and "" skips the comparison below - so a review entry whose "gate" field
+    # was not a mapping silently disabled the check. Measured, same mismatched
+    # vacancy both times: a dict produced FAIL_CLOSED, a string produced
+    # READY_TO_SUBMIT. A field that is absent (None) is legitimate - reviews
+    # written before gate data existed - and stays a skip; anything else is an
+    # anomaly and fails closed.
+    gate_data = entry.get("gate")
+    if gate_data is None:
         gate_vacancy = ""
+    elif isinstance(gate_data, dict):
+        gate_vacancy = gate_data.get("vacancy_stable_id") or ""
+    else:
+        report.status = SubmissionStatus.FAIL_CLOSED
+        report.reason = (
+            f"review gate record is unreadable ({type(gate_data).__name__}), "
+            "so the approved vacancy cannot be confirmed"
+        )
+        return report
     if gate_vacancy and gate_vacancy != report.vacancy_stable_id:
         report.status = SubmissionStatus.FAIL_CLOSED
         report.reason = f"vacancy_stable_id mismatch vs approved review: {gate_vacancy} != {report.vacancy_stable_id}"

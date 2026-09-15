@@ -74,10 +74,24 @@ class SubmissionEvidence:
     latest_verification_status: str | None = None
     dom_already_applied: bool = False
     claim_status: str | None = None
+    # BLE001 finding #31: sources that could not be read. A source that
+    # raised is not "no evidence" - it is "unknown", and unknown blocks.
+    read_errors: list[str] = field(default_factory=list)
 
     @property
     def blocked_reasons(self) -> list[str]:
         reasons: list[str] = []
+        # BLE001 finding #31: first, before any evidence-based reason, admit
+        # that the picture is incomplete. Measured: with all five sources
+        # raising, this property used to come back empty, so can_submit()
+        # answered True and the duplicate-submission guard in
+        # browser_executor let the run continue. A guard that answers
+        # "go ahead" when it could not look is not a guard.
+        if self.read_errors:
+            reasons.append(
+                "Submission evidence could not be read from "
+                f"{len(self.read_errors)} source(s): " + "; ".join(self.read_errors)
+            )
         if self.dom_already_applied:
             reasons.append("DOM live page indicates already responded to vacancy")
 
@@ -106,7 +120,14 @@ class SubmissionEvidence:
 
     @property
     def is_already_applied(self) -> bool:
-        """True if ANY source indicates an existing, confirmed, or ambiguous submission."""
+        """True if ANY source indicates an existing submission, or if a source
+        could not be read.
+
+        BLE001 finding #31: the second half is deliberate. "I could not read
+        the evidence" and "there is no evidence" are different answers, and
+        only the caller's safety depends on telling them apart - so an
+        unreadable source counts as blocking, not as clean.
+        """
         return len(self.blocked_reasons) > 0
 
     @property
@@ -127,7 +148,15 @@ class SubmissionEvidence:
 
 
 def get_submission_evidence(vacancy_stable_id: str, dom_already_applied: bool = False) -> SubmissionEvidence:
-    """Collect evidence across all tables fail-closed on DB errors."""
+    """Collect evidence across all tables, fail-closed on DB errors.
+
+    BLE001 finding #31: every source that raises is recorded in
+    ``read_errors`` and surfaces through ``blocked_reasons``, so
+    ``can_submit()`` refuses and ``is_already_applied`` stays True. The
+    docstring claimed this all along; the code did the opposite - it logged
+    a warning and carried on with an empty value, which is indistinguishable
+    from "this vacancy was never applied to".
+    """
     evidence = SubmissionEvidence(vacancy_stable_id=vacancy_stable_id, dom_already_applied=dom_already_applied)
 
     # 1. Tracking status
@@ -137,6 +166,7 @@ def get_submission_evidence(vacancy_stable_id: str, dom_already_applied: bool = 
             evidence.tracking_status = track.status.value if hasattr(track.status, "value") else str(track.status)
     except Exception as e:
         logger.warning("Failed to query tracking status for %s: %s", vacancy_stable_id, e)
+        evidence.read_errors.append(f"application_tracking: {type(e).__name__}: {e}")
 
     # 2. application_submissions
     try:
@@ -149,6 +179,7 @@ def get_submission_evidence(vacancy_stable_id: str, dom_already_applied: bool = 
             })
     except Exception as e:
         logger.warning("Failed to query application_submissions for %s: %s", vacancy_stable_id, e)
+        evidence.read_errors.append(f"application_submissions: {type(e).__name__}: {e}")
 
     # 3. submission_verifications
     try:
@@ -164,6 +195,7 @@ def get_submission_evidence(vacancy_stable_id: str, dom_already_applied: bool = 
             evidence.latest_verification_status = str(row[0])
     except Exception as e:
         logger.warning("Failed to query submission_verifications for %s: %s", vacancy_stable_id, e)
+        evidence.read_errors.append(f"submission_verifications: {type(e).__name__}: {e}")
 
     # 4. hh_applications
     try:
@@ -172,6 +204,7 @@ def get_submission_evidence(vacancy_stable_id: str, dom_already_applied: bool = 
             evidence.hh_application_state = str(hh_app.get("state"))
     except Exception as e:
         logger.warning("Failed to query hh_applications for %s: %s", vacancy_stable_id, e)
+        evidence.read_errors.append(f"hh_applications: {type(e).__name__}: {e}")
 
     # 5. submission_claims
     try:
@@ -180,6 +213,7 @@ def get_submission_evidence(vacancy_stable_id: str, dom_already_applied: bool = 
             evidence.claim_status = str(claim.get("status"))
     except Exception as e:
         logger.warning("Failed to query submission_claims for %s: %s", vacancy_stable_id, e)
+        evidence.read_errors.append(f"submission_claims: {type(e).__name__}: {e}")
 
     return evidence
 

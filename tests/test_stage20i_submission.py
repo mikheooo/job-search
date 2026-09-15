@@ -439,6 +439,20 @@ def test_no_db_writes(monkeypatch):
     # submit path opens a connection.
     monkeypatch.setattr(db, "is_submit_paused", lambda: False)
     monkeypatch.setattr(db, "get_connection", forbidden)
+    # BLE001 finding #31: the second read this path is allowed to make is the
+    # duplicate-submission check (gate 9). It has always read the DB here; what
+    # changed is that failing to read it is no longer mistaken for "never
+    # applied", so it has to be stubbed explicitly instead of failing silently.
+    # An empty evidence object is exactly what a healthy database returns for a
+    # vacancy with no history. Everything below still proves this test's point:
+    # nothing else in the submit path opens a connection.
+    from ai_assistant.submission_state import SubmissionEvidence
+
+    monkeypatch.setattr(
+        "ai_assistant.submission_state.get_submission_evidence",
+        lambda vacancy_stable_id, **k: SubmissionEvidence(
+            vacancy_stable_id=vacancy_stable_id),
+    )
     gate, plan, orch, pkg, store, rid = _approved_review()
     dom = FakeDOM(body_after="Вы откликнулись")
     rep = submit_application(store, rid, gate.fingerprint, pkg, plan, orch, dom.evaluate)

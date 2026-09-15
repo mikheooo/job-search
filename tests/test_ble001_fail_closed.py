@@ -3051,3 +3051,199 @@ def test_audit_cli_still_reports_a_genuinely_empty_history(monkeypatch, tmp_path
     out = capsys.readouterr().out
     assert code == 0
     assert "No audit events found." in out
+
+
+# ---------------------------------------------------------------------------
+# BLE001 finding #31: the duplicate-submission guard read "cannot look" as
+# "nothing there". get_submission_evidence() logged a warning for every source
+# that raised and carried on with an empty value, so a database it could not
+# read produced is_already_applied == False and can_submit() == (True, None) -
+# and the two guards in browser_executor let the run continue towards a second
+# application.
+# ---------------------------------------------------------------------------
+
+_BLE31_VAC = "hh:999000222"
+
+
+def _ble31_break_reads(monkeypatch):
+    """Make every source get_submission_evidence() reads raise."""
+
+    def boom(*a, **k):
+        raise _Boom("database is locked")
+
+    from ai_assistant import submission_state as ss
+
+    monkeypatch.setattr(db, "get_connection", boom)
+    monkeypatch.setattr(db, "get_all_submissions", boom)
+    monkeypatch.setattr(db, "get_hh_application_by_vacancy", boom)
+    monkeypatch.setattr(db, "get_submission_claim", boom)
+    monkeypatch.setattr(ss, "get_application_status", boom)
+
+
+def _ble31_fresh_db(monkeypatch, tmp_path, name="ble31.db"):
+    from ai_assistant import config
+
+    monkeypatch.setattr(config, "DB_FILE", str(tmp_path / name), raising=False)
+    db.init_db()
+
+
+def test_evidence_records_every_source_it_could_not_read(monkeypatch, tmp_path):
+    from ai_assistant.submission_state import get_submission_evidence
+
+    _ble31_fresh_db(monkeypatch, tmp_path)
+    _ble31_break_reads(monkeypatch)
+
+    ev = get_submission_evidence(_BLE31_VAC)
+
+    assert len(ev.read_errors) == 5, ev.read_errors
+    for name in ("application_tracking", "application_submissions",
+                 "submission_verifications", "hh_applications", "submission_claims"):
+        assert any(name in err for err in ev.read_errors), name
+    assert ev.is_already_applied is True
+    can, reason = ev.can_submit()
+    assert can is False
+    assert "could not be read" in reason
+    assert "database is locked" in reason
+
+
+def test_evidence_is_silent_about_read_errors_on_a_healthy_database(monkeypatch, tmp_path):
+    """Counter-check: a working database produces no read errors at all."""
+    from ai_assistant.submission_state import get_submission_evidence
+
+    _ble30_db(monkeypatch, tmp_path)  # one complete submission history
+    ev = get_submission_evidence(_BLE30_VAC)
+
+    assert ev.read_errors == []
+    assert ev.is_already_applied is True
+    can, reason = ev.can_submit()
+    assert can is False
+    # ...and the refusal names the evidence, not a broken read.
+    assert "could not be read" not in reason
+    assert "SUBMITTED" in reason
+
+
+def test_evidence_stays_permissive_when_there_is_genuinely_nothing(monkeypatch, tmp_path):
+    """Counter-check: an empty history is not a failure.
+
+    This is the whole point of the fix - "I could not read the evidence" and
+    "there is no evidence" must not collapse into one answer.
+    """
+    from ai_assistant.submission_state import get_submission_evidence
+
+    _ble30_db(monkeypatch, tmp_path, seed=False)
+    ev = get_submission_evidence(_BLE31_VAC)
+
+    assert ev.read_errors == []
+    assert ev.is_already_applied is False
+    assert ev.can_submit() == (True, None)
+
+
+def test_duplicate_guard_blocks_when_evidence_is_unreadable(monkeypatch, tmp_path):
+    _ble31_fresh_db(monkeypatch, tmp_path, "ble31_guard.db")
+    # init_db() itself goes through db.get_connection(), which we are about to
+    # break; the guard under test sits after it.
+    monkeypatch.setattr(be, "init_db", lambda: None)
+    _ble31_break_reads(monkeypatch)
+
+    res = be.submit_application_in_browser(_BLE31_VAC, dry_run=True)
+
+    assert res.status == "BLOCKED"
+    assert "Cannot verify whether this vacancy was already applied" in res.error
+    assert "database is locked" in res.error
+
+
+def test_duplicate_guard_still_lets_a_clean_vacancy_through(monkeypatch, tmp_path):
+    """Counter-check: the new branch blocks unreadable evidence, not everything."""
+    _ble31_fresh_db(monkeypatch, tmp_path, "ble31_clean.db")
+
+    res = be.submit_application_in_browser(_BLE31_VAC, dry_run=True)
+
+    assert "Cannot verify whether this vacancy was already applied" not in res.error
+    # It got past the guard and stopped on the missing vacancy row instead.
+    assert "Vacancy not found" in res.error
+
+
+# ---------------------------------------------------------------------------
+# BLE001 finding #32: in preflight_submission(), the "is this the vacancy the
+# human approved?" check sat behind a try/except that fell back to "". An empty
+# value skips the comparison, so a review entry whose "gate" field was not a
+# mapping silently disabled the check. Measured with the same mismatched
+# vacancy: a dict gave FAIL_CLOSED, a string gave READY_TO_SUBMIT.
+# ---------------------------------------------------------------------------
+
+
+class _StubReviewStore:
+    def __init__(self, entry):
+        self._entry = entry
+
+    def get(self, review_id):
+        return self._entry
+
+
+def _ble32_preflight(monkeypatch, tmp_path, gate_value, package_vac="hh:136591579"):
+    import json as _json
+
+    from ai_assistant import config
+    from ai_assistant import hh_submission as hs
+    from ai_assistant.hh_submission import clear_submitted_reviews, preflight_submission
+
+    monkeypatch.setattr(config, "DB_FILE", str(tmp_path / "ble32.db"), raising=False)
+    db.init_db()
+    clear_submitted_reviews()
+    _set_submit_allowed(True)
+
+    url = f"https://hh.ru/applicant/vacancy_response?vacancyId={package_vac.split(':')[1]}"
+
+    def evaluate(expression: str) -> str:
+        if expression == hs._URL_JS:
+            return _json.dumps({"url": url})
+        if expression == hs._SUBMIT_BTN_JS:
+            return _json.dumps({"found": True, "disabled": False, "tag": "BUTTON"})
+        raise _Boom(f"unexpected expression: {expression[:60]}")
+
+    fingerprint = "f" * 64
+    entry = {
+        "state": "HUMAN_APPROVED",
+        "fingerprint": fingerprint,
+        "review_id": "rid-1",
+        "gate": gate_value,
+    }
+    package = SimpleNamespace(vacancy_stable_id=package_vac, validation_status="VALID")
+    plan = SimpleNamespace(status="VALID", unresolved=[])
+    orchestration = SimpleNamespace(
+        verdict="VERIFIED", failed_operations=0, skipped_operations=0, errors=[])
+    return preflight_submission(
+        _StubReviewStore(entry), "rid-1", fingerprint, package, plan, orchestration, evaluate)
+
+
+def test_preflight_fails_closed_when_the_review_gate_field_is_unreadable(monkeypatch, tmp_path):
+    from ai_assistant.hh_submission import SubmissionStatus
+
+    rep = _ble32_preflight(monkeypatch, tmp_path, '{"vacancy_stable_id": "hh:999999999"}')
+
+    assert rep.status == SubmissionStatus.FAIL_CLOSED
+    assert "unreadable" in rep.reason
+    assert rep.submit_count == 0
+
+
+def test_preflight_still_catches_a_mismatch_in_a_well_formed_field(monkeypatch, tmp_path):
+    """Counter-check: the honest case keeps its own, more precise refusal."""
+    from ai_assistant.hh_submission import SubmissionStatus
+
+    rep = _ble32_preflight(monkeypatch, tmp_path, {"vacancy_stable_id": "hh:999999999"})
+
+    assert rep.status == SubmissionStatus.FAIL_CLOSED
+    assert "mismatch" in rep.reason
+
+
+def test_preflight_tolerates_a_review_that_never_had_gate_data(monkeypatch, tmp_path):
+    """Counter-check: an absent field is legitimate - reviews predate gate data.
+
+    Only "present but unreadable" is an anomaly; absence must not block a
+    submission that is otherwise ready.
+    """
+    from ai_assistant.hh_submission import SubmissionStatus
+
+    rep = _ble32_preflight(monkeypatch, tmp_path, None)
+
+    assert rep.status == SubmissionStatus.READY_TO_SUBMIT

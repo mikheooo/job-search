@@ -2388,6 +2388,21 @@ def submit_application_in_browser(
     # Check if already submitted
     from .submission_state import get_submission_evidence
     evidence = get_submission_evidence(vacancy_stable_id)
+    if evidence.read_errors:
+        # BLE001 finding #31: this guard exists to stop a duplicate
+        # application, and it used to answer "not applied yet" whenever it
+        # could not read its evidence - the same shape as finding #4. Refuse,
+        # and say which read failed, so the operator sees a broken database
+        # rather than a vacancy that looks untouched.
+        return SubmitResult(
+            vacancy_stable_id=vacancy_stable_id,
+            submission_id=submission_id,
+            status="BLOCKED",
+            error=("Cannot verify whether this vacancy was already applied - "
+                   "submission evidence is unreadable: "
+                   + "; ".join(evidence.read_errors)),
+            executor_version="v1",
+        )
     if evidence.is_already_applied:
         return SubmitResult(
             vacancy_stable_id=vacancy_stable_id,
@@ -2551,6 +2566,21 @@ def submit_application_in_browser(
     # Check if already submitted
     from .submission_state import get_submission_evidence
     evidence = get_submission_evidence(vacancy_stable_id)
+    if evidence.read_errors:
+        # BLE001 finding #31: this guard exists to stop a duplicate
+        # application, and it used to answer "not applied yet" whenever it
+        # could not read its evidence - the same shape as finding #4. Refuse,
+        # and say which read failed, so the operator sees a broken database
+        # rather than a vacancy that looks untouched.
+        return SubmitResult(
+            vacancy_stable_id=vacancy_stable_id,
+            submission_id=submission_id,
+            status="BLOCKED",
+            error=("Cannot verify whether this vacancy was already applied - "
+                   "submission evidence is unreadable: "
+                   + "; ".join(evidence.read_errors)),
+            executor_version="v1",
+        )
     if evidence.is_already_applied:
         return SubmitResult(
             vacancy_stable_id=vacancy_stable_id,
