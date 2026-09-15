@@ -907,8 +907,34 @@ class HHSubmissionGates:
         }
 
         # Gate 8: GATE_NO_UNKNOWN_QUESTIONS
+        #
+        # BLE001 finding #34: `fields` is built from the application package
+        # (`form_snapshot["fields"] = pkg_data.get("questions") or []`), never
+        # from the page. On a vacancy with screening questions nothing fills
+        # that list, so the loop below ran over an empty set and reported
+        # "All questions resolved" while the page was holding eleven questions
+        # nobody had read. Measured: on a fresh vacancy whose screening form was
+        # not filled, the live check said READY and all 11 gates said
+        # "All 11 gates passed successfully".
+        #
+        # The live inspection now counts the response form's own answer
+        # controls (hh.ru names them "task_*"). If the page holds them and the
+        # package carries no questions to check them against, that is not "no
+        # questions" - it is "questions we did not read". Fail closed.
         g8_err = None
         fields = form_snapshot.get("fields", [])
+        page_answer_controls = int(getattr(live_page_result, "screening_control_count", 0) or 0)
+        if page_answer_controls and not fields:
+            g8_err = GateCheckResult(
+                passed=False,
+                failed_gate=GateName.GATE_NO_UNKNOWN_QUESTIONS,
+                reason=(
+                    f"The page holds {page_answer_controls} answer control(s) of the "
+                    "application form, but no questions were collected for this "
+                    "vacancy - refusing to submit a form we cannot fill"
+                ),
+                details={"page_answer_controls": page_answer_controls, "package_questions": 0},
+            )
         for f in fields:
             f_type = f.get("type", "")
             label = f.get("label", "")
@@ -1269,14 +1295,37 @@ def execute_hh_submission(
         submission_id=sub_id,
     )
 
-    submit_click_js = """// hh_submit_click
+    from .hh_live_page_checks import _inject_screening_guard
+
+    submit_click_js = _inject_screening_guard("""// hh_submit_click
 (() => {
+        // BLE001 finding #34, second layer. The gates above read the question
+        // list from the application package; this reads the page itself, at the
+        // moment of the mutation. On a vacancy with screening questions the
+        // popup's submit button does not exist yet, so the selector below falls
+        // through to the "Откликнуться" link, clicks it, and reports
+        // {ok: true} for a click that cannot have submitted anything. Refusing
+        // here also covers a page that changed between the gate check and this
+        // click, and any future caller that skips the gates.
+        // The counting block is shared verbatim with the live inspection
+        // (ai_assistant/hh_live_page_checks.py), so the two cannot drift.
+        __SCREENING_GUARD_JS__
+        if (unfilledNames.length) {
+            return JSON.stringify({
+                ok: false,
+                refused: true,
+                reason: 'unanswered_screening_questions: ' + unfilledNames.length +
+                        ' answer field(s) of the application form are not filled',
+                unanswered_count: unfilledNames.length,
+                unanswered_sample: unfilledNames.slice(0, 5)
+            });
+        }
         const submitBtn = document.querySelector('[data-qa*="response-submit-popup"], [data-qa*="response-submit"], button[type="submit"], [data-qa="vacancy-response-link-top"], [data-qa="vacancy-response-link-bottom"]');
         if (!submitBtn) return JSON.stringify({ ok: false, reason: 'Submit or Apply button not found in DOM' });
         if (submitBtn.disabled) return JSON.stringify({ ok: false, reason: 'Submit button is disabled' });
         submitBtn.click();
         return JSON.stringify({ ok: true });
-    })()"""
+    })()""")
 
     try:
         raw_click = evaluate_fn(submit_click_js)
@@ -1341,7 +1390,15 @@ def execute_hh_submission(
 
     if not click_res.get("ok"):
         reason_str = click_res.get("reason", "unknown")
-        is_pre_click = "not found in DOM" in reason_str or "disabled" in reason_str
+        # BLE001 finding #34: a refusal we made ourselves is not an ambiguous
+        # outcome - no click was executed. Until now the only way to tell "we
+        # did not click" from "we may have clicked" was substring-matching the
+        # human-readable reason, so a new refusal reason landed in AMBIGUOUS: a
+        # claim that the application may be on HH when nothing was sent, plus a
+        # burned one-shot attempt. The explicit marker does not depend on the
+        # wording; the substrings stay for the older reasons.
+        refused = bool(click_res.get("refused"))
+        is_pre_click = refused or "not found in DOM" in reason_str or "disabled" in reason_str
         new_status = "FAILED_SAFE" if is_pre_click else "AMBIGUOUS"
         db.update_submission_claim(
             vacancy_stable_id,

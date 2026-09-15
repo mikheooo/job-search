@@ -22,7 +22,70 @@ logger = logging.getLogger(__name__)
 
 _HH_NUMERIC_ID_PATTERN = re.compile(r"(?:hh:|/vacancy/|vacancyId=|^)(\d{6,12})", re.IGNORECASE)
 
-_INSPECT_LIVE_PAGE_JS = """// hh_live_page_inspect
+# BLE001 finding #34: the response form's own answer controls.
+#
+# hh.ru names every field of a response form "task_<id>", and "<id>_text" is the
+# "Свой вариант" companion of a choice group rather than a question of its own.
+# This block is the single source of truth for "how many questions does this
+# page hold", and two independent places use it:
+#   * _INSPECT_LIVE_PAGE_JS below, which reports the counts to the submission
+#     gates so they can tell "no questions" from "questions nobody read";
+#   * submit_click_js in hh_submission.py, which refuses the click outright.
+# It used to be duplicated verbatim in both. A mutation that broke the selector
+# in one copy then survived the entire test suite, because the pin asserted the
+# fragment "name^='task_'" and the other half of the selector still contained
+# it. One block, interpolated into both, cannot drift.
+_SCREENING_GUARD_PLACEHOLDER = "__SCREENING_GUARD_JS__"
+
+_SCREENING_GUARD_JS = """
+        const answerFields = Array.from(document.querySelectorAll(
+            "input[type='radio'][name^='task_'], input[type='checkbox'][name^='task_']," +
+            " textarea[name^='task_'], select[name^='task_']"));
+        const allNames = {};
+        const filledNames = {};
+        for (const f of answerFields) {
+            const n = f.getAttribute('name') || '';
+            allNames[n] = true;
+            if (f.checked || (f.value || '').trim()) filledNames[n] = true;
+        }
+        const unfilledNames = [];
+        for (const f of answerFields) {
+            const n = f.getAttribute('name') || '';
+            if (filledNames[n]) continue;
+            // "<group>_text" is the "Свой вариант" companion of a choice group,
+            // so it is not a question of its own - count it only when no control
+            // with its base name exists.
+            if (n.slice(-5) === '_text' && allNames[n.slice(0, -5)]) continue;
+            if (unfilledNames.indexOf(n) === -1) unfilledNames.push(n);
+        }
+"""
+
+
+def _inject_screening_guard(js: str) -> str:
+    """Interpolate the shared screening-form guard into a JS snippet.
+
+    Raises instead of returning the snippet unchanged: an un-replaced
+    placeholder is a bare JS identifier, so the snippet would still parse and
+    would fail only in the browser - on a live submission.
+
+    Watch the wording of any comment added to a snippet that goes through here.
+    The browser doubles in tests/test_stage46_*.py and test_stage47_*.py decide
+    what a script is by looking for substrings in it, and one of their rules
+    reads "contains the word c-l-i-c-k AND the word response-submit". A comment
+    in this file's inspection snippet that used that word made the live
+    inspection answer as if it were the submit call: the runner got a payload
+    with no URL and refused with "URL host '' does not belong to hh.ru". Four
+    tests failed, and the cause was a comment. Finding #35 in
+    docs/ble001_triage.md.
+    """
+    if _SCREENING_GUARD_PLACEHOLDER not in js:
+        raise ValueError(
+            "JS snippet carries no " + _SCREENING_GUARD_PLACEHOLDER + " placeholder"
+        )
+    return js.replace(_SCREENING_GUARD_PLACEHOLDER, _SCREENING_GUARD_JS)
+
+
+_INSPECT_LIVE_PAGE_JS = _inject_screening_guard("""// hh_live_page_inspect
 (() => {
     try {
         const url = window.location.href || "";
@@ -58,6 +121,11 @@ _INSPECT_LIVE_PAGE_JS = """// hh_live_page_inspect
         // Response modal / form
         const responseModal = document.querySelector('[data-qa="vacancy-response-popup"], .bloko-modal, form.vacancy-response');
 
+        // BLE001 finding #34: the response form's own answer controls. The
+        // counting block is shared verbatim with the guard that precedes the
+        // submit in hh_submission.py, so the two cannot drift apart.
+        __SCREENING_GUARD_JS__
+
         return JSON.stringify({
             ok: true,
             url: url,
@@ -71,11 +139,14 @@ _INSPECT_LIVE_PAGE_JS = """// hh_live_page_inspect
             submit_btn_disabled: submitElement ? !!submitElement.disabled : false,
             has_apply_btn: !!applyElement,
             has_response_modal: !!responseModal,
+            screening_control_count: answerFields.length,
+            screening_unanswered_count: unfilledNames.length,
+            screening_unanswered_sample: unfilledNames.slice(0, 5),
         });
     } catch (e) {
         return JSON.stringify({ ok: false, error: String(e) });
     }
-})()"""
+})()""")
 
 
 def extract_numeric_id(target: str) -> str | None:
@@ -112,6 +183,10 @@ class LivePageResult:
     submit_btn_disabled: bool = False
     has_apply_btn: bool = False
     has_response_modal: bool = False
+    # BLE001 finding #34: how many answer controls the page itself holds.
+    # 0 means "the page showed us no form" - not "there is no form".
+    screening_control_count: int = 0
+    screening_unanswered_count: int = 0
     is_404: bool = False
     is_captcha: bool = False
     is_access_denied: bool = False
@@ -317,6 +392,11 @@ def check_live_page(
     res.submit_btn_disabled = submit_disabled
     res.has_apply_btn = has_apply
     res.has_response_modal = has_modal
+    # BLE001 finding #34: report what the page holds, so the submission gates
+    # can tell "no questions" from "questions nobody read". This is data, not a
+    # verdict - check_live_page's own job stays "is this the right page".
+    res.screening_control_count = int(data.get("screening_control_count") or 0)
+    res.screening_unanswered_count = int(data.get("screening_unanswered_count") or 0)
 
     if not (has_submit or has_apply or has_modal):
         res.is_ok = False

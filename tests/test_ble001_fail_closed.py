@@ -3359,3 +3359,310 @@ def test_list_queue_still_returns_every_readable_row(monkeypatch, tmp_path):
     items = list_queue(queue_version=version)
 
     assert {i.vacancy_stable_id for i in items} == {_BLE33_GOOD, _BLE33_BAD}
+
+
+# ---------------------------------------------------------------------------
+# Finding #34 - a vacancy with screening questions cleared all 11 gates
+# ---------------------------------------------------------------------------
+# Gate 8 reads `form_snapshot["fields"]`, which execute_hh_submission builds as
+# `pkg_data.get("questions") or []` - the application package, never the page.
+# On a vacancy with screening questions nothing fills that list, so the loop ran
+# over an empty set and reported "All questions resolved" while the page was
+# holding questions nobody had read.
+#
+# Measured before the fix, on a fresh vacancy whose screening form was not
+# filled: the live check answered READY and check_all_gates returned passed=True
+# with "All 11 gates passed successfully", gate 8 "All questions resolved". The
+# click then fell through to the "Откликнуться" link (the popup's submit button
+# does not exist yet), clicked it and reported {ok: true} for a click that
+# cannot have submitted anything.
+#
+# The control count below is the real one: artifacts/hh_manual_form_snapshot.json
+# is a live hh.ru response form with 48 controls, 17 distinct names, 11 questions.
+
+def _ble34_live(controls: int, unanswered: int = 0):
+    """A live-page result whose page holds `controls` answer controls."""
+    from ai_assistant.hh_live_page_checks import LivePageResult
+
+    return LivePageResult(
+        is_ok=True,
+        status="READY",
+        reason="Live page verified and ready for submission",
+        current_url="https://hh.ru/vacancy/1",
+        numeric_id_match=True,
+        title_matched=True,
+        has_apply_btn=True,
+        screening_control_count=controls,
+        screening_unanswered_count=unanswered,
+    )
+
+
+def test_a_page_holding_an_unfilled_form_is_not_ready_to_submit(monkeypatch):
+    """The page holds the form; the package holds no questions. That is not
+    "no questions", it is "questions nobody read"."""
+    from ai_assistant.hh_submission import GateName, HHSubmissionGates
+
+    sid, url, snapshot, profile = _gate18_inputs("999000801")
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
+    monkeypatch.setattr(db, "is_submit_paused", lambda: False)
+
+    res = HHSubmissionGates.check_all_gates(
+        sid, url, snapshot, human_confirmed=True, dry_run=False,
+        candidate_profile=profile, live_page_result=_ble34_live(48, 11),
+    )
+
+    assert res.passed is False, res.reason
+    assert res.failed_gate == GateName.GATE_NO_UNKNOWN_QUESTIONS
+    record = res.gate_results[GateName.GATE_NO_UNKNOWN_QUESTIONS.value]
+    assert record["passed"] is False
+    assert "48" in record["reason"]
+    assert "All questions resolved" not in record["reason"]
+
+
+def test_a_vacancy_without_a_form_is_still_ready(monkeypatch):
+    """Counter-check: no controls on the page means no form, and a vacancy
+    without screening questions must keep sailing through."""
+    from ai_assistant.hh_submission import HHSubmissionGates
+
+    sid, url, snapshot, profile = _gate18_inputs("999000802")
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
+    monkeypatch.setattr(db, "is_submit_paused", lambda: False)
+
+    res = HHSubmissionGates.check_all_gates(
+        sid, url, snapshot, human_confirmed=True, dry_run=False,
+        candidate_profile=profile, live_page_result=_ble34_live(0, 0),
+    )
+
+    assert res.passed is True, res.reason
+
+
+def test_a_form_whose_questions_were_collected_is_still_ready(monkeypatch):
+    """Counter-check: the new branch must not block the case it is not about.
+    The page holds a form AND the package carries the questions, answered."""
+    from ai_assistant.hh_submission import HHSubmissionGates
+
+    sid, url, snapshot, profile = _gate18_inputs("999000803")
+    snapshot = dict(snapshot)
+    snapshot["fields"] = [
+        {"type": "number", "label": "Сколько лет коммерческого опыта?",
+         "required": True, "value": "5"},
+    ]
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
+    monkeypatch.setattr(db, "is_submit_paused", lambda: False)
+
+    res = HHSubmissionGates.check_all_gates(
+        sid, url, snapshot, human_confirmed=True, dry_run=False,
+        candidate_profile=profile, live_page_result=_ble34_live(48, 0),
+    )
+
+    assert res.passed is True, res.reason
+    assert res.gate_results["no_unknown_questions"]["passed"] is True
+
+
+def _ble34_click_setup(monkeypatch, vid: str, live_controls: int):
+    """Reach the click: gates stubbed green (they have their own tests above)."""
+    from ai_assistant import hh_live_page_checks
+    from ai_assistant.hh_submission import GateCheckResult, HHSubmissionGates
+
+    sid, _url, _snapshot, _profile = _gate18_inputs(vid)
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
+    monkeypatch.setattr(db, "is_submit_paused", lambda: False)
+    monkeypatch.setattr(db, "get_vacancy_by_id", lambda vacancy_id: ("row",))
+    monkeypatch.setattr(
+        db, "_row_to_vacancy", lambda row: SimpleNamespace(title="Python Developer")
+    )
+    monkeypatch.setattr(
+        hh_live_page_checks, "check_live_page", lambda *a, **kw: _ble34_live(live_controls)
+    )
+    monkeypatch.setattr(
+        HHSubmissionGates, "check_all_gates",
+        classmethod(lambda cls, *a, **kw: GateCheckResult(passed=True, reason="stub: gates green")),
+    )
+    return sid
+
+
+def test_the_click_refuses_a_page_holding_an_unfilled_form(monkeypatch):
+    """Second layer: the guard reads the page at the moment of the mutation."""
+    from ai_assistant.hh_submission import execute_hh_submission
+
+    sid = _ble34_click_setup(monkeypatch, "999000804", live_controls=0)
+
+    def stub(js: str) -> str:
+        if "hh_submit_click" in js:
+            return json.dumps({
+                "ok": False,
+                "refused": True,
+                "reason": ("unanswered_screening_questions: 11 answer field(s) of "
+                           "the application form are not filled"),
+                "unanswered_count": 11,
+            })
+        return "{}"
+
+    res = execute_hh_submission(sid, evaluate_fn=stub, human_confirmed=True)
+
+    assert res.status == "FAILED_SAFE", res.reason
+    assert res.submit_count == 0
+    assert "unanswered_screening_questions" in res.reason
+    # A refusal we made ourselves is not an ambiguous outcome: nothing was
+    # clicked, so nothing may be recorded as "maybe applied".
+    assert res.status != "AMBIGUOUS"
+    claim = db.get_submission_claim(sid)
+    assert claim is not None and claim["status"] == "FAILED_SAFE", claim
+
+
+def test_the_click_still_fires_when_the_page_has_no_form(monkeypatch):
+    """Counter-check: the guard must not become a way to block every submit."""
+    from ai_assistant.hh_submission import execute_hh_submission
+
+    sid = _ble34_click_setup(monkeypatch, "999000805", live_controls=0)
+
+    def stub(js: str) -> str:
+        if "hh_submit_click" in js:
+            return json.dumps({"ok": True})
+        return "{}"
+
+    res = execute_hh_submission(sid, evaluate_fn=stub, human_confirmed=True)
+
+    assert res.submit_count == 1, res.reason
+    assert res.status in ("SUBMITTED", "AMBIGUOUS"), res.status
+
+
+def _strip_js_comments(js: str) -> str:
+    """Drop whole-line JS comments: a comment quoting the old behaviour must
+    not satisfy a pin."""
+    return "\n".join(l for l in js.splitlines() if not l.strip().startswith("//"))
+
+
+def _click_js_template() -> str:
+    """The click JS as written inside execute_hh_submission, comments stripped.
+
+    Still carries the placeholder: the guard is injected when the function
+    runs, not at import.
+    """
+    import inspect
+
+    from ai_assistant.hh_submission import execute_hh_submission
+
+    src = inspect.getsource(execute_hh_submission)
+    marker = '_inject_screening_guard("""// hh_submit_click'
+    assert marker in src, (
+        "execute_hh_submission no longer builds the click JS through "
+        "_inject_screening_guard - the shared guard would not be injected"
+    )
+    js = src.split(marker, 1)[1].split('"""', 1)[0]
+    return _strip_js_comments(js)
+
+
+def _click_js_source() -> str:
+    """What the browser is actually handed: template + shared guard."""
+    from ai_assistant.hh_live_page_checks import _inject_screening_guard
+
+    return _strip_js_comments(_inject_screening_guard(_click_js_template()))
+
+
+def test_the_screening_guard_is_one_block_shared_by_both_js_snippets():
+    """The guard is a Python string that Python never runs, so every test that
+    exercises the flow stubs the JS out entirely.
+
+    That is how a mutation which broke the selector in one of the two copies
+    survived the whole suite: the pin asserted the fragment "name^='task_'",
+    and the textarea/select half of the selector still contained it. So pin the
+    full literal, and pin that there is only one copy of it left to break.
+    """
+    from ai_assistant import hh_live_page_checks as live
+
+    guard = _strip_js_comments(live._SCREENING_GUARD_JS)
+
+    # Both halves of the selector, spelled out - a pin on "name^='task_'"
+    # alone is satisfied after the radio/checkbox half has been broken.
+    assert ("input[type='radio'][name^='task_'], input[type='checkbox'][name^='task_']"
+            in guard)
+    assert "textarea[name^='task_'], select[name^='task_']" in guard
+    assert guard.count("name^='task_'") == 4
+    # The "Свой вариант" companion is not a question of its own; without the
+    # allNames rule the real 11-question form reports 17.
+    assert "allNames[n.slice(0, -5)]" in guard
+
+    live_js = _strip_js_comments(live._INSPECT_LIVE_PAGE_JS)
+    click_tmpl = _click_js_template()
+    click_js = _click_js_source()
+
+    # One block, interpolated into both snippets, and no second copy of the
+    # selector in either of them.
+    assert guard in live_js
+    assert guard in click_js
+    assert live_js.count("name^='task_'") == 4
+    assert click_js.count("name^='task_'") == 4
+    # The live snippet is injected at import, the click snippet when the
+    # function runs - so the marker is gone from the first and still present in
+    # the second, and the call site really does go through the injector.
+    assert live._SCREENING_GUARD_PLACEHOLDER not in live._INSPECT_LIVE_PAGE_JS
+    assert live._SCREENING_GUARD_PLACEHOLDER in click_tmpl
+    assert live._SCREENING_GUARD_PLACEHOLDER not in click_js
+
+
+def test_injecting_the_screening_guard_fails_loudly_without_a_placeholder():
+    """A snippet with no marker must raise: the placeholder is a bare JS
+    identifier, so the un-injected JS would still parse and would fail only in
+    the browser, on a live submission."""
+    from ai_assistant.hh_live_page_checks import _inject_screening_guard
+
+    with pytest.raises(ValueError):
+        _inject_screening_guard("(() => { return JSON.stringify({ ok: true }); })()")
+
+
+def test_the_click_guard_refuses_before_it_clicks():
+    import re
+
+    js = _click_js_source()
+
+    assert "unfilledNames" in js
+    assert "if (unfilledNames.length) {" in js
+    assert "refused: true" in js
+    assert "submitBtn.click()" in js
+    # The refusal must RETURN, not merely be built: a guard that works out the
+    # answer and then clicks anyway is the bug this whole finding is about.
+    assert re.search(r"if \(unfilledNames\.length\) \{\s*return JSON\.stringify\(\{", js)
+    # A refusal that arrives after the click is not a refusal.
+    assert js.index("refused: true") < js.index("submitBtn.click()")
+
+
+def test_the_live_inspection_reports_the_answer_controls():
+    """The gate's input has to exist. Pin the keys it reads."""
+    from ai_assistant import hh_live_page_checks as live
+
+    js = _strip_js_comments(live._INSPECT_LIVE_PAGE_JS)
+
+    assert "screening_control_count: answerFields.length" in js
+    assert "screening_unanswered_count: unfilledNames.length" in js
+    assert "screening_unanswered_sample: unfilledNames.slice(0, 5)" in js
+
+
+def test_check_live_page_carries_the_control_counts_into_its_result():
+    """The gate reads LivePageResult, so the inspection's counts must land
+    there. Without this the branch could be fed by nothing and every other test
+    in this section would still pass - they build LivePageResult by hand."""
+    from ai_assistant.hh_live_page_checks import check_live_page
+
+    page = json.dumps({
+        "ok": True,
+        "url": "https://hh.ru/vacancy/136591579",
+        "title": "Senior AI Automation Engineer",
+        "is_404": False, "is_captcha": False, "is_access_denied": False,
+        "is_login_required": False, "already_responded": False,
+        "has_submit_btn": False, "submit_btn_disabled": False,
+        "has_apply_btn": True, "has_response_modal": False,
+        "screening_control_count": 48, "screening_unanswered_count": 11,
+    })
+
+    res = check_live_page(
+        lambda js: page,
+        expected_vacancy_id="hh:136591579",
+        expected_title="Senior AI Automation Engineer",
+    )
+
+    assert res.screening_control_count == 48
+    assert res.screening_unanswered_count == 11
+    # The page itself is still the right page: this is data, not a verdict.
+    assert res.is_ok is True
+    assert res.status == "READY"

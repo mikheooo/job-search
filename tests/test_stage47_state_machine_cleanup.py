@@ -76,6 +76,17 @@ class MockBrowser:
 
     def evaluate(self, script: str) -> str:
         self.evaluated_scripts.append(script)
+
+        # The live inspection carries its own marker, so recognise it by that.
+        # It used to be recognised only by falling through to the generic
+        # payload at the bottom, which broke the moment a comment inside another
+        # JS snippet contained the word c-l-i-c-k: the loose rule below then
+        # claimed the inspection as a submit call, the runner got a payload with
+        # no URL and refused with "URL host '' does not belong to hh.ru".
+        # Finding #35 in docs/ble001_triage.md.
+        if "hh_live_page_inspect" in script:
+            return self._page_payload()
+
         if "submitBtn.click()" in script or "submit_response" in script or ("click" in script and "response-submit" in script) or "el.click()" in script:
             self.submit_attempts += 1
             return json.dumps({"ok": self.submit_ok, "clicked_button": "Откликнуться"})
@@ -97,6 +108,10 @@ class MockBrowser:
                 "evidence_snippet": "Отклик отправлен" if success else "",
             })
 
+        return self._page_payload()
+
+    def _page_payload(self) -> str:
+        """The plain vacancy page, as the live inspection sees it."""
         return json.dumps({
             "url": self.current_url,
             "title": "Python developer middle",
