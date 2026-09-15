@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -18,6 +19,37 @@ from .db import (
 )
 
 logger = logging.getLogger(__name__)
+
+AUDIT_INCOMPLETE = "AUDIT_INCOMPLETE"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _audit_failure(kind: str, exc: Exception) -> dict[str, Any]:
+    """Событие-маркер: категорию следа прочитать не удалось.
+
+    BLE001 finding #30: раньше падение запроса проглатывалось
+    (`except Exception: pass`). След молча терял целую категорию, а при отказе
+    всех пяти запросов `get_submission_audit` возвращал пустой список — и CLI
+    печатал «No audit events found.» с кодом 0. Вакансия с отправленным и
+    подтверждённым откликом выглядела как вакансия, по которой вообще ничего не
+    происходило, а частичный след выглядел полным.
+
+    Это тот же класс, что №4: диагностика, которая отвечает «всё чисто», когда
+    сама не смогла посмотреть.
+    """
+    logger.exception("submission audit: could not read %s records", kind)
+    return {
+        "type": AUDIT_INCOMPLETE,
+        "timestamp": _now_iso(),
+        "status": "INCOMPLETE",
+        "detail": (
+            f"{kind} records could not be read: {type(exc).__name__}: {exc}. "
+            "The trail below is INCOMPLETE."
+        ),
+    }
 
 
 class RecoveryStatus(str, Enum):
@@ -70,7 +102,12 @@ def inspect_submission_state(vacancy_stable_id: str) -> RecoveryResult:
                 "updated_at": submission_row[7],
                 "executor_version": submission_row[2],
             }
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                "submission_recovery: submission row for %s is not readable "
+                "(%s: %s); losing submission_id also loses the verification lookup",
+                vacancy_stable_id, type(e).__name__, e,
+            )
             last_submission = {"raw": str(submission_row)}
 
     # Get latest verification
@@ -273,6 +310,10 @@ def get_submission_audit(vacancy_stable_id: str) -> list[dict[str, Any]]:
     """
     Get chronological audit trail for a vacancy.
     Includes: reviews, browser preparations, submissions, verifications, tracking transitions.
+
+    A category that could not be read is reported as an ``AUDIT_INCOMPLETE`` event
+    rather than being dropped silently (BLE001 finding #30). Callers must treat a
+    non-empty result containing that marker as an incomplete trail, not a clean one.
     """
     init_db()
     conn = get_connection()
@@ -296,8 +337,8 @@ def get_submission_audit(vacancy_stable_id: str) -> list[dict[str, Any]]:
                 "status": row[2],
                 "detail": row[3],
             })
-    except Exception:
-        pass
+    except Exception as e:
+        events.append(_audit_failure("REVIEW", e))
 
     # Get browser preparation history
     try:
@@ -315,8 +356,8 @@ def get_submission_audit(vacancy_stable_id: str) -> list[dict[str, Any]]:
                 "status": row[2],
                 "detail": f"URL: {row[3]}",
             })
-    except Exception:
-        pass
+    except Exception as e:
+        events.append(_audit_failure("BROWSER_PREPARE", e))
 
     # Get submission history - need to query all submissions
     try:
@@ -333,7 +374,11 @@ def get_submission_audit(vacancy_stable_id: str) -> list[dict[str, Any]]:
                 sub_data = json.loads(detail) if detail else {}
                 sub_id = sub_data.get("submission_id", "unknown")
                 detail_str = f"submission_id: {sub_id}, error: {sub_data.get('error', 'none')}"
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    "submission audit: %s detail is not JSON, showing raw text: %s",
+                    "SUBMISSION", e,
+                )
                 detail_str = str(detail)[:200]
             events.append({
                 "type": "SUBMISSION",
@@ -341,8 +386,8 @@ def get_submission_audit(vacancy_stable_id: str) -> list[dict[str, Any]]:
                 "status": row[2],
                 "detail": detail_str,
             })
-    except Exception:
-        pass
+    except Exception as e:
+        events.append(_audit_failure("SUBMISSION", e))
 
     # Get verification history
     try:
@@ -359,7 +404,11 @@ def get_submission_audit(vacancy_stable_id: str) -> list[dict[str, Any]]:
                 ver_data = json.loads(detail) if detail else {}
                 success_signal = ver_data.get("success_signal", "none")
                 detail_str = f"signal: {success_signal}, url: {ver_data.get('final_url', 'none')}"
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    "submission audit: %s detail is not JSON, showing raw text: %s",
+                    "VERIFICATION", e,
+                )
                 detail_str = str(detail)[:200]
             events.append({
                 "type": "VERIFICATION",
@@ -367,8 +416,8 @@ def get_submission_audit(vacancy_stable_id: str) -> list[dict[str, Any]]:
                 "status": row[2],
                 "detail": detail_str,
             })
-    except Exception:
-        pass
+    except Exception as e:
+        events.append(_audit_failure("VERIFICATION", e))
 
     # Get tracking status history
     try:
@@ -386,8 +435,8 @@ def get_submission_audit(vacancy_stable_id: str) -> list[dict[str, Any]]:
                 "status": row[2],
                 "detail": row[3] or "",
             })
-    except Exception:
-        pass
+    except Exception as e:
+        events.append(_audit_failure("TRACKING", e))
 
     conn.close()
 

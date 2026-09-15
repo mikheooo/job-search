@@ -1216,6 +1216,15 @@ def submissions_audit(vacancy_stable_id: str) -> int:
         print()
     
     events = get_submission_audit(vacancy_stable_id)
+    incomplete = [e for e in events if e.get("type") == "AUDIT_INCOMPLETE"]
+    if incomplete:
+        # BLE001 finding #30: part of the trail could not be read. Say it up front,
+        # and exit non-zero so a script can tell too (the health check uses the same
+        # convention: anything not HEALTHY/DEGRADED is a non-zero exit).
+        print(f"WARNING: audit trail is INCOMPLETE - {len(incomplete)} of 5 categories could not be read:")
+        for e in incomplete:
+            print(f"  - {e.get('detail', 'unknown failure')}")
+        print()
     
     if not events:
         print("No audit events found.")
@@ -1237,7 +1246,7 @@ def submissions_audit(vacancy_stable_id: str) -> int:
             print(f"  Detail: {detail}")
         print()
     
-    return 0
+    return 2 if incomplete else 0
 
 
 def dashboard() -> int:

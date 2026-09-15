@@ -2895,3 +2895,159 @@ def test_questionnaire_already_responded_does_not_invent_a_submit_count(monkeypa
     assert res.verdict == "ALREADY_SUBMITTED", res
     assert res.submit_count == 0, res
     assert res.click_count == 0, res
+
+
+# ---------------------------------------------------------------------------
+# BLE001 finding #30 - the submission audit trail must not drop a category it
+# could not read. Before the fix each of the five queries sat in
+# `except Exception: pass`, so a schema drift removed whole categories from the
+# trail; when all five failed the function returned [] and the CLI printed
+# "No audit events found." with exit code 0 - a vacancy with a submitted and
+# VERIFIED application looked like one where nothing had ever happened.
+# ---------------------------------------------------------------------------
+
+_BLE30_VAC = "hh:999000111"
+
+
+def _ble30_db(monkeypatch, tmp_path, *, seed=True):
+    """A temp DB holding one complete submission history."""
+    from ai_assistant import config
+
+    monkeypatch.setattr(config, "DB_FILE", str(tmp_path / "ble30.db"), raising=False)
+    db.init_db()
+    if not seed:
+        return
+    conn = db.get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO application_submissions (vacancy_stable_id, submission_id, executor_version,"
+        " submission_json, status, submitted_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+        (_BLE30_VAC, "sub-1", "v1", '{"submission_id": "sub-1"}', "SUBMITTED",
+         "2026-09-01T10:00:00", "2026-09-01T10:00:00", "2026-09-01T10:00:00"),
+    )
+    cur.execute(
+        "INSERT INTO submission_verifications (vacancy_stable_id, submission_id, verification_version,"
+        " verification_status, verification_json, verified_at, created_at, updated_at)"
+        " VALUES (?,?,?,?,?,?,?,?)",
+        (_BLE30_VAC, "sub-1", "v1", "VERIFIED", '{"success_signal": "chat visible"}',
+         "2026-09-01T10:05:00", "2026-09-01T10:05:00", "2026-09-01T10:05:00"),
+    )
+    cur.execute(
+        "INSERT INTO application_reviews (vacancy_stable_id, review_json, status, note,"
+        " created_at, updated_at, review_version) VALUES (?,?,?,?,?,?,?)",
+        (_BLE30_VAC, "{}", "APPROVED", "ok", "2026-09-01T09:00:00", "2026-09-01T09:00:00", "v1"),
+    )
+    cur.execute(
+        "INSERT INTO browser_preparations (vacancy_stable_id, url, status, final_url, page_title,"
+        " site, form_detected, fields_json, warnings_json, screenshot_path, created_at, updated_at,"
+        " executor_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (_BLE30_VAC, "https://hh.ru/vacancy/999000111", "PREPARED", "", "", "hh.ru", 1, "[]", "[]",
+         "", "2026-09-01T08:00:00", "2026-09-01T08:00:00", "v1"),
+    )
+    cur.execute(
+        "INSERT INTO application_status_history (vacancy_stable_id, old_status, new_status,"
+        " changed_at, note) VALUES (?,?,?,?,?)",
+        (_BLE30_VAC, None, "SUBMITTED", "2026-09-01T10:00:01", "submitted"),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _ble30_drift(table, column):
+    """Simulate schema drift: rename a column the audit query depends on.
+
+    `init_db()` does not undo this - the table exists, so CREATE TABLE IF NOT
+    EXISTS is a no-op and the query fails with "no such column", which is what a
+    half-applied migration or a rolled-back release looks like.
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    cur.execute(f"ALTER TABLE {table} RENAME COLUMN {column} TO {column}_renamed")
+    conn.commit()
+    conn.close()
+
+
+def test_audit_trail_emits_no_marker_when_everything_is_readable(monkeypatch, tmp_path):
+    """Counter-check: the marker must not become a permanent fixture."""
+    _ble30_db(monkeypatch, tmp_path)
+    from ai_assistant.submission_recovery import AUDIT_INCOMPLETE, get_submission_audit
+
+    events = get_submission_audit(_BLE30_VAC)
+    assert [e["type"] for e in events] == [
+        "BROWSER_PREPARE", "REVIEW", "SUBMISSION", "TRACKING", "VERIFICATION"]
+    assert all(e["type"] != AUDIT_INCOMPLETE for e in events)
+
+
+def test_audit_trail_names_the_category_it_could_not_read(monkeypatch, tmp_path):
+    _ble30_db(monkeypatch, tmp_path)
+    _ble30_drift("application_submissions", "submission_json")
+
+    from ai_assistant.submission_recovery import AUDIT_INCOMPLETE, get_submission_audit
+
+    events = get_submission_audit(_BLE30_VAC)
+    markers = [e for e in events if e["type"] == AUDIT_INCOMPLETE]
+    assert len(markers) == 1, events
+    assert "SUBMISSION" in markers[0]["detail"], markers[0]
+    assert markers[0]["status"] == "INCOMPLETE"
+    # The readable categories must still be there - the fix must not blank the
+    # whole trail just because one query failed.
+    assert [e["type"] for e in events if e["type"] != AUDIT_INCOMPLETE] == [
+        "BROWSER_PREPARE", "REVIEW", "TRACKING", "VERIFICATION"]
+
+
+def test_audit_trail_is_never_silently_empty_when_every_query_fails(monkeypatch, tmp_path):
+    """The old code returned [] here, and the CLI called that "no events"."""
+    _ble30_db(monkeypatch, tmp_path)
+    for table, column in [
+        ("application_reviews", "note"),
+        ("browser_preparations", "url"),
+        ("application_submissions", "submission_json"),
+        ("submission_verifications", "verification_json"),
+        ("application_status_history", "note"),
+    ]:
+        _ble30_drift(table, column)
+
+    from ai_assistant.submission_recovery import AUDIT_INCOMPLETE, get_submission_audit
+
+    events = get_submission_audit(_BLE30_VAC)
+    assert events, "an unreadable trail must not come back empty"
+    assert len(events) == 5, events
+    assert all(e["type"] == AUDIT_INCOMPLETE for e in events)
+
+
+def test_audit_cli_exits_nonzero_when_the_trail_is_incomplete(monkeypatch, tmp_path, capsys):
+    _ble30_db(monkeypatch, tmp_path)
+    _ble30_drift("submission_verifications", "verification_json")
+
+    from ai_assistant import cli
+
+    code = cli.submissions_audit(_BLE30_VAC)
+    out = capsys.readouterr().out
+    assert code == 2, "an incomplete trail must not exit 0"
+    assert "INCOMPLETE" in out
+    assert "No audit events found." not in out
+
+
+def test_audit_cli_exits_zero_on_a_healthy_trail(monkeypatch, tmp_path, capsys):
+    """Counter-check: the new exit code must not fire on readable data."""
+    _ble30_db(monkeypatch, tmp_path)
+
+    from ai_assistant import cli
+
+    code = cli.submissions_audit(_BLE30_VAC)
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "VERIFICATION" in out
+    assert "INCOMPLETE" not in out
+
+
+def test_audit_cli_still_reports_a_genuinely_empty_history(monkeypatch, tmp_path, capsys):
+    """A vacancy with no history keeps its own answer, and still exits 0."""
+    _ble30_db(monkeypatch, tmp_path, seed=False)
+
+    from ai_assistant import cli
+
+    code = cli.submissions_audit(_BLE30_VAC)
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "No audit events found." in out
