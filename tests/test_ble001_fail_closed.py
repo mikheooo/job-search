@@ -3638,6 +3638,31 @@ def test_the_live_inspection_reports_the_answer_controls():
     assert "screening_unanswered_sample: unfilledNames.slice(0, 5)" in js
 
 
+def test_the_live_inspection_script_does_not_say_click():
+    """Finding #35: a test double may decide what a script is by looking for
+    substrings in it. A comment containing the word "click" inside the
+    inspection JS made two doubles answer the inspection with the submit
+    payload.
+
+    This is the cheapest guard against that: keep the word out of the
+    inspection script. It is not a style rule - measured, that word is what
+    broke it. If the inspection ever genuinely needs it, teach the doubles to
+    recognise the script by its own marker first, the way
+    tests/test_stage46_application_runner.py now does.
+    """
+    from ai_assistant import hh_live_page_checks as live
+
+    js = live._INSPECT_LIVE_PAGE_JS
+
+    assert "click" not in js.lower(), (
+        "the live-inspection script mentions 'click'; a double that dispatches "
+        "on that substring answers the inspection with the submit payload "
+        "(finding #35)"
+    )
+    # The marker is what a double should dispatch on instead.
+    assert "hh_live_page_inspect" in js
+
+
 def test_check_live_page_carries_the_control_counts_into_its_result():
     """The gate reads LivePageResult, so the inspection's counts must land
     there. Without this the branch could be fed by nothing and every other test
