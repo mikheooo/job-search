@@ -298,7 +298,15 @@ def evaluate(
             else:
                 checks_passed.append("questionnaire_complete")
     else:
-        checks_passed.append("questionnaire_complete")
+        # BLE001 finding #37: nothing on record says this vacancy has a
+        # questionnaire, and the old line recorded "questionnaire_complete" - a
+        # passed check - so an audit reading checks_passed saw "the questionnaire
+        # was verified" when nothing had been looked at. Measured: 8 of the 10
+        # rows in state.db carry no questionnaire_id, two of them in
+        # READY_TO_SUBMIT. Whether the page holds questions is exactly what is
+        # unknown here (see #34, which fixed the same assumption in gate 8 of
+        # hh_submission.py); the record must say "not tracked", not "complete".
+        checks_passed.append("questionnaire_not_tracked")
 
     # -------------------------------------------------------------------------
     # Gate 6: Language Match Check
@@ -328,6 +336,14 @@ def evaluate(
     if lang_vac != "unknown" and lang_letter != "unknown" and lang_vac != lang_letter:
         checks_failed.append("language_match")
         reasons.append(f"language_mismatch (vacancy: {lang_vac}, letter: {lang_letter})")
+    elif lang_vac == "unknown" or lang_letter == "unknown":
+        # BLE001 finding #37: the detector needs >=10 Cyrillic or >=50 Latin
+        # characters before it names a language at all. When it cannot, the old
+        # code recorded "language_match" - a passed check - so the audit said the
+        # two languages had been compared and matched. They were never compared.
+        # Measured over the 1830 vacancies in state.db: 37 (2.0%) come out
+        # "unknown".
+        checks_passed.append("language_match_undetermined")
     else:
         checks_passed.append("language_match")
 

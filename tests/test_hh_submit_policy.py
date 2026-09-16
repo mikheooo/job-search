@@ -297,6 +297,82 @@ def test_policy_language_mismatch_fails(clean_db):
     assert any("language_mismatch" in r for r in decision.reasons)
 
 
+def test_policy_without_a_questionnaire_record_does_not_claim_the_check_passed(clean_db):
+    """Finding #37: with no questionnaire on record the gate has nothing to look
+    at. It used to record "questionnaire_complete" - a passed check - so the
+    audit trail said the questionnaire had been verified.
+
+    Measured on the real state.db: 8 of 10 rows in hh_applications carry no
+    questionnaire_id, two of them in READY_TO_SUBMIT.
+    """
+    sid = "hh:136704137"
+    _pkg, _fp, letter = _create_valid_package_and_review(sid)
+    app = {
+        "application_id": "app_no_questionnaire",
+        "vacancy_stable_id": sid,
+        "title": "Python developer middle",
+        "employer": "Maxima.tech",
+        "draft": letter,
+        # no questionnaire_id - the state 8 of 10 real rows are in
+    }
+
+    decision = evaluate(app)
+
+    assert "questionnaire_complete" not in decision.checks_passed, (
+        "the gate recorded a passed check for a questionnaire that does not exist"
+    )
+    assert "questionnaire_not_tracked" in decision.checks_passed
+
+
+def test_policy_with_an_undetectable_language_does_not_claim_the_check_passed(clean_db):
+    """Finding #37: detect_text_language needs >=10 Cyrillic or >=50 Latin
+    characters before it names a language. Below that it answers "unknown", and
+    the gate used to record "language_match" - a passed check - for a comparison
+    that never happened.
+
+    Measured over the 1830 vacancies in state.db: 37 (2.0%) come out "unknown".
+    """
+    app = {
+        "application_id": "app_lang_unknown",
+        "vacancy_stable_id": "hh:136704137",
+        "title": "Python dev",
+        "employer": "ACME",
+        "draft": "Hi, I want this job.",
+    }
+
+    decision = evaluate(app)
+
+    assert "language_match" not in decision.checks_passed, (
+        "the gate recorded a passed check for a language it never determined"
+    )
+    assert "language_match_undetermined" in decision.checks_passed
+
+
+def test_policy_still_records_a_real_language_match_as_passed(clean_db):
+    """The counter-check for the two tests above: when both sides are long enough
+    to name a language and they agree, the record must stay "language_match"."""
+    sid = "hh:136704137"
+    ru_letter = (
+        "Здравствуйте! Меня заинтересовала эта позиция, и я хотел бы откликнуться. "
+        "У меня большой опыт разработки на Python, проектирования асинхронных сервисов, "
+        "работы с PostgreSQL, Docker и FastAPI, а также оптимизации тяжёлых запросов "
+        "в высоконагруженных системах."
+    )
+    _create_valid_package_and_review(sid, letter_text=ru_letter)
+    app = {
+        "application_id": "app_lang_ok",
+        "vacancy_stable_id": sid,
+        "title": "Разработчик бэкенда на Python, удалённая работа",
+        "employer": "Максима Технологии",
+        "draft": ru_letter,
+    }
+
+    decision = evaluate(app)
+
+    assert "language_match" in decision.checks_passed
+    assert "language_match_undetermined" not in decision.checks_passed
+
+
 def test_policy_hourly_rate_limit_fails(clean_db):
     """When hourly submit count exceeds limit, policy rejects."""
     sid = "hh:136704137"
