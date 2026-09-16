@@ -389,6 +389,21 @@ except Exception:
 | `vacancy_identity.py:101` | `except: return url` — при сбое нормализации возвращает URL как есть. Это **строже**, не мягче: сравнение падает на точное совпадение строки, то есть в сторону отказа. |
 | `application_integrity.py:215` | «последняя отправка» выбирается по `s[5]`, статус из `s[4]`. Проверено против `get_all_submissions`: там явный `SELECT` (`... status, submitted_at ...`), порядок совпадает. Чисто. |
 
+Остальные 26 файлов получили вердикт по роли и по ссылкам. «Мёртвый» здесь
+значит «ноль импортов из живых `.py`» — проверено грепом импортов, не глазами:
+
+| Группа | Файлы | Вердикт |
+|---|---|---|
+| Мёртвые, 0 импортёров | `inspect_hh_form.py`, `wellfound_scraper.py`, `linkedin.py`, `bot.py`, `pipeline.py`, `outreach_note.py`, `reconcile_production_state.py` | Не вызываются. `pipeline.py` и `outreach_note.py` при этом написаны безопасно: `pipeline` логирует и пишет статус `error`, `outreach_note` логирует `LLM Error`. Про `outreach_note` отдельно: при сбое LLM он **возвращает текст ошибки как текст заметки** — но импортёров ноль, наружу это уйти не может. Совпадает с `docs/stage30c_cli_audit.md`, где он уже помечен DEAD. |
+| Живут только в тестах | `capture_manual_form.py`, `job_search_fetcher.py`, `email_message_reply.py`, `gmail_readonly_connector.py`, `app.py` | Импортируются только тестовыми файлами. В боевую цепочку не входят. |
+| Заблокированы lockout'ом | `auto_apply.py`, `hh_reply.py` | `exit=1`, см. таблицу выше. |
+| Живые, вне пути отправки | адаптеры `habr_career`/`himalayas`/`remoteok`/`weworkremotely`, `matcher.py`, `job_analyzer.py`, `feedback_analytics.py`, `application_dashboard.py`, `telegram_feedback.py`, `hermes_integration.py` | Скраперы, скоринг, аналитика, отображение, уведомления. Прочитаны точечно: `hermes_integration` при сбое чтения оставляет флаги `False` → статус `DRIFTED` (отказ в безопасную сторону); `job_analyzer` при сбое LLM пишет warning и уходит в детерминированный фолбэк; `matcher` и `candidate_profile` — узкая нормализация чисел в `None`; `application_dashboard` — только отображение; `telegram_feedback` логирует сбой записи аудита. |
+| Живые, на пути — прочитаны | `candidate_profile.py`, `application_prep.py`, `prefill_orchestrate.py`, `vacancy_identity.py` | Чисто. `prefill_orchestrate` при сбое чтения группы ставит `actual = ["<unreadable>"]` → вердикт FAILED; `application_prep` при сбое LLM логирует и уходит в детерминированное письмо. |
+| Тесты | `test_application_integrity.py`, `test_stage20g_orchestrate.py` | Тестовые. Замечание: в `test_application_integrity` сбой `transition_application` при сборке фикстуры глотается — тест не проверяет собственную предпосылку. Замерено: сегодня этот `except` не срабатывает ни разу (0 из 21 теста), то есть замечание латентное. |
+
+Итог переписи: **настоящая находка из 30 файлов одна — №37.** Остальное либо вне
+пути, либо мёртвое, либо уже безопасное.
+
 Отдельно три проверки, которые выглядели подозрительно и были замерены:
 
 | Проверка | Что мерил | Результат |
