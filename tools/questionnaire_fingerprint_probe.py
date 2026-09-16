@@ -121,6 +121,20 @@ def describe(snapshot: dict, label: str) -> dict:
     }
 
 
+def row_count(db: Path) -> int:
+    """Count questionnaire rows, closing the handle.
+
+    The first version of this probe left four 20 MB copies of state.db in %TEMP%:
+    it opened sqlite connections and never closed them, so rmtree() failed on a
+    locked file - and ignore_errors=True hid the failure.
+    """
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM hh_questionnaires").fetchone()[0]
+    finally:
+        conn.close()
+
+
 def stored_rows() -> list[dict]:
     """Read the hand-made questionnaire rows. Read-only connection."""
     if not DB_FILE.exists():
@@ -296,16 +310,13 @@ def main() -> int:
     print("\n=== RESULT ===")
     print("  probe completed; nothing was clicked, filled or submitted")
     print(f"  sandbox DB (all writes land here): {_SANDBOX_DB}")
-    prod_rows = sqlite3.connect(f"file:{PRODUCTION_DB}?mode=ro", uri=True).execute(
-        "SELECT COUNT(*) FROM hh_questionnaires"
-    ).fetchone()[0]
-    sand_rows = sqlite3.connect(f"file:{_SANDBOX_DB}?mode=ro", uri=True).execute(
-        "SELECT COUNT(*) FROM hh_questionnaires"
-    ).fetchone()[0]
+    prod_rows = row_count(PRODUCTION_DB)
+    sand_rows = row_count(_SANDBOX_DB)
     print(f"  hh_questionnaires rows: production={prod_rows}  sandbox={sand_rows}")
-    if sand_rows > prod_rows:
-        print("  [NOTE] the extractor wrote into the sandbox, as documented above;"
-              f" production untouched ({prod_rows} rows)")
+    print("  Equal counts do NOT mean no write happened: the extractor derives its")
+    print("  id as sha256(f'{vid}_{cid}_{fp}'), so with no vacancy id passed every")
+    print("  run overwrites the same row instead of appending. What the number does")
+    print("  prove is that production is unchanged while the sandbox takes the write.")
     return 0
 
 
@@ -314,3 +325,7 @@ if __name__ == "__main__":
         raise SystemExit(main())
     finally:
         shutil.rmtree(_TMPDIR, ignore_errors=True)
+        if Path(_TMPDIR).exists():
+            # Never hide this: a leftover copy is 20 MB, and a silent failure to
+            # clean up looks exactly like a successful clean-up.
+            print(f"  [WARN] could not remove {_TMPDIR} - delete it by hand")
