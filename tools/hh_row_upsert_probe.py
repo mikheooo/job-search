@@ -1,16 +1,21 @@
 #!/usr/bin/env python
 """Probe: what a partial dict does to an hh_applications row, and to answers.
 
-Backs findings #40 and #41 in docs/ble001_triage.md. Both are about the same
-family of defect: a writer whose *partial* input means something the reader did
-not intend.
+Backs findings #40, #41 and #42 in docs/ble001_triage.md. All three are about the
+same family of defect: a writer whose *partial* input means something the reader
+did not intend.
 
 #40 - save_hh_application() is an upsert whose SET clause mixes
     COALESCE(excluded.x, existing.x) with a bare `x = excluded.x`. A dict that
     names only some columns therefore clobbers the bare ones. Measured below.
 
-#41 - save_hh_questionnaire() guards its two serialisations differently, so the
-    model's `answers` dict never reaches the column while a JSON string does.
+#41 - the answers column used to be filled by three inlined lines that were
+    wrong in two ways: a dict passed as `answers_json` was serialised from
+    `answers` (the other field) and stored "{}", and a dict passed as `answers`
+    never reached the column at all. Both call sites now share
+    db._serialise_answers_json(). Measured below - including the case a naive
+    fix would have broken, where an EMPTY answers dict must keep writing NULL so
+    that the upsert's COALESCE cannot erase stored answers.
 
 Nothing here touches production: DB_FILE is redirected to a temp directory
 *before* ai_assistant.config is imported, and the redirect is asserted.
@@ -31,7 +36,7 @@ os.environ["VACANCIES_FILE"] = os.path.join(_TMP, "vacancies.json")
 os.environ["LOGS_DIR"] = os.path.join(_TMP, "logs")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ai_assistant import config, db
+from ai_assistant import config, db  # noqa: E402
 
 ANSWERS = {"q1": "A"}
 QUESTIONS = [{
@@ -46,7 +51,7 @@ def _section(title: str) -> None:
     print("-" * len(title))
 
 
-def _raw_answers(qid: str):
+def _raw_questionnaire_answers(qid: str):
     conn = db.get_connection()
     try:
         row = conn.execute(
@@ -133,39 +138,42 @@ def measure_partial_upsert() -> bool:
 
 
 def measure_answers_channel() -> bool:
-    """#41: which shapes of 'answers' actually reach the column?"""
-    _section("#41  the questionnaire answers channel")
+    """#41: which shapes of 'answers' reach the column, and does empty wipe?"""
+    _section("#41  the answers channel")
 
-    def case(label: str, payload: dict, qid: str, expect: dict) -> bool:
+    def case(label: str, payload: dict, qid: str) -> bool:
         db.save_hh_questionnaire(payload)
         got = db.get_hh_questionnaire(qid)["answers"]
-        ok = got == expect
+        ok = got == ANSWERS
         print(f"  {'OK  ' if ok else 'LOST'} {label:<46} -> {got}")
         return ok
 
-    a = case("answers=<dict>, no answers_json",
+    shapes = [
+        case("answers=<dict>, no answers_json",
              {"questionnaire_id": "quest_a", "questions": QUESTIONS,
-              "answers": ANSWERS}, "quest_a", ANSWERS)
-    b = case("answers_json=<dict>",
+              "answers": ANSWERS}, "quest_a"),
+        case("answers_json=<dict>",
              {"questionnaire_id": "quest_b", "questions": QUESTIONS,
-              "answers_json": ANSWERS}, "quest_b", ANSWERS)
-    c = case("answers_json=<json string>",
+              "answers_json": ANSWERS}, "quest_b"),
+        case("answers_json=<json string>",
              {"questionnaire_id": "quest_c", "questions": QUESTIONS,
-              "answers_json": json.dumps(ANSWERS)}, "quest_c", ANSWERS)
+              "answers_json": json.dumps(ANSWERS)}, "quest_c"),
+    ]
 
     from ai_assistant.hh_questionnaire import HHQuestionnaire
     dumped = HHQuestionnaire(questionnaire_id="quest_e",
                              questions=QUESTIONS, answers=ANSWERS).model_dump()
-    e = case("HHQuestionnaire.model_dump()",
-             dumped, "quest_e", ANSWERS)
-    print(f"  [KEY] 'answers_json' in model_dump(): {'answers_json' in dumped}")
+    shapes.append(case("HHQuestionnaire.model_dump()", dumped, "quest_e"))
+    print(f"  [KEY] 'answers_json' in model_dump(): {'answers_json' in dumped}"
+          "  (absent, so the column is filled from `answers`)")
 
     print()
     print("  raw answers_json column:")
     for qid in ("quest_a", "quest_b", "quest_c", "quest_e"):
-        print(f"    {qid:<10} {_raw_answers(qid)!r}")
+        print(f"    {qid:<10} {_raw_questionnaire_answers(qid)!r}")
 
-    # the fail-safe direction: re-discovery must not wipe stored answers
+    # The case a naive fix breaks: an EMPTY answers dict must keep writing NULL.
+    # "{}" is not NULL, so it would win COALESCE on an update and erase answers.
     db.save_hh_questionnaire({"questionnaire_id": "quest_d", "questions": QUESTIONS,
                               "answers_json": json.dumps(ANSWERS)})
     db.save_hh_questionnaire({"questionnaire_id": "quest_d", "questions": QUESTIONS})
@@ -174,18 +182,31 @@ def measure_answers_channel() -> bool:
     print(f"  [KEY] a questions-only re-save leaves stored answers alone: {kept}")
     print("        (COALESCE saves it: excluded.answers_json is NULL, not '{}')")
 
-    # per-question answers ride inside questions_json - a channel that works
+    db.save_hh_questionnaire({"questionnaire_id": "quest_g", "questions": QUESTIONS,
+                              "answers": {}})
+    empty_is_null = _raw_questionnaire_answers("quest_g") is None
+    print(f"  [KEY] an empty answers dict stores NULL, not '{{}}': {empty_is_null}")
+
+    # per-question answers ride inside questions_json - a different channel
     db.save_hh_questionnaire(HHQuestionnaire(
         questionnaire_id="quest_f",
         questions=[{**QUESTIONS[0], "answer": "A"}],
     ).model_dump())
     per_q = db.get_hh_questionnaire("quest_f")["questions"][0].get("answer") == "A"
-    print(f"  [KEY] HHQuestionItem.answer survives (a different channel): {per_q}")
+    print(f"  [KEY] HHQuestionItem.answer still survives (a different channel): {per_q}")
+
+    # the same three inlined lines lived in save_hh_application as well
+    db.save_hh_application({
+        "application_id": "app_probe_ans",
+        "vacancy_stable_id": "hh:777002",
+        "answers": ANSWERS,
+    })
+    app_ans = db.get_hh_application("app_probe_ans")["answers"] == ANSWERS
+    print(f"  [KEY] the same channel in save_hh_application: {app_ans}")
 
     print()
-    print(f"  [KEY] only the JSON-string form works: {c and not a and not b}")
-    print(f"  [KEY] the model's own `answers` field is a dead channel: {not e}")
-    return c and not a and not b and not e and kept and per_q
+    print(f"  [KEY] every documented shape reaches the column: {all(shapes)}")
+    return all(shapes) and kept and empty_is_null and per_q and app_ans
 
 
 def main() -> int:
@@ -196,8 +217,8 @@ def main() -> int:
     print("RESULT")
     print(f"  [{'OK' if ok40 else 'FAIL'}] #40 the partial dict rewinds state and"
           f" erases error + last_transition_reason")
-    print(f"  [{'OK' if ok41 else 'FAIL'}] #41 answers survive only as a JSON"
-          f" string; the model's `answers` field is dead")
+    print(f"  [{'OK' if ok41 else 'FAIL'}] #41 every shape of `answers` reaches the"
+          f" column, and an empty one still writes NULL")
 
     shutil.rmtree(_TMP, ignore_errors=True)
     gone = not os.path.exists(_TMP)

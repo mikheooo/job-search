@@ -3884,66 +3884,120 @@ def test_the_narrow_binding_call_leaves_the_state_machine_alone():
     assert after["state"] == "READY_TO_SUBMIT", after["state"]
 
 # ---------------------------------------------------------------------------
-# Finding #41 - a questionnaire's `answers` dict never reaches the database
+# Finding #41 - a questionnaire's `answers` dict did not reach the database
 # ---------------------------------------------------------------------------
 # HHQuestionnaire has an `answers: dict[str, Any]` field, and its name is the
-# obvious place to put answers. It is a dead channel. save_hh_questionnaire()
-# guards its two serialisations differently:
-#     if not isinstance(questions_json, str):                            # handles None
-#     if answers_json is not None and not isinstance(answers_json, str): # does not
-# HHQuestionnaire.model_dump() has "answers" and no "answers_json" key, so the
-# second guard is False and the column is written as NULL. Measured: a dict in
-# `answers` is gone; only a JSON *string* in `answers_json` survives. A dict
-# passed as `answers_json` is worse - it serialises data.get("answers"), the
-# wrong field, and stores "{}" (which, unlike NULL, would survive COALESCE).
-#
-# Not a live loss today: extract_hh_questionnaire_from_snapshot() leaves
-# `answers` empty, so this is a tripwire for whoever fills it next. The fix is
-# not one line - an empty {} must keep writing NULL, or the upsert's
-# COALESCE(excluded.answers_json, hh_questionnaires.answers_json) would make a
-# questions-only re-discovery wipe answers that are already stored. Measured:
-# today it does not (seed answers as a JSON string, re-save with questions only,
-# answers survive).
+# obvious place to put answers. It used to be a dead channel. The three lines
+# that filled answers_json were inlined in TWO functions - save_hh_questionnaire
+# and save_hh_application - and were wrong in two ways:
+#     * a dict passed as `answers_json` was serialised from data["answers"],
+#       the *other* field, so the caller's value was thrown away and "{}" was
+#       stored. "{}" is not NULL, so on an update it wins the upsert's
+#       COALESCE(excluded.answers_json, hh_questionnaires.answers_json) and
+#       erases the answers already stored;
+#     * a dict passed as `answers` never reached the column at all:
+#       HHQuestionnaire.model_dump() sends `answers` with no `answers_json` key,
+#       and the old guard (`if answers_json is not None and ...`) was False in
+#       exactly that case.
+# Both call sites now share db._serialise_answers_json(). The invariant the fix
+# had to preserve is the COALESCE one above: an empty or absent `answers` must
+# keep writing NULL, because "{}" is not NULL and would wipe stored answers on a
+# questions-only re-discovery. Measured both ways in
+# tools/hh_row_upsert_probe.py.
 
 
-def test_a_questionnaire_answers_dict_never_reaches_the_database():
-    """Documents a dead channel, so that filling it is not silently lossy.
+def test_a_questionnaire_answers_dict_reaches_the_database():
+    """#41: every documented shape of `answers` must reach the column."""
+    db.init_db()
+    questions = [{
+        "question_id": "q1", "text": "Where?", "question_type": "radio",
+        "required": True, "options": ["A", "B"],
+    }]
+    expected = {"q1": "A"}
 
-    If this fails because `answers` now survives, that is the fix landing: keep
-    the assertions about questions and the string channel, drop the `== {}` one,
-    and check the COALESCE note above first - a re-discovery must still leave
-    stored answers alone.
+    # the shape HHQuestionnaire.model_dump() produces: `answers`, no answers_json
+    db.save_hh_questionnaire({
+        "questionnaire_id": "quest_ans_dict",
+        "questions": questions,
+        "answers": expected,
+    })
+    row = db.get_hh_questionnaire("quest_ans_dict")
+    assert row["questions"], (
+        "the questions channel stopped working too - that is a different bug"
+    )
+    assert row["answers"] == expected, (
+        f"the model_dump() shape stored {row['answers']!r}. This is the shape the"
+        " questionnaire is actually written in, so an empty result here means the"
+        " answers a human gave are silently lost."
+    )
+
+    # a dict in answers_json must not be serialised from the OTHER field
+    db.save_hh_questionnaire({
+        "questionnaire_id": "quest_ans_dict_json",
+        "questions": questions,
+        "answers_json": expected,
+    })
+    assert db.get_hh_questionnaire("quest_ans_dict_json")["answers"] == expected, (
+        "a dict passed as answers_json was serialised from `answers` instead -"
+        " that is the first half of #41 coming back"
+    )
+
+    # the channel that always worked
+    db.save_hh_questionnaire({
+        "questionnaire_id": "quest_ans_str",
+        "questions": questions,
+        "answers_json": '{"q1": "A"}',
+    })
+    assert db.get_hh_questionnaire("quest_ans_str")["answers"] == expected, (
+        "the JSON-string channel broke - that one is load-bearing"
+    )
+
+
+def test_an_empty_answers_dict_does_not_wipe_stored_answers():
+    """#41's counter-check: the fix must not break the COALESCE invariant.
+
+    The seed goes through `answers_json` as a JSON string - the one channel that
+    worked before the fix too - so this test measures the COALESCE behaviour
+    alone, not the channel repair. A naive fix (serialise whatever is in
+    `answers`, empty dict included) would store "{}", and "{}" is not NULL, so
+    COALESCE(excluded.answers_json, hh_questionnaires.answers_json) would pick it
+    and a questions-only re-discovery would erase stored answers.
     """
     db.init_db()
     questions = [{
         "question_id": "q1", "text": "Where?", "question_type": "radio",
         "required": True, "options": ["A", "B"],
     }]
+    expected = {"q1": "A"}
 
-    # the shape HHQuestionnaire.model_dump() produces
     db.save_hh_questionnaire({
-        "questionnaire_id": "quest_ans_dict",
-        "questions": questions,
-        "answers": {"q1": "A"},
-    })
-    row = db.get_hh_questionnaire("quest_ans_dict")
-    assert row["questions"], (
-        "the questions channel stopped working too - that is a different bug"
-    )
-    assert row["answers"] == {}, (
-        f"an `answers` dict now survives as {row['answers']!r}. That is an"
-        " improvement, not a regression - see the COALESCE note in the comment"
-        " above before deleting this test."
-    )
-
-    # the channel that does work
-    db.save_hh_questionnaire({
-        "questionnaire_id": "quest_ans_str",
+        "questionnaire_id": "quest_ans_keep",
         "questions": questions,
         "answers_json": '{"q1": "A"}',
     })
-    assert db.get_hh_questionnaire("quest_ans_str")["answers"] == {"q1": "A"}, (
-        "the JSON-string channel broke - that one is load-bearing"
+    assert db.get_hh_questionnaire("quest_ans_keep")["answers"] == expected, (
+        "the seed did not land, so this test cannot tell a wipe from a no-op"
+    )
+
+    # re-discovery: the same questionnaire, questions only, no answers at all
+    db.save_hh_questionnaire({
+        "questionnaire_id": "quest_ans_keep",
+        "questions": questions,
+    })
+    assert db.get_hh_questionnaire("quest_ans_keep")["answers"] == expected, (
+        "a questions-only re-save erased stored answers - the absent payload was"
+        " serialised as something that is not NULL, so COALESCE let it win"
+    )
+
+    # an explicitly empty dict is the same case, not an exception
+    db.save_hh_questionnaire({
+        "questionnaire_id": "quest_ans_keep",
+        "questions": questions,
+        "answers": {},
+    })
+    assert db.get_hh_questionnaire("quest_ans_keep")["answers"] == expected, (
+        "an explicit empty `answers` dict erased stored answers - {} must"
+        " serialise to NULL so that COALESCE keeps the stored value"
     )
 
 # ---------------------------------------------------------------------------

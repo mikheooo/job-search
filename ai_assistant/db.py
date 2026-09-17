@@ -14,6 +14,41 @@ logger = logging.getLogger(__name__)
 _DRY_RUN = False
 
 
+def _serialise_answers_json(data: dict[str, Any]) -> str | None:
+    """Return the value for an ``answers_json`` column from a save_* payload.
+
+    BLE001 finding #41. Two call sites (save_hh_questionnaire, save_hh_application)
+    used to inline the same three lines, and the lines were wrong in two ways:
+
+    * a dict passed as ``answers_json`` was serialised from ``data["answers"]`` —
+      the *other* field — so the caller's value was thrown away and ``"{}"`` was
+      stored instead. ``"{}"`` is not NULL, so on an update it wins the upsert's
+      ``COALESCE(excluded.answers_json, <table>.answers_json)`` and wipes the
+      answers that were already stored;
+    * a dict passed as ``answers`` never reached the column at all:
+      ``HHQuestionnaire.model_dump()`` sends ``answers`` with no ``answers_json``
+      key, and the old guard (``if answers_json is not None and ...``) was False
+      in exactly that case.
+
+    An empty or absent ``answers`` deliberately returns None. NULL is what lets
+    that same COALESCE keep the stored value, so a questions-only re-discovery
+    must not write ``"{}"`` here — that would erase the answers instead of
+    leaving them alone.
+
+    Pinned by test_a_questionnaire_answers_dict_reaches_the_database and
+    test_an_empty_answers_dict_does_not_wipe_stored_answers.
+    """
+    answers_json = data.get("answers_json")
+    if answers_json is None:
+        answers = data.get("answers")
+        if answers:
+            return json.dumps(answers, ensure_ascii=False)
+        return None
+    if isinstance(answers_json, str):
+        return answers_json
+    return json.dumps(answers_json, ensure_ascii=False)
+
+
 def set_dry_run(enabled: bool) -> None:
     global _DRY_RUN
     _DRY_RUN = bool(enabled)
@@ -828,9 +863,7 @@ def save_hh_questionnaire(data: dict[str, Any]) -> None:
     questions_json = data.get("questions_json")
     if not isinstance(questions_json, str):
         questions_json = json.dumps(data.get("questions") or [], ensure_ascii=False)
-    answers_json = data.get("answers_json")
-    if answers_json is not None and not isinstance(answers_json, str):
-        answers_json = json.dumps(data.get("answers") or {}, ensure_ascii=False)
+    answers_json = _serialise_answers_json(data)
 
     now = datetime.utcnow().isoformat()
     created_at = data.get("created_at") or now
@@ -997,13 +1030,10 @@ def update_hh_questionnaire_answers(
 
 def save_hh_application(data: dict[str, Any]) -> None:
     """Save or update an HH application record in state.db."""
-    import json
     conn = get_connection()
     cur = conn.cursor()
     app_id = str(data["application_id"]).strip()
-    answers_json = data.get("answers_json")
-    if answers_json is not None and not isinstance(answers_json, str):
-        answers_json = json.dumps(data.get("answers") or {}, ensure_ascii=False)
+    answers_json = _serialise_answers_json(data)
     now = datetime.utcnow().isoformat()
     created_at = data.get("created_at") or now
     updated_at = data.get("updated_at") or now
