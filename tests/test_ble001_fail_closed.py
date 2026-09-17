@@ -11,6 +11,7 @@ survived review the first time.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from types import SimpleNamespace
 from typing import ClassVar
@@ -4068,4 +4069,183 @@ def test_a_supplied_fingerprint_is_reported_as_compared(monkeypatch):
     )
     assert res.status == "NEEDS_HUMAN_REVIEW", res.status
     assert res.submit_count == 0, "the stop must survive the new field"
+
+
+# ---------------------------------------------------------------------------
+# Finding #44 -- the candidate-profile fallback
+#
+# Three byte-identical inline blocks in browser_executor.py loaded the profile
+# with a fallback that was silent twice over: a configured path that failed to
+# read was swallowed and replaced by whatever the default search found, and when
+# nothing was found at all the hard-coded default came back -- with no name,
+# email or phone. Measured: seven attributes come back empty (name, email,
+# phone_ru, phone_th, github, linkedin, portfolio), which through
+# _get_profile_value_truth() costs eight form fields their values. The same
+# profile feeds the hard-constraint gate on the submit path.
+#
+# The fallback is deliberate -- refusing to work because a file is missing would
+# be a worse failure on this path -- so the pins below assert VISIBILITY, not
+# refusal. A test that demanded an exception would be pinning the wrong repair.
+# ---------------------------------------------------------------------------
+
+_PROFILE_CONTACT_FIELDS = (
+    "name", "email", "phone_ru", "phone_th", "github", "linkedin", "portfolio",
+)
+
+
+def _force_profile_fallback(monkeypatch, tmp_path):
+    """Make every profile search location miss, so the fallback is reached."""
+    from ai_assistant import candidate_profile as cp
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CANDIDATE_PROFILE", raising=False)
+    monkeypatch.delenv("CANDIDATE_PROFILE_FILE", raising=False)
+    monkeypatch.setattr(cp, "DEFAULT_PROFILE_PATHS", [tmp_path / "no_such_profile.json"])
+    return cp
+
+
+def test_a_missing_profile_is_reported_instead_of_silently_defaulted(
+        monkeypatch, tmp_path, caplog):
+    """Measured before the fix: 0 warnings. After: 1."""
+    cp = _force_profile_fallback(monkeypatch, tmp_path)
+
+    with caplog.at_level(logging.WARNING, logger=cp.__name__):
+        profile = cp.load_candidate_profile()
+
+    assert profile is not None, (
+        "the fallback itself must stay: refusing to run because a file is missing"
+        " would be a worse failure than running with a thin profile"
+    )
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warnings, (
+        "load_candidate_profile() fell back to the built-in default and said nothing."
+        " That default carries no name, email or phone (seven attributes measured"
+        " empty, eight form fields lose their value), so the silence is the defect."
+    )
+    assert "built-in default" in warnings[0].getMessage(), warnings[0].getMessage()
+
+
+def test_the_built_in_default_is_the_one_without_contact_details(
+        monkeypatch, tmp_path):
+    """The premise of the finding, pinned so it cannot be argued away later."""
+    cp = _force_profile_fallback(monkeypatch, tmp_path)
+    fallback = cp.load_candidate_profile()
+
+    for field in _PROFILE_CONTACT_FIELDS:
+        assert getattr(fallback, field, None) in (None, "", [], {}), (
+            f"the built-in default now carries {field!r}. If that is deliberate,"
+            f" the warning text and this pin both need revisiting."
+        )
+
+
+def test_an_explicit_readable_path_still_returns_the_real_profile(tmp_path, caplog):
+    """Counter-check: the helper must not turn a working path into a fallback."""
+    from ai_assistant.candidate_profile import load_candidate_profile
+
+    real = tmp_path / "real_profile.json"
+    real.write_text(
+        json.dumps({
+            "name": "Test Human",
+            "email": "test@example.com",
+            "phone_ru": "+70000000000",
+        }),
+        encoding="utf-8",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="ai_assistant.candidate_profile"):
+        profile = load_candidate_profile(str(real))
+
+    assert profile.name == "Test Human"
+    assert profile.email == "test@example.com"
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING], (
+        "a readable explicit path produced a warning"
+    )
+
+
+def test_the_profile_helper_reports_a_configured_path_it_could_not_read(
+        monkeypatch, tmp_path, caplog):
+    """The other half of the silence: the configured path fails, the old code
+    swapped in another profile without a word."""
+    from ai_assistant import candidate_profile as cp
+    from ai_assistant import config
+
+    broken = tmp_path / "broken_profile.json"
+    broken.write_text("{ not json at all", encoding="utf-8")
+    monkeypatch.setattr(config, "CANDIDATE_PROFILE_FILE", str(broken))
+    monkeypatch.setattr(cp, "DEFAULT_PROFILE_PATHS", [tmp_path / "no_such_profile.json"])
+
+    with caplog.at_level(logging.WARNING, logger="ai_assistant.browser_executor"):
+        profile = be._load_profile()
+
+    assert profile is not None
+    messages = " ".join(
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    )
+    assert "could not be read" in messages, (
+        "the configured profile path failed to read and the swap went unrecorded;"
+        f" warnings seen: {messages!r}"
+    )
+    assert str(broken) in messages
+
+
+def test_browser_executor_loads_the_profile_in_exactly_one_place():
+    """Finding #44 as a class, the way test_no_second_copy_of_cdp_resolution()
+    handles #14: three byte-identical inline copies is how the silence got
+    triplicated, so the fix is one owner and the pin counts the copies.
+
+    Substring matching would fire on the comments above, so walk the AST and
+    require that every call to load_candidate_profile() sits inside _load_profile.
+    """
+    import ast
+    import pathlib
+
+    path = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "ai_assistant" / "browser_executor.py"
+    )
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+    def _called_name(node: ast.Call) -> str | None:
+        func = node.func
+        if isinstance(func, ast.Name):
+            return func.id
+        return None
+
+    helper = next(
+        (
+            n for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name == "_load_profile"
+        ),
+        None,
+    )
+    assert helper is not None, "_load_profile() is gone; the profile load has no owner"
+
+    inside_helper = [
+        n for n in ast.walk(helper)
+        if isinstance(n, ast.Call) and _called_name(n) == "load_candidate_profile"
+    ]
+    outside_helper = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and _called_name(n) == "load_candidate_profile"
+        and not (helper.lineno <= n.lineno <= (helper.end_lineno or helper.lineno))
+    ]
+    call_sites = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and _called_name(n) == "_load_profile"
+    ]
+
+    assert not outside_helper, (
+        "a call to load_candidate_profile() lives outside _load_profile() -- that is"
+        f" how the fallback went silent three times over. Lines:"
+        f" {[n.lineno for n in outside_helper]}"
+    )
+    assert len(inside_helper) == 4, (
+        f"_load_profile() should make four attempts (explicit path, no config path,"
+        f" configured path, fallback); found {len(inside_helper)}"
+    )
+    assert len(call_sites) == 3, (
+        f"expected three call sites (prepare once, submit twice), found"
+        f" {len(call_sites)} at lines {[n.lineno for n in call_sites]}"
+    )
 

@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-from .candidate_profile import CandidateProfile
+from .candidate_profile import CandidateProfile, load_candidate_profile
 from .db import get_connection, init_db
 from .schema import Vacancy
 
@@ -1574,6 +1574,49 @@ def _get_validated_package_answer(field: str, package: Any) -> str | None:
             return str(ans)
     return None
 
+def _load_profile(profile_path: str | None = None) -> CandidateProfile:
+    """Load the candidate profile, preferring an explicit path.
+
+    BLE001 finding #44. Three call sites (prepare_application_in_browser,
+    submit_application_in_browser twice) used to inline this same fallback, and
+    it was silent in two ways at once:
+
+      * when the configured path failed to read, the exception was caught and
+        whatever ``load_candidate_profile()`` found next was substituted, with
+        no record that anything had gone wrong;
+      * when nothing was found at all, ``load_candidate_profile()`` returns the
+        built-in default profile -- which has no name, email or phone.
+
+    Measured: with that default, eight fields the real profile supplies come
+    back None -- name, first_name, last_name, email, phone, github, linkedin,
+    portfolio. Forms would be prepared with empty contact details, silently. The
+    same profile feeds the hard-constraint gate on the submit path, so a missing
+    file would also evaluate constraints from the OLD profile.
+
+    The fallback is kept: refusing to work because a file is missing would be a
+    worse failure on this path. It just stops being silent.
+    """
+    if profile_path:
+        return load_candidate_profile(profile_path)
+
+    from .config import CANDIDATE_PROFILE_FILE
+
+    cfg_path = CANDIDATE_PROFILE_FILE if CANDIDATE_PROFILE_FILE and CANDIDATE_PROFILE_FILE.strip() else None
+    if not cfg_path:
+        return load_candidate_profile()
+    try:
+        return load_candidate_profile(cfg_path)
+    except Exception as exc:
+        logger.warning(
+            "candidate profile at %s could not be read (%s: %s); falling back to the "
+            "default search locations. Fields that profile supplied may come out empty.",
+            cfg_path,
+            type(exc).__name__,
+            exc,
+        )
+        return load_candidate_profile()
+
+
 def _get_profile_value(field: str, profile: CandidateProfile, resume_text: str, vacancy: Vacancy, package: Any) -> str | None:
     """Truth-only field value: confirmed profile/resume data first, then a
     validated (requires_review=False) package answer. Never invents."""
@@ -1902,7 +1945,6 @@ def prepare_application_in_browser(
 ) -> BrowserResult:
 
     from .application_tracking import ApplicationStatus, get_application_status
-    from .candidate_profile import load_candidate_profile
     from .db import _row_to_vacancy, get_application_package, get_vacancy_by_id
     from .job_analyzer import get_resume_text
 
@@ -1973,18 +2015,7 @@ def prepare_application_in_browser(
         )
 
     # Load profile and resume
-    if profile_path:
-        profile = load_candidate_profile(profile_path)
-    else:
-        from .config import CANDIDATE_PROFILE_FILE
-        cfg_path = CANDIDATE_PROFILE_FILE if CANDIDATE_PROFILE_FILE and CANDIDATE_PROFILE_FILE.strip() else None
-        if cfg_path:
-            try:
-                profile = load_candidate_profile(cfg_path)
-            except Exception:
-                profile = load_candidate_profile()
-        else:
-            profile = load_candidate_profile()
+    profile = _load_profile(profile_path)
     resume_text = get_resume_text(profile)
 
     url = vac.job_url
@@ -2444,19 +2475,7 @@ def submit_application_in_browser(
     vac = _row_to_vacancy(row)
 
     # Load profile
-    from .candidate_profile import load_candidate_profile
-    if profile_path:
-        profile = load_candidate_profile(profile_path)
-    else:
-        from .config import CANDIDATE_PROFILE_FILE
-        cfg_path = CANDIDATE_PROFILE_FILE if CANDIDATE_PROFILE_FILE and CANDIDATE_PROFILE_FILE.strip() else None
-        if cfg_path:
-            try:
-                profile = load_candidate_profile(cfg_path)
-            except Exception:
-                profile = load_candidate_profile()
-        else:
-            profile = load_candidate_profile()
+    profile = _load_profile(profile_path)
 
     # Defense-in-Depth Hard Constraint Gate
     from .matcher import _coerce_profile, _hard_constraints
@@ -2617,19 +2636,7 @@ def submit_application_in_browser(
     vac = _row_to_vacancy(row)
 
     # Load profile
-    from .candidate_profile import load_candidate_profile
-    if profile_path:
-        profile = load_candidate_profile(profile_path)
-    else:
-        from .config import CANDIDATE_PROFILE_FILE
-        cfg_path = CANDIDATE_PROFILE_FILE if CANDIDATE_PROFILE_FILE and CANDIDATE_PROFILE_FILE.strip() else None
-        if cfg_path:
-            try:
-                profile = load_candidate_profile(cfg_path)
-            except Exception:
-                profile = load_candidate_profile()
-        else:
-            profile = load_candidate_profile()
+    profile = _load_profile(profile_path)
     from .job_analyzer import get_resume_text
     resume_text = get_resume_text(profile)
 

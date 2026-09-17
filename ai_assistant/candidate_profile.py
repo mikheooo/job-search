@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def _norm_list(values: Any) -> list[str]:
@@ -407,7 +410,10 @@ DEFAULT_PROFILE_PATHS = [
 
 def load_candidate_profile(path: str | os.PathLike | None = None) -> CandidateProfile:
     """Load profile from explicit path, env var, or default locations.
-    Falls back to a sensible default profile if nothing found.
+
+    Falls back to the built-in default profile when nothing is found, and logs a
+    warning when it does: that default carries no name, email or phone, so the
+    fallback is visible rather than silent (BLE001 finding #44).
     """
     # explicit
     if path:
@@ -421,6 +427,23 @@ def load_candidate_profile(path: str | os.PathLike | None = None) -> CandidatePr
         if p.exists():
             return CandidateProfile.from_json_file(p)
     # fallback: return default profile
+    #
+    # BLE001 finding #44. This fallback used to be silent, and it is not a
+    # cosmetic one: the built-in profile carries NO contact details. Measured
+    # against the real profile, eight fields come back None through
+    # _get_profile_value_truth() -- name, first_name, last_name, email, phone,
+    # github, linkedin, portfolio -- so forms get prepared with empty contact
+    # data and nothing anywhere says why. The profile also feeds the
+    # hard-constraint gate on the submit path.
+    #
+    # The fallback itself stays: refusing to run because a file is missing
+    # would be a worse failure. It just stops being silent.
+    logger.warning(
+        "candidate profile not found: no explicit path, no CANDIDATE_PROFILE/"
+        "CANDIDATE_PROFILE_FILE in the environment, and none of %s exists. Using the "
+        "built-in default profile, which has no name, email or phone.",
+        ", ".join(str(p) for p in DEFAULT_PROFILE_PATHS),
+    )
     return CandidateProfile(
         target_roles=["AI Automation Engineer", "n8n Developer", "Automation Engineer", "AI Agent Developer", "Application Support Engineer"],
         desired_roles=["AI Automation Engineer", "n8n Developer", "Automation Engineer", "AI Agent Developer", "Application Support Engineer"],
