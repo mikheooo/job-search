@@ -36,6 +36,7 @@ hh_storage_state*.json
 
 # Temporary / scratch (never commit)
 _tmp_*
+.pytest_*.xml
 *.bak
 *.bak2
 *.backup
