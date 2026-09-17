@@ -1753,6 +1753,7 @@ def extract_form_for_vacancy(
     url: str,
     adapter: BrowserAdapter | None = None,
     canonical_id: str | None = None,
+    snapshot_out: dict | None = None,
 ):
     """Open a vacancy page and return a normalized ApplicationForm.
 
@@ -1764,6 +1765,15 @@ def extract_form_for_vacancy(
     otherwise a MockBrowserAdapter (for tests/offline). An authenticated HH
     session can be provided via env HH_STORAGE_STATE (Playwright storage_state
     JSON file path); it is never hardcoded or persisted.
+
+    snapshot_out, when a dict is passed, is filled with the RAW DOM snapshot
+    this call read. Without it the snapshot is thrown away, and the caller has
+    no way to build a questionnaire: the normalized form assigns its own ids
+    (hh__<slug> or hh__hash_<...>), while
+    extract_hh_questionnaire_from_snapshot() numbers questions positionally
+    (q1..q6). Measured on a live vacancy page: the two schemes differ, so a
+    questionnaire built from the normalized form would never match one read
+    from a snapshot. Collection therefore has to start from the snapshot.
     """
     from .hh_extractor import extract_application_form
 
@@ -1787,6 +1797,9 @@ def extract_form_for_vacancy(
         snapshot["site"] = snapshot.get("site") or open_res.get("site", "hh.ru")
         snapshot["blocked"] = open_res.get("blocked", False)
         snapshot["blocked_reason"] = open_res.get("reason")
+        if snapshot_out is not None:
+            snapshot_out.clear()
+            snapshot_out.update(snapshot)
         return extract_application_form(
             vacancy_stable_id=vacancy_stable_id,
             url=url,

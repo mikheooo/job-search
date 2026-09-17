@@ -3795,3 +3795,152 @@ def test_discovering_a_questionnaire_does_record_it():
         "that quietly drops the write is worse than the surprise it replaced"
     )
     assert row["status"] == "NEEDS_HUMAN_REVIEW", row["status"]
+
+
+# ---------------------------------------------------------------------------
+# Finding #40 - binding a questionnaire the obvious way rewinds the state machine
+# ---------------------------------------------------------------------------
+# Option B needs to attach a questionnaire to an application. The obvious call is
+#     db.save_hh_application({"application_id": app_id, "questionnaire_id": qid})
+# and it is wrong. save_hh_application() is an upsert: most columns are written
+# through COALESCE(excluded.x, existing.x) so a partial dict leaves them alone,
+# but four columns are written as a bare `x = excluded.x`: state, error,
+# last_transition_reason and updated_at. Measured on a full row: a partial dict
+# rewound state READY_TO_SUBMIT -> NEW and erased both error ("previous failure"
+# -> NULL) and last_transition_reason ("11 gates passed" -> NULL). The COALESCE
+# columns all survived - which is exactly what makes the bare ones easy to miss.
+#
+# That is not cosmetic - an application rewound to NEW can be picked up and
+# processed again. db.set_hh_application_questionnaire() does a targeted UPDATE
+# instead, and record_questionnaire_for_vacancy() uses it.
+
+
+def test_binding_a_questionnaire_the_obvious_way_rewinds_the_state_machine():
+    """Documents the trap that made a narrow db function necessary.
+
+    If save_hh_application() is ever fixed to COALESCE the bare columns, THIS
+    TEST WILL FAIL - and that failure is an improvement, not a regression.
+    Change it to assert the row survives intact, and
+    record_questionnaire_for_vacancy() may then use either call.
+    """
+    db.init_db()
+    db.save_hh_application({
+        "application_id": "app_hh_999555",
+        "vacancy_stable_id": "hh:999555",
+        "title": "Title that must survive",
+        "state": "READY_TO_SUBMIT",
+        "error": "previous failure",
+        "last_transition_reason": "11 gates passed",
+    })
+    before = db.get_hh_application("app_hh_999555")
+    assert before["state"] == "READY_TO_SUBMIT"
+    assert before["error"] == "previous failure"
+    assert before["last_transition_reason"] == "11 gates passed"
+
+    # the obvious way to attach a questionnaire
+    db.save_hh_application({
+        "application_id": "app_hh_999555",
+        "questionnaire_id": "quest_abc",
+    })
+
+    after = db.get_hh_application("app_hh_999555")
+    assert after["questionnaire_id"] == "quest_abc"
+    assert after["title"] == "Title that must survive", (
+        "COALESCE protected the title - that is what makes the state column easy"
+        " to overlook"
+    )
+    assert after["state"] == "NEW", (
+        f"the state column is no longer rewound by a partial upsert"
+        f" (it came back as {after['state']!r}). If that is a deliberate fix,"
+        " update this test rather than deleting it."
+    )
+    # state is the loud one, but it is not the only bare column: a partial dict
+    # also erases the recorded error and the reason for the last transition.
+    assert after["error"] is None, (
+        f"error survived as {after['error']!r} - the bare-column trap is narrower"
+        " than this test claims, so update the comment above"
+    )
+    assert after["last_transition_reason"] is None, (
+        f"last_transition_reason survived as {after['last_transition_reason']!r}"
+    )
+
+
+def test_the_narrow_binding_call_leaves_the_state_machine_alone():
+    """The counter-check: the call the collection path actually uses."""
+    db.init_db()
+    db.save_hh_application({
+        "application_id": "app_hh_999556",
+        "vacancy_stable_id": "hh:999556",
+        "state": "READY_TO_SUBMIT",
+    })
+
+    updated = db.set_hh_application_questionnaire("app_hh_999556", "quest_abc")
+
+    assert updated is True
+    after = db.get_hh_application("app_hh_999556")
+    assert after["questionnaire_id"] == "quest_abc"
+    assert after["state"] == "READY_TO_SUBMIT", after["state"]
+
+# ---------------------------------------------------------------------------
+# Finding #41 - a questionnaire's `answers` dict never reaches the database
+# ---------------------------------------------------------------------------
+# HHQuestionnaire has an `answers: dict[str, Any]` field, and its name is the
+# obvious place to put answers. It is a dead channel. save_hh_questionnaire()
+# guards its two serialisations differently:
+#     if not isinstance(questions_json, str):                            # handles None
+#     if answers_json is not None and not isinstance(answers_json, str): # does not
+# HHQuestionnaire.model_dump() has "answers" and no "answers_json" key, so the
+# second guard is False and the column is written as NULL. Measured: a dict in
+# `answers` is gone; only a JSON *string* in `answers_json` survives. A dict
+# passed as `answers_json` is worse - it serialises data.get("answers"), the
+# wrong field, and stores "{}" (which, unlike NULL, would survive COALESCE).
+#
+# Not a live loss today: extract_hh_questionnaire_from_snapshot() leaves
+# `answers` empty, so this is a tripwire for whoever fills it next. The fix is
+# not one line - an empty {} must keep writing NULL, or the upsert's
+# COALESCE(excluded.answers_json, hh_questionnaires.answers_json) would make a
+# questions-only re-discovery wipe answers that are already stored. Measured:
+# today it does not (seed answers as a JSON string, re-save with questions only,
+# answers survive).
+
+
+def test_a_questionnaire_answers_dict_never_reaches_the_database():
+    """Documents a dead channel, so that filling it is not silently lossy.
+
+    If this fails because `answers` now survives, that is the fix landing: keep
+    the assertions about questions and the string channel, drop the `== {}` one,
+    and check the COALESCE note above first - a re-discovery must still leave
+    stored answers alone.
+    """
+    db.init_db()
+    questions = [{
+        "question_id": "q1", "text": "Where?", "question_type": "radio",
+        "required": True, "options": ["A", "B"],
+    }]
+
+    # the shape HHQuestionnaire.model_dump() produces
+    db.save_hh_questionnaire({
+        "questionnaire_id": "quest_ans_dict",
+        "questions": questions,
+        "answers": {"q1": "A"},
+    })
+    row = db.get_hh_questionnaire("quest_ans_dict")
+    assert row["questions"], (
+        "the questions channel stopped working too - that is a different bug"
+    )
+    assert row["answers"] == {}, (
+        f"an `answers` dict now survives as {row['answers']!r}. That is an"
+        " improvement, not a regression - see the COALESCE note in the comment"
+        " above before deleting this test."
+    )
+
+    # the channel that does work
+    db.save_hh_questionnaire({
+        "questionnaire_id": "quest_ans_str",
+        "questions": questions,
+        "answers_json": '{"q1": "A"}',
+    })
+    assert db.get_hh_questionnaire("quest_ans_str")["answers"] == {"q1": "A"}, (
+        "the JSON-string channel broke - that one is load-bearing"
+    )
+

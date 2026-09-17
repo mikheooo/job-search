@@ -423,16 +423,37 @@ def prepare_applications(top_n: int = 20, profile_path: str | None = None, force
 
         # Stage 17D: extract HH form -> resolve answers -> validate package.
         # Read-only extraction; failure leaves the package NEEDS_REVIEW.
+        snapshot_out: dict = {}
         try:
             from .application_qa import prepare_package_with_form
             pkg = prepare_package_with_form(
                 pkg, sid, vac.job_url, profile, resume_text,
                 deep=deep, vacancy=vac,
+                snapshot_out=snapshot_out,
             )
         except Exception as e:
             logging.warning("Form extraction/validation failed for %s: %s", sid, e)
             pkg.validation_status = "NEEDS_REVIEW"
             pkg.review_reasons = list(pkg.review_reasons or []) + [f"Form extraction/validation failed: {e}"]
+
+        # Option B, collection half: the prep step above is contractually
+        # read-only (test_no_db_writes_during_extraction_and_validation), so the
+        # recording happens here, in the caller. Measured over 10 live hh
+        # vacancies: the 8 plain ones yield 0 controls and 0 questions, so
+        # "discover found something" is a sufficient condition and no
+        # classification predicate is needed.
+        if snapshot_out:
+            try:
+                from .hh_questionnaire import record_questionnaire_for_vacancy
+                qid = record_questionnaire_for_vacancy(
+                    snapshot_out, sid,
+                    title=getattr(vac, "title", None),
+                    employer=getattr(vac, "company", None),
+                )
+                if qid:
+                    print(f"     Questionnaire recorded: {qid}")
+            except Exception as e:
+                logger.warning("Questionnaire collection failed for %s: %s", sid, e)
 
         try:
             save_application_package(sid, APPLICATION_PREP_VERSION, pkg.model_dump_json())

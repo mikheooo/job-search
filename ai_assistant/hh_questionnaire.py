@@ -305,6 +305,44 @@ def discover_hh_questionnaire_from_snapshot(
     return quest
 
 
+def record_questionnaire_for_vacancy(
+    snapshot: dict[str, Any],
+    vacancy_stable_id: str,
+    title: str | None = None,
+    employer: str | None = None,
+) -> str | None:
+    """Discover the questionnaire on a live snapshot and attach it to the application.
+
+    Returns the questionnaire id, or None when the snapshot carries no questions
+    (a plain "Откликнуться" vacancy). This is the collection half of option B:
+    a path that has already read the page records what the employer asks, so
+    that a later read has something to compare against.
+
+    Binding uses db.set_hh_application_questionnaire() rather than
+    db.save_hh_application(): the latter is an upsert that would rewind the
+    application's state to NEW (measured - see that function's docstring).
+
+    When no application exists yet for the vacancy, the questionnaire is still
+    recorded and keyed by vacancy, and the binding is simply skipped - the row is
+    then findable by vacancy_stable_id rather than orphaned the way
+    quest_1c2be2caaff3bfff was (that one had vacancy_stable_id = NULL).
+    """
+    quest = discover_hh_questionnaire_from_snapshot(
+        snapshot,
+        vacancy_stable_id=vacancy_stable_id,
+        title=title,
+        employer=employer,
+    )
+    if quest is None:
+        return None
+    app = db.get_hh_application_by_vacancy(vacancy_stable_id)
+    if app:
+        db.set_hh_application_questionnaire(
+            str(app["application_id"]), quest.questionnaire_id
+        )
+    return quest.questionnaire_id
+
+
 def format_hh_application_form_cli_output(
     vacancy_title: str,
     quest: HHQuestionnaire | None = None,

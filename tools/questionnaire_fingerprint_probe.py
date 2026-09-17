@@ -297,6 +297,35 @@ def main() -> int:
                 print("  -> no names of either kind: this page really is not the form.")
         except Exception as exc:  # noqa: BLE001
             print(f"      [query failed] {type(exc).__name__}: {exc}")
+
+        print("\n=== 2d. the normalised form vs the questionnaire: same ids? ===")
+        print("  Production reads a page with extract_form_for_vacancy(), which")
+        print("  returns a normalised ApplicationForm - and then THROWS THE SNAPSHOT")
+        print("  AWAY. If the questionnaire were built from the normalised form")
+        print("  instead, it would be a third producer with its own id scheme, and")
+        print("  the comparison would be between two different shapes. Measuring:")
+        try:
+            from ai_assistant.hh_extractor import extract_application_form as normalise
+
+            ad.open(vacancy_url)
+            raw = ad.extract_application_form()
+            form = normalise(
+                vacancy_stable_id="hh:probe",
+                url=vacancy_url,
+                dom_snapshot=raw,
+            )
+            norm_ids = [str(q.id) for q in (form.questions or [])]
+            print(f"      normalised application_type = {getattr(form.application_type, 'value', form.application_type)}")
+            print(f"      normalised question ids     = {norm_ids[:6]}")
+            print(f"      questionnaire ids           = {(result_a or {}).get('ids', [])[:6]}")
+            if norm_ids[:6] == (result_a or {}).get("ids", [])[:6]:
+                print("  -> the two agree; either source would do.")
+            else:
+                print("  -> [DECISIVE] the id schemes differ, so a questionnaire")
+                print("     built from the normalised form would never match one read")
+                print("     from a snapshot. Collection MUST use the snapshot path.")
+        except Exception as exc:  # noqa: BLE001
+            print(f"      [failed] {type(exc).__name__}: {exc}")
     finally:
         if ad is not None:
             ad.close()

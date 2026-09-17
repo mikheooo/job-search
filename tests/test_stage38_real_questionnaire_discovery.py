@@ -439,3 +439,89 @@ def test_cli_questionnaire_suggest_command(clean_db, capsys):
     assert updated["status"] == HHQuestionStatus.READY_TO_SUBMIT.value
     assert updated["answers"] is not None
     assert len(updated["answers"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# Option B, collection half: record what the employer asks, bind it, compare
+# later. Finding #38 fixed the read (extract_* is pure now), so the write lives
+# in record_questionnaire_for_vacancy().
+# ---------------------------------------------------------------------------
+
+def _app_and_snapshot(vid: str = "hh:999222", questions=None):
+    db.save_hh_application({
+        "application_id": f"app_hh_{vid.split(':')[-1]}",
+        "vacancy_stable_id": vid,
+        "title": "Python developer",
+        "employer": "Test Employer",
+        "state": "READY_TO_SUBMIT",
+    })
+    return {
+        "vacancy_stable_id": vid,
+        "title": "Python developer",
+        "employer": "Test Employer",
+        "controls": [],
+        "questions": questions if questions is not None else [
+            {
+                "id": "q1_where",
+                "text": "Где вы находитесь?",
+                "type": "radio",
+                "required": True,
+                "options": ["Москва", "Удалённо"],
+            },
+        ],
+    }
+
+
+def test_recording_a_questionnaire_attaches_it_to_the_application(clean_db):
+    """The collection half of option B: one call records and binds."""
+    from ai_assistant.hh_questionnaire import record_questionnaire_for_vacancy
+
+    snapshot = _app_and_snapshot()
+    qid = record_questionnaire_for_vacancy(snapshot, "hh:999222")
+
+    assert qid and qid.startswith("quest_"), qid
+    assert db.get_hh_questionnaire(qid) is not None, "nothing was recorded"
+    app = db.get_hh_application("app_hh_999222")
+    assert app["questionnaire_id"] == qid, (
+        "the questionnaire was recorded but not bound, so every reader that goes"
+        " through app.questionnaire_id still sees nothing"
+    )
+    assert app["state"] == "READY_TO_SUBMIT", (
+        f"binding rewound the state machine to {app['state']!r}"
+    )
+
+
+def test_recording_creates_no_row_for_a_vacancy_without_questions(clean_db):
+    """Counter-check. Measured over 10 live hh vacancies: the 8 plain ones give
+    0 controls and 0 questions. Recording must stay silent for them, otherwise
+    the table fills with noise and a comparison means nothing."""
+    from ai_assistant.hh_questionnaire import record_questionnaire_for_vacancy
+
+    before = db.list_hh_questionnaires()
+    qid = record_questionnaire_for_vacancy(_app_and_snapshot(questions=[]), "hh:999222")
+
+    assert qid is None, "a vacancy with no questions produced a questionnaire"
+    assert len(db.list_hh_questionnaires()) == len(before)
+    app = db.get_hh_application("app_hh_999222")
+    assert app["questionnaire_id"] is None
+
+
+def test_binding_a_questionnaire_leaves_the_state_alone(clean_db):
+    """db.set_hh_application_questionnaire() exists because the obvious way to
+    bind - db.save_hh_application() with a partial dict - rewinds the state
+    machine. Measured: a row in READY_TO_SUBMIT came back as NEW."""
+    db.save_hh_application({
+        "application_id": "app_hh_999444",
+        "vacancy_stable_id": "hh:999444",
+        "state": "READY_TO_SUBMIT",
+    })
+    updated = db.set_hh_application_questionnaire("app_hh_999444", "quest_abc")
+
+    assert updated is True
+    row = db.get_hh_application("app_hh_999444")
+    assert row["questionnaire_id"] == "quest_abc"
+    assert row["state"] == "READY_TO_SUBMIT", row["state"]
+
+
+def test_binding_a_questionnaire_for_an_unknown_application_reports_nothing_done(clean_db):
+    assert db.set_hh_application_questionnaire("app_does_not_exist", "quest_abc") is False

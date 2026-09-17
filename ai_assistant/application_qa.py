@@ -398,6 +398,7 @@ def prepare_package_with_form(
     adapter: Any | None = None,
     canonical_id: str | None = None,
     llm: Any | None = None,
+    snapshot_out: dict | None = None,
 ) -> Any:
     """Stage 17D integration: extraction -> resolution -> validation.
 
@@ -407,12 +408,20 @@ def prepare_package_with_form(
 
     Read-only with respect to the DB. Never submits/clicks/fills/uploads.
     LLM only inside answer generation (truth sources only).
+
+    snapshot_out, when a dict is passed, is filled with the raw DOM snapshot
+    that was read. This function stays read-only: the caller decides whether to
+    record a questionnaire from it. That split is deliberate and pinned by
+    test_no_db_writes_during_extraction_and_validation - the collection write
+    belongs to the caller, not to a function whose contract says it writes
+    nothing (finding #38 was the same mistake in the other direction).
     """
     from .browser_executor import extract_form_for_vacancy
 
     try:
         form = extract_form_for_vacancy(
-            vacancy_stable_id, url, adapter=adapter, canonical_id=canonical_id
+            vacancy_stable_id, url, adapter=adapter, canonical_id=canonical_id,
+            snapshot_out=snapshot_out,
         )
     except Exception as e:
         pkg.validation_status = "NEEDS_REVIEW"

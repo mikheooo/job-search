@@ -1045,6 +1045,36 @@ def save_hh_application(data: dict[str, Any]) -> None:
     conn.close()
 
 
+def set_hh_application_questionnaire(application_id: str, questionnaire_id: str) -> bool:
+    """Attach a questionnaire to an application. Returns True if a row was updated.
+
+    Narrow on purpose. The obvious way to do this is
+
+        db.save_hh_application({"application_id": app_id, "questionnaire_id": qid})
+
+    and it is wrong: save_hh_application() is an upsert whose state column is
+    written as ``excluded.state`` with a default of "NEW", so a partial dict
+    silently rewinds the application's state machine. Measured on a row in
+    READY_TO_SUBMIT: after that call the state was NEW (title and questionnaire
+    survived, because those columns use COALESCE - state does not). An
+    application rewound to NEW can be picked up and processed again, so this is
+    not a cosmetic difference. Pinned by
+    test_binding_a_questionnaire_the_obvious_way_rewinds_the_state_machine.
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE hh_applications SET questionnaire_id = ?, updated_at = ?"
+            " WHERE application_id = ?",
+            (questionnaire_id, datetime.utcnow().isoformat(), str(application_id).strip()),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def _row_to_application(row: Any) -> dict[str, Any] | None:
     if not row:
         return None
