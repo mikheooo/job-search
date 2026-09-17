@@ -23,11 +23,18 @@ This probe answers the part that could only be answered live:
 It never clicks apply, never fills a field, never submits. It DOES NOT write to
 the production DB either - and that is not automatic:
 
-    extract_hh_questionnaire_from_snapshot() ends with db.save_hh_questionnaire().
-    An extraction function that persists. The first run of this probe wrote a row
-    into state.db (quest_1c2be2caaff3bfff, vacancy_stable_id=NULL) because of it.
-    So the probe now points config.DB_FILE at a throwaway copy before doing
-    anything, and asserts the production file is untouched at the end.
+    The first version of this probe was declared read-only and wrote a row into
+    state.db (quest_1c2be2caaff3bfff, vacancy_stable_id=NULL), because
+    extract_hh_questionnaire_from_snapshot() ended with
+    db.save_hh_questionnaire(). Finding #38.
+
+    That has since been fixed: extract_* is now pure, and
+    discover_hh_questionnaire_from_snapshot() is the one that records. The probe
+    still points config.DB_FILE at a throwaway copy before doing anything, and
+    still prints both row counts - a guard that is cheap now and would have
+    caught the original mistake. It also now demonstrates the fix: the sandbox
+    must end up with the same number of rows as production, because a read
+    writes nothing at all.
 
 Run:  .venv/Scripts/python.exe tools/questionnaire_fingerprint_probe.py
 Exit: 0 = probe completed, 1 = it could not complete (no live page / no session).
@@ -252,6 +259,44 @@ def main() -> int:
         print("\n=== 2b. VACANCY page, second read (is field_name stable?) ===")
         ad.open(vacancy_url)
         result_a2 = describe(ad.extract_application_form(), "vacancy page, reloaded")
+
+        print("\n=== 2c. does the DOM carry the names at all? ===")
+        print("  The snapshot builder reads e.getAttribute('name') - the ATTRIBUTE.")
+        print("  A name assigned from JS as a property has no attribute, and the")
+        print("  extractor would be blind to it. Comparing both, on the same page:")
+        try:
+            attr_task = ad.page.eval_on_selector_all(
+                "input[name^='task_'], textarea[name^='task_'], select[name^='task_']",
+                "els => els.length",
+            )
+            prop_task = ad.page.evaluate(
+                "() => Array.from(document.querySelectorAll('input, textarea, select'))"
+                ".filter(e => String(e.name || '').startsWith('task_')).length"
+            )
+            attr_any = ad.page.eval_on_selector_all(
+                "input[name], textarea[name], select[name]", "els => els.length"
+            )
+            prop_any = ad.page.evaluate(
+                "() => Array.from(document.querySelectorAll('input, textarea, select'))"
+                ".filter(e => e.name).length"
+            )
+            hidden_only = ad.page.evaluate(
+                "() => Array.from(document.querySelectorAll('input'))"
+                ".filter(e => e.name && !e.getAttribute('name')).length"
+            )
+            print(f"      task_* by attribute : {attr_task}")
+            print(f"      task_* by property  : {prop_task}")
+            print(f"      any name by attrib  : {attr_any}")
+            print(f"      any name by property: {prop_any}")
+            print(f"      property-only names : {hidden_only}")
+            if prop_task > attr_task:
+                print("  -> [FINDING] names exist as JS properties, not attributes.")
+                print("     getAttribute('name') returns null, so the snapshot, the")
+                print("     question_groups builder and gate 8's CSS selector all see 0.")
+            elif prop_any == attr_any == 0:
+                print("  -> no names of either kind: this page really is not the form.")
+        except Exception as exc:  # noqa: BLE001
+            print(f"      [query failed] {type(exc).__name__}: {exc}")
     finally:
         if ad is not None:
             ad.close()
@@ -313,10 +358,14 @@ def main() -> int:
     prod_rows = row_count(PRODUCTION_DB)
     sand_rows = row_count(_SANDBOX_DB)
     print(f"  hh_questionnaires rows: production={prod_rows}  sandbox={sand_rows}")
-    print("  Equal counts do NOT mean no write happened: the extractor derives its")
-    print("  id as sha256(f'{vid}_{cid}_{fp}'), so with no vacancy id passed every")
-    print("  run overwrites the same row instead of appending. What the number does")
-    print("  prove is that production is unchanged while the sandbox takes the write.")
+    if sand_rows == prod_rows:
+        print("  [OK] the read recorded nothing: extract_* is pure (finding #38).")
+    else:
+        print("  [WARN] the sandbox gained rows, so something on this path writes.")
+    print("  Note: equality alone would not prove that before #38 was fixed - the")
+    print("  extractor's id is sha256(f'{vid}_{cid}_{fp}'), so a repeat write")
+    print("  overwrites the same row instead of appending. The pin for the fix is")
+    print("  test_extracting_a_questionnaire_does_not_write_to_the_database.")
     return 0
 
 

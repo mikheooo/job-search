@@ -22,7 +22,7 @@ from ai_assistant.hh_questionnaire import (
     HHQuestionItem,
     HHQuestionnaire,
     HHQuestionStatus,
-    extract_hh_questionnaire_from_snapshot,
+    discover_hh_questionnaire_from_snapshot,
     submit_questionnaire_response,
 )
 from ai_assistant.hh_application_orchestrator import (
@@ -77,7 +77,7 @@ def _setup_test_app(app_id: str = "app_hh_135112049", state: str = "READY_TO_SUB
             {"id": "q2_exp", "text": "Опыт Python (лет):", "type": "number", "required": True},
         ]
     }
-    quest = extract_hh_questionnaire_from_snapshot(snapshot)
+    quest = discover_hh_questionnaire_from_snapshot(snapshot)
     answers = {"q1_location": "Удаленно", "q2_exp": "3"}
     db.update_hh_questionnaire_answers(quest.questionnaire_id, answers, new_status=HHQuestionStatus.READY_TO_SUBMIT.value)
 
@@ -188,7 +188,7 @@ def test_missing_questionnaire_answers_blocks_submit(clean_db):
             {"id": "q1", "text": "Опыт Python:", "type": "number", "required": True},
         ]
     }
-    quest = extract_hh_questionnaire_from_snapshot(snapshot)
+    quest = discover_hh_questionnaire_from_snapshot(snapshot)
     cdp = FakeSubmitCDP()
 
     # Attempt submit with empty answers

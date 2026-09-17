@@ -28,7 +28,7 @@ from ai_assistant.hh_questionnaire import (
     HHQuestionStatus,
     QuestionnaireValidationResult,
     compute_questionnaire_fingerprint,
-    extract_hh_questionnaire_from_snapshot,
+    discover_hh_questionnaire_from_snapshot,
     format_questionnaire_cli_output,
     validate_human_answers,
     submit_questionnaire_response,
@@ -130,7 +130,7 @@ def test_questionnaire_detected_stops_before_submit(clean_db):
             }
         ]
     }
-    quest = extract_hh_questionnaire_from_snapshot(snapshot)
+    quest = discover_hh_questionnaire_from_snapshot(snapshot)
     assert quest is not None
     assert quest.status == HHQuestionStatus.NEEDS_HUMAN_REVIEW.value
     assert len(quest.questions) == 2
@@ -383,8 +383,8 @@ def test_questionnaire_idempotency(clean_db):
             {"id": "q1", "text": "Опыт работы?", "type": "number", "required": True}
         ]
     }
-    q1 = extract_hh_questionnaire_from_snapshot(snapshot)
-    q2 = extract_hh_questionnaire_from_snapshot(snapshot)
+    q1 = discover_hh_questionnaire_from_snapshot(snapshot)
+    q2 = discover_hh_questionnaire_from_snapshot(snapshot)
 
     assert q1.questionnaire_id == q2.questionnaire_id
     assert q1.fingerprint == q2.fingerprint

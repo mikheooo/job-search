@@ -41,7 +41,7 @@ from ai_assistant.hh_questionnaire import (
     HHQuestionItem,
     HHQuestionnaire,
     compute_questionnaire_fingerprint,
-    extract_hh_questionnaire_from_snapshot,
+    discover_hh_questionnaire_from_snapshot,
 )
 from ai_assistant import cli
 
@@ -218,7 +218,7 @@ def test_full_application_flow_dry_run(clean_db, capsys):
             }
         ]
     }
-    quest = extract_hh_questionnaire_from_snapshot(snapshot)
+    quest = discover_hh_questionnaire_from_snapshot(snapshot)
     assert quest is not None
     assert quest.status == "NEEDS_HUMAN_REVIEW"
     questionnaire_id = quest.questionnaire_id
@@ -367,7 +367,7 @@ def test_questionnaire_dom_change_resets_to_stale(clean_db):
         "title": "Backend Dev",
         "questions": [{"id": "q1", "text": "Опыт работы", "type": "number", "required": True}],
     }
-    quest = extract_hh_questionnaire_from_snapshot(snapshot)
+    quest = discover_hh_questionnaire_from_snapshot(snapshot)
     app = get_or_create_hh_application("app_stale_test", conversation_id="conv_stale_test")
     app.questionnaire_id = quest.questionnaire_id
     db.save_hh_application(app.model_dump())

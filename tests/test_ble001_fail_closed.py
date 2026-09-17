@@ -3724,3 +3724,74 @@ def test_the_pass_message_counts_the_gates_that_actually_ran(monkeypatch):
     # Derived from the results, not typed in: adding a 12th gate without
     # evaluating it breaks the line above, and evaluating it moves this number.
     assert res.reason == f"All {len(res.gate_results)} gates passed successfully", res.reason
+
+
+# ---------------------------------------------------------------------------
+# Finding #38 - a function named "extract" wrote to the database
+# ---------------------------------------------------------------------------
+# extract_hh_questionnaire_from_snapshot() ended with
+#     db.init_db()
+#     db.save_hh_questionnaire(quest.model_dump())
+# Measured cost: a probe whose whole purpose was to compare a live form against
+# the stored one created a row in the production state.db
+# (quest_1c2be2caaff3bfff, created 2026-09-16T04:43:56, referenced by nothing),
+# and four test files leaned on the side effect without ever saying so - renaming
+# the callers to the persisting name turned 16 tests red, which is how the
+# contract became visible.
+#
+# The comparison half of the questionnaire flow needs a read that records
+# nothing, so the two jobs now have two names: extract_* is pure, discover_*
+# records. These two tests hold that split down - without them the next person
+# can put the save back and only the probe would notice.
+
+
+def _one_question_snapshot(vid: str = "hh:999000901") -> dict:
+    return {
+        "vacancy_stable_id": vid,
+        "title": "Probe vacancy",
+        "employer": "Probe employer",
+        "questions": [
+            {
+                "id": "q1_where",
+                "text": "Where do you work from?",
+                "type": "radio",
+                "required": True,
+                "options": ["Office", "Remote"],
+            }
+        ],
+    }
+
+
+def test_extracting_a_questionnaire_does_not_write_to_the_database():
+    """Reading a form must not record it: the comparison path depends on that."""
+    from ai_assistant.hh_questionnaire import extract_hh_questionnaire_from_snapshot
+
+    db.init_db()  # the isolation fixture points DB_FILE at a fresh file
+    before = db.list_hh_questionnaires()
+    quest = extract_hh_questionnaire_from_snapshot(_one_question_snapshot())
+
+    assert quest is not None, "the snapshot has one question, extraction must work"
+    after = db.list_hh_questionnaires()
+    assert len(after) == len(before), (
+        "extract wrote to the database: "
+        f"{len(before)} rows before, {len(after)} after. A read that records "
+        "cannot be used to compare a live form against the stored one."
+    )
+    assert db.get_hh_questionnaire(quest.questionnaire_id) is None, (
+        "extract persisted the questionnaire it was asked to only read"
+    )
+
+
+def test_discovering_a_questionnaire_does_record_it():
+    """The counter-check: the persisting half must still persist."""
+    from ai_assistant.hh_questionnaire import discover_hh_questionnaire_from_snapshot
+
+    quest = discover_hh_questionnaire_from_snapshot(_one_question_snapshot())
+
+    assert quest is not None
+    row = db.get_hh_questionnaire(quest.questionnaire_id)
+    assert row is not None, (
+        "discover is the half that records, and it recorded nothing - a rename "
+        "that quietly drops the write is worse than the surprise it replaced"
+    )
+    assert row["status"] == "NEEDS_HUMAN_REVIEW", row["status"]

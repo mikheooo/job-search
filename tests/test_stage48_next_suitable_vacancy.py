@@ -36,7 +36,7 @@ from ai_assistant.hh_questionnaire import (
     HHQuestionnaire,
     HHQuestionItem,
     HHQuestionStatus,
-    extract_hh_questionnaire_from_snapshot,
+    discover_hh_questionnaire_from_snapshot,
     compute_questionnaire_fingerprint,
 )
 
@@ -209,7 +209,7 @@ def test_questionnaire_discovery_and_fingerprinting(clean_db):
             {"id": "q2", "text": "Experience with LLM agents?", "type": "textarea", "required": True},
         ],
     }
-    quest = extract_hh_questionnaire_from_snapshot(snapshot)
+    quest = discover_hh_questionnaire_from_snapshot(snapshot)
     assert quest is not None
     assert len(quest.questions) == 2
     assert quest.fingerprint.startswith("hh_qfp_")

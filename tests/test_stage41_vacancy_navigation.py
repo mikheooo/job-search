@@ -28,7 +28,7 @@ from ai_assistant.hh_questionnaire import (
     HHQuestionItem,
     HHQuestionnaire,
     HHQuestionStatus,
-    extract_hh_questionnaire_from_snapshot,
+    discover_hh_questionnaire_from_snapshot,
     submit_questionnaire_response,
 )
 
@@ -214,7 +214,7 @@ def test_missing_submit_ui_after_navigation_blocks_without_retry(clean_db):
             {"id": "q1", "text": "Локация:", "type": "radio", "required": True, "options": ["Удаленно"]},
         ]
     }
-    quest = extract_hh_questionnaire_from_snapshot(snapshot)
+    quest = discover_hh_questionnaire_from_snapshot(snapshot)
     answers = {"q1": "Удаленно"}
     db.update_hh_questionnaire_answers(quest.questionnaire_id, answers, new_status=HHQuestionStatus.READY_TO_SUBMIT.value)
 

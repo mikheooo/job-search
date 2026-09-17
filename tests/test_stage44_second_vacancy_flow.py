@@ -31,7 +31,7 @@ from ai_assistant.hh_questionnaire import (
     HHQuestionnaire,
     HHQuestionStatus,
     compute_questionnaire_fingerprint,
-    extract_hh_questionnaire_from_snapshot,
+    discover_hh_questionnaire_from_snapshot,
     generate_suggested_answers,
     submit_questionnaire_response,
 )
@@ -196,7 +196,7 @@ def test_flow_with_questionnaire_discovery_and_audit(clean_db):
         ]
     }
 
-    quest = extract_hh_questionnaire_from_snapshot(snapshot)
+    quest = discover_hh_questionnaire_from_snapshot(snapshot)
     assert quest.questionnaire_id.startswith("quest_")
 
     transition_application(
@@ -256,7 +256,7 @@ def test_unconfirmed_answers_block_ready_state(clean_db):
             }
         ]
     }
-    quest = extract_hh_questionnaire_from_snapshot(snapshot)
+    quest = discover_hh_questionnaire_from_snapshot(snapshot)
     # Put unverified answer '10' when profile only confirms 3
     db.update_hh_questionnaire_answers(quest.questionnaire_id, {"q1_experience": "10"})
 

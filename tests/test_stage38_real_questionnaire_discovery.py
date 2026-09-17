@@ -27,7 +27,7 @@ from ai_assistant.hh_questionnaire import (
     HHQuestionType,
     HHQuestionStatus,
     compute_questionnaire_fingerprint,
-    extract_hh_questionnaire_from_snapshot,
+    discover_hh_questionnaire_from_snapshot,
     validate_human_answers,
     format_hh_application_form_cli_output,
 )
@@ -101,7 +101,7 @@ def test_required_and_optional_question_extraction(clean_db):
         ]
     }
 
-    quest = extract_hh_questionnaire_from_snapshot(snapshot)
+    quest = discover_hh_questionnaire_from_snapshot(snapshot)
     assert quest is not None
     assert len(quest.questions) == 6
     assert quest.status == HHQuestionStatus.NEEDS_HUMAN_REVIEW.value
@@ -181,7 +181,7 @@ def test_changed_fingerprint_detection(clean_db):
             {"id": "q1", "text": "Опыт Python", "type": "number", "required": True},
         ]
     }
-    quest = extract_hh_questionnaire_from_snapshot(snapshot)
+    quest = discover_hh_questionnaire_from_snapshot(snapshot)
     assert quest is not None
 
     answers = {"q1": "5"}
@@ -211,7 +211,7 @@ def test_unsupported_question_type_handling(clean_db):
             {"id": "q1", "text": "Загрузите видео-визитку", "type": "video_recording_special", "required": True},
         ]
     }
-    quest = extract_hh_questionnaire_from_snapshot(snapshot)
+    quest = discover_hh_questionnaire_from_snapshot(snapshot)
     assert quest is not None
     assert quest.questions[0].question_type == "video_recording_special"
     assert quest.status == HHQuestionStatus.NEEDS_HUMAN_REVIEW.value
@@ -229,7 +229,7 @@ def test_number_field_validation(clean_db):
             {"id": "q1", "text": "Опыт работы (полных лет):", "type": "number", "required": True},
         ]
     }
-    quest = extract_hh_questionnaire_from_snapshot(snapshot)
+    quest = discover_hh_questionnaire_from_snapshot(snapshot)
     assert quest is not None
 
     # Valid numeric strings
@@ -257,7 +257,7 @@ def test_choice_validation_select_radio_checkbox(clean_db):
             {"id": "q_check", "text": "Стек", "type": "checkbox", "required": False, "options": ["Python", "FastAPI", "Docker"]},
         ]
     }
-    quest = extract_hh_questionnaire_from_snapshot(snapshot)
+    quest = discover_hh_questionnaire_from_snapshot(snapshot)
     assert quest is not None
 
     # Valid choices
@@ -297,7 +297,7 @@ def test_empty_questionnaire_case(clean_db):
         "title": "Middle Python Developer",
         "questions": [],
     }
-    quest = extract_hh_questionnaire_from_snapshot(snapshot)
+    quest = discover_hh_questionnaire_from_snapshot(snapshot)
     assert quest is None
 
     cli_out = format_hh_application_form_cli_output(vacancy_title="Middle Python Developer", quest=None)
@@ -325,7 +325,7 @@ def test_cli_formatted_output_for_found_questionnaire(clean_db):
             }
         ]
     }
-    quest = extract_hh_questionnaire_from_snapshot(snapshot)
+    quest = discover_hh_questionnaire_from_snapshot(snapshot)
     assert quest is not None
 
     cli_out = format_hh_application_form_cli_output(vacancy_title="Lead AI Engineer", quest=quest)
@@ -356,8 +356,8 @@ def test_duplicate_extraction_idempotency(clean_db):
             {"id": "q1", "text": "Опыт архитектурного проектирования", "type": "textarea", "required": True},
         ]
     }
-    q1 = extract_hh_questionnaire_from_snapshot(snapshot)
-    q2 = extract_hh_questionnaire_from_snapshot(snapshot)
+    q1 = discover_hh_questionnaire_from_snapshot(snapshot)
+    q2 = discover_hh_questionnaire_from_snapshot(snapshot)
 
     assert q1.questionnaire_id == q2.questionnaire_id
     assert q1.fingerprint == q2.fingerprint
@@ -384,7 +384,7 @@ def test_generate_suggested_answers_from_profile(clean_db):
             {"id": "q4", "text": "Ссылка на GitHub:", "type": "text", "required": False},
         ]
     }
-    quest = extract_hh_questionnaire_from_snapshot(snapshot)
+    quest = discover_hh_questionnaire_from_snapshot(snapshot)
     assert quest is not None
 
     profile_dict = {
@@ -425,7 +425,7 @@ def test_cli_questionnaire_suggest_command(clean_db, capsys):
             {"id": "q1", "text": "Опыт Python (лет):", "type": "number", "required": True},
         ]
     }
-    quest = extract_hh_questionnaire_from_snapshot(snapshot)
+    quest = discover_hh_questionnaire_from_snapshot(snapshot)
     assert quest is not None
 
     ret = cli.questionnaire_suggest_cmd(quest.questionnaire_id, apply_answers=True)

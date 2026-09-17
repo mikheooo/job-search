@@ -186,7 +186,12 @@ def extract_hh_questionnaire_from_snapshot(
     title: str | None = None,
     employer: str | None = None,
 ) -> HHQuestionnaire | None:
-    """Extract an HHQuestionnaire from a DOM snapshot or structured questions list."""
+    """Extract an HHQuestionnaire from a DOM snapshot or structured questions list.
+
+    Read-only: builds and returns the questionnaire, and does NOT write to the
+    database (see finding #38 in docs/ble001_triage.md). The caller saves it
+    with ``db.save_hh_questionnaire(quest.model_dump())`` when it means to.
+    """
     raw_questions = snapshot.get("questions") or []
     controls = snapshot.get("controls") or []
     q_groups = snapshot.get("question_groups") or []
@@ -252,9 +257,51 @@ def extract_hh_questionnaire_from_snapshot(
         created_at=now,
         updated_at=now,
     )
-    
-    db.init_db()
-    db.save_hh_questionnaire(quest.model_dump())
+
+    # BLE001 finding #38: this function used to end with
+    #     db.init_db()
+    #     db.save_hh_questionnaire(quest.model_dump())
+    # so a function called "extract" wrote to the database. Measured
+    # consequences: a read-only probe that only wanted to compare a live form
+    # against the stored one created a row in the production state.db, and the
+    # four test files that call this function relied on that side effect without
+    # ever saying so. Saving is now the caller's explicit act - which is what
+    # makes the option-B comparison possible at all: the comparison path must be
+    # able to read a form WITHOUT recording it.
+    return quest
+
+
+def discover_hh_questionnaire_from_snapshot(
+    snapshot: dict[str, Any],
+    vacancy_stable_id: str | None = None,
+    conversation_id: str | None = None,
+    title: str | None = None,
+    employer: str | None = None,
+) -> HHQuestionnaire | None:
+    """Extract a questionnaire from a snapshot AND record it.
+
+    The name says what it does: this one writes. It is the discovery half of the
+    questionnaire flow - record what the employer asks (status
+    NEEDS_HUMAN_REVIEW) so a human can answer it, and so a later comparison has
+    something to compare against.
+
+    Use extract_hh_questionnaire_from_snapshot() when you only want to read:
+    that one is pure, and a pure read is what the "form changed -> stop"
+    invariant needs, because it must be able to look without recording.
+
+    The id is deterministic (sha256 over vacancy, conversation and fingerprint),
+    so discovering the same form twice overwrites one row instead of adding two.
+    """
+    quest = extract_hh_questionnaire_from_snapshot(
+        snapshot,
+        vacancy_stable_id=vacancy_stable_id,
+        conversation_id=conversation_id,
+        title=title,
+        employer=employer,
+    )
+    if quest is not None:
+        db.init_db()
+        db.save_hh_questionnaire(quest.model_dump())
     return quest
 
 

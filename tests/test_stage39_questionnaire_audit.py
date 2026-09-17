@@ -23,7 +23,7 @@ from ai_assistant.hh_questionnaire import (
     HHQuestionItem,
     HHQuestionnaire,
     HHQuestionStatus,
-    extract_hh_questionnaire_from_snapshot,
+    discover_hh_questionnaire_from_snapshot,
 )
 from ai_assistant.hh_questionnaire_audit import (
     audit_questionnaire,
@@ -99,7 +99,7 @@ def _create_sample_quest(quest_id: str = "quest_test_audit") -> HHQuestionnaire:
             }
         ]
     }
-    quest = extract_hh_questionnaire_from_snapshot(snapshot)
+    quest = discover_hh_questionnaire_from_snapshot(snapshot)
     return quest
 
 
