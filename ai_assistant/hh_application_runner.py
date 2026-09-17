@@ -529,6 +529,12 @@ def run_application(
 
         quest_data = db.get_hh_questionnaire(qid) or {}
         human_answers = quest_data.get("answers") or app.get("answers") or {}
+        # BLE001 finding #42: no production path passes a fingerprint, because
+        # this runner answers from the database and never reads the form page.
+        # The "form changed -> stop" invariant therefore cannot fire here, and
+        # the claim records that explicitly instead of leaving a reader to guess
+        # whether the comparison ran. Wiring the live read is a separate change
+        # that needs a probe on a real questionnaire.
         q_res = submit_questionnaire_response(
             questionnaire_id=qid,
             human_answers=human_answers,
@@ -540,7 +546,10 @@ def run_application(
             db.update_submission_claim(
                 vac_stable_id or f"hh:{vac_id}",
                 status="FAILED_SAFE",
-                details={"reason": q_res.reason},
+                details={
+                    "reason": q_res.reason,
+                    "fingerprint_checked": q_res.fingerprint_checked,
+                },
             )
             return RunnerExecutionResult(
                 application_id=app_id,

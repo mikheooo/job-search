@@ -2256,6 +2256,7 @@ def _save_questionnaire(
     questions: list[dict] | None = None,
     *,
     vacancy_stable_id: str | None = "hh:135112049",
+    fingerprint: str = "",
 ) -> str:
     from ai_assistant.hh_questionnaire import HHQuestionStatus
 
@@ -2270,6 +2271,7 @@ def _save_questionnaire(
              "required": True, "options": []},
         ],
         "answers": {},
+        "fingerprint": fingerprint,
         "status": HHQuestionStatus.NEEDS_HUMAN_REVIEW.value,
     })
     return qid
@@ -3943,4 +3945,73 @@ def test_a_questionnaire_answers_dict_never_reaches_the_database():
     assert db.get_hh_questionnaire("quest_ans_str")["answers"] == {"q1": "A"}, (
         "the JSON-string channel broke - that one is load-bearing"
     )
+
+# ---------------------------------------------------------------------------
+# Finding #42 - the result must distinguish "compared" from "not compared"
+# ---------------------------------------------------------------------------
+# submit_questionnaire_response() takes current_dom_fingerprint, and
+# validate_human_answers() silently SKIPS the "form changed -> stop" comparison
+# when it is None. No production caller passes one:
+#   - hh_application_runner.py:532 answers from the database and never reads the
+#     form page, so it has no fingerprint to pass;
+#   - the two orchestrator methods that could pass one
+#     (record_questionnaire_answers, execute_confirmed_submit) have no callers
+#     outside tests (verified with git grep across ai_assistant/, tools/, *.py).
+# So the invariant cannot fire in production - and before this the result object
+# did not say so: "compared and matched" and "never compared" were the same
+# object, which is finding #37's shape pointed the other way.
+#
+# The flag is NOT the fix. The fix is a live read at the submit point, which
+# needs a probe on a real questionnaire. The flag is what keeps the gap visible
+# instead of silent.
+
+
+def test_a_submit_that_could_not_compare_the_fingerprint_says_so():
+    """Measured: no fingerprint -> comparison skipped, and the result admits it."""
+    qid = _save_questionnaire("q42_no_fingerprint")
+
+    res = submit_questionnaire_response(
+        questionnaire_id=qid, human_answers={"q_personal": "123456789012"},
+        confirm_submit=True)
+
+    assert res.fingerprint_checked is False, (
+        "the result claims the fingerprint was compared, but none was supplied"
+    )
+    # and the submit took the ordinary path: the flag is observability, not a
+    # new gate. A reader must not mistake "not compared" for "blocked".
+    assert res.submit_count == 0
+    assert res.status == "READY_TO_SUBMIT", res.status
+
+
+def test_a_supplied_fingerprint_is_reported_as_compared(monkeypatch):
+    """Counter-check, and the link between the flag and real behaviour: when a
+    fingerprint IS supplied the comparison actually runs, so a mismatch stops
+    the submit and the flag reads True."""
+    _silence_telegram(monkeypatch)
+    from ai_assistant.hh_questionnaire import (
+        HHQuestionItem,
+        compute_questionnaire_fingerprint,
+    )
+
+    question = {"question_id": "q_personal", "text": "Ваш ИНН?",
+                "question_type": "text", "required": True, "options": []}
+    fp = compute_questionnaire_fingerprint([HHQuestionItem(**question)])
+
+    matching = _save_questionnaire("q42_match", [question], fingerprint=fp)
+    res = submit_questionnaire_response(
+        questionnaire_id=matching, human_answers={"q_personal": "123456789012"},
+        confirm_submit=True, current_dom_fingerprint=fp)
+    assert res.fingerprint_checked is True
+    assert res.status == "READY_TO_SUBMIT", res.status
+
+    changed = _save_questionnaire("q42_changed", [question], fingerprint=fp)
+    res = submit_questionnaire_response(
+        questionnaire_id=changed, human_answers={"q_personal": "123456789012"},
+        confirm_submit=True, current_dom_fingerprint="a_different_fingerprint")
+    assert res.fingerprint_checked is True, (
+        "the flag must mean 'the comparison ran' - and here it ran: it is what"
+        " stopped the submit"
+    )
+    assert res.status == "NEEDS_HUMAN_REVIEW", res.status
+    assert res.submit_count == 0, "the stop must survive the new field"
 

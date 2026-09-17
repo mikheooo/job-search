@@ -98,6 +98,14 @@ class QuestionnaireSubmitResult(BaseModel):
     questionnaire_id: str = ""
     vacancy_stable_id: str | None = None
     errors: list[str] = Field(default_factory=list)
+    # Whether the stored fingerprint was actually compared against the page.
+    # BLE001 finding #42: current_dom_fingerprint is None on every production
+    # path, because the runner answers from the database and never reads the
+    # form. So the "form changed -> stop" invariant cannot fire, and without
+    # this flag a result where the comparison ran and matched looks exactly like
+    # one where it was never attempted. Same shape as finding #37, mirrored: the
+    # trail must not make "not checked" indistinguishable from "checked, fine".
+    fingerprint_checked: bool = False
 
     model_config = {"extra": "forbid"}
 
@@ -696,6 +704,9 @@ def submit_questionnaire_response(
         click_count=0,
         status=HHQuestionStatus.BLOCKED.value,
         questionnaire_id=questionnaire_id,
+        # validate_human_answers() skips the comparison when this is falsy, so
+        # the flag mirrors exactly whether the comparison was possible at all.
+        fingerprint_checked=bool(current_dom_fingerprint),
     )
 
     db.init_db()
