@@ -1591,7 +1591,7 @@ def _resolve_hh_evaluate(cdp_url=None, url_substring=None, evaluate_fn=None):
     if evaluate_fn is not None:
         return evaluate_fn
     sub = url_substring or _DEFAULT_HH_MESSAGES_URL_SUBSTRING
-    cdp = cdp_url or _default_hh_cdp_url()
+    cdp = cdp_url or _default_hh_cdp_url()
     return make_cdp_evaluate(cdp, sub)
 
 

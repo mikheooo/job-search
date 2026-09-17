@@ -902,21 +902,43 @@ def save_hh_questionnaire(data: dict[str, Any]) -> None:
 
 
 def _row_to_questionnaire(row: Any) -> dict[str, Any] | None:
+    """Read a hh_questionnaires row into a plain dict.
+
+    BLE001 finding #46. ``questions_json`` and ``answers_json`` used to fall back
+    to ``[]`` and ``{}`` on a decode error, which made an unreadable column
+    indistinguishable from an empty one. Measured on a row whose questions_json
+    was ``"{not json"``: every downstream gate that iterates the question list
+    was vacuously satisfied - ``audit_questionnaire`` returned SAFE_TO_SUBMIT,
+    ``validate_human_answers`` returned ok=True ("All questionnaire requirements
+    satisfied") and ``hh_submit_policy`` gate 5 recorded ``questionnaire_complete``
+    as a *passed* check. The control (readable questions, no answers) blocks all
+    three, so the emptiness was the whole problem.
+
+    The fallback values are kept for display, but the decode error is now
+    reported in ``questions_error`` / ``answers_error``. Callers that decide
+    whether it is safe to submit must treat a non-None value as "could not
+    look", not as "empty" - see hh_questionnaire.validate_human_answers,
+    hh_questionnaire_audit.audit_questionnaire and hh_submit_policy gate 5.
+    """
     if not row:
         return None
     import json
     questions = []
+    questions_error = None
     if row[6]:
         try:
             questions = json.loads(row[6])
-        except Exception:
+        except Exception as exc:
             questions = []
+            questions_error = f"questions_json is not readable as JSON: {exc}"
     answers = {}
+    answers_error = None
     if row[7]:
         try:
             answers = json.loads(row[7])
-        except Exception:
+        except Exception as exc:
             answers = {}
+            answers_error = f"answers_json is not readable as JSON: {exc}"
     return {
         "questionnaire_id": row[0],
         "vacancy_stable_id": row[1],
@@ -926,6 +948,8 @@ def _row_to_questionnaire(row: Any) -> dict[str, Any] | None:
         "fingerprint": row[5],
         "questions": questions,
         "answers": answers,
+        "questions_error": questions_error,
+        "answers_error": answers_error,
         "status": row[8],
         "created_at": row[9],
         "updated_at": row[10],

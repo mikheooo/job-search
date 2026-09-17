@@ -283,20 +283,31 @@ def evaluate(
             reasons.append(f"questionnaire_{qid}_not_found")
         else:
             quest = HHQuestionnaire(**q_data)
-            answers = app.get("answers") or quest.answers or {}
-            q_errors = []
-            for item in quest.questions:
-                if item.required:
-                    ans = answers.get(item.question_id)
-                    if ans is None or str(ans).strip() == "":
-                        q_errors.append(f"missing_answer_for_{item.question_id}")
-                    elif str(ans).strip().lower() in UNCERTAIN_ANSWER_VALUES:
-                        q_errors.append(f"uncertain_answer_for_{item.question_id}")
-            if q_errors:
+            # BLE001 finding #46, same class as #37 just below. When
+            # questions_json cannot be read, the loop underneath has nothing to
+            # iterate, q_errors stays empty and this gate used to record
+            # "questionnaire_complete" as a PASSED check - so an audit reading
+            # checks_passed saw a verified questionnaire while nothing had been
+            # verified. Measured: corrupt column -> passed=['questionnaire_complete'],
+            # readable column with no answers -> failed=['questionnaire_complete'].
+            if quest.questions_error:
                 checks_failed.append("questionnaire_complete")
-                reasons.extend(q_errors)
+                reasons.append(f"questionnaire_{qid}_questions_unreadable: {quest.questions_error}")
             else:
-                checks_passed.append("questionnaire_complete")
+                answers = app.get("answers") or quest.answers or {}
+                q_errors = []
+                for item in quest.questions:
+                    if item.required:
+                        ans = answers.get(item.question_id)
+                        if ans is None or str(ans).strip() == "":
+                            q_errors.append(f"missing_answer_for_{item.question_id}")
+                        elif str(ans).strip().lower() in UNCERTAIN_ANSWER_VALUES:
+                            q_errors.append(f"uncertain_answer_for_{item.question_id}")
+                if q_errors:
+                    checks_failed.append("questionnaire_complete")
+                    reasons.extend(q_errors)
+                else:
+                    checks_passed.append("questionnaire_complete")
     else:
         # BLE001 finding #37: nothing on record says this vacancy has a
         # questionnaire, and the old line recorded "questionnaire_complete" - a

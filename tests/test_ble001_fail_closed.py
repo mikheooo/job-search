@@ -4249,3 +4249,280 @@ def test_browser_executor_loads_the_profile_in_exactly_one_place():
         f" {len(call_sites)} at lines {[n.lineno for n in call_sites]}"
     )
 
+# ---------------------------------------------------------------------------
+# Finding #46 - an unreadable questionnaire must not audit as safe to submit
+# ---------------------------------------------------------------------------
+# db._row_to_questionnaire() fell back to questions=[] when the stored
+# questions_json would not parse, and every gate that answers "may we submit?"
+# iterates that list. An empty list satisfies all of them without looking at
+# anything. Measured on a row with questions_json = "{not json", answers = "{}":
+#
+#   audit_questionnaire     -> SAFE_TO_SUBMIT, 0 items
+#   validate_human_answers  -> ok=True, "All questionnaire requirements satisfied"
+#   hh_submit_policy gate 5 -> checks_passed += "questionnaire_complete"
+#
+# Control, readable questions and the same empty answers:
+#
+#   audit_questionnaire     -> NEEDS_CORRECTION, 1 item
+#   validate_human_answers  -> ok=False, BLOCKED
+#   hh_submit_policy gate 5 -> checks_failed += "questionnaire_complete"
+#
+# The audit verdict is not decorative: hh_application_runner.py reads
+# overall == "SAFE_TO_SUBMIT" straight back as RunnerPreCheckStatus.PASS. The
+# reader now reports the decode failure in questions_error / answers_error and
+# all three gates refuse on it. The corrupt-answers case is pinned as well: it
+# was already fail-closed, and it must stay that way.
+
+_READABLE_QUESTIONS = [
+    {
+        "question_id": "q1",
+        "text": "How many years of Python experience do you have?",
+        "question_type": "text",
+        "options": [],
+        "required": True,
+    }
+]
+
+
+def _insert_questionnaire_row(qid: str, questions_json: str, answers_json: str) -> None:
+    """Write a hh_questionnaires row straight to SQLite, bypassing the writer.
+
+    save_hh_questionnaire() only ever receives json.dumps() output, so a
+    corrupt column cannot be produced through it - but a row already in the
+    database can hold anything, and that is the row the gates read.
+    """
+    db.init_db()
+    conn = db.get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO hh_questionnaires (
+            questionnaire_id, vacancy_stable_id, conversation_id, title, employer,
+            fingerprint, questions_json, answers_json, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            qid,
+            f"hh:{qid}",
+            f"conv-{qid}",
+            "Python Developer",
+            "Acme",
+            "fp",
+            questions_json,
+            answers_json,
+            "READY_TO_SUBMIT",
+            "2026-01-01T00:00:00",
+            "2026-01-01T00:00:00",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _policy_checks_for(qid: str) -> tuple[list[str], list[str], list[str]]:
+    """Run hh_submit_policy.evaluate and return its questionnaire gate outcome.
+
+    Reasons are returned as well: the failure *name* alone cannot tell "the gate
+    refused because it could not read the questions" from "the gate refuses
+    everything now", and the counter-check below depends on the difference.
+    """
+    from ai_assistant.hh_submit_policy import evaluate
+
+    decision = evaluate(
+        {
+            "application_id": "app-46",
+            "vacancy_stable_id": f"hh:{qid}",
+            "questionnaire_id": qid,
+            "title": "Python Developer",
+            "employer": "Acme",
+        }
+    )
+    passed = [c for c in decision.checks_passed if c.startswith("questionnaire")]
+    failed = [c for c in decision.checks_failed if c.startswith("questionnaire")]
+    return passed, failed, list(decision.reasons)
+
+
+def test_the_reader_reports_an_unreadable_questions_column():
+    _insert_questionnaire_row("q46-reader-bad", "{not json", "{}")
+    _insert_questionnaire_row("q46-reader-ok", json.dumps(_READABLE_QUESTIONS), "{}")
+
+    broken = db.get_hh_questionnaire("q46-reader-bad")
+    assert broken["questions"] == []
+    assert broken["questions_error"], (
+        "an unreadable questions_json must not be reported as an empty question"
+        " list with no explanation - that is the whole defect"
+    )
+
+    healthy = db.get_hh_questionnaire("q46-reader-ok")
+    assert healthy["questions"], "the readable row must still be read"
+    assert healthy["questions_error"] is None, (
+        "a row that parsed cleanly must not be flagged"
+    )
+
+
+def test_a_genuinely_empty_question_list_is_not_flagged():
+    """Counter-check: the guard must not fire on an honestly empty list."""
+    _insert_questionnaire_row("q46-empty", "[]", "{}")
+
+    data = db.get_hh_questionnaire("q46-empty")
+    assert data["questions"] == []
+    assert data["questions_error"] is None, (
+        "questions_json = '[]' parsed fine - that is an empty questionnaire,"
+        " not an unreadable one"
+    )
+
+
+def test_unreadable_questions_never_audit_as_safe_to_submit():
+    from ai_assistant.hh_questionnaire_audit import audit_questionnaire
+
+    _insert_questionnaire_row("q46-audit-bad", "{not json", "{}")
+    report = audit_questionnaire("q46-audit-bad")
+
+    assert report.overall.value == "NEEDS_CORRECTION", (
+        "an unreadable question list produced SAFE_TO_SUBMIT, which"
+        " hh_application_runner reads back as a PASS"
+    )
+    assert report.items, (
+        "the refusal must carry a reason: a report with no items and no verdict"
+        " change is how the original defect stayed invisible"
+    )
+    assert report.items[0].source_of_truth == "hh_questionnaires.questions_json", (
+        "the item must point at the unreadable column - otherwise this pin would"
+        " also pass if the audit had simply been made to refuse everything"
+    )
+
+
+def test_readable_questions_without_answers_still_need_correction():
+    """Counter-check: the control case must keep its original verdict.
+
+    Without this, the pin above would also pass if audit_questionnaire had been
+    changed to return NEEDS_CORRECTION unconditionally.
+    """
+    from ai_assistant.hh_questionnaire_audit import audit_questionnaire
+
+    _insert_questionnaire_row("q46-audit-ctl", json.dumps(_READABLE_QUESTIONS), "{}")
+    report = audit_questionnaire("q46-audit-ctl")
+
+    assert report.overall.value == "NEEDS_CORRECTION"
+    assert len(report.items) == 1
+    assert report.items[0].verdict.value == "REVIEW"
+    assert report.items[0].source_of_truth == "Missing", (
+        "this is the unanswered-question path; the refusal path uses"
+        " source_of_truth='hh_questionnaires.questions_json'"
+    )
+
+
+def test_unreadable_questions_block_answer_validation():
+    from ai_assistant.hh_questionnaire import (
+        HHQuestionnaire,
+        validate_human_answers,
+    )
+
+    _insert_questionnaire_row("q46-validate", "{not json", "{}")
+    quest = HHQuestionnaire(**db.get_hh_questionnaire("q46-validate"))
+    res = validate_human_answers(quest, {})
+
+    assert res.ok is False, (
+        "an empty question list made every rule in validate_human_answers pass"
+        " vacuously and reported 'All questionnaire requirements satisfied'"
+    )
+    assert res.status == "NEEDS_HUMAN_REVIEW"
+    assert "could not be read" in res.reason
+
+
+def test_readable_questions_without_answers_still_block_validation():
+    """Counter-check for the validation pin."""
+    from ai_assistant.hh_questionnaire import (
+        HHQuestionnaire,
+        validate_human_answers,
+    )
+
+    _insert_questionnaire_row("q46-validate-ctl", json.dumps(_READABLE_QUESTIONS), "{}")
+    quest = HHQuestionnaire(**db.get_hh_questionnaire("q46-validate-ctl"))
+    res = validate_human_answers(quest, {})
+
+    assert res.ok is False
+    assert res.status == "BLOCKED"
+    assert "q1" in res.reason
+
+
+def test_unreadable_questions_fail_the_submit_policy_gate():
+    _insert_questionnaire_row("q46-policy-bad", "{not json", "{}")
+    passed, failed, reasons = _policy_checks_for("q46-policy-bad")
+
+    assert "questionnaire_complete" in failed
+    assert "questionnaire_complete" not in passed, (
+        "gate 5 recorded a passed check for a questionnaire it never read"
+    )
+    assert any("questions_unreadable" in r for r in reasons), (
+        f"gate 5 must say the questions were unreadable; got {reasons}"
+    )
+
+
+def test_readable_questions_without_answers_fail_the_submit_policy_gate():
+    """Counter-check for the gate-5 pin."""
+    _insert_questionnaire_row("q46-policy-ctl", json.dumps(_READABLE_QUESTIONS), "{}")
+    passed, failed, reasons = _policy_checks_for("q46-policy-ctl")
+
+    assert "questionnaire_complete" in failed
+    assert "questionnaire_complete" not in passed
+    assert any("missing_answer_for_q1" in r for r in reasons), (
+        f"the control must fail for the missing answer, not for a parse error;"
+        f" got {reasons}"
+    )
+
+
+def test_unreadable_answers_still_fail_closed():
+    """The answers column was already fail-closed - keep it that way.
+
+    Losing the answers makes every question look unanswered, so all three gates
+    refused even before this fix. The reader now says why instead of reporting
+    an empty dict, but the verdict must not move.
+    """
+    from ai_assistant.hh_questionnaire_audit import audit_questionnaire
+
+    _insert_questionnaire_row("q46-bada", json.dumps(_READABLE_QUESTIONS), "{not json")
+
+    data = db.get_hh_questionnaire("q46-bada")
+    assert data["answers"] == {}
+    assert data["answers_error"]
+
+    assert audit_questionnaire("q46-bada").overall.value == "NEEDS_CORRECTION"
+    passed, failed, _reasons = _policy_checks_for("q46-bada")
+    assert "questionnaire_complete" in failed
+    assert "questionnaire_complete" not in passed
+
+def test_a_fully_answered_questionnaire_still_audits_as_safe():
+    """Positive control: the audit must still say SAFE when it really is.
+
+    Every other pin here asserts a refusal, and a refusal is also what an audit
+    that refuses everything would produce. This one is what makes the others
+    mean something: a readable questionnaire with an answer for its single
+    free-text question comes out SAFE_TO_SUBMIT, so "made to always refuse" is
+    a mutation these tests catch.
+    """
+    from ai_assistant.hh_questionnaire_audit import audit_questionnaire
+
+    _insert_questionnaire_row(
+        "q46-audit-ok",
+        json.dumps(
+            [
+                {
+                    "question_id": "q1",
+                    "text": "Please describe your motivation for this position",
+                    "question_type": "text",
+                    "options": [],
+                    "required": True,
+                }
+            ]
+        ),
+        json.dumps({"q1": "I want to build automation for a living."}),
+    )
+
+    report = audit_questionnaire("q46-audit-ok")
+    assert report.overall.value == "SAFE_TO_SUBMIT", (
+        f"a readable, answered questionnaire must still be safe to submit;"
+        f" got {report.overall.value} with items"
+        f" {[(i.question_id, i.verdict.value) for i in report.items]}"
+    )
+

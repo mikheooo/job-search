@@ -115,6 +115,14 @@ FALSE_POSITIVE_CLASSES = (
     "a prose name-pattern, not a symbol (discover_*, extract_*)",
     ("the name says what should appear there AFTER the fix "
      "(browser_executor.py:681 + form_detected)"),
+    ("the name is what the cited code READS or RETURNS, not a symbol defined "
+     "there (db.py:2608 + state: the counter sits at that line and counts by "
+     "state)"),
+    ("the name comes from another clause of the same doc line, so a correct "
+     "address is flagged (a backticked `passed` in the gate-5 sentence sat on "
+     "the line whose address was the runner's). The fix is not a wider window: "
+     "name the symbol the cited line actually has, on the line that carries "
+     "the address -- then the reference is CHECKED instead of skipped"),
 )
 SYMBOL_STOP = {
     "py", "md", "js", "json", "toml", "sh", "yaml", "yml",

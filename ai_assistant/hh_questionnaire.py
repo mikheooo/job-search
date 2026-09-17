@@ -75,6 +75,15 @@ class HHQuestionnaire(BaseModel):
     created_at: str = ""
     updated_at: str = ""
 
+    # BLE001 finding #46. These two carry a decode failure from
+    # db._row_to_questionnaire. A non-None value means "the stored column could
+    # not be read", which is NOT the same as "the list is empty" - an empty
+    # question list satisfies every gate vacuously. They live on the model
+    # because the model forbids extra fields and every reader dict is splatted
+    # straight into it.
+    questions_error: str | None = None
+    answers_error: str | None = None
+
     model_config = {"extra": "forbid"}
 
 
@@ -453,6 +462,22 @@ def validate_human_answers(
         ok=False,
         status=HHQuestionStatus.BLOCKED.value,
     )
+
+    # BLE001 finding #46. Invariant 0: the question list must have been read.
+    # An unreadable questions_json used to arrive here as questions=[] and this
+    # function answered ok=True, "All questionnaire requirements satisfied" -
+    # the loop below has nothing to iterate, so every rule passes vacuously.
+    # Measured: with a corrupt column and no answers, ok=True/READY_TO_SUBMIT;
+    # with a readable column and no answers, ok=False/BLOCKED. Never validate
+    # against a questionnaire whose questions could not be read.
+    if questionnaire.questions_error:
+        res.reason = (
+            "Questionnaire questions could not be read from the database "
+            f"({questionnaire.questions_error}); refusing to validate answers "
+            "against an empty question list"
+        )
+        res.status = HHQuestionStatus.NEEDS_HUMAN_REVIEW.value
+        return res
 
     # Invariant 6: Changed questionnaire DOM -> fail closed
     if current_dom_fingerprint and current_dom_fingerprint != questionnaire.fingerprint:

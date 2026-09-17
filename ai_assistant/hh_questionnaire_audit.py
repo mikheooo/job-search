@@ -113,6 +113,41 @@ def audit_questionnaire(
     prof = profile or load_candidate_profile()
     answers = quest.answers or {}
 
+    # BLE001 finding #46. A questionnaire whose questions could not be read from
+    # the database must never come out of this function as SAFE_TO_SUBMIT. The
+    # loop below is what does the auditing, and an empty question list makes it
+    # vacuously satisfied: measured on a row with questions_json = "{not json",
+    # this function used to return SAFE_TO_SUBMIT with zero items, while the
+    # control (readable questions, no answers) returned NEEDS_CORRECTION. That
+    # verdict is read straight back as a PASS by hh_application_runner:106.
+    if quest.questions_error:
+        app_id = application_id
+        if not app_id and quest.vacancy_stable_id:
+            app_id = f"app_hh_{quest.vacancy_stable_id.split(':')[-1]}"
+        return QuestionnaireAuditReport(
+            application_id=app_id,
+            questionnaire_id=quest.questionnaire_id,
+            vacancy_title=quest.title or quest.vacancy_stable_id,
+            items=[
+                QuestionnaireAuditItem(
+                    question_id="",
+                    question_text="(question list could not be read)",
+                    current_answer=None,
+                    source_of_truth="hh_questionnaires.questions_json",
+                    rationale=(
+                        f"{quest.questions_error}. Auditing an empty question list "
+                        "would pass vacuously, so the audit is inconclusive and the "
+                        "application needs correction before any submission."
+                    ),
+                    is_confirmed_by_profile=False,
+                    verdict=AuditVerdict.REVIEW,
+                )
+            ],
+            overall=OverallAuditStatus.NEEDS_CORRECTION,
+            real_hh_submit="NO",
+            pipeline_py="NOT RUN",
+        )
+
     audit_items: list[QuestionnaireAuditItem] = []
     all_pass = True
 

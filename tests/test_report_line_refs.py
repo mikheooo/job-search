@@ -135,35 +135,59 @@ def test_absolute_and_relative_references_resolve_the_same_way(needle, tmp_path)
 # anchor" and "did it stay a warning".
 
 
+def _live_line(relpath: str, symbol: str) -> int:
+    """The line `symbol` sits on right now -- looked up, not typed.
+
+    These two pins used to hardcode db.py:2584. Finding #46 added 24 lines to
+    db.py, the counter moved to 2608, and the "stays quiet" pin started failing
+    on a document that was correct when it was written. A pin that cites a line
+    number rots together with the code it is about, which is the subject of this
+    whole file; the mutation tool looks its anchor up for the same reason. The
+    import is local so the file keeps its shell-out-only shape -- the checker is
+    a CLI contract.
+    """
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    from tools.report_line_refs import find_symbol_line
+
+    line = find_symbol_line(REPO / relpath, symbol)
+    assert line, f"{symbol} is no longer in {relpath}"
+    return line
+
+
 def test_the_symbol_worklist_flags_a_wrong_line_for_a_real_symbol(tmp_path):
     """In range, wrong place -- the exact shape a range check passes silently."""
+    real = _live_line("ai_assistant/db.py", "count_submitted_transitions_since")
+    wrong = real - 84 if real - 84 >= 1 else real + 84
+    assert wrong != real
     doc = tmp_path / "drifted.md"
     doc.write_text(
         "<!-- line-numbering: grep -->\n\n"
-        "Счётчик `count_submitted_transitions_since` (`db.py:2500`).\n",
+        f"Счётчик `count_submitted_transitions_since` (`db.py:{wrong}`).\n",
         encoding="utf-8",
     )
     proc = _run("report_line_refs.py", "--symbols", str(doc))
     assert proc.returncode == 0, (
-        "the advisory mode must never change the exit code:\n"
+        "the advisory mode must never change the exit code:/n"
         f"{proc.stdout}{proc.stderr}"
     )
     assert "flagged for reading: 1" in proc.stdout, proc.stdout
-    assert "db.py:2500" in proc.stdout, proc.stdout
+    assert f"db.py:{wrong}" in proc.stdout, proc.stdout
 
 
 def test_the_symbol_worklist_stays_quiet_when_the_symbol_is_there(tmp_path):
     """Counter-check: the worklist has to be able to say nothing. Without this,
     a check that flagged everything would pass the pin above."""
+    real = _live_line("ai_assistant/db.py", "count_submitted_transitions_since")
     doc = tmp_path / "correct.md"
     doc.write_text(
         "<!-- line-numbering: grep -->\n\n"
-        "Счётчик `count_submitted_transitions_since` (`db.py:2584`).\n",
+        f"Счётчик `count_submitted_transitions_since` (`db.py:{real}`).\n",
         encoding="utf-8",
     )
     proc = _run("report_line_refs.py", "--symbols", str(doc))
     assert "flagged for reading: 0" in proc.stdout, proc.stdout
-    assert "db.py:2584" not in proc.stdout, proc.stdout
+    assert f"db.py:{real}" not in proc.stdout, proc.stdout
 
 
 def test_the_advisory_mode_does_not_mask_a_real_range_failure(tmp_path):
