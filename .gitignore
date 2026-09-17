@@ -21,9 +21,13 @@ node_modules/
 !package-lock.json
 !vacancies.json
 
-# Browser artifacts (runtime screenshots/state; tracked fixture exception below)
+# Browser artifacts (runtime screenshots/state; tracked fixture exceptions below)
 artifacts/*
 !artifacts/hh_manual_form_snapshot.json
+# Exported row deleted from the production state.db on 2026-09-17. Kept as a
+# tracked fixture because docs/ble001_triage.md cites this row as evidence that
+# the "live read -> db -> live read" path converges (findings #27 and #38).
+!artifacts/deleted_quest_1c2be2caaff3bfff.json
 
 
 # HH authenticated session storage (NEVER commit)

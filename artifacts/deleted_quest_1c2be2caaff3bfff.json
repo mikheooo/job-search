@@ -1,0 +1,13 @@
+{
+  "questionnaire_id": "quest_1c2be2caaff3bfff",
+  "vacancy_stable_id": null,
+  "conversation_id": null,
+  "title": "Вакансия QA Automation Engineer (Java) в Минске, работа в компании Qulix Systems",
+  "employer": null,
+  "fingerprint": "hh_qfp_6ee71cb90aac7e20530e9d7b",
+  "questions_json": "[{\"question_id\": \"q1\", \"text\": \"Где располагается место работы?\", \"question_type\": \"checkbox\", \"required\": true, \"options\": [], \"field_name\": \"hh__hash_a4b973790a445254\", \"answer\": null}, {\"question_id\": \"q2\", \"text\": \"Какой график работы?\", \"question_type\": \"checkbox\", \"required\": true, \"options\": [], \"field_name\": \"hh__hash_e199c1df55856dba\", \"answer\": null}, {\"question_id\": \"q3\", \"text\": \"Вакансия открыта?\", \"question_type\": \"checkbox\", \"required\": true, \"options\": [], \"field_name\": \"hh__hash_54081152bac05f98\", \"answer\": null}, {\"question_id\": \"q4\", \"text\": \"Какая оплата труда?\", \"question_type\": \"checkbox\", \"required\": true, \"options\": [], \"field_name\": \"hh__hash_a093d7b0babb9787\", \"answer\": null}, {\"question_id\": \"q5\", \"text\": \"Как с вами связаться?\", \"question_type\": \"checkbox\", \"required\": true, \"options\": [], \"field_name\": \"hh__hash_f685be811419801a\", \"answer\": null}, {\"question_id\": \"q6\", \"text\": \"Другой вопрос\", \"question_type\": \"checkbox\", \"required\": true, \"options\": [], \"field_name\": \"hh__hash_6c604301a1675afd\", \"answer\": null}]",
+  "answers_json": null,
+  "status": "NEEDS_HUMAN_REVIEW",
+  "created_at": "2026-09-16T04:43:56.621544",
+  "updated_at": "2026-09-16T04:43:57.135007"
+}
