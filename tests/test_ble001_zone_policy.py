@@ -57,13 +57,21 @@ GREEN_ZONE = {
     "hh_browser_launcher.py",
 }
 
-# Frozen 2026-09-09. Count = broad handlers in that file that leave NO trace of
-# the exception (no raise, no logger call, exception name never used).
-# Lowering a number is a win -- update this baseline when you fix one.
+# Re-measured 2026-09-17. Count = broad handlers in that file that leave NO trace
+# of the exception (no raise, no logger call, exception name never used).
+#
+# This is an EXACT count, not a ceiling. Lowering a number is a win -- and the
+# test now fails until you lower it here, so the win cannot be absorbed silently.
 # Raising it is what this test is here to stop.
+#
+# Why the strictness: until 2026-09-17 this asserted `count <= baseline`, and the
+# numbers were never lowered after the handlers got their logging. The guard had
+# drifted open by ten free slots (submission_recovery 8, hh_submission 2) -- a
+# new silent fail-open on the submission path would have passed the test. A
+# ceiling nobody updates stops being a ceiling.
 RED_BASELINE: dict[str, int] = {
-    "hh_submission.py": 9,
-    "submission_recovery.py": 8,
+    "hh_submission.py": 7,
+    "submission_recovery.py": 0,
     "hh_application_runner.py": 2,
     "submission_verifier.py": 3,
     "submission_state.py": 0,
@@ -136,25 +144,45 @@ def test_red_zone_files_all_exist() -> None:
 
 @pytest.mark.parametrize("name", sorted(RED_ZONE))
 def test_red_zone_has_no_new_silent_handlers(name: str) -> None:
-    """A new broad-and-silent handler on the submission path fails the build.
+    """The count of broad-and-silent handlers on the submission path is exact.
 
-    If you are fixing one of these: this test starts passing as soon as you
-    make the handler log, re-raise, or use the exception. Then lower the
-    number in RED_BASELINE so the improvement is locked in.
+    Both directions fail the build, and the messages say different things:
+
+      * more than the baseline -- a new silent failure appeared on the
+        submission path. Make it log / re-raise / use the exception, or justify
+        it in docs/ble001_triage.md and raise the number.
+      * fewer than the baseline -- an improvement happened. Set the baseline to
+        the measured value so it is locked in.
+
+    The second direction used to be allowed silently, which is exactly how the
+    guard drifted open by ten slots between 2026-09-09 and 2026-09-17.
     """
     silent = _silent_handlers(SRC / name)
     baseline = RED_BASELINE[name]
-    assert len(silent) <= baseline, (
-        f"{name}: {len(silent)} broad handlers swallow the error with no trace, "
-        f"baseline was {baseline}. New silent failure on the submission path. "
-        f"Handlers at lines {silent}. "
-        f"Either make them log / re-raise / use the exception, or justify it in "
-        f"docs/ble001_triage.md and update RED_BASELINE."
+    if len(silent) > baseline:
+        raise AssertionError(
+            f"{name}: {len(silent)} broad handlers swallow the error with no trace, "
+            f"baseline was {baseline}. New silent failure on the submission path. "
+            f"Handlers at lines {silent}. "
+            f"Either make them log / re-raise / use the exception, or justify it in "
+            f"docs/ble001_triage.md and update RED_BASELINE."
+        )
+    assert len(silent) == baseline, (
+        f"{name}: {baseline - len(silent)} fewer silent handler(s) than the frozen "
+        f"baseline ({len(silent)} now, {baseline} in RED_BASELINE). That is a win, "
+        f"not a failure -- lock it in by setting RED_BASELINE[{name!r}] = {len(silent)}. "
+        f"The baseline is an exact count: a ceiling nobody lowers is how this guard "
+        f"went blind between 2026-09-09 and 2026-09-17."
     )
 
 
-def test_red_zone_baseline_is_not_stale() -> None:
-    """Baseline must name exactly the files in RED_ZONE -- no more, no less."""
+def test_red_zone_baseline_covers_exactly_the_red_zone() -> None:
+    """Baseline must name exactly the files in RED_ZONE -- no more, no less.
+
+    This checks the key set only. The values are checked by
+    test_red_zone_has_no_new_silent_handlers, which requires them to match the
+    measured count exactly.
+    """
     assert set(RED_BASELINE) == RED_ZONE, (
         f"RED_BASELINE and RED_ZONE disagree: "
         f"{set(RED_BASELINE) ^ RED_ZONE}"
