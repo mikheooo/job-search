@@ -2322,15 +2322,39 @@ def get_production_health(now_dt: Any | None = None, storage_dir: str | None = N
         health_result["metrics"]["job_digest_records"] = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM telegram_delivery_records WHERE notification_type = 'digest_batch'")
         health_result["metrics"]["digest_batch_records"] = cur.fetchone()[0]
-    except Exception:
-        pass
+    except Exception as counts_err:
+        # Same rule as block 2, applied to the numbers cli.py prints: a COUNT
+        # that crashed is not a count of zero. The metrics become None rather
+        # than 0, because 0 is a measurement and this is the absence of one.
+        # See docs/ble001_triage.md finding #47.
+        health_result["metrics"]["total_delivery_records"] = None
+        health_result["metrics"]["job_digest_records"] = None
+        health_result["metrics"]["digest_batch_records"] = None
+        health_result["metrics"]["record_counts_error"] = str(counts_err)
+        if health_result["health"] == "HEALTHY":
+            health_result["health"] = "UNKNOWN"
+        health_result["alerts"].append({
+            "severity": "WARNING",
+            "message": f"Delivery record counts could not be read, totals are unknown: {counts_err}",
+            "timestamp": now_iso,
+        })
 
     # 5. Pending undigested vacancies count
     try:
         undigested = list_undigested_vacancies(limit=1000)
         health_result["metrics"]["pending_undigested_vacancies_count"] = len(undigested)
-    except Exception:
-        pass
+    except Exception as undigested_err:
+        # A backlog that could not be listed is not an empty backlog. Same
+        # shape as block 4; see docs/ble001_triage.md finding #47.
+        health_result["metrics"]["pending_undigested_vacancies_count"] = None
+        health_result["metrics"]["pending_undigested_error"] = str(undigested_err)
+        if health_result["health"] == "HEALTHY":
+            health_result["health"] = "UNKNOWN"
+        health_result["alerts"].append({
+            "severity": "WARNING",
+            "message": f"Pending undigested vacancies could not be listed, backlog size is unknown: {undigested_err}",
+            "timestamp": now_iso,
+        })
 
     conn.close()
 
@@ -2375,8 +2399,11 @@ def get_production_health(now_dt: Any | None = None, storage_dir: str | None = N
             "timestamp": now_iso,
         })
     elif consec_fails > 0 or failed_cnt > 0:
-        # Isolated failure awaiting retry -> DEGRADED
-        if health_result["health"] != "UNHEALTHY":
+        # Isolated failure awaiting retry -> DEGRADED. HEALTHY -> DEGRADED
+        # only: an UNKNOWN raised by a probe above means a check could not run,
+        # and "could not check" must not be rewritten as "checked, minor
+        # problem" (finding #47).
+        if health_result["health"] == "HEALTHY":
             health_result["health"] = "DEGRADED"
             health_result["alerts"].append({
                 "severity": "WARNING",
@@ -2409,8 +2436,21 @@ def get_production_health(now_dt: Any | None = None, storage_dir: str | None = N
                 "message": "Hermes external runtime files are MISSING. Run 'python -m ai_assistant.cli hermes sync' to deploy.",
                 "timestamp": now_iso,
             })
-    except Exception:
-        pass
+    except Exception as hermes_err:
+        # An integration check that could not run says so. UNKNOWN, not
+        # DEGRADED: DRIFTED and MISSING above are answers, this is the absence
+        # of one. See docs/ble001_triage.md finding #47.
+        health_result["hermes_integration"] = {
+            "status": "UNKNOWN",
+            "error": str(hermes_err),
+        }
+        if health_result["health"] == "HEALTHY":
+            health_result["health"] = "UNKNOWN"
+        health_result["alerts"].append({
+            "severity": "WARNING",
+            "message": f"Hermes integration status could not be read, result is inconclusive: {hermes_err}",
+            "timestamp": now_iso,
+        })
 
     return health_result
 

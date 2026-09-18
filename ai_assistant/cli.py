@@ -4046,6 +4046,16 @@ def digest_attempts_cmd(
         return 1
 
 
+def _metric_text(value: Any) -> str:
+    """A metric that could not be read prints as unknown, never as a zero.
+
+    get_production_health() sets these to None when the query behind them
+    failed (docs/ble001_triage.md finding #47): 0 is a measurement, None is
+    the absence of one, and whoever reads this line has to see which.
+    """
+    return "unknown (read failed)" if value is None else str(value)
+
+
 def production_health_cmd(output_json: bool = False) -> int:
     """Inspect production state and evaluate overall operational health (Stage 83)."""
 
@@ -4060,7 +4070,7 @@ def production_health_cmd(output_json: bool = False) -> int:
         print(f"Evaluation Timestamp: {res['evaluation_timestamp']}")
         print("-" * 60)
         m = res["metrics"]
-        print(f"Delivery Records Total: {m['total_delivery_records']} (Batches: {m['digest_batch_records']}, Vacancies: {m['job_digest_records']})")
+        print(f"Delivery Records Total: {_metric_text(m['total_delivery_records'])} (Batches: {_metric_text(m['digest_batch_records'])}, Vacancies: {_metric_text(m['job_digest_records'])})")
         print(f"Attempt States: Delivered={m['delivered_count']}, Attempting={m['attempting_count']}, Stale={m['stale_count']}, Ambiguous={m['ambiguous_count']}, Failed={m['failed_count']}")
         print(f"Duplicate Delivery Keys: {m['duplicate_delivery_keys_count']}")
         print(f"Consecutive Failures: {m['consecutive_failures']}")
@@ -4071,7 +4081,7 @@ def production_health_cmd(output_json: bool = False) -> int:
         )
         print(f"Last Attempt: {m['last_digest_attempt_at'] or 'Never'}")
         print(f"Last Successful Delivery: {m['last_successful_digest_at'] or 'Never'}")
-        print(f"Pending Undigested Vacancies: {m['pending_undigested_vacancies_count']}")
+        print(f"Pending Undigested Vacancies: {_metric_text(m['pending_undigested_vacancies_count'])}")
         print("-" * 60)
         if res["alerts"]:
             print(f"ACTIVE ALERTS ({len(res['alerts'])}):")

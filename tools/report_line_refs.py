@@ -12,8 +12,11 @@ Two counting systems exist and they disagree on some files:
   * Python's `splitlines()` and every GUI editor also treat a bare `\\r` as a
     line break.
 
-`cli.py` carries 6101 bare CR on top of 5946 LF, so the same call sits at 3312
-by grep and around 6708 in an editor. `application_queue.py` has the same
+`cli.py` carries 6111 bare CR on top of 5956 LF, so the same call sits at 3312
+by grep and around 6708 in an editor (the count grew by 10 when finding #47 added
+a helper above `production_health_cmd`; everything below grep line 4049 moved by
+10, and the report's one live reference past that point was translated).
+`application_queue.py` has the same
 property (769 bare CR against 737 CRLF) and the report never mentioned it, so a
 reference into that file meant two different places while only one was checked.
 

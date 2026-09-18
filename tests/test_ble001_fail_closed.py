@@ -258,9 +258,10 @@ def test_health_is_unknown_when_duplicate_check_itself_fails(monkeypatch):
     monkeypatch.setattr(db, "get_connection", lambda *a, **kw: _BrokenConn())
 
     res = db.get_production_health()
-    # Downstream probes may escalate UNKNOWN to UNHEALTHY on the same broken
-    # connection; what matters is that we never report HEALTHY and that the
-    # inconclusive probe says so out loud.
+    # What matters is that we never report HEALTHY and that the inconclusive
+    # probe says so out loud. It used to be able to escalate to UNHEALTHY via a
+    # later rule on the same broken connection; finding #47 then stopped rule B
+    # from rewriting any inconclusive verdict, so UNKNOWN now survives.
     assert res["health"] != "HEALTHY", "a broken probe must not report HEALTHY"
     assert any("Duplicate delivery key check failed" in a["message"] for a in res["alerts"])
 
@@ -4526,3 +4527,178 @@ def test_a_fully_answered_questionnaire_still_audits_as_safe():
         f" {[(i.question_id, i.verdict.value) for i in report.items]}"
     )
 
+# ---------------------------------------------------------------------------
+# Finding #47 - db.get_production_health: three probes that printed a crashed
+# read as a measured number
+# ---------------------------------------------------------------------------
+# Block 2 of get_production_health was fixed under finding #4: a duplicate-key
+# probe that crashes may not leave health at HEALTHY. Three other probes in the
+# same function kept the older shape -- `except Exception: pass` with the metric
+# pre-filled to 0 -- so a failed COUNT printed as "Delivery Records Total: 0"
+# while health stayed HEALTHY. "Could not read" and "read a zero" are different
+# facts, and only one of them is a measurement. The CLI prints these numbers, so
+# the fake zero was the whole story the operator saw.
+
+# Unique to block 4: block 2's duplicate probe also counts rows, but its SQL
+# starts with "SELECT delivery_key", so this prefix cannot catch it by accident.
+_RECORD_COUNTS_SQL = "SELECT COUNT(*) FROM telegram_delivery_records"
+
+
+class _HealthProbeCursor:
+    """Cursor that fails only the statement a test names."""
+
+    def __init__(self, fail_on: str):
+        self.fail_on = fail_on
+
+    def execute(self, sql, *args):
+        if self.fail_on in sql:
+            raise _Boom(f"{self.fail_on} failed")
+        return self
+
+    def fetchall(self):
+        return []
+
+    def fetchone(self):
+        return (0,)
+
+    def close(self):
+        pass
+
+
+class _HealthProbeConn:
+    def __init__(self, fail_on: str):
+        self.fail_on = fail_on
+
+    def cursor(self):
+        return _HealthProbeCursor(self.fail_on)
+
+    def execute(self, sql, *args):
+        # ensure_schema() goes through conn.execute, not conn.cursor()
+        return self.cursor().execute(sql, *args)
+
+    def commit(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def _health_with_broken_connection(fail_on: str, monkeypatch, storage_dir):
+    db.init_db()
+    monkeypatch.setattr(
+        db, "get_connection", lambda *a, **kw: _HealthProbeConn(fail_on)
+    )
+    return db.get_production_health(storage_dir=str(storage_dir))
+
+
+def test_health_is_unknown_when_record_counts_cannot_be_read(monkeypatch, tmp_path):
+    res = _health_with_broken_connection(_RECORD_COUNTS_SQL, monkeypatch, tmp_path)
+
+    assert res["health"] != "HEALTHY", (
+        "a COUNT that crashed is not a count of zero; health must not stay HEALTHY"
+    )
+    assert any("record count" in a["message"].lower() for a in res["alerts"]), (
+        f"the failed probe has to name itself; alerts were {res['alerts']}"
+    )
+    assert res["metrics"]["total_delivery_records"] is None, (
+        "0 is a measurement; the read failed, so the metric has no value"
+    )
+    assert res["metrics"]["record_counts_error"], (
+        "the reader has to keep the reason, not just drop the number"
+    )
+
+
+def test_record_counts_are_still_numbers_when_the_query_works(monkeypatch, tmp_path):
+    """Control: the refusal must not cost the honest path its measurement."""
+    db.init_db()
+    res = db.get_production_health(storage_dir=str(tmp_path))
+
+    assert res["metrics"]["total_delivery_records"] == 0
+    assert isinstance(res["metrics"]["job_digest_records"], int)
+    assert isinstance(res["metrics"]["digest_batch_records"], int)
+    assert "record_counts_error" not in res["metrics"]
+    assert not any("record count" in a["message"].lower() for a in res["alerts"])
+
+
+def test_health_is_unknown_when_pending_vacancies_cannot_be_listed(
+    monkeypatch, tmp_path
+):
+    db.init_db()
+
+    def _boom(*args, **kwargs):
+        raise _Boom("undigested listing failed")
+
+    monkeypatch.setattr(db, "list_undigested_vacancies", _boom)
+    res = db.get_production_health(storage_dir=str(tmp_path))
+
+    assert res["health"] != "HEALTHY", (
+        "an unreadable pending count is not a pending count of zero"
+    )
+    assert any("undigested" in a["message"].lower() for a in res["alerts"]), (
+        f"alerts were {res['alerts']}"
+    )
+    assert res["metrics"]["pending_undigested_vacancies_count"] is None
+
+
+def test_health_is_unknown_when_hermes_status_cannot_be_read(monkeypatch, tmp_path):
+    from ai_assistant import hermes_integration
+
+    db.init_db()
+
+    def _boom(*args, **kwargs):
+        raise _Boom("hermes status failed")
+
+    monkeypatch.setattr(
+        hermes_integration, "get_hermes_integration_status", _boom
+    )
+    res = db.get_production_health(storage_dir=str(tmp_path))
+
+    assert res["health"] != "HEALTHY", (
+        "an unreadable integration check must not read as a healthy integration"
+    )
+    assert res["hermes_integration"]["status"] == "UNKNOWN", res.get(
+        "hermes_integration"
+    )
+    assert any("hermes" in a["message"].lower() for a in res["alerts"]), (
+        f"alerts were {res['alerts']}"
+    )
+
+
+def test_a_readable_hermes_drift_is_still_reported_as_drift(monkeypatch, tmp_path):
+    """Control: UNKNOWN is for a check that could not run, not for a bad answer."""
+    from ai_assistant import hermes_integration
+
+    db.init_db()
+    monkeypatch.setattr(
+        hermes_integration,
+        "get_hermes_integration_status",
+        lambda *a, **kw: {"status": "DRIFTED"},
+    )
+    res = db.get_production_health(storage_dir=str(tmp_path))
+
+    assert res["hermes_integration"]["status"] == "DRIFTED"
+    assert res["health"] == "DEGRADED", (
+        "a readable DRIFTED status is a known bad answer, not an unknown one"
+    )
+
+
+def test_an_inconclusive_probe_is_not_downgraded_to_degraded(monkeypatch, tmp_path):
+    """'Could not check' must not be rewritten as 'checked, minor problem'.
+
+    Rule B below the probes sets DEGRADED whenever failures are recorded, and it
+    used to do that on any health but UNHEALTHY -- so an UNKNOWN raised by the
+    duplicate-key probe (finding #4) was silently rewritten into DEGRADED, and
+    cli.py then exited 1 instead of 2.
+    """
+    from ai_assistant.runner import ConsecutiveFailureTracker
+
+    db.init_db()
+    ConsecutiveFailureTracker(storage_dir=str(tmp_path)).record_failure("isolated")
+
+    res = _health_with_broken_connection(
+        "GROUP BY delivery_key", monkeypatch, tmp_path
+    )
+
+    assert res["health"] == "UNKNOWN", (
+        f"an inconclusive probe was downgraded to {res['health']}"
+    )
