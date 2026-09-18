@@ -491,3 +491,119 @@ def test_route_policy_rejection_moves_to_needs_human_review(clean_db):
     assert len(transitions) == 1
     assert transitions[0]["state"] == "NEEDS_HUMAN_REVIEW"
     assert "paused" in transitions[0]["evidence"]["reasons"]
+
+# ---------------------------------------------------------------------------
+# Finding #48 - the third check in the same ledger that named itself "passed"
+# without running
+# ---------------------------------------------------------------------------
+# Finding #37 fixed two of the six checks in evaluate(): a questionnaire that was
+# not on record and a language that could not be determined both stopped being
+# written down as passed. The third one was left behind, in the same ledger, four
+# lines above the letter checks.
+#
+# When there is no stored fingerprint to compare against, but a fingerprint can
+# be computed (a draft or a package exists), the gate took this branch:
+#
+#     elif actual_fp:
+#         resolved_fp = actual_fp
+#         checks_passed.append("fingerprint_match")   # nothing was compared
+#
+# Measured 2026-09-17 on the real state.db: of the 10 rows in hh_applications
+# exactly one carries a draft (74 chars, state READY_TO_SUBMIT), and its
+# vacancy_stable_id is NULL - so it cannot be joined to any application_reviews
+# row at all, and this branch, not the comparison above, is the shape production
+# is actually in. Only 1 of the 20 review rows carries a non-empty fingerprint.
+#
+# The 74-character draft is also too short for gate 4 (300-2500), so that
+# particular row is refused on length and production has not yet *reached*
+# submission with the false name in the ledger. What is reachable, and what the
+# pins below measure, is the configuration itself: a full-length draft with no
+# review row is approved with "fingerprint_match" written down.
+#
+# The record is not cosmetic: checks_passed travels into SubmitApproval and, from
+# there, into the evidence of the SUBMITTED transition (hh_application_runner.py
+# writes submit_approval.to_dict()), so the audit trail of a real submission
+# asserted a comparison that never took place.
+
+# The draft used by the two pins below. It has to stay inside 300-2500 characters
+# or gate 4 fails it on length and the verdict stops being "approved", which hides
+# what these pins are actually about: the first red run of this block used a
+# 258-character draft and the control failed on
+# "cover_letter_length_out_of_bounds (258 chars, expected 300-2500)" - a real
+# failure, but of the fixture, not of the code under test. It also has to mention
+# the title or the employer ("Python" does) for letter_mentions_target.
+_DRAFT_ONLY_LETTER = (
+    "Здравствуйте! Меня заинтересовала эта позиция, и я хотел бы откликнуться. "
+    "У меня большой опыт разработки на Python: проектирование асинхронных сервисов, "
+    "работа с PostgreSQL, Docker и FastAPI, оптимизация тяжёлых запросов в "
+    "высоконагруженных системах. В прошлых проектах я отвечал за архитектуру "
+    "внутреннего API, настраивал CI, писал тесты и разбирал инциденты в продакшене. "
+    "Буду рад обсудить задачи команды на техническом интервью и рассказать подробнее "
+    "о своём опыте."
+)
+
+
+def test_policy_without_a_stored_fingerprint_does_not_claim_the_check_passed(clean_db):
+    """A computable fingerprint with nothing to compare it against is not a match."""
+    app = {
+        "application_id": "app_fp_uncomparable",
+        "vacancy_stable_id": "hh:136704137",
+        "title": "Python developer",
+        "employer": "Maxima.tech",
+        "draft": _DRAFT_ONLY_LETTER,
+        # no package and no review row - the shape the one real row with a draft is in
+    }
+
+    decision = evaluate(app)
+
+    assert "fingerprint_match" not in decision.checks_passed, (
+        "the gate recorded a passed fingerprint check without comparing anything"
+    )
+    assert "fingerprint_not_compared" in decision.checks_passed
+
+
+def test_policy_still_records_a_real_fingerprint_match(clean_db):
+    """Counter-check: with a stored fingerprint that agrees, the name stays."""
+    sid = "hh:136704137"
+    _pkg, _fp, letter = _create_valid_package_and_review(sid)
+    app = {
+        "application_id": "app_fp_ok",
+        "vacancy_stable_id": sid,
+        "title": "Python developer middle",
+        "employer": "Maxima.tech",
+        "draft": letter,
+    }
+
+    decision = evaluate(app)
+
+    assert "fingerprint_match" in decision.checks_passed
+    assert "fingerprint_not_compared" not in decision.checks_passed
+
+
+def test_the_fingerprint_record_change_does_not_change_the_verdict(clean_db):
+    """Finding #37's doctrine: the record stops lying, the verdict does not move.
+
+    Two things have to stay true, and each guards a different wrong "fix": the
+    approval must not start failing, and the computed fingerprint must not be
+    thrown away to make the record honest.
+    """
+    app = {
+        "application_id": "app_fp_verdict",
+        "vacancy_stable_id": "hh:136704137",
+        "title": "Python developer",
+        "employer": "Maxima.tech",
+        "draft": _DRAFT_ONLY_LETTER,
+    }
+
+    decision = evaluate(app)
+
+    assert decision.approve is True, (
+        "the honest record must not turn into a new refusal"
+    )
+    assert decision.fingerprint, (
+        "the computed fingerprint is a real value and must still be reported"
+    )
+    assert decision.approval is not None
+    assert "fingerprint_not_compared" in decision.approval.checks_passed, (
+        "the approval record is what reaches the audit trail"
+    )

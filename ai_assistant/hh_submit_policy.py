@@ -219,8 +219,20 @@ def evaluate(
             checks_failed.append("fingerprint_match")
             reasons.append(f"fingerprint_mismatch (expected {expected_fp[:8]}, got {actual_fp[:8]})")
     elif actual_fp:
+        # BLE001 finding #48, the third check in the same ledger as #37 and #46.
+        # A fingerprint could be computed (a package or a draft exists) but
+        # there was no stored review fingerprint to compare it against, and the
+        # old line recorded "fingerprint_match" - a passed check - so an audit
+        # reading checks_passed saw "the fingerprint was verified" when nothing
+        # had been compared. Measured 2026-09-17 on the real state.db: of the 10
+        # rows in hh_applications exactly one carries a draft, and its
+        # vacancy_stable_id is NULL, so it can never join a review row - this
+        # branch, not the comparison above, is the shape production is in. Only
+        # 1 of the 20 review rows carries a non-empty fingerprint.
+        # The computed fingerprint is still reported: the record stops lying,
+        # the verdict does not move (see #37).
         resolved_fp = actual_fp
-        checks_passed.append("fingerprint_match")
+        checks_passed.append("fingerprint_not_compared")
     else:
         checks_failed.append("fingerprint_match")
         reasons.append("missing_fingerprint_data")
