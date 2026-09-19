@@ -2071,17 +2071,34 @@ def list_digest_attempts(limit: int = 50, now_dt: Any | None = None) -> list[dic
         # persisted attempt. It is refreshed atomically when a failed batch is
         # retried; payload timestamps are diagnostic and may be stale.
         attempted_at_str = r[3] or payload.get("attempted_at")
-        age_seconds = 0
+        age_seconds: int | None = None
+        age_error: str | None = None
         try:
             att_dt = datetime.datetime.fromisoformat(attempted_at_str.replace("Z", "+00:00"))
             if att_dt.tzinfo is None:
                 att_dt = att_dt.replace(tzinfo=datetime.timezone.utc)
             age_seconds = max(0, int((now_dt - att_dt).total_seconds()))
-        except Exception:
-            pass
+        except Exception as exc:
+            # BLE001 finding #50, the same class as #47: a timestamp that could
+            # not be read is not a timestamp of age zero. The old code left
+            # age_seconds at 0, so an ATTEMPTING batch of unknown age was
+            # reported as fresh and, because Rule A fires only on stale_cnt > 0,
+            # it never raised the critical alert. age_seconds is None now, and
+            # the exception text is kept so an operator can see why.
+            age_error = f"{type(exc).__name__}: {exc}"
 
         persisted_status = r[4]
-        is_stale = (persisted_status == "ATTEMPTING" and age_seconds >= stale_threshold_seconds)
+        # An ATTEMPTING batch whose age could not be computed is not a fresh
+        # batch - it is a batch we cannot age at all, and the stale rule exists
+        # precisely to catch ATTEMPTING rows that outlived the threshold. Fail
+        # closed: unknown age counts as stale. Note that `age_seconds >=
+        # threshold` cannot be evaluated on None, so the unknown case is checked
+        # first rather than left to comparison.
+        age_unknown = age_seconds is None
+        is_stale = (
+            persisted_status == "ATTEMPTING"
+            and (age_unknown or age_seconds >= stale_threshold_seconds)
+        )
         
         effective_status = persisted_status
         if is_stale:
@@ -2100,7 +2117,9 @@ def list_digest_attempts(limit: int = 50, now_dt: Any | None = None) -> list[dic
             "status": persisted_status,
             "effective_status": effective_status,
             "age_seconds": age_seconds,
-            "age_minutes": round(age_seconds / 60.0, 1),
+            "age_minutes": None if age_seconds is None else round(age_seconds / 60.0, 1),
+            "age_unknown": age_unknown,
+            "age_error": age_error,
             "stale": is_stale,
             "vacancy_count": len(vac_list),
             "vacancies": vac_list,

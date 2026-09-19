@@ -4017,7 +4017,16 @@ def digest_attempts_cmd(
                     stale_str = " [STALE]" if att.get("stale") else ""
                     reconcile_str = " [ACTION REQUIRED]" if att.get("requires_reconciliation") else ""
                     print(f"Batch: {att['batch_key']} | Persisted: {att['status']} | Effective: {att['effective_status']}{stale_str}{reconcile_str}")
-                    print(f"  Age: {att.get('age_minutes', 0)} min | Created: {att.get('created_at')} | Updated: {att.get('last_updated_at')}")
+                    age_minutes = att.get("age_minutes")
+                    # A batch whose timestamp could not be read has no age. Same
+                    # rule as _metric_text: a failed read is not a measured zero
+                    # (docs/ble001_triage.md findings #47 and #50). The reason
+                    # itself travels in the JSON output as age_error.
+                    age_str = (
+                        _metric_text(age_minutes) if age_minutes is None
+                        else f"{age_minutes} min"
+                    )
+                    print(f"  Age: {age_str} | Created: {att.get('created_at')} | Updated: {att.get('last_updated_at')}")
                     print(f"  Chat: {att['chat_id']} | Vacancies: {att['vacancy_count']} | Retry: {retry_str}")
                     if att["vacancies"]:
                         print(f"  IDs: {', '.join(att['vacancies'][:5])}{'...' if len(att['vacancies']) > 5 else ''}")

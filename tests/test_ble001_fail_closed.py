@@ -4888,3 +4888,154 @@ def test_the_questionnaires_own_answers_survive_a_corrupt_application_column(mon
     assert "questionnaire_complete" in decision.checks_passed, (
         "the questionnaire's own answers are the source of truth on this path"
     )
+
+
+# ---------------------------------------------------------------------------
+# Finding #50 - an ATTEMPTING batch whose timestamp cannot be read was reported
+# as fresh and never tripped the critical rule
+# ---------------------------------------------------------------------------
+# list_digest_attempts computed the age like this:
+#
+#     attempted_at_str = r[3] or payload.get("attempted_at")
+#     age_seconds = 0
+#     try:
+#         att_dt = datetime.datetime.fromisoformat(attempted_at_str.replace("Z", "+00:00"))
+#         ...
+#         age_seconds = max(0, int((now_dt - att_dt).total_seconds()))
+#     except Exception:
+#         pass
+#
+#     is_stale = (persisted_status == "ATTEMPTING" and age_seconds >= stale_threshold_seconds)
+#
+# age_seconds started at 0 and stayed 0 when the timestamp could not be read.
+# That is finding #47's class - a failed read printed as a measured zero - but
+# here the zero fed a rule rather than a display line. Two consumers:
+#
+#     cli.py:4029                  printed "Age: 0.0 min" with no [STALE] marker
+#     db.get_production_health     counted the row as `attempting`, and Rule A
+#                                  raises UNHEALTHY only on stale_cnt > 0
+#
+# and attempting_cnt is written into metrics but read by no rule at all, so the
+# one row an operator most needs to see raised nothing.
+#
+# Measured 2026-09-19 with tools/ble001_digest_stale_probe.py: before the fix an
+# unreadable timestamp gave age 0 / ATTEMPTING / stale_count 0 / no critical
+# alert; after it, age is None, the row is STALE and the critical rule fires.
+# The first pin holds the fix; the other three hold what the fix must not break.
+
+_Q50_CHAT = "-1004399255305"
+
+
+def _q50_setup(monkeypatch, tmp_path) -> None:
+    from ai_assistant import config
+
+    monkeypatch.setattr(config, "DB_FILE", str(tmp_path / "ble50.db"), raising=False)
+    monkeypatch.setattr(config, "DIGEST_ATTEMPT_STALE_MINUTES", 60, raising=False)
+    db.init_db()
+
+
+def _q50_insert_attempting(delivered_at: str, payload_attempted_at: str | None = None) -> None:
+    """One ATTEMPTING digest_batch row, written straight into the table.
+
+    Raw INSERT, not record_digest_attempt: that writer always stamps a valid
+    now_iso, so it cannot produce the shape under test. This is the same reason
+    the probe writes its rows directly.
+    """
+    payload: dict = {"vacancies": ["hh:50"], "chat_id": _Q50_CHAT}
+    if payload_attempted_at is not None:
+        payload["attempted_at"] = payload_attempted_at
+    conn = db.get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO telegram_delivery_records
+                (delivery_key, notification_type, chat_id, delivered_at, status, payload)
+            VALUES (?, 'digest_batch', ?, ?, 'ATTEMPTING', ?)
+            """,
+            (f"digest_batch:q50-{delivered_at!r}", _Q50_CHAT, delivered_at, json.dumps(payload)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _q50_now():
+    import datetime
+
+    return datetime.datetime(2026, 9, 19, 12, 0, 0, tzinfo=datetime.timezone.utc)
+
+
+def test_an_unreadable_digest_timestamp_fails_closed(monkeypatch, tmp_path):
+    """An un-ageable ATTEMPTING row is STALE and raises the critical rule."""
+    _q50_setup(monkeypatch, tmp_path)
+    _q50_insert_attempting("{not a date")
+    now = _q50_now()
+
+    attempts = db.list_digest_attempts(limit=10, now_dt=now)
+    assert len(attempts) == 1
+    att = attempts[0]
+
+    assert att["age_seconds"] is None, "a failed read must not become a measured zero"
+    assert att["age_minutes"] is None
+    assert att["age_unknown"] is True
+    assert att["age_error"], "the reason has to survive for whoever reads this"
+    assert att["stale"] is True
+    assert att["effective_status"] == "STALE"
+    assert att["requires_reconciliation"] is True
+
+    health = db.get_production_health(now_dt=now, storage_dir=str(tmp_path))
+    assert health["metrics"]["stale_count"] >= 1
+    assert health["health"] == "UNHEALTHY"
+    criticals = [a["message"] for a in health["alerts"] if a["severity"] == "CRITICAL"]
+    assert any("Stale unresolved digest attempts" in m for m in criticals), criticals
+
+
+def test_a_readable_recent_digest_timestamp_is_still_not_stale(monkeypatch, tmp_path):
+    """The other direction: the fix must not mark every ATTEMPTING row stale."""
+    _q50_setup(monkeypatch, tmp_path)
+    now = _q50_now()
+    import datetime
+
+    _q50_insert_attempting((now - datetime.timedelta(minutes=5)).isoformat())
+
+    att = db.list_digest_attempts(limit=10, now_dt=now)[0]
+    assert att["age_seconds"] == 300
+    # .get(..., False), not ["age_unknown"]: this control has to pass on the OLD
+    # code too, or it proves nothing about the fix. Measured - the first version
+    # of this pin died with KeyError on the pre-fix code, which reads as "caught
+    # the bug" while actually catching a missing key. See the #50 section of
+    # docs/ble001_triage.md.
+    assert att.get("age_unknown", False) is False
+    assert att.get("age_error") is None
+    assert att["stale"] is False
+    assert att["effective_status"] == "ATTEMPTING"
+
+
+def test_an_empty_digest_column_still_falls_back_to_the_payload(monkeypatch, tmp_path):
+    """An empty column is not an unreadable one - the documented fallback stands."""
+    _q50_setup(monkeypatch, tmp_path)
+    now = _q50_now()
+    import datetime
+
+    three_hours_ago = (now - datetime.timedelta(hours=3)).isoformat()
+    _q50_insert_attempting("", three_hours_ago)
+
+    att = db.list_digest_attempts(limit=10, now_dt=now)[0]
+    assert att["age_seconds"] == 10800, "the payload timestamp is the second half of the fallback"
+    assert att.get("age_unknown", False) is False
+    assert att["stale"] is True
+
+
+def test_the_cli_reports_an_unknown_digest_age_as_unknown(monkeypatch, tmp_path, capsys):
+    """The operator line must not print a number the reader could not measure."""
+    from ai_assistant.cli import digest_attempts_cmd
+
+    _q50_setup(monkeypatch, tmp_path)
+    _q50_insert_attempting("{not a date")
+
+    assert digest_attempts_cmd(action="list", output_json=False) == 0
+
+    out = capsys.readouterr().out
+    assert "Age: unknown (read failed)" in out
+    assert "0.0 min" not in out, "the old display printed a zero it never measured"
+    assert "[STALE]" in out
