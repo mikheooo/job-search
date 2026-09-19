@@ -1864,8 +1864,8 @@ def record_digest_attempt(vacancy_ids: list[str], chat_id: str = "-1004399255305
                     (delivery_key, notification_type, chat_id, delivered_at, status, payload)
                 VALUES (?, 'digest_batch', ?, ?, 'ATTEMPTING', ?)
             ''', (batch_key, str(chat_id), now_iso, batch_payload))
-        except Exception:
-            # Unique constraint race lost
+        except sqlite3.IntegrityError:
+            # BLE001 #51: the race, and only it - see docs/ble001_triage.md.
             conn.close()
             return None
 

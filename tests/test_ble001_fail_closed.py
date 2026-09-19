@@ -5039,3 +5039,149 @@ def test_the_cli_reports_an_unknown_digest_age_as_unknown(monkeypatch, tmp_path,
     assert "Age: unknown (read failed)" in out
     assert "0.0 min" not in out, "the old display printed a zero it never measured"
     assert "[STALE]" in out
+
+
+# ---------------------------------------------------------------------------
+# Finding #51 - a write failure was reported as "another worker has it"
+# ---------------------------------------------------------------------------
+# The first-time branch of record_digest_attempt read
+#
+#     try:
+#         cur.execute("INSERT INTO telegram_delivery_records ...")
+#     except Exception:
+#         # Unique constraint race lost
+#         conn.close()
+#         return None
+#
+# so a UNIQUE violation on delivery_key - the race the comment names - and a
+# locked or readonly database all left through the same door. The docstring
+# documents None as "the attempt is already ATTEMPTING, DELIVERED, or
+# AMBIGUOUS", and the caller prints exactly that and exits "safely"
+# (integrations/hermes/job_search_fetcher.py:222-224). Measured 2026-09-19 with
+# tools/ble001_digest_writer_probe.py: OperationalError('database is locked') and
+# OperationalError('attempt to write a readonly database') both returned None and
+# produced the "another worker has it" line. Nothing was sent and no row was left
+# behind, so nothing was stuck - the harm is the diagnosis, which hides a
+# database that cannot be written.
+#
+# delivery_key is declared NOT NULL UNIQUE (db_schema.py:466) and every other
+# column of that INSERT is supplied, so an IntegrityError there IS the race and
+# nothing else. The handler is now that narrow; everything else propagates, as
+# the vacancy-level INSERTs twelve lines below have always done.
+# The first two pins hold the fix; the last two hold what it must not break.
+
+_Q51_CHAT = "-1004399255305"
+
+
+class _FailingDigestCursor:
+    """A real cursor that refuses the batch INSERT with a chosen error."""
+
+    def __init__(self, real, error):
+        self._real = real
+        self._error = error
+
+    def execute(self, sql, params=()):
+        if (
+            self._error is not None
+            and sql.lstrip().upper().startswith("INSERT")
+            and "telegram_delivery_records" in sql
+        ):
+            raise self._error
+        return self._real.execute(sql, params)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+class _FailingDigestConn:
+    """Stands in for get_connection(); the batch INSERT blows up."""
+
+    def __init__(self, real, error):
+        self._real = real
+        self._error = error
+
+    def cursor(self):
+        return _FailingDigestCursor(self._real.cursor(), self._error)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def _q51_setup(monkeypatch, tmp_path) -> None:
+    from ai_assistant import config
+
+    monkeypatch.setattr(config, "DB_FILE", str(tmp_path / "ble51.db"), raising=False)
+    db.init_db()
+
+
+def _q51_force_insert_error(monkeypatch, error) -> None:
+    """Hand the writer a connection whose batch INSERT raises `error`.
+
+    A fresh connection per call, exactly as the real get_connection does:
+    init_db() closes the connection it borrows, so a shared one would be dead by
+    the time the writer asks for its own.
+    """
+    import sqlite3
+
+    from ai_assistant import config
+
+    def fake():
+        return _FailingDigestConn(sqlite3.connect(config.DB_FILE), error)
+
+    monkeypatch.setattr(db, "get_connection", fake)
+
+
+def test_a_write_failure_is_not_reported_as_another_worker(monkeypatch, tmp_path):
+    """A database that cannot be written must not answer "already claimed"."""
+    import sqlite3
+
+    _q51_setup(monkeypatch, tmp_path)
+    _q51_force_insert_error(
+        monkeypatch,
+        sqlite3.OperationalError("attempt to write a readonly database"),
+    )
+
+    with pytest.raises(sqlite3.OperationalError):
+        db.record_digest_attempt(["hh:q51_readonly"], chat_id=_Q51_CHAT)
+
+
+def test_the_original_reason_survives_the_raise(monkeypatch, tmp_path):
+    """The operator must see the real cause, not a substitute message."""
+    import sqlite3
+
+    _q51_setup(monkeypatch, tmp_path)
+    _q51_force_insert_error(
+        monkeypatch, sqlite3.OperationalError("database is locked")
+    )
+
+    with pytest.raises(sqlite3.OperationalError) as caught:
+        db.record_digest_attempt(["hh:q51_locked"], chat_id=_Q51_CHAT)
+    assert "database is locked" in str(caught.value)
+
+
+def test_the_unique_race_still_returns_none(monkeypatch, tmp_path):
+    """Control: the race the docstring documents must keep its None.
+
+    This one passes on the OLD code too - `except Exception` swallowed the
+    IntegrityError as well. It is here so the narrowing cannot overshoot and turn
+    the real concurrency gate into a crash.
+    """
+    import sqlite3
+
+    _q51_setup(monkeypatch, tmp_path)
+    _q51_force_insert_error(
+        monkeypatch,
+        sqlite3.IntegrityError(
+            "UNIQUE constraint failed: telegram_delivery_records.delivery_key"
+        ),
+    )
+
+    assert db.record_digest_attempt(["hh:q51_race"], chat_id=_Q51_CHAT) is None
+
+
+def test_a_healthy_write_still_returns_a_batch_key(monkeypatch, tmp_path):
+    """Control: the happy path is untouched by the narrower handler."""
+    _q51_setup(monkeypatch, tmp_path)
+
+    key = db.record_digest_attempt(["hh:q51_healthy"], chat_id=_Q51_CHAT)
+    assert key, "a first-time attempt on a healthy database must claim the batch"
