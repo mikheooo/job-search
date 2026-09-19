@@ -74,6 +74,50 @@ class RecoveryResult(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+def _verification_record_is_unreadable(vacancy_stable_id: str, submission_id: str) -> bool:
+    """True when a verification row exists for this submission but cannot be parsed.
+
+    get_verification() answers None both for "there is no row" and for "there is
+    a row that SubmissionVerification refuses", so its callers cannot tell a
+    missing verification from a damaged one. BLE001 finding #55: the recovery
+    report called a damaged record missing - "Submission exists but no
+    verification performed" - and advised re-checking the result on the website,
+    for a submission whose stored record says VERIFIED.
+
+    This reads the column the way application_integrity._check_verification_json_records
+    does: by SQL, independently of the model getter, choosing the same row
+    (latest by verified_at) so the auditor and this report cannot disagree about
+    which row they mean.
+
+    The except is narrowed on purpose. json.JSONDecodeError and pydantic's
+    ValidationError both descend from ValueError, and a non-text column raises
+    TypeError; any other exception is not "this row is unreadable" but a bug in
+    this helper, and it should be loud rather than be filed as a damaged record.
+    """
+    from .submission_verifier import SubmissionVerification
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT verification_json FROM submission_verifications "
+            "WHERE vacancy_stable_id=? AND submission_id=? "
+            "ORDER BY verified_at DESC LIMIT 1",
+            (vacancy_stable_id, submission_id),
+        )
+        row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return False
+    try:
+        data = json.loads(row[0]) if row[0] else {}
+        SubmissionVerification.model_validate(data)
+    except (ValueError, TypeError):
+        return True
+    return False
+
+
 def inspect_submission_state(vacancy_stable_id: str) -> RecoveryResult:
     """
     Deterministically determine submission state from existing records.
@@ -112,6 +156,12 @@ def inspect_submission_state(vacancy_stable_id: str) -> RecoveryResult:
 
     # Get latest verification
     ver = get_verification(vacancy_stable_id, submission_id) if submission_id else None
+    # None means either "no row" or "row I cannot read". The difference decides
+    # whether the report may say a verification was never performed (#55).
+    verification_unreadable = bool(
+        ver is None and submission_id
+        and _verification_record_is_unreadable(vacancy_stable_id, submission_id)
+    )
     last_verification = None
     if ver:
         last_verification = {
@@ -138,6 +188,7 @@ def inspect_submission_state(vacancy_stable_id: str) -> RecoveryResult:
         last_verification,
         review_status,
         browser_status,
+        verification_unreadable=verification_unreadable,
     )
 
     warnings = []
@@ -145,7 +196,11 @@ def inspect_submission_state(vacancy_stable_id: str) -> RecoveryResult:
         warnings.append("No application tracking record found")
     if not last_submission:
         warnings.append("No submission record found")
-    if not last_verification and last_submission:
+    if verification_unreadable:
+        warnings.append(
+            "Verification record exists but cannot be read - its content is unknown"
+        )
+    elif not last_verification and last_submission:
         warnings.append("Submission exists but no verification performed")
 
     return RecoveryResult(
@@ -167,8 +222,16 @@ def _determine_recovery_status(
     verification: dict | None,
     review_status: str | None,
     browser_status: str | None,
+    verification_unreadable: bool = False,
 ) -> tuple[RecoveryStatus, str, str]:
-    """Determine recovery status based on all available state."""
+    """Determine recovery status based on all available state.
+
+    `verification` is None both when no verification was performed and when the
+    stored one cannot be read; `verification_unreadable` carries the second case
+    so the report does not assert the first (#55). The status stays
+    NEEDS_VERIFICATION either way - an unreadable record must not look more
+    settled than a missing one.
+    """
 
     # Terminal states - no action needed
     terminal_statuses = {"APPLIED", "REJECTED", "INTERVIEW", "OFFER", "WITHDRAWN"}
@@ -203,6 +266,16 @@ def _determine_recovery_status(
             )
 
         if not verification:
+            if verification_unreadable:
+                return (
+                    RecoveryStatus.NEEDS_VERIFICATION,
+                    "Submission exists but its verification record cannot be read",
+                    (
+                        "Inspect the stored verification record - it exists but cannot "
+                        "be parsed, so whether the submission succeeded is unknown. "
+                        "Do not assume it was never verified"
+                    ),
+                )
             return (
                 RecoveryStatus.NEEDS_VERIFICATION,
                 "Submission exists but no verification performed",

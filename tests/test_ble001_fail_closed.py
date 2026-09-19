@@ -5650,3 +5650,269 @@ def test_confirm_human_submission_cannot_run_the_gates_it_claimed(_q53_clean):
     assert "check_all_gates" not in source
     assert "check_readonly_gates" not in source
 
+
+# ===========================================================================
+# BLE001 finding #55 - the recovery report called a damaged record "missing"
+# ===========================================================================
+#
+# db.get_verification() answers None in two different situations: there is no
+# verification row for this submission, and there is a row that
+# SubmissionVerification refuses to parse. inspect_submission_state() could not
+# tell them apart, so a submission whose stored record says VERIFIED was
+# reported as "Submission exists but no verification performed" - with the
+# advice to go and re-check the result on the website.
+#
+# The row that reaches this state today is the one an older schema wrote: the
+# model sets extra="forbid", so a field that has since been removed from
+# SubmissionVerification makes every historical row unreadable at once. The
+# auditor already knows this - application_integrity._check_verification_json_records
+# reads the column by SQL and raises INVALID_VERIFICATION_JSON for the same row
+# (its docstring names this exact failure mode as the precedent for finding
+# #33). Only the recovery reader was left treating "cannot read" as "is not
+# there".
+#
+# The pins below are the two halves that must both hold: the report must stop
+# claiming the record is absent, and it must keep refusing to act on it.
+
+_Q55_SID = "hh:55"
+_Q55_SUB = "sub_55"
+
+
+def _q55_payload(status: str = "VERIFIED") -> dict:
+    """A row the current model parses without complaint."""
+    from ai_assistant.submission_verifier import VERIFICATION_VERSION
+
+    return {
+        "vacancy_stable_id": _Q55_SID,
+        "submission_id": _Q55_SUB,
+        "verification_status": status,
+        "evidence": {"body_marker": True},
+        "final_url": "https://hh.ru/applicant/negotiations",
+        "page_title": "Отклик отправлен",
+        "verified_at": "2026-09-20T00:00:00",
+        "warnings": [],
+        "verification_version": VERIFICATION_VERSION,
+    }
+
+
+def _q55_unreadable_shapes() -> list[tuple[str, str | None]]:
+    """Every stored form the current model refuses, with the reason it refuses.
+
+    All of them are written by SQL, not by save_verification(): the point is a
+    row from another version of the schema, which today's writer cannot produce.
+    """
+    valid = _q55_payload()
+    return [
+        ("extra-key", json.dumps({**valid, "screenshot_sha256": "deadbeef"})),
+        ("dropped-required", json.dumps({k: v for k, v in valid.items() if k != "verification_status"})),
+        ("empty-object", "{}"),
+        ("null-column", None),
+        ("empty-string", ""),
+        ("broken-json", '{"verification_status": "VERIFIED"'),
+        ("unknown-enum", json.dumps(_q55_payload(status="ACCEPTED"))),
+    ]
+
+
+def _q55_write_verification(raw: str | None) -> None:
+    """Put exactly `raw` in the verification column, replacing whatever was there."""
+    import sqlite3
+
+    from ai_assistant import config
+    from ai_assistant.submission_verifier import VERIFICATION_VERSION
+
+    conn = sqlite3.connect(config.DB_FILE)
+    try:
+        conn.execute("DELETE FROM submission_verifications")
+        conn.execute(
+            """
+            INSERT INTO submission_verifications
+                (vacancy_stable_id, submission_id, verification_version,
+                 verification_status, verification_json, verified_at,
+                 created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _Q55_SID, _Q55_SUB, VERIFICATION_VERSION, "VERIFIED", raw,
+                "2026-09-20T00:00:00", "2026-09-20T00:00:00", "2026-09-20T00:00:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _q55_clear_verifications() -> None:
+    """Leave the fixture with no verification row at all - the true "missing" case.
+
+    Distinct from a NULL column: that is a row which exists and says nothing,
+    and the two must not be reported the same way.
+    """
+    import sqlite3
+
+    from ai_assistant import config
+
+    conn = sqlite3.connect(config.DB_FILE)
+    try:
+        conn.execute(
+            "DELETE FROM submission_verifications WHERE vacancy_stable_id=?",
+            (_Q55_SID,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def _q55_submitted():
+    """A vacancy sitting in SUBMITTED with a submission record and no verification row.
+
+    SUBMITTED is the state that makes the report reach for the verification
+    record at all - the branch that produced the false sentence.
+    """
+    from ai_assistant.application_tracking import (
+        ApplicationStatus,
+        set_application_status,
+        transition_application,
+    )
+    from ai_assistant.schema import Vacancy
+
+    db.init_db()
+    db.save_vacancy(Vacancy(
+        source="hh", source_job_id="55", title="Старший разработчик Python",
+        company="TechCo",
+        description="Python, PostgreSQL, FastAPI.",
+        job_url="https://hh.ru/vacancy/55", location="Remote",
+    ))
+    set_application_status(
+        _Q55_SID, ApplicationStatus.DISCOVERED, company="TechCo",
+        title="Старший разработчик Python", source="hh",
+        vacancy_url="https://hh.ru/vacancy/55",
+    )
+    transition_application(_Q55_SID, ApplicationStatus.ANALYZED)
+    transition_application(_Q55_SID, ApplicationStatus.READY_TO_APPLY)
+    transition_application(_Q55_SID, ApplicationStatus.SUBMITTED)
+    db.save_submission(
+        _Q55_SID,
+        json.dumps({"status": "SUBMITTED", "url_after": "https://hh.ru/vacancy/55"}),
+        status="SUBMITTED",
+        submission_id=_Q55_SUB,
+    )
+    return _Q55_SID
+
+
+@pytest.mark.parametrize("shape,raw", _q55_unreadable_shapes(), ids=lambda v: v if isinstance(v, str) and len(v) < 20 else "")
+def test_an_unreadable_verification_record_is_not_reported_as_missing(_q55_submitted, shape, raw):
+    """The false sentence, from every direction the model can fail.
+
+    "no verification performed" is a statement about the world. The row is
+    there; it is the reader that failed. Saying otherwise sends a human to
+    re-check a submission that was already verified.
+    """
+    from ai_assistant.submission_recovery import inspect_submission_state
+
+    _q55_write_verification(raw)
+    result = inspect_submission_state(_q55_submitted)
+
+    haystack = " | ".join([result.reason, *result.warnings])
+    assert "no verification performed" not in haystack.lower(), (shape, haystack)
+    assert "no verification" not in haystack.lower(), (shape, haystack)
+    # ...and it must say what actually happened instead of staying silent.
+    assert "cannot be read" in result.reason.lower(), (shape, result.reason)
+
+
+@pytest.mark.parametrize("shape,raw", _q55_unreadable_shapes(), ids=lambda v: v if isinstance(v, str) and len(v) < 20 else "")
+def test_an_unreadable_verification_record_does_not_advise_rechecking_the_site(_q55_submitted, shape, raw):
+    """The advice, not just the sentence.
+
+    "Run verification to check submission result on the website" is an action
+    for a submission with no verification. Pointing it at a damaged record
+    invites a second look at a live vacancy to learn what the database already
+    knew.
+    """
+    from ai_assistant.submission_recovery import inspect_submission_state
+
+    _q55_write_verification(raw)
+    result = inspect_submission_state(_q55_submitted)
+
+    action = result.recommended_action.lower()
+    assert "run verification" not in action, (shape, result.recommended_action)
+    assert "on the website" not in action, (shape, result.recommended_action)
+
+
+def test_a_missing_verification_record_is_still_reported_as_missing(_q55_submitted):
+    """The true half. A submission with no verification row must keep saying so.
+
+    Without this the fix could be satisfied by never using the sentence at all,
+    which would hide the genuinely unverified submission instead.
+    """
+    from ai_assistant.submission_recovery import (
+        RecoveryStatus,
+        inspect_submission_state,
+    )
+
+    _q55_clear_verifications()
+
+    result = inspect_submission_state(_q55_submitted)
+
+    assert result.recovery_status == RecoveryStatus.NEEDS_VERIFICATION
+    assert "no verification performed" in result.reason.lower(), result.reason
+    assert "no verification performed" in " ".join(result.warnings).lower()
+
+
+def test_a_readable_verification_record_is_still_reported_as_verified(_q55_submitted):
+    """The control: nothing about the fix may disturb the working path."""
+    from ai_assistant.submission_recovery import (
+        RecoveryStatus,
+        inspect_submission_state,
+    )
+
+    _q55_write_verification(json.dumps(_q55_payload()))
+    result = inspect_submission_state(_q55_submitted)
+
+    assert result.recovery_status == RecoveryStatus.NO_ACTION, result.reason
+    assert result.last_verification is not None
+    assert result.last_verification["verification_status"] == "VERIFIED"
+    assert not result.warnings
+
+
+@pytest.mark.parametrize("shape,raw", _q55_unreadable_shapes(), ids=lambda v: v if isinstance(v, str) and len(v) < 20 else "")
+def test_an_unreadable_verification_record_still_fails_reconcile_closed(_q55_submitted, shape, raw):
+    """The direction that must not move.
+
+    reconcile_submission_state() is the only place a verification record can
+    move the lifecycle to APPLIED, and it is gated on last_verification. A
+    record nobody can read must not be able to open that gate - the old code
+    got this right by accident (None is falsy) and the fix must keep it.
+    """
+    from ai_assistant.application_tracking import (
+        ApplicationStatus,
+        get_application_status,
+    )
+    from ai_assistant.submission_recovery import reconcile_submission_state
+
+    _q55_write_verification(raw)
+    reconcile_submission_state(_q55_submitted)
+
+    track = get_application_status(_q55_submitted)
+    assert track.status != ApplicationStatus.APPLIED, (shape, track.status)
+
+
+@pytest.mark.parametrize("shape,raw", _q55_unreadable_shapes(), ids=lambda v: v if isinstance(v, str) and len(v) < 20 else "")
+def test_the_audit_and_the_recovery_report_agree_that_the_record_is_damaged(_q55_submitted, shape, raw):
+    """The two readers must not contradict each other.
+
+    The auditor reads the column by SQL and raises INVALID_VERIFICATION_JSON for
+    exactly these rows. If the recovery report kept calling the record missing,
+    the project would be telling a human two different stories about one row.
+    """
+    from ai_assistant.application_integrity import run_integrity_audit
+    from ai_assistant.submission_recovery import inspect_submission_state
+
+    _q55_write_verification(raw)
+    report = run_integrity_audit(scope="full")
+    codes = {i.code for i in report.issues if i.vacancy_stable_id == _q55_submitted}
+
+    assert "INVALID_VERIFICATION_JSON" in codes, (shape, codes)
+    result = inspect_submission_state(_q55_submitted)
+    assert "cannot be read" in result.reason.lower(), (shape, result.reason)
+
