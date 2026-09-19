@@ -4702,3 +4702,189 @@ def test_an_inconclusive_probe_is_not_downgraded_to_degraded(monkeypatch, tmp_pa
     assert res["health"] == "UNKNOWN", (
         f"an inconclusive probe was downgraded to {res['health']}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Finding #49 - measured, not a hole: an unreadable answers column on the
+# APPLICATION row closes the gate instead of opening it
+# ---------------------------------------------------------------------------
+# Finding #46 gave _row_to_questionnaire a questions_error / answers_error marker.
+# Its neighbour _row_to_application (db.py:1132) got nothing:
+#
+#     answers = {}
+#     if row[8]:
+#         try:
+#             answers = json.loads(row[8])
+#         except Exception:
+#             answers = {}
+#
+# so "no answers stored" and "answers stored but unreadable" are the same shape.
+# A missing marker is only a defect if a consumer treats the two differently, and
+# both consumers put the answers in the BODY of a loop over the questionnaire's
+# questions - the same asymmetry as #46, where losing the answers closes the gate
+# and losing the questions opens it:
+#
+#     hh_submit_policy.py:309       app.get("answers") or quest.answers or {}
+#     hh_application_runner.py:531  quest_data.get("answers") or app.get("answers") or {}
+#
+# Measured 2026-09-19 with tools/ble001_app_answers_probe.py: unreadable, NULL and
+# an empty dict all give the reader {}, gate 5 refuses, the validator refuses with
+# the SAME reason (missing_answer_for_q1), and a complete column passes. The
+# address therefore closes as "measured, not a hole", and these pins keep it that
+# way - a future consumer that reports the answers as a fact would need the marker
+# this reader does not have.
+
+_Q49_QID = "q49-answers"
+_Q49_QUESTIONS = [
+    {
+        "question_id": "q1",
+        "text": "How many years of Python experience do you have?",
+        "question_type": "text",
+        "options": [],
+        "required": True,
+    }
+]
+
+
+def _q49_setup(monkeypatch, tmp_path) -> None:
+    """A readable questionnaire with one required question and no stored answers."""
+    from ai_assistant import config
+
+    monkeypatch.setattr(config, "DB_FILE", str(tmp_path / "ble49.db"), raising=False)
+    db.init_db()
+    conn = db.get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO hh_questionnaires (
+                questionnaire_id, vacancy_stable_id, conversation_id, title, employer,
+                fingerprint, questions_json, answers_json, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _Q49_QID,
+                f"hh:{_Q49_QID}",
+                "conv-49",
+                "Python Developer",
+                "Acme",
+                "fp",
+                json.dumps(_Q49_QUESTIONS),
+                None,
+                "READY_TO_SUBMIT",
+                "2026-01-01T00:00:00",
+                "2026-01-01T00:00:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _q49_application(app_id: str, answers_json) -> dict:
+    """Insert an application row with this exact answers_json, then read it back.
+
+    save_hh_application() serialises the column itself, so a corrupt value cannot
+    be produced through it - but a row already in the database can hold anything,
+    and that is the row the reader reads. What comes back is the reader's own
+    output, so these pins measure the real path and not a hand-built app dict.
+    """
+    conn = db.get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO hh_applications (
+                application_id, vacancy_stable_id, title, employer, state,
+                draft, questionnaire_id, answers_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                app_id,
+                f"hh:{_Q49_QID}",
+                "Python Developer",
+                "Acme",
+                "READY_TO_SUBMIT",
+                "",
+                _Q49_QID,
+                answers_json,
+                "2026-01-01T00:00:00",
+                "2026-01-01T00:00:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return db.get_hh_application(app_id)
+
+
+def test_an_unreadable_answers_column_on_the_application_fails_closed(monkeypatch, tmp_path):
+    from ai_assistant.hh_questionnaire import HHQuestionnaire, validate_human_answers
+    from ai_assistant.hh_submit_policy import evaluate
+
+    _q49_setup(monkeypatch, tmp_path)
+    app = _q49_application("app-49-bad", "{not json")
+
+    assert app["answers"] == {}, "the reader is expected to fall back to an empty dict"
+    assert "answers_error" not in app, (
+        "this reader has no marker for the unreadable column - if one is added,"
+        " replace this pin with one that asserts the marker rather than deleting it"
+    )
+
+    decision = evaluate(app)
+    assert "questionnaire_complete" in decision.checks_failed, (
+        "an unreadable answers column must not look like a satisfied questionnaire"
+    )
+    assert "questionnaire_complete" not in decision.checks_passed
+
+    quest = HHQuestionnaire(**db.get_hh_questionnaire(_Q49_QID))
+    res = validate_human_answers(quest, app["answers"])
+    assert res.ok is False
+    assert res.status == "BLOCKED"
+    assert "q1" in res.reason
+
+
+def test_a_complete_answers_column_on_the_application_still_passes(monkeypatch, tmp_path):
+    """Positive control: without this, "refuses everything" satisfies the pin above."""
+    from ai_assistant.hh_questionnaire import HHQuestionnaire, validate_human_answers
+    from ai_assistant.hh_submit_policy import evaluate
+
+    _q49_setup(monkeypatch, tmp_path)
+    app = _q49_application("app-49-ok", json.dumps({"q1": "5 years"}))
+
+    assert app["answers"] == {"q1": "5 years"}
+
+    decision = evaluate(app)
+    assert "questionnaire_complete" in decision.checks_passed
+    assert "questionnaire_complete" not in decision.checks_failed
+
+    quest = HHQuestionnaire(**db.get_hh_questionnaire(_Q49_QID))
+    assert validate_human_answers(quest, app["answers"]).ok is True
+
+
+def test_the_questionnaires_own_answers_survive_a_corrupt_application_column(monkeypatch, tmp_path):
+    """The other direction: a corrupt application column must not close a gate either.
+
+    Both consumers fall back to the questionnaire's stored answers when the
+    application's column yields nothing, so the corrupt column is inert - it can
+    neither open a gate nor close one that the questionnaire would open.
+    """
+    from ai_assistant.hh_submit_policy import evaluate
+
+    _q49_setup(monkeypatch, tmp_path)
+    conn = db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE hh_questionnaires SET answers_json = ? WHERE questionnaire_id = ?",
+            (json.dumps({"q1": "5 years"}), _Q49_QID),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    app = _q49_application("app-49-fallback", "{not json")
+
+    assert app["answers"] == {}
+
+    decision = evaluate(app)
+    assert "questionnaire_complete" in decision.checks_passed, (
+        "the questionnaire's own answers are the source of truth on this path"
+    )
