@@ -69,6 +69,35 @@ def _create_valid_package_and_review(
     return pkg, fp, letter_text
 
 
+def _insert_vacancy(
+    sid: str,
+    title: str,
+    description: str,
+    company: str = "Maxima.tech",
+) -> None:
+    """One vacancy row, written straight into the table.
+
+    Gate 6 reads the vacancy with db.get_vacancy_by_id and, when there is no row,
+    falls back to the *application's own* title (finding #52). A test that means
+    to exercise the language comparison therefore has to put a row there - before
+    #52 every test in this file compared the letter against the application.
+    """
+    conn = db.get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO vacancies
+                (stable_id, source, source_job_id, title, company, description,
+                 job_url, state)
+            VALUES (?, 'hh', ?, ?, ?, ?, ?, 'NEW')
+            """,
+            (sid, sid, title, company, description, f"https://hh.ru/vacancy/{sid}"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def test_policy_all_checks_pass(clean_db):
     """When all gates are satisfied, policy approves and returns SubmitApproval."""
     sid = "hh:136704137"
@@ -275,7 +304,12 @@ def test_policy_questionnaire_uncertain_answer_fails(clean_db):
 
 
 def test_policy_language_mismatch_fails(clean_db):
-    """When vacancy is Russian and cover letter is pure English, policy rejects."""
+    """When vacancy is Russian and cover letter is pure English, policy rejects.
+
+    The vacancy row is inserted for real (finding #52): without one gate 6
+    compares the letter against the application's own title, which made this test
+    pass for a reason that had nothing to do with the vacancy.
+    """
     sid = "hh:136704137"
     en_letter = (
         "Hello hiring team! I am excited to apply for the Python developer position at Maxima.tech. "
@@ -283,7 +317,15 @@ def test_policy_language_mismatch_fails(clean_db):
         "and managing relational databases with PostgreSQL and Docker. Looking forward to discussing this role!"
     )
     _create_valid_package_and_review(sid, letter_text=en_letter)
-    # Vacancy title with Russian letters
+    _insert_vacancy(
+        sid,
+        title="Разработчик бэкенда на Python middle",
+        description=(
+            "Ищем разработчика бэкенда на Python. Предстоит проектировать асинхронные "
+            "сервисы, работать с PostgreSQL и Docker, оптимизировать тяжёлые запросы "
+            "в высоконагруженных системах."
+        ),
+    )
     app = {
         "application_id": "app_lang_mismatch",
         "vacancy_stable_id": sid,
@@ -294,6 +336,9 @@ def test_policy_language_mismatch_fails(clean_db):
     decision = evaluate(app)
     assert decision.approve is False
     assert "language_match" in decision.checks_failed
+    assert "language_match_without_description" not in decision.checks_passed, (
+        "the vacancy was read - this is a real mismatch, not an unread vacancy"
+    )
     assert any("language_mismatch" in r for r in decision.reasons)
 
 
@@ -330,11 +375,17 @@ def test_policy_with_an_undetectable_language_does_not_claim_the_check_passed(cl
     the gate used to record "language_match" - a passed check - for a comparison
     that never happened.
 
-    Measured over the 1830 vacancies in state.db: 37 (2.0%) come out "unknown".
+    The vacancy row is inserted for real (finding #52), with a description that
+    is too short for the detector, so this test is about the detector and not
+    about a vacancy that was never read.
+
+    Measured over the 1996 vacancies in state.db: 37 (1.9%) come out "unknown".
     """
+    sid = "hh:136704137"
+    _insert_vacancy(sid, title="Python dev", description="Коротко.")
     app = {
         "application_id": "app_lang_unknown",
-        "vacancy_stable_id": "hh:136704137",
+        "vacancy_stable_id": sid,
         "title": "Python dev",
         "employer": "ACME",
         "draft": "Hi, I want this job.",
@@ -346,11 +397,20 @@ def test_policy_with_an_undetectable_language_does_not_claim_the_check_passed(cl
         "the gate recorded a passed check for a language it never determined"
     )
     assert "language_match_undetermined" in decision.checks_passed
+    assert "language_match_without_description" not in decision.checks_passed, (
+        "the vacancy WAS read - its description is just too short to name a language"
+    )
 
 
 def test_policy_still_records_a_real_language_match_as_passed(clean_db):
     """The counter-check for the two tests above: when both sides are long enough
-    to name a language and they agree, the record must stay "language_match"."""
+    to name a language and they agree, the record must stay "language_match".
+
+    The vacancy row is inserted for real (finding #52). Before the fix this test
+    reached "language_match" through the fallback text - the fixture's database
+    held no vacancy at all, so the gate compared the letter against the
+    application's own title and called that a match with the vacancy.
+    """
     sid = "hh:136704137"
     ru_letter = (
         "Здравствуйте! Меня заинтересовала эта позиция, и я хотел бы откликнуться. "
@@ -359,6 +419,15 @@ def test_policy_still_records_a_real_language_match_as_passed(clean_db):
         "в высоконагруженных системах."
     )
     _create_valid_package_and_review(sid, letter_text=ru_letter)
+    _insert_vacancy(
+        sid,
+        title="Разработчик бэкенда на Python, удалённая работа",
+        description=(
+            "Требуется разработчик бэкенда. Вы будете проектировать асинхронные "
+            "сервисы на Python, работать с PostgreSQL, Docker и FastAPI, а также "
+            "оптимизировать тяжёлые запросы в высоконагруженных системах."
+        ),
+    )
     app = {
         "application_id": "app_lang_ok",
         "vacancy_stable_id": sid,
@@ -371,6 +440,7 @@ def test_policy_still_records_a_real_language_match_as_passed(clean_db):
 
     assert "language_match" in decision.checks_passed
     assert "language_match_undetermined" not in decision.checks_passed
+    assert "language_match_without_description" not in decision.checks_passed
 
 
 def test_policy_hourly_rate_limit_fails(clean_db):

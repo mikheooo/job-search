@@ -5185,3 +5185,244 @@ def test_a_healthy_write_still_returns_a_batch_key(monkeypatch, tmp_path):
 
     key = db.record_digest_attempt(["hh:q51_healthy"], chat_id=_Q51_CHAT)
     assert key, "a first-time attempt on a healthy database must claim the batch"
+
+
+# ---------------------------------------------------------------------------
+# Finding #52 - gate 6 recorded "language_match" for a vacancy it never read
+# ---------------------------------------------------------------------------
+# Gate 6 builds the text it compares like this:
+#
+#     vac_desc = ""
+#     vac_title = title                    # the APPLICATION's own title
+#     vac_row = db.get_vacancy_by_id(vac_stable_id) if vac_stable_id else None
+#     if vac_row:
+#         try:
+#             ... three branches that set vac_desc / vac_title ...
+#         except Exception:
+#             pass                         # silently, leaving no trace at all
+#
+#     vac_text = f"{vac_title} {company} {vac_desc}".strip()
+#     lang_vac = detect_text_language(vac_text)
+#     lang_letter = detect_text_language(letter_text)
+#
+#     if both named and different:  checks_failed += "language_match"
+#     elif one unknown:             checks_passed += "language_match_undetermined"
+#     else:                         checks_passed += "language_match"
+#
+# The triage read this handler and called the direction safe: "vac_desc is empty,
+# so the language comes out unknown and the record is honest
+# (language_match_undetermined), not 'matched'". That premise is the bug. When
+# vac_desc is empty, vac_title is NOT - it falls back to the APPLICATION's own
+# title, and an application title names a language far more often than not.
+# Measured 2026-09-19 over the 1996 rows in state.db: building the fallback text
+# from title + company alone still names a language for 837 of them (41.9%). So
+# for two rows in five the record is not "undetermined" but the false "matched" -
+# and that record is copied into SubmitApproval and out into the SUBMITTED
+# evidence, where it attests a comparison nobody made.
+#
+# Three doors leave vac_desc empty, and the bare `except` is only the first:
+#
+#   1. the row read raises        -> the handler swallows it
+#   2. the row matches no branch  -> falls out of the if/elif with no error
+#   3. there is no row at all     -> an empty vacancy_stable_id skips the lookup
+#                                    entirely, and a stale id finds nothing
+#
+# Door 3 is not hypothetical: 5 of the 10 rows in hh_applications carry an empty
+# vacancy_stable_id. Doors 1 and 2 need a row object that is not the 25-column
+# tuple get_vacancy_by_id returns today, so they are hardening, not repair.
+#
+# The fix splits the verdicts the way #46 split them one gate up: a read that was
+# ATTEMPTED and failed closes the gate, while a vacancy that was never on record
+# only stops claiming the comparison happened.
+
+_Q52_LETTER_RU = (
+    "Здравствуйте! Меня заинтересовала эта позиция, и я хотел бы откликнуться. "
+    "У меня большой опыт разработки на Python, проектирования асинхронных сервисов, "
+    "работы с PostgreSQL, Docker и FastAPI, а также оптимизации тяжёлых запросов "
+    "в высоконагруженных системах."
+)
+_Q52_APP_TITLE = "Разработчик бэкенда на Python, удалённая работа"
+_Q52_COMPANY = "Максима Технологии"
+
+
+def _q52_setup(monkeypatch, tmp_path) -> None:
+    from ai_assistant import config
+
+    monkeypatch.setattr(config, "DB_FILE", str(tmp_path / "ble52.db"), raising=False)
+    db.init_db()
+
+
+def _q52_app(sid: str) -> dict:
+    """An application whose own title is Russian and whose letter is Russian.
+
+    That is what makes the false record reachable: with no vacancy description
+    the gate compares the letter against THIS title, they agree, and the old code
+    wrote "language_match" - a passed check - for the vacancy it never read.
+    """
+    return {
+        "application_id": "app_q52",
+        "vacancy_stable_id": sid,
+        "title": _Q52_APP_TITLE,
+        "employer": _Q52_COMPANY,
+        "draft": _Q52_LETTER_RU,
+    }
+
+
+def _q52_insert_vacancy(description: str, sid: str = "hh:52") -> None:
+    conn = db.get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO vacancies
+                (stable_id, source, source_job_id, title, company, description,
+                 job_url, state)
+            VALUES (?, 'hh', ?, ?, ?, ?, ?, 'NEW')
+            """,
+            (sid, sid, _Q52_APP_TITLE, _Q52_COMPANY, description,
+             f"https://hh.ru/vacancy/{sid}"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _q52_verdict(app: dict):
+    from ai_assistant.hh_submit_policy import evaluate
+
+    return evaluate(app)
+
+
+class _Q52UnindexableMapping:
+    """Has .keys(), so gate 6 takes the mapping branch - and refuses to be indexed.
+
+    This is door 1: the three readers raise, and the exception used to vanish into
+    `except Exception: pass`.
+    """
+
+    def keys(self):
+        return ["description", "title"]
+
+    def __getitem__(self, key):
+        raise TypeError(f"{key!r} cannot be read")
+
+
+def test_a_vacancy_row_that_cannot_be_read_does_not_claim_a_language_match(
+    monkeypatch, tmp_path
+):
+    """Door 1: the row is there, the read raises, and the gate must close.
+
+    Before the fix the handler swallowed this, vac_desc stayed empty, and the gate
+    recorded "language_match" - a PASSED check - because the fallback title is the
+    application's own Russian title and the letter is Russian too.
+    """
+    _q52_setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        db, "get_vacancy_by_id", lambda sid: _Q52UnindexableMapping(), raising=False
+    )
+
+    decision = _q52_verdict(_q52_app("hh:52"))
+
+    assert "language_match" not in decision.checks_passed, (
+        "the gate recorded a language comparison it never made"
+    )
+    assert "language_match" in decision.checks_failed
+    assert any("vacancy_row_unreadable" in r for r in decision.reasons), decision.reasons
+    assert any("TypeError" in r for r in decision.reasons), (
+        f"the swallowed exception has to survive as text; got {decision.reasons}"
+    )
+
+
+def test_a_vacancy_row_of_an_unknown_shape_does_not_claim_a_language_match(
+    monkeypatch, tmp_path
+):
+    """Door 2: nothing raised, no branch matched, and the gate must still close.
+
+    A five-column row - what a narrowed SELECT would return - falls through all
+    three branches without an error, so no handler ever sees it.
+    """
+    _q52_setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        db,
+        "get_vacancy_by_id",
+        lambda sid: ("hh:52", "hh", "52", _Q52_APP_TITLE, _Q52_COMPANY),
+        raising=False,
+    )
+
+    decision = _q52_verdict(_q52_app("hh:52"))
+
+    assert "language_match" not in decision.checks_passed
+    assert "language_match" in decision.checks_failed
+    assert any("unrecognised row shape" in r for r in decision.reasons), decision.reasons
+
+
+def test_a_vacancy_that_was_never_read_does_not_claim_a_language_match(
+    monkeypatch, tmp_path
+):
+    """Door 3, first way in: the row is simply not there.
+
+    Not a read failure, so the gate must NOT close - it must only stop claiming
+    the comparison happened.
+    """
+    _q52_setup(monkeypatch, tmp_path)
+
+    decision = _q52_verdict(_q52_app("hh:52"))
+
+    assert "language_match" not in decision.checks_passed
+    assert "language_match_without_description" in decision.checks_passed
+    assert "language_match" not in decision.checks_failed, (
+        "a vacancy that was never on record is not a read failure"
+    )
+
+
+def test_an_empty_vacancy_id_skips_the_lookup_entirely(monkeypatch, tmp_path):
+    """Door 3, second way in - the one with a live population.
+
+    5 of the 10 rows in hh_applications carry an empty vacancy_stable_id, so the
+    lookup is not even attempted. The stub asserts that, rather than assuming it.
+    """
+    _q52_setup(monkeypatch, tmp_path)
+
+    def _must_not_be_called(sid):
+        raise AssertionError(f"gate 6 looked up {sid!r} for an empty vacancy id")
+
+    monkeypatch.setattr(db, "get_vacancy_by_id", _must_not_be_called, raising=False)
+
+    decision = _q52_verdict(_q52_app(""))
+
+    assert "language_match" not in decision.checks_passed
+    assert "language_match_without_description" in decision.checks_passed
+
+
+def test_a_vacancy_that_was_read_still_records_a_language_match(monkeypatch, tmp_path):
+    """Control: the fix must not turn a real comparison into a marker.
+
+    This one passes on the OLD code too. It is here so the new branch cannot
+    overshoot and mark every vacancy, read or not.
+    """
+    _q52_setup(monkeypatch, tmp_path)
+    _q52_insert_vacancy(_Q52_LETTER_RU)
+
+    decision = _q52_verdict(_q52_app("hh:52"))
+
+    assert "language_match" in decision.checks_passed
+    assert "language_match_without_description" not in decision.checks_passed
+    assert "language_match" not in decision.checks_failed
+
+
+def test_a_vacancy_with_no_description_is_marked_but_does_not_block(
+    monkeypatch, tmp_path
+):
+    """Boundary: the row WAS read - it just carries no description.
+
+    Not a read failure, so it must not close the gate; but the comparison still
+    ran against the application's own title, so it must not claim a match either.
+    """
+    _q52_setup(monkeypatch, tmp_path)
+    _q52_insert_vacancy("")
+
+    decision = _q52_verdict(_q52_app("hh:52"))
+
+    assert "language_match_without_description" in decision.checks_passed
+    assert "language_match" not in decision.checks_passed
+    assert "language_match" not in decision.checks_failed
+

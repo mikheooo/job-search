@@ -336,6 +336,7 @@ def evaluate(
     # -------------------------------------------------------------------------
     vac_desc = ""
     vac_title = title
+    vac_row_unreadable = ""
     vac_row = db.get_vacancy_by_id(vac_stable_id) if vac_stable_id else None
     if vac_row:
         try:
@@ -348,23 +349,57 @@ def evaluate(
             elif isinstance(vac_row, (list, tuple)) and len(vac_row) > 5:
                 vac_title = vac_row[3] or title
                 vac_desc = vac_row[5] or ""
-        except Exception:
-            pass
+            else:
+                vac_row_unreadable = f"unrecognised row shape: {type(vac_row).__name__}"
+        except (KeyError, TypeError, IndexError, AttributeError) as exc:
+            # BLE001 finding #52. A bare `except Exception: pass` stood here and
+            # swallowed the failure without a trace. These four are the only
+            # exceptions the three readers above can raise - KeyError from the
+            # mapping branches, TypeError/IndexError from the sequence one,
+            # AttributeError from a `.keys()` object that will not be indexed.
+            # Anything else propagates now, exactly as a failure of the
+            # get_vacancy_by_id call on the line above already does.
+            vac_row_unreadable = f"{type(exc).__name__}: {exc}"
 
     vac_text = f"{vac_title} {company} {vac_desc}".strip()
 
     lang_vac = detect_text_language(vac_text)
     lang_letter = detect_text_language(letter_text)
 
-    if lang_vac != "unknown" and lang_letter != "unknown" and lang_vac != lang_letter:
+    if vac_row_unreadable:
+        # BLE001 finding #52: the row was there and could not be read, so nothing
+        # below has anything to compare. #46 set the house rule for this shape one
+        # gate up - a read that was attempted and failed closes the gate - and this
+        # branch follows it. Deliberately over-strict: it also closes the gate when
+        # only the title was unreadable and the description came through, because a
+        # row this code cannot interpret is not one to submit on. No live
+        # population - every real row is a 25-column tuple - so this half is
+        # hardening, not a repair.
+        checks_failed.append("language_match")
+        reasons.append(f"vacancy_row_unreadable: {vac_row_unreadable}")
+    elif lang_vac != "unknown" and lang_letter != "unknown" and lang_vac != lang_letter:
         checks_failed.append("language_match")
         reasons.append(f"language_mismatch (vacancy: {lang_vac}, letter: {lang_letter})")
+    elif not vac_desc:
+        # BLE001 finding #52, the half with a live population. With no description
+        # vac_title is the application's own title, not the vacancy's, so `lang_vac`
+        # describes the package we are about to send rather than the vacancy we are
+        # sending it to - and the code still recorded "language_match", a PASSED
+        # check. The triage called this direction safe on the grounds that an empty
+        # description leaves the language "unknown"; measured 2026-09-19 over the
+        # 1996 rows in state.db, the fallback text (title + company) still names a
+        # language for 837 of them (41.9%). Two ways in without an exception: no row
+        # at all, and a row whose description is genuinely empty. An empty
+        # vacancy_stable_id skips the lookup outright - 5 of the 10 rows in
+        # hh_applications are in that state. Neither is a read failure, so neither
+        # closes the gate; both must stop claiming the comparison happened.
+        checks_passed.append("language_match_without_description")
     elif lang_vac == "unknown" or lang_letter == "unknown":
         # BLE001 finding #37: the detector needs >=10 Cyrillic or >=50 Latin
         # characters before it names a language at all. When it cannot, the old
         # code recorded "language_match" - a passed check - so the audit said the
         # two languages had been compared and matched. They were never compared.
-        # Measured over the 1830 vacancies in state.db: 37 (2.0%) come out
+        # Measured over the 1996 vacancies in state.db: 37 (1.9%) come out
         # "unknown".
         checks_passed.append("language_match_undetermined")
     else:
