@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
 
@@ -22,6 +23,12 @@ from ai_assistant import browser_executor as be
 from ai_assistant import db
 from ai_assistant import hh_application_queue as hq
 from ai_assistant import hh_application_runner as hr
+from ai_assistant import hh_human_submission as hcs
+from ai_assistant.application_review_gate import (
+    GateStatus,
+    HumanReviewGate,
+    HumanReviewStore,
+)
 from ai_assistant.hh_questionnaire import submit_questionnaire_response
 
 
@@ -5425,4 +5432,221 @@ def test_a_vacancy_with_no_description_is_marked_but_does_not_block(
     assert "language_match_without_description" in decision.checks_passed
     assert "language_match" not in decision.checks_passed
     assert "language_match" not in decision.checks_failed
+
+
+# ---------------------------------------------------------------------------
+# Finding #53: confirm_human_submission() recorded a confirmation for a
+# comparison it never ran.
+#
+# hh_human_submission.confirm_human_submission() is the explicit human
+# confirmation layer. Its docstring said it "Checks the same 11 gates as
+# preflight plus the approval state", and hh_controlled_submit calls it as
+# step 1 before anything else is allowed to happen. It never called a gate
+# checker. It checked three things: the fingerprint, the approval state, and
+# that the vacancy being confirmed is the one the review approved.
+#
+# The third check was:
+#
+#     gate_vacancy = ""
+#     try:
+#         gate_data = entry.get("gate") or {}
+#         gate_vacancy = gate_data.get("vacancy_stable_id") or ""
+#     except Exception:
+#         gate_vacancy = ""
+#     if gate_vacancy and gate_vacancy != vacancy_stable_id:
+#         return {"ok": False, ...}
+#
+# so any "gate" that is not a non-empty mapping skipped the comparison and the
+# function went on to record {"ok": True, "reason": "human confirmation
+# recorded"} - a passed check for a comparison that never happened. That is
+# finding #52's harm in a different module: nothing bad gets sent because of
+# it, but a green record is minted.
+#
+# The report exonerated this site with two claims, and both are wrong:
+#   * it cited hh_submission.py:259 - which is not this handler. The sibling
+#     copy lives at hh_submission.py:341 and had already been fixed by #32.
+#   * it argued "до неё уже прошёл gate_res" - that check is inside
+#     execute_hh_submission(), a different function in a different module.
+#     confirm_human_submission() has no gate_res in front of it.
+#
+# Reachability, measured and stated honestly rather than assumed:
+#   * HumanReviewStore is the only store. It is in-memory and its save() writes
+#     gate.model_dump(), which is always a dict. Nothing in the repo writes a
+#     non-mapping into entry["gate"] today.
+#   * The click is ALSO masked downstream: controlled_real_submit() refuses
+#     unless hh_submission.preflight_submission() returns READY_TO_SUBMIT, and
+#     that path carries #32's fail-closed branch. So this is not a hole that
+#     clicks.
+#   * What leaks is the record, and the docstring's claim. It is fixed on the
+#     anomaly rule #32 already established for the sibling copy, so the two
+#     copies cannot drift apart - which is exactly what finding #44 was about.
+#
+# The pin that carries the finding is the FALSY one. "" / [] / 0 are coerced to
+# {} by `or {}` without raising, so the except never fires: narrowing it - the
+# fix #52 applied to this same shape - does not close that door. The fix has to
+# be structural, and these pins hold the structure in place.
+# ---------------------------------------------------------------------------
+
+_Q53_FP = "c" * 64
+_Q53_APPROVED = "hh:53"
+_Q53_WRONG = "hh:53-not-the-approved-one"
+
+
+@pytest.fixture
+def _q53_clean():
+    """The confirmations dict is module state, so it outlives a test."""
+    hcs.clear_human_confirmations()
+    yield
+    hcs.clear_human_confirmations()
+
+
+def _q53_approved_store():
+    """A real store holding one really-approved review for _Q53_APPROVED.
+
+    Built through the real state machine rather than by hand: if the store ever
+    stops producing this entry shape, these pins should stop being about
+    finding #53 and start failing.
+    """
+    gate = HumanReviewGate(
+        review_id="review_q53",
+        status=GateStatus.READY_FOR_HUMAN_REVIEW,
+        fingerprint=_Q53_FP,
+        vacancy_stable_id=_Q53_APPROVED,
+    )
+    store = HumanReviewStore()
+    rid = store.save(gate)
+    store.mark_waiting_for_human(rid)
+    approved = store.approve_review(rid, _Q53_FP)
+    assert approved["ok"] is True, approved
+    return store, rid
+
+
+def _q53_confirm(store, rid, vacancy):
+    return hcs.confirm_human_submission(store, rid, _Q53_FP, vacancy)
+
+
+def test_a_gate_record_that_is_not_a_mapping_does_not_confirm(_q53_clean):
+    """Door 1: "gate" holds something that is not a mapping at all.
+
+    Truthy, so `or {}` keeps it and the .get() raises. On the old code the
+    except swallowed that and the mismatched vacancy was confirmed anyway.
+    """
+    store, rid = _q53_approved_store()
+    store.get(rid)["gate"] = "approved"
+
+    result = _q53_confirm(store, rid, _Q53_WRONG)
+
+    assert result["ok"] is False, "a gate record nobody could read confirmed a vacancy"
+    assert "unreadable" in result["reason"]
+
+
+def test_a_falsy_gate_record_does_not_confirm(_q53_clean):
+    """Door 2: the one a narrowed `except` cannot close.
+
+    "" / [] / 0 are falsy, so `entry.get("gate") or {}` turns them into {} and
+    the .get() never raises - the except is not involved at all. Same mismatch
+    as door 1, same answer has to come out of it.
+    """
+    for value in ("", [], 0):
+        store, rid = _q53_approved_store()
+        store.get(rid)["gate"] = value
+
+        result = _q53_confirm(store, rid, _Q53_WRONG)
+
+        assert result["ok"] is False, f"gate={value!r} confirmed the wrong vacancy"
+        assert "unreadable" in result["reason"]
+
+
+def test_an_unreadable_gate_record_records_no_confirmation(_q53_clean):
+    """The actual harm: a confirmation written for a comparison that never ran.
+
+    The return value is only half of it. The confirmation goes into module
+    state and is consumed later by submit_with_human_confirmation(), so the
+    record itself has to be absent - not merely the reason text different.
+    """
+    store, rid = _q53_approved_store()
+    store.get(rid)["gate"] = "approved"
+
+    _q53_confirm(store, rid, _Q53_WRONG)
+
+    assert rid not in hcs._human_confirmations, "a refused confirmation was still recorded"
+
+
+def test_a_matching_vacancy_is_still_confirmed(_q53_clean):
+    """Control: a real match must still confirm. Passes on the old code too."""
+    store, rid = _q53_approved_store()
+
+    result = _q53_confirm(store, rid, _Q53_APPROVED)
+
+    assert result["ok"] is True, result
+    assert hcs._human_confirmations[rid] == (_Q53_FP, _Q53_APPROVED)
+
+
+def test_a_mismatched_vacancy_is_still_refused(_q53_clean):
+    """Control: the half of the check that was never broken must keep working.
+
+    Without this pin "refuse everything unreadable" would look green while the
+    readable mismatch case quietly regressed. Passes on the old code too.
+    """
+    store, rid = _q53_approved_store()
+    store.get(rid)["gate"] = {"vacancy_stable_id": _Q53_APPROVED}
+
+    result = _q53_confirm(store, rid, _Q53_WRONG)
+
+    assert result["ok"] is False
+    assert "vacancy mismatch" in result["reason"]
+
+
+@pytest.mark.parametrize(
+    "gate_value",
+    [None, {}, {"vacancy_stable_id": ""}],
+    ids=["absent", "empty-dict", "blank-vacancy"],
+)
+def test_a_review_with_no_vacancy_on_record_still_confirms(_q53_clean, gate_value):
+    """Boundary: no vacancy on record means the comparison is not made.
+
+    Three shapes reach it, and they are not equally defensible:
+
+    * `None` - finding #32's stated rule ("reviews written before gate data
+      existed"). Not reachable through the current store, which always writes a
+      "gate" key, so this half is a specification pin.
+    * `{}` and `{"vacancy_stable_id": ""}` - the same skip, inherited from #32
+      verbatim, but REACHABLE: HumanReviewGate.vacancy_stable_id defaults to
+      "", so a review built from a package and a form that both lack a vacancy
+      lands exactly here.
+
+    This pin holds the boundary where it is; it does not bless it. The
+    reachable half is finding #54, measured and deliberately left open -
+    closing it changes #32's copy too, and that is a decision rather than a
+    tidy-up. What the pin does guarantee is that "no vacancy on record" and
+    "record that cannot be read" cannot be collapsed into one branch by a later
+    edit, because that collapse is what finding #53 was.
+    """
+    store, rid = _q53_approved_store()
+    store.get(rid)["gate"] = gate_value
+
+    result = _q53_confirm(store, rid, _Q53_WRONG)
+
+    assert result["ok"] is True, result
+
+
+def test_confirm_human_submission_cannot_run_the_gates_it_claimed(_q53_clean):
+    """The false claim, pinned by the fact that contradicted it.
+
+    The docstring said the function "Checks the same 11 gates as preflight".
+    hh_human_submission imports exactly three names from hh_submission -
+    SubmissionReport, SubmissionStatus, clear_submitted_reviews - and no gate
+    runner is among them, so that was not an imprecise sentence: it described
+    something the module had no way to do. The pin asserts the structural fact.
+
+    The prose itself is deliberately NOT pinned. Two drafts of this test did,
+    and both failed against their own fix - the first on the bare phrase "11
+    gates", the second because the corrected docstring quoted the old sentence
+    in order to explain it. A target that breaks twice on its own correction is
+    the wrong target; the claim cannot come back without the code that would
+    make it true, and that is what is checked here.
+    """
+    source = Path(hcs.__file__).read_text(encoding="utf-8")
+    assert "check_all_gates" not in source
+    assert "check_readonly_gates" not in source
 

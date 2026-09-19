@@ -42,7 +42,11 @@ def confirm_human_submission(
 ) -> dict[str, Any]:
     """Explicit human confirmation for a single future submit.
 
-    Checks the same 11 gates as preflight plus the approval state.
+    Checks three things: the fingerprint, the approval state, and that the
+    vacancy being confirmed is the one the review approved. It does NOT run
+    the 11 preflight gates - that is preflight_submission(), on the submit
+    path. (Before BLE001 finding #53 this docstring claimed it did, which the
+    module had no way to do: no gate runner is imported here.)
     Stores a one-time confirmation that submit_application will consume.
     Returns {"ok": bool, "reason": str}.
     Never touches browser, DB, or network.
@@ -57,12 +61,31 @@ def confirm_human_submission(
     if state != "HUMAN_APPROVED":
         return {"ok": False, "reason": f"review state is {state} (must be HUMAN_APPROVED)"}
     # vacancy must match the approved one
-    gate_vacancy = ""
-    try:
-        gate_data = entry.get("gate") or {}
-        gate_vacancy = gate_data.get("vacancy_stable_id") or ""
-    except Exception:
+    #
+    # BLE001 finding #53: this used to be `entry.get("gate") or {}` inside a
+    # try/except that fell back to "" - and "" skips the comparison below, so a
+    # review entry whose "gate" was not a mapping confirmed the wrong vacancy
+    # and recorded "human confirmation recorded" for a comparison that never
+    # ran. The `or {}` is what makes this different from finding #52: a FALSY
+    # non-mapping ("", [], 0) is coerced to {} without raising, so the except
+    # never fires and narrowing it closes nothing. The fix has to be
+    # structural. Same rule as finding #32 in hh_submission.py, deliberately
+    # identical so the two copies cannot drift apart: absent (None) is
+    # legitimate - reviews written before gate data existed - and stays a skip;
+    # anything else is an anomaly and fails closed.
+    gate_data = entry.get("gate")
+    if gate_data is None:
         gate_vacancy = ""
+    elif isinstance(gate_data, dict):
+        gate_vacancy = gate_data.get("vacancy_stable_id") or ""
+    else:
+        return {
+            "ok": False,
+            "reason": (
+                f"review gate record is unreadable ({type(gate_data).__name__}), "
+                "so the approved vacancy cannot be confirmed"
+            ),
+        }
     if gate_vacancy and gate_vacancy != vacancy_stable_id:
         return {"ok": False, "reason": f"vacancy mismatch vs approved review: {gate_vacancy} != {vacancy_stable_id}"}
     # One confirmation per review; re-confirmation overwrites (human re-affirms).
