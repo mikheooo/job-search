@@ -828,14 +828,14 @@ class HHSubmissionGates:
         # raising, check_all_gates returned passed=True, "All 11 gates passed
         # successfully".
         #
-        # The same module already treats this exact call as fatal 400 lines
-        # below: the pre-click check at `if db.is_submit_paused():` has no
-        # guard at all, so there a read failure aborts the submission. Same
-        # call, opposite policy, one screen apart. A latch whose failure mode
-        # is "submit anyway" is not a latch - fail closed, and say why.
+        # The same module already treated this call as fatal 400 lines below:
+        # the pre-click check, then spelled `if db.is_submit_paused():`, had no
+        # guard at all, so a read failure aborted the submission. Same call,
+        # opposite policy, one screen apart. A latch whose failure mode is
+        # "submit anyway" is not a latch - fail closed, and say why.
         # BLE001 finding #21: gate 1 covered only two of the three stops. The
-        # stop file is listed first in hh_submit_policy.evaluate()'s stop
-        # sources; here it did not exist at all.
+        # stop file is listed first in hh_submit_policy.evaluate()'s stop sources;
+        # here it did not exist at all. #21 also unified the pre-click check.
         #
         # What is deliberately NOT changed: dry_run still bypasses
         # SUBMIT_ALLOWED. That is a documented, tested contract - Step 2.4

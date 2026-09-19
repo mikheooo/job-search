@@ -1326,9 +1326,9 @@ def test_submit_application_proceeds_past_the_row_check():
 # is_submit_paused() raising, check_all_gates returned passed=True, "All 11
 # gates passed successfully".
 #
-# The same module treats this exact call as fatal 400 lines below: the
-# pre-click check `if db.is_submit_paused():` has no guard at all, so there a
-# read failure aborts the submission. Same call, opposite policy.
+# The same module treated this call as fatal 400 lines below: the pre-click
+# check, then spelled `if db.is_submit_paused():`, had no guard at all - same
+# call, opposite policy. Finding #21 later unified it behind one helper.
 
 def _gate18_inputs(vid: str = "999000555"):
     """A vacancy that clears every gate except gate 1."""

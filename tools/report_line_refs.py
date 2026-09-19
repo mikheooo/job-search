@@ -42,6 +42,14 @@ from "correct in the other one" -- both are in range for numbers below the grep
 length. This mode is how that question gets answered by reading, once, instead of
 by hoping.
 
+The reference count is by literal spelling, not by resolved file: the document
+writes `cli.py:794` in prose and `ai_assistant/cli.py:794` in a quoted comment
+header, and those are two entries for one address. Measured 2026-09-19: 148
+tokens against 144 distinct addresses, 4 of the difference. Left as-is on
+purpose -- changing the counter's semantics would silently invalidate every
+count already recorded in the report, and the count that matters (the ratchet
+on flagged references) does not depend on it.
+
 --symbols is ADVISORY and never changes the exit code. It answers the question
 range checking cannot: is the symbol the sentence names actually at the line it
 cites? An in-range but rotted anchor is invisible to a range check -- measured
@@ -102,6 +110,13 @@ REF_RANGE = re.compile(r"`?([A-Za-z0-9_./\\-]+\.py):(\d+)(?:-(\d+))?`?")
 CODE = re.compile(r"`([^`]+)`")
 FILETOK = re.compile(r"[A-Za-z0-9_./\\-]*\.(?:py|md|js|json|toml|sh|yaml|yml)")
 IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+# Measured 2026-09-19: the window is also a false-NEGATIVE class, the mirror of
+# the list below. An address that rotted INSIDE the window passes silently,
+# because the question asked is "is any named symbol near here", not "is THIS
+# one". `hh_submit_policy.py:337` passed for as long as `vac_row` -- a name from
+# the same report line, `vac_row[3]` -- sat at 339, while the code the sentence
+# quoted had moved to 349. Silence from this mode is not evidence that an
+# address is right.
 SYMBOL_WINDOW = 4
 
 # Measured 2026-09-17 on docs/ble001_triage.md: 31 flagged, 26 real. These are
