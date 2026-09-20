@@ -6,7 +6,9 @@ click, no navigation.
 
 Verdicts:
     SUBMITTED           - proven success via read-only DOM/URL
-    SUBMISSION_UNKNOWN  - clicked but success cannot be proven
+    SUBMISSION_UNKNOWN  - the click was dispatched but success cannot be proven;
+                          also used when the click response was lost, which
+                          leaves the click's fate unknown (finding #61)
     FAILED              - clicked but explicit failure observed
     FAIL_CLOSED         - safety invariant violated (URL/DOM/fingerprint change)
     BLOCKED             - gate failure, zero mutations
@@ -135,25 +137,39 @@ def controlled_real_submit(
         return report
 
     # --- Step 3: The single click ---
-    from .hh_submission import _SUBMIT_CLICK_JS
+    from .hh_submission import _SUBMIT_CLICK_JS, _submitted_reviews
+    # BLE001 finding #61: arm the one-shot invariant BEFORE the click, the way
+    # hh_submission.submit_application() does at :418. _SUBMIT_CLICK_JS runs
+    # el.click() and only then returns its JSON, so a lost CDP response arrives
+    # as an exception AFTER the button was pressed. Arming the invariant
+    # afterwards (as this used to) left that path with the review unspent, and a
+    # second call on the same approved review reached a second click.
+    _submitted_reviews.add(review_id)
     try:
         raw = evaluate_fn(_SUBMIT_CLICK_JS)
         res = json.loads(raw)
     except Exception as e:
-        report.click_count = 0
-        report.submit_count = 0
-        report.failed_submit = 0
-        report.verdict = "FAIL_CLOSED"
-        report.stop_reason = f"submit evaluate error: {e}"
+        # The click was dispatched and its fate is unknown - the same event the
+        # sibling path pins as AMBIGUOUS with the click counted
+        # (tests/test_phase2_1_submission_crash_safety.py::test_ambiguous_timeout_on_click).
+        # Do not record click_count = 0: that asserts "no click happened", which
+        # this handler cannot know. FAIL_CLOSED is also wrong here - in this
+        # module it means a violated URL/DOM/fingerprint invariant, not a lost
+        # transport. SUBMISSION_UNKNOWN is the verdict for an unproven click,
+        # and auto_apply_modes never retries it.
+        report.click_count = 1
+        report.submit_count = 1
+        report.verdict = "SUBMISSION_UNKNOWN"
+        report.stop_reason = (
+            f"submit evaluate error: {e} - the click was dispatched but its "
+            "outcome is unknown (the JS clicks before it returns, so a lost "
+            "response is indistinguishable from a click that never ran); "
+            "treated as SUBMISSION_UNKNOWN, never retried")
         report.errors.append(report.stop_reason)
         return report
 
     report.click_count = 1
     report.submit_count = 1
-
-    # Mark this review as submitted (one-shot invariant).
-    from .hh_submission import _submitted_reviews
-    _submitted_reviews.add(review_id)
 
     if not res.get("ok"):
         report.failed_submit = 1

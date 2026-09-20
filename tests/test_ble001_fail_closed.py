@@ -7474,3 +7474,231 @@ def test_the_writer_is_a_setter_not_a_merger_so_the_argument_is_the_defect():
 
     db.update_hh_questionnaire_answers(_Q60_QID, {}, new_status=HHQuestionStatus.SUBMITTED.value)
     assert _q60_raw_column() == "{}"
+
+
+# ===========================================================================
+# №61. Потерянный ответ на клик записан как «клика не было», и одноразовый
+#      предохранитель после него не взведён
+# ===========================================================================
+_Q61_VAC = "hh:136591579"
+
+
+def _q61_dom(*, break_click_response: str | None = None, markers=()):
+    """Поддельный браузер: клик считает по-настоящему, транспорт можно сломать.
+
+    `break_click_response`:
+        None     - транспорт здоров;
+        "before" - evaluate падает, НЕ выполнив JS (клика не было);
+        "after"  - evaluate падает ПОСЛЕ того, как JS выполнил el.click().
+
+    Разделение нужно потому, что `_SUBMIT_CLICK_JS` (hh_submission.py:78-85)
+    нажимает кнопку строкой :83 и только потом возвращает JSON строкой :84:
+    потеря ответа CDP приходит как исключение уже после нажатия, и отличить её
+    от падения до JS вызывающий код не может.
+    """
+
+    class _Dom:
+        URL = "https://hh.ru/applicant/vacancy_response?vacancyId=136591579"
+
+        def __init__(self) -> None:
+            self.clicks = 0
+            self.click_js_runs = 0
+            self.markers = list(markers)
+
+        def evaluate(self, expression: str) -> str:
+            if expression == "JSON.stringify({url: location.href})":
+                return json.dumps({"url": self.URL})
+            if "markers" in expression and "body" in expression:
+                return json.dumps({"found": self.markers, "url": self.URL})
+            if '"vacancy-response-submit-popup"' in expression and "el.click()" not in expression:
+                return json.dumps({
+                    "found": True, "tag": "BUTTON", "type": "submit",
+                    "text": "Откликнуться",
+                    "dataQa": "vacancy-response-submit-popup",
+                    "disabled": False, "visible": True,
+                    "cls": "magritte-button_mode-primary"})
+            if "el.click()" in expression:
+                self.click_js_runs += 1
+                if break_click_response == "before":
+                    raise _Boom("CDP evaluate failed before the JS ran")
+                self.clicks += 1
+                if break_click_response == "after":
+                    raise _Boom("CDP evaluate response lost after the JS clicked")
+                return json.dumps({"ok": True})
+            raise _Boom(f"unknown expression: {expression[:80]}")
+
+    return _Dom()
+
+
+def _q61_approved_setup():
+    """Отзыв, доведённый до HUMAN_APPROVED, - ровно то, что нужно для клика."""
+    from ai_assistant.application_prep import ApplicationPackage, ResumeAdaptation
+    from ai_assistant.application_review_gate import build_review_gate
+    from ai_assistant.hh_extractor import (
+        ApplicationAnswer,
+        ApplicationForm,
+        ApplicationQuestion,
+        ApplicationType,
+        QuestionSource,
+        QuestionType,
+    )
+    from ai_assistant.prefill_orchestrate import GroupCheck, OrchestrationReport
+    from ai_assistant.prefill_plan import PrefillPlan
+
+    _set_submit_allowed(True)
+    hcs.clear_all_submission_state()
+
+    form = ApplicationForm(
+        source="hh", vacancy_stable_id=_Q61_VAC,
+        application_type=ApplicationType.screening_questions,
+        questions=[
+            ApplicationQuestion(id="hh__ctrl_task_384589146", label="Опыт?",
+                                normalized_type=QuestionType.RADIO, required=False,
+                                options=["Менее 3 лет", "5-7 лет"],
+                                source=QuestionSource.SCREENING),
+        ])
+    pkg = ApplicationPackage(
+        vacancy_id=_Q61_VAC, vacancy_stable_id=_Q61_VAC,
+        resume_adaptation_needed=False, resume_summary="s",
+        tailored_skills=["python"], relevant_experience=["e"],
+        cover_letter="Hello " + " ".join(["word"] * 130), application_strategy="st",
+        warnings=[], generator_version="v1",
+        adaptation=ResumeAdaptation(target_title="t", professional_summary="p",
+                                    prioritized_skills=["python"],
+                                    relevant_experience_points=["e"]))
+    pkg.validation_status = "VALID"
+    pkg.answers = [
+        ApplicationAnswer(question_id="hh__ctrl_task_384589146",
+                          answer="Менее 3 лет", answer_type=QuestionType.RADIO,
+                          confidence=1.0, requires_review=False, reason="c"),
+    ]
+    plan = PrefillPlan(vacancy_stable_id=_Q61_VAC, status="VALID")
+    orch = OrchestrationReport(
+        vacancy_stable_id=_Q61_VAC,
+        verdict="VERIFIED", planned_operations=1, executed_operations=1,
+        verified_operations=1, failed_operations=0, skipped_operations=0,
+        group_checks=[
+            GroupCheck(group_name="task_384589146", input_type="radio",
+                       expected_checked=["Менее 3 лет"],
+                       actual_checked=["Менее 3 лет"], ok=True),
+        ])
+
+    gate = build_review_gate(pkg, plan, orch, {"controls": []}, form)
+    assert gate.status == GateStatus.READY_FOR_HUMAN_REVIEW, gate.block_reasons
+    store = HumanReviewStore()
+    rid = store.save(gate)
+    store.mark_waiting_for_human(rid)
+    assert store.approve_review(rid, gate.fingerprint)["ok"] is True
+    assert hcs.confirm_human_submission(store, rid, gate.fingerprint, _Q61_VAC)["ok"] is True
+    return gate, plan, orch, pkg, store, rid
+
+
+def _q61_submit(store, rid, gate, pkg, plan, orch, dom):
+    from ai_assistant.hh_controlled_submit import controlled_real_submit
+
+    return controlled_real_submit(
+        store, rid, gate.fingerprint, pkg, plan, orch, dom.evaluate)
+
+
+def test_a_lost_click_response_is_not_recorded_as_a_click_that_never_happened():
+    """Потерянный ответ CDP - это не «клика не было», а «судьба клика неизвестна».
+
+    Обработчик не может отличить падение до JS от потери ответа после нажатия,
+    поэтому единственная честная запись для обоих случаев - неизвестность.
+    """
+    gate, plan, orch, pkg, store, rid = _q61_approved_setup()
+    dom = _q61_dom(break_click_response="after")
+    rep = _q61_submit(store, rid, gate, pkg, plan, orch, dom)
+
+    assert dom.clicks == 1, "стенд не нажал кнопку - проба ничего не мерит"
+    assert rep.click_count == 1, (
+        "потерянный ответ записан как отсутствие клика, хотя кнопка нажата")
+    assert rep.submit_count == 1
+    assert rep.verdict == "SUBMISSION_UNKNOWN", rep.stop_reason
+    assert rep.verdict != "FAIL_CLOSED", (
+        "FAIL_CLOSED в этом модуле значит 'нарушен предохранитель URL/DOM/"
+        "fingerprint', а здесь нарушен только транспорт")
+
+    # Вторая половина: та же запись, когда транспорт упал ДО клика. Обработчик
+    # их не различает, значит и запись не имеет права утверждать «клика не было».
+    gate2, plan2, orch2, pkg2, store2, rid2 = _q61_approved_setup()
+    dom_before = _q61_dom(break_click_response="before")
+    rep_before = _q61_submit(store2, rid2, gate2, pkg2, plan2, orch2, dom_before)
+    assert dom_before.clicks == 0
+    assert rep_before.verdict == "SUBMISSION_UNKNOWN"
+    assert (rep_before.click_count, rep_before.submit_count) == (
+        rep.click_count, rep.submit_count), (
+        "два неразличимых случая записаны по-разному")
+
+
+def test_a_lost_click_response_arms_the_one_shot_invariant():
+    """Одноразовый предохранитель взводится ДО клика, как в копии-близнеце.
+
+    `hh_submission.submit_application()` взводит его на :418, то есть до клика
+    на :429. Здесь он взводился на :156 - после клика, - поэтому путь исключения
+    оставлял отзыв многоразовым.
+    """
+    from ai_assistant.hh_submission import _submitted_reviews
+
+    gate, plan, orch, pkg, store, rid = _q61_approved_setup()
+    dom = _q61_dom(break_click_response="after")
+    _q61_submit(store, rid, gate, pkg, plan, orch, dom)
+
+    assert dom.clicks == 1
+    assert rid in _submitted_reviews, (
+        "клик мог произойти, а отзыв остался неиспользованным")
+
+
+def test_a_lost_click_response_does_not_allow_a_second_click_on_the_same_review():
+    """Материальное: без взведённого предохранителя второй вызов кликает снова."""
+    gate, plan, orch, pkg, store, rid = _q61_approved_setup()
+    first = _q61_dom(break_click_response="after")
+    _q61_submit(store, rid, gate, pkg, plan, orch, first)
+    assert first.clicks == 1
+
+    second = _q61_dom(markers=["Вы откликнулись"])
+    rep2 = _q61_submit(store, rid, gate, pkg, plan, orch, second)
+
+    assert second.clicks == 0, (
+        "второй клик по тому же одобренному отзыву после потерянного ответа")
+    assert rep2.verdict == "BLOCKED", rep2.stop_reason
+    assert "already submitted" in rep2.stop_reason
+
+
+def test_a_confirmed_click_still_reports_submitted_and_still_blocks_a_second_attempt():
+    """Контроль: здоровый путь не изменился."""
+    from ai_assistant.hh_submission import _submitted_reviews
+
+    gate, plan, orch, pkg, store, rid = _q61_approved_setup()
+    dom = _q61_dom(markers=["Вы откликнулись"])
+    rep = _q61_submit(store, rid, gate, pkg, plan, orch, dom)
+
+    assert rep.verdict == "SUBMITTED", rep.stop_reason
+    assert (rep.click_count, rep.submit_count, rep.successful_submit) == (1, 1, 1)
+    assert dom.clicks == 1
+    assert rid in _submitted_reviews
+
+    again = _q61_dom(markers=["Вы откликнулись"])
+    rep2 = _q61_submit(store, rid, gate, pkg, plan, orch, again)
+    assert rep2.verdict == "BLOCKED", rep2.stop_reason
+    assert again.clicks == 0
+
+
+def test_a_gate_refusal_still_records_zero_clicks():
+    """Контроль: отказ на воротах по-прежнему не кликает и не считает клик.
+
+    Правка №61 поднимает счётчик кликов только на пути исключения при клике;
+    на отказах, где до клика дело не дошло, ноль обязан остаться нулём.
+    """
+    from ai_assistant.hh_submission import _submitted_reviews
+
+    gate, plan, orch, pkg, store, rid = _q61_approved_setup()
+    pkg.validation_status = "NEEDS_REVIEW"
+    dom = _q61_dom(markers=["Вы откликнулись"])
+    rep = _q61_submit(store, rid, gate, pkg, plan, orch, dom)
+
+    assert rep.verdict == "BLOCKED", rep.stop_reason
+    assert (rep.click_count, rep.submit_count) == (0, 0)
+    assert dom.click_js_runs == 0
+    assert dom.clicks == 0
+    assert rid not in _submitted_reviews
