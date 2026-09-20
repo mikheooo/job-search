@@ -7167,3 +7167,310 @@ def test_the_sync_fallback_that_writes_the_refused_status_is_reported(
     assert _q59_status(sid) == "READY_TO_APPLY"
     assert _q59_history_tail(sid) == "DISCOVERED"
     assert "UNRECORDED_STATUS_CHANGE" in _q59_audit_codes(sid)
+
+# ===========================================================================
+# №60. Ответы анкеты, стёртые писателем раннера после подтверждённой отправки
+# ===========================================================================
+_Q60_QID = "q60"
+_Q60_APP_ID = "app_hh_60"
+_Q60_SID = "hh:60"
+_Q60_QUESTIONS = [
+    {
+        "question_id": "q_exp",
+        "text": "Сколько лет опыта?",
+        "question_type": "number",
+        "required": True,
+    },
+    {
+        "question_id": "q_city",
+        "text": "Готовы к релокации?",
+        "question_type": "text",
+        "required": True,
+    },
+]
+_Q60_ANSWERS = {"q_exp": "7", "q_city": "Да"}
+
+
+def _q60_seed_questionnaire(answers: dict | None, status: str) -> None:
+    """Строка анкеты.
+
+    Строка сначала удаляется: `save_hh_questionnaire` пишет `answers_json` через
+    `COALESCE(excluded.answers_json, ...)`, а `_serialise_answers_json` на пустом
+    словаре отдаёт None - то есть `{}` этим писателем не записывается вовсе.
+    """
+    db.init_db()
+    conn = db.get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM hh_questionnaires WHERE questionnaire_id=?", (_Q60_QID,))
+    conn.commit()
+    conn.close()
+    db.save_hh_questionnaire(
+        {
+            "questionnaire_id": _Q60_QID,
+            "vacancy_stable_id": None,
+            "conversation_id": None,
+            "title": None,
+            "employer": None,
+            "fingerprint": "fp60",
+            "questions": _Q60_QUESTIONS,
+            "answers": answers,
+            "status": status,
+            "created_at": "2026-09-20T00:00:00",
+            "updated_at": "2026-09-20T00:00:00",
+        }
+    )
+
+
+def _q60_seed_application() -> None:
+    db.init_db()
+    db.save_hh_application(
+        {
+            "application_id": _Q60_APP_ID,
+            "vacancy_stable_id": _Q60_SID,
+            "title": "Test Vacancy 60",
+            "employer": "TestCo",
+            "state": "READY_TO_SUBMIT",
+            "questionnaire_id": _Q60_QID,
+            "created_at": "2026-09-20T00:00:00",
+            "updated_at": "2026-09-20T00:00:00",
+        }
+    )
+
+
+def _q60_raw_column() -> str | None:
+    conn = db.get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT answers_json FROM hh_questionnaires WHERE questionnaire_id=?", (_Q60_QID,)
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def _q60_status() -> str | None:
+    conn = db.get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT status FROM hh_questionnaires WHERE questionnaire_id=?", (_Q60_QID,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def _q60_reader_view() -> tuple[dict, str | None]:
+    """Ответы и `answers_error` так, как их видит читатель."""
+    from ai_assistant.hh_questionnaire import HHQuestionnaire
+
+    data = db.get_hh_questionnaire(_Q60_QID)
+    quest = HHQuestionnaire(**data)
+    return dict(quest.answers), quest.answers_error
+
+
+def _q60_runner_to_confirmed_submit(monkeypatch) -> None:
+    """Довести `run_application` до ветки «отправка подтверждена».
+
+    Настоящими остаются: чтение ответов из базы, `submit_questionnaire_response`
+    (он и кладёт ответы со статусом SUBMITTED) и спорная строка раннера. Заглушены
+    только страница и внешние эффекты - их в этой пробе не измеряют:
+
+      * `hr.audit_questionnaire` - предполётный аудит анкеты; вопрос №60 не о нём,
+        а пройти его с настоящим профилем нельзя (аудит сверяет ответы с профилем);
+      * `hr.verify_and_navigate_hh_vacancy` - навигация по странице;
+      * `hh_submission.submission_halt_reason` - стоп-кран читает файл на диске;
+      * `hr.verify_hh_submitted_application` - пост-верификация; её PASS и есть
+        вход в ту ветку, где стоит строка №60;
+      * `telegram_notifier.send_post_submit_notification` - сеть;
+      * `time.sleep` - иначе тест ждёт 3.5 с на ровном месте.
+    """
+    import time
+
+    from ai_assistant import hh_application_runner as runner_mod
+    from ai_assistant import hh_submission, telegram_notifier
+    from ai_assistant.hh_questionnaire_audit import (
+        OverallAuditStatus,
+        QuestionnaireAuditReport,
+    )
+
+    monkeypatch.setattr(
+        runner_mod,
+        "audit_questionnaire",
+        lambda qid, application_id=None, profile=None: QuestionnaireAuditReport(
+            application_id=application_id,
+            questionnaire_id=qid,
+            overall=OverallAuditStatus.SAFE_TO_SUBMIT,
+        ),
+    )
+    monkeypatch.setattr(
+        runner_mod,
+        "verify_and_navigate_hh_vacancy",
+        lambda **kwargs: SimpleNamespace(ok=True, status="OK", reason="stubbed"),
+    )
+    monkeypatch.setattr(hh_submission, "submission_halt_reason", lambda *a, **k: None)
+    monkeypatch.setattr(
+        runner_mod,
+        "verify_hh_submitted_application",
+        lambda *a, **k: SimpleNamespace(
+            verification_verdict="PASS",
+            evidence_text="stubbed evidence",
+            hh_status="Отклик отправлен",
+            vacancy_url=f"https://hh.ru/vacancy/{_Q60_SID.split(':')[-1]}",
+            timestamp="2026-09-20T00:00:00",
+            reason="stubbed",
+        ),
+    )
+    monkeypatch.setattr(telegram_notifier, "send_post_submit_notification", lambda **k: None)
+    monkeypatch.setattr(time, "sleep", lambda *a, **k: None)
+
+
+def _q60_click_eval(script: str) -> str:
+    return json.dumps({"ok": True, "clicked_button": "Откликнуться"})
+
+
+def test_a_confirmed_submission_keeps_the_answers_the_questionnaire_was_submitted_with(
+    monkeypatch,
+):
+    """Измерено 2026-09-20.
+
+    `hh_application_runner.py:702` в ветке «отправка подтверждена» делает
+    `update_hh_questionnaire_answers(qid, {}, new_status=SUBMITTED)`. Тот писатель
+    (`db.py:1022`) не сливает, а перезаписывает колонку тем, что ему дали, - то
+    есть кладёт `"{}"` поверх настоящих ответов.
+
+    Ответы там уже есть: их положил `submit_questionnaire_response()`
+    (`hh_questionnaire.py:847`) в том же прогоне, тем же писателем, но с настоящим
+    `human_answers`. Значит строка №60 - второй писатель, единственный эффект
+    которого - стереть запись первого.
+    """
+    _q60_seed_questionnaire(_Q60_ANSWERS, "READY_TO_SUBMIT")
+    _q60_seed_application()
+    _q60_runner_to_confirmed_submit(monkeypatch)
+
+    res = hr.run_application(_Q60_APP_ID, confirm_submit=True, evaluate_fn=_q60_click_eval)
+
+    assert res.real_hh_submit == 1, res.reason
+    assert _q60_status() == "SUBMITTED"
+    answers, _err = _q60_reader_view()
+    assert answers == _Q60_ANSWERS, (
+        "подтверждённая отправка стёрла ответы, с которыми анкета была отправлена: "
+        f"колонка = {_q60_raw_column()!r}"
+    )
+
+
+def test_the_erased_row_stops_supporting_the_claim_that_it_was_answered(monkeypatch):
+    """То же измерение, но глазами читателей записи.
+
+    Строка со стёртыми ответами противоречит сама себе: статус говорит
+    SUBMITTED, содержимое - «ни на один вопрос не отвечено». Проверок, которые
+    это заметят, две, и обе стоят на пути отправки: `validate_human_answers` и
+    гейт 5 политики (`hh_submit_policy.py:302`).
+    """
+    from ai_assistant.hh_questionnaire import HHQuestionnaire, validate_human_answers
+    from ai_assistant.hh_submit_policy import evaluate as evaluate_policy
+
+    _q60_seed_questionnaire(_Q60_ANSWERS, "READY_TO_SUBMIT")
+    _q60_seed_application()
+    _q60_runner_to_confirmed_submit(monkeypatch)
+
+    hr.run_application(_Q60_APP_ID, confirm_submit=True, evaluate_fn=_q60_click_eval)
+
+    quest = HHQuestionnaire(**db.get_hh_questionnaire(_Q60_QID))
+    val = validate_human_answers(quest, quest.answers)
+    assert val.ok is True, (
+        f"запись об отправленной анкете больше не подтверждает, что в ней есть "
+        f"ответы: {val.status} {val.reason} missing={val.missing_required}"
+    )
+
+    decision = evaluate_policy(
+        {
+            "application_id": _Q60_APP_ID,
+            "vacancy_stable_id": _Q60_SID,
+            "employer": "TestCo",
+            "title": "Test Vacancy 60",
+            "questionnaire_id": _Q60_QID,
+            "state": "READY_TO_SUBMIT",
+        }
+    )
+    assert "questionnaire_complete" in decision.checks_passed, (
+        f"гейт 5 больше не засчитывает анкету: {decision.checks_failed} {decision.reasons[:3]}"
+    )
+
+
+def test_the_runner_does_not_pass_an_empty_answers_literal_to_the_writer():
+    """Структурный пин на саму строку, а не на её следствие.
+
+    Поведенческий пин выше сработает и если кто-то вернёт пустой литерал иначе
+    (например, через промежуточную переменную). Этот пин держит форму: на месте
+    №60 писателю передают те же ответы, которые ушли в `submit_questionnaire_response`.
+    """
+    import ast
+
+    src = Path(hr.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    sites: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute) or func.attr != "update_hh_questionnaire_answers":
+            continue
+        # args[0] - идентификатор анкеты, args[1] - ответы. Первая версия этого
+        # пина смотрела на args[0] и была красной по посторонней причине
+        # (`qid != human_answers`): ни до правки, ни после она дефект не измеряла.
+        if len(node.args) < 2:
+            continue
+        sites.append((node.lineno, ast.unparse(node.args[1])))
+    assert sites, "в раннере не нашлось ни одного вызова update_hh_questionnaire_answers"
+
+    empty_literals = [(line, arg) for line, arg in sites if arg in ("{}", "dict()")]
+    assert not empty_literals, (
+        "раннер снова передаёт писателю пустой словарь ответов: "
+        f"{empty_literals}"
+    )
+    assert any(arg == "human_answers" for _line, arg in sites), (
+        "ответы, с которыми анкета была отправлена, до писателя не доходят: "
+        f"{sites}"
+    )
+
+
+def test_a_questionnaire_that_was_never_answered_still_reads_as_unanswered():
+    """Контроль: стёртое и «никогда не было» неразличимы - и фикс это не меняет.
+
+    Предохранитель №46 (`answers_error`) видит только НЕЧИТАЕМУЮ колонку. `"{}"` -
+    валидный JSON, поэтому стёртая строка проходит мимо него с `answers_error=None`,
+    как и строка, в которую никогда ничего не писали. Правка №60 убирает стирание,
+    а не эту слепоту: она остаётся честной границей читателя.
+    """
+    _q60_seed_questionnaire(_Q60_ANSWERS, "READY_TO_SUBMIT")
+    from ai_assistant.hh_questionnaire import HHQuestionStatus
+
+    db.update_hh_questionnaire_answers(_Q60_QID, {}, new_status=HHQuestionStatus.SUBMITTED.value)
+    erased_answers, erased_error = _q60_reader_view()
+    assert erased_answers == {}
+    assert erased_error is None, "стёртая колонка перестала быть валидным JSON?"
+
+    _q60_seed_questionnaire(None, "NEEDS_HUMAN_REVIEW")
+    never_answers, never_error = _q60_reader_view()
+    assert never_answers == {}
+    assert never_error is None
+    assert (erased_answers, erased_error) == (never_answers, never_error)
+
+
+def test_the_writer_is_a_setter_not_a_merger_so_the_argument_is_the_defect():
+    """Контроль: дефект - аргумент на месте вызова, а не сам писатель.
+
+    `update_hh_questionnaire_answers()` - обычный сеттер, и таким его зовут все
+    остальные вызывающие: `hh_questionnaire.py:847`, `hh_application_orchestrator.py:779`,
+    `cli.py:3399` передают настоящие ответы. Пустой словарь приходит только из
+    раннера, поэтому чинить надо там, а не в писателе.
+    """
+    from ai_assistant.hh_questionnaire import HHQuestionStatus
+
+    _q60_seed_questionnaire(_Q60_ANSWERS, "READY_TO_SUBMIT")
+    db.update_hh_questionnaire_answers(
+        _Q60_QID, {"q_exp": "9", "q_city": "Нет"}, new_status=HHQuestionStatus.SUBMITTED.value
+    )
+    answers, _err = _q60_reader_view()
+    assert answers == {"q_exp": "9", "q_city": "Нет"}
+
+    db.update_hh_questionnaire_answers(_Q60_QID, {}, new_status=HHQuestionStatus.SUBMITTED.value)
+    assert _q60_raw_column() == "{}"

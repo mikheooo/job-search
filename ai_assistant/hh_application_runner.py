@@ -699,7 +699,17 @@ def run_application(
             approval=submit_approval,
         )
         if qid:
-            db.update_hh_questionnaire_answers(qid, {}, new_status=HHQuestionStatus.SUBMITTED.value)
+            # BLE001 finding #60. This used to pass a literal {} and
+            # db.update_hh_questionnaire_answers() is a setter, not a merger - so the
+            # line overwrote answers_json with "{}" immediately after
+            # submit_questionnaire_response() had stored the answers this run actually
+            # sent, under the same status. The second write's only effect was to erase
+            # the first, and "{}" is valid JSON, so answers_error stayed None: the erased
+            # row was indistinguishable from one nobody ever answered, while its status
+            # said SUBMITTED. Write the submitted answers back instead.
+            db.update_hh_questionnaire_answers(
+                qid, human_answers, new_status=HHQuestionStatus.SUBMITTED.value
+            )
         final_state = HHApplicationState.SUBMITTED.value
         msg = "Application submitted and verified on HeadHunter."
 
