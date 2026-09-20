@@ -63,6 +63,58 @@ class ApplicationPackage(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+def package_record_is_unreadable(vacancy_stable_id: str) -> bool:
+    """True when a package row exists for this vacancy but cannot be used.
+
+    BLE001 finding #57. The fourth sister of the family #33 (queue) / #55
+    (verifications) / #56 (reviews) - except that package_json is the source
+    they all read from: it is what the review fingerprint is computed from,
+    where the answers and the cover letter come from, and what three submit
+    gates check.
+
+    Returns False when there is no row at all - that is the caller's "missing"
+    case, and this function must not blur it. Mirrors
+    review_record_is_unreadable() (finding #56) and
+    _verification_record_is_unreadable() (finding #55).
+
+    "Unreadable" here means what the READERS need, not what the WRITER's model
+    demands. That distinction was measured, not assumed: the first version of
+    this helper asked ApplicationPackage, and it flagged six tests' worth of
+    perfectly usable rows (test_policy_all_checks_pass,
+    test_stage50_execution_with_confirmation and the four stage30* prepare
+    tests). Every consumer of this column does json.loads() and then .get()
+    with defaults (hh_submission.py:1245, hh_submit_policy.py:206,
+    browser_executor.py:1997) - the eleven required fields of ApplicationPackage
+    are a writer's contract, and a hand-written row never carries them. Flagging
+    those rows would have been a regression dressed as safety.
+
+    So a row is unreadable exactly when the readers cannot use it:
+
+      * not valid JSON - the submit path used to raise a raw JSONDecodeError on
+        it (finding #57; now refused earlier, hh_submission.py:1233), every
+        other reader silently degrades to {} or None;
+      * valid JSON that is not an object - .get() is not available on it;
+      * an empty object, NULL or an empty string - the row exists and says
+        nothing, so the fingerprint computed from it is the fingerprint of an
+        empty package: it attests to nothing while looking like evidence.
+    """
+    from .db import get_application_package
+
+    row = get_application_package(vacancy_stable_id)
+    if not row:
+        return False
+    raw = row[2]
+    if not raw:
+        return True
+    try:
+        payload = json.loads(raw)
+    except (ValueError, TypeError):
+        return True
+    if not isinstance(payload, dict):
+        return True
+    return not payload
+
+
 def get_resume_text(profile: CandidateProfile | None = None) -> str:
     # reuse same logic as job_analyzer
     return job_get_resume_text(profile)

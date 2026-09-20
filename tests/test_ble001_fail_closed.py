@@ -2736,7 +2736,10 @@ def _runner_ready_app(vid: str = "135112049"):
         compute_review_fingerprint,
         save_application_review,
     )
-    from ai_assistant.application_tracking import ApplicationStatus, set_application_status
+    from ai_assistant.application_tracking import (
+        ApplicationStatus,
+        set_application_status,
+    )
     from ai_assistant.schema import Vacancy
 
     sid = f"hh:{vid}"
@@ -2774,7 +2777,12 @@ def _no_executor_but_verifier_sees_a_page(monkeypatch, *, page_shows_chat: bool)
     runner asks for the *vacancy* tab and gets nothing, while the verifier falls
     back to any hh.ru tab and succeeds.
     """
-    from ai_assistant import cli, hh_browser_launcher, hh_vacancy_navigator, telegram_notifier
+    from ai_assistant import (
+        cli,
+        hh_browser_launcher,
+        hh_vacancy_navigator,
+        telegram_notifier,
+    )
 
     notifications: list[str] = []
 
@@ -6235,3 +6243,509 @@ def test_the_audit_and_the_gate_agree_that_the_record_is_damaged(_q56_ready, sha
     gate, _fp, _rid = HHSubmissionGates._check_review_gate(_q56_ready)
     assert "cannot be read" in gate.reason.lower(), (shape, gate.reason)
 
+
+
+# ---------------------------------------------------------------------------
+# BLE001 finding #57 - application_packages.package_json
+#
+# The fourth sister of the family #33 (queue) / #55 (verifications) /
+# #56 (reviews), except that this one is the SOURCE rather than a consumer:
+# package_json is what the review fingerprint is computed from, where the
+# answers and the cover letter come from, and what three submit gates read.
+#
+# Measured (tools/ble001_package_read_probe.py, 2026-09-20): the auditor never
+# reads this column (no "package_json" or "application_packages" anywhere in
+# application_integrity.py), and the same damaged row is read four different
+# ways - silently as {} by compute_review_fingerprint, silently as None by
+# prepare_application_in_browser, silently as a no-op by the approve_review
+# sync, and as a raw JSONDecodeError by hh_submission.py:1227 and
+# hh_submit_policy.py:195.
+# ---------------------------------------------------------------------------
+
+_Q57_SID = "hh:57"
+
+
+def _q57_package(status: str = "NEEDS_REVIEW") -> dict:
+    """A package row the current model parses without complaint."""
+    from ai_assistant.application_prep import APPLICATION_PREP_VERSION
+
+    return {
+        "vacancy_id": _Q57_SID,
+        "vacancy_stable_id": _Q57_SID,
+        "resume_adaptation_needed": False,
+        "resume_summary": "Python-разработчик, 8 лет",
+        "tailored_skills": ["python", "postgresql"],
+        "relevant_experience": ["платежи", "интеграции"],
+        "cover_letter": "Здравствуйте! Готов обсудить вакансию.",
+        "application_strategy": "apply",
+        "warnings": [],
+        "generator_version": APPLICATION_PREP_VERSION,
+        "adaptation": {
+            "target_title": "Старший разработчик Python",
+            "professional_summary": "summary",
+            "prioritized_skills": ["python"],
+            "relevant_experience_points": ["exp"],
+        },
+        "application_type": "unknown",
+        "form": None,
+        "answers": [],
+        "validation_status": status,
+        "review_reasons": [],
+    }
+
+
+def _q57_unreadable_shapes() -> list[tuple[str, str | None]]:
+    """(id, package_json) for every form the readers cannot use.
+
+    Measured 2026-09-20, and the list is shorter than the first draft because
+    the first draft was wrong: it asked ApplicationPackage, which flags
+    two-key and five-key rows that the whole codebase reads happily
+    (test_policy_all_checks_pass, test_stage50_execution_with_confirmation and
+    the four stage30* prepare tests all write those). "Readable" for this
+    column means what json.loads() + .get() need, not what the writer's model
+    demands - see application_prep.package_record_is_unreadable().
+    """
+    return [
+        ("empty-object", "{}"),
+        ("null-column", None),
+        ("empty-string", ""),
+        ("broken-json", '{"validation_status": "VALID"'),
+        ("json-list", "[]"),
+    ]
+
+
+def _q57_readable_shapes() -> list[tuple[str, str]]:
+    """(id, package_json) for rows that must NOT be flagged.
+
+    A fix that flagged these would be a regression dressed as safety: these are
+    the rows production and the rest of the suite actually write. The extra-key
+    and dropped-required rows are the asymmetry with #55 and #56 worth pinning -
+    those two columns ARE read through a model with extra="forbid", so the same
+    shapes are unreadable there. This column is read as a plain dict, so a
+    missing or added field costs nothing.
+    """
+    valid = _q57_package()
+    return [
+        ("valid", json.dumps(valid)),
+        ("valid-VALID", json.dumps(_q57_package("VALID"))),
+        (
+            "valid-with-reasons",
+            json.dumps({**_q57_package(), "review_reasons": ["письмо короткое"]}),
+        ),
+        ("extra-key", json.dumps({**valid, "screenshot_sha256": "deadbeef"})),
+        (
+            "dropped-required",
+            json.dumps({k: v for k, v in valid.items() if k != "cover_letter"}),
+        ),
+        ("minimal-two-key", json.dumps({"cover_letter": "AI application", "validation_status": "VALID"})),
+    ]
+
+
+def _q57_write_package(raw: str | None) -> None:
+    """Put exactly `raw` in the package column, replacing whatever was there.
+
+    By SQL, not by save_application_package(): the point is a row another
+    version of the schema wrote, which today's writer cannot produce.
+    """
+    import sqlite3
+
+    from ai_assistant import config
+    from ai_assistant.application_prep import APPLICATION_PREP_VERSION
+
+    conn = sqlite3.connect(config.DB_FILE)
+    try:
+        conn.execute("DELETE FROM application_packages")
+        conn.execute(
+            """
+            INSERT INTO application_packages
+                (vacancy_stable_id, generator_version, package_json, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (_Q57_SID, APPLICATION_PREP_VERSION, raw, "2026-09-20T00:00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _q57_clear_packages() -> None:
+    """Leave no package row at all - the true "missing" case."""
+    import sqlite3
+
+    from ai_assistant import config
+
+    conn = sqlite3.connect(config.DB_FILE)
+    try:
+        conn.execute(
+            "DELETE FROM application_packages WHERE vacancy_stable_id=?", (_Q57_SID,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _q57_write_review(status: str = "PENDING_REVIEW") -> None:
+    import sqlite3
+
+    from ai_assistant import config
+    from ai_assistant.application_review import REVIEW_VERSION
+
+    payload = {
+        "vacancy_stable_id": _Q57_SID,
+        "company": "TestCo",
+        "title": "Старший разработчик Python",
+        "source": "hh",
+        "vacancy_url": "https://hh.ru/vacancy/57",
+        "status": status,
+        "cover_letter": "Здравствуйте! Готов обсудить вакансию.",
+        "form_fingerprint": "a" * 64,
+        "review_id": "rev_57",
+        "created_at": "2026-09-20T00:00:00",
+        "updated_at": "2026-09-20T00:00:00",
+        "review_version": REVIEW_VERSION,
+    }
+    conn = sqlite3.connect(config.DB_FILE)
+    try:
+        conn.execute("DELETE FROM application_reviews")
+        conn.execute(
+            """
+            INSERT INTO application_reviews
+                (vacancy_stable_id, review_json, status, note,
+                 created_at, updated_at, review_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _Q57_SID, json.dumps(payload), status, None,
+                "2026-09-20T00:00:00", "2026-09-20T00:00:00", REVIEW_VERSION,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _q57_clear_preparations() -> None:
+    """Browser preparation is idempotent per vacancy - clear it between runs."""
+    import sqlite3
+
+    from ai_assistant import config
+
+    conn = sqlite3.connect(config.DB_FILE)
+    try:
+        conn.execute("DELETE FROM browser_preparations")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _q57_package_status() -> str:
+    """What the package column says about validation, read the raw way."""
+    row = db.get_application_package(_Q57_SID)
+    if not row:
+        return "<нет строки>"
+    raw = row[2]
+    if raw is None:
+        return "<SQL NULL>"
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return "<JSON не разобран>"
+    if not isinstance(data, dict):
+        return "<не объект>"
+    return str(data.get("validation_status", "<нет ключа>"))
+
+
+@pytest.fixture
+def _q57_ready():
+    """A vacancy in READY_TO_APPLY with queue and tracking - ready for both the
+    audit and a real prepare_application_in_browser run."""
+    from ai_assistant.application_queue import QueueItem, save_queue_item
+    from ai_assistant.application_tracking import (
+        ApplicationStatus,
+        set_application_status,
+    )
+    from ai_assistant.schema import Vacancy
+
+    db.init_db()
+    vac = Vacancy(
+        source="hh", source_job_id="57", title="Старший разработчик Python",
+        company="TestCo",
+        description="Python, PostgreSQL, FastAPI.",
+        job_url="https://hh.ru/vacancy/57", location="Remote",
+    )
+    db.save_vacancy(vac)
+    save_queue_item(QueueItem(
+        canonical_id="canonical_57",
+        representative_vacancy_stable_id=_Q57_SID,
+        vacancy_stable_id=_Q57_SID,
+        priority_score=90, match_score=90, deep_score=85,
+        company="TestCo", title="Старший разработчик Python", source="hh",
+        vacancy_url="https://hh.ru/vacancy/57",
+        reasons=["high match"], warnings=[], rank=1, components={},
+        application_strategy="apply",
+    ))
+    set_application_status(
+        _Q57_SID, ApplicationStatus.READY_TO_APPLY, company="TestCo",
+        title="Старший разработчик Python", source="hh",
+        vacancy_url="https://hh.ru/vacancy/57", match_score=90, deep_score=85,
+    )
+    return _Q57_SID
+
+
+def _q57_audit_codes(sid: str) -> set[str]:
+    from ai_assistant.application_integrity import run_integrity_audit
+
+    report = run_integrity_audit(scope="full")
+    return {i.code for i in report.issues if i.vacancy_stable_id == sid}
+
+
+def _q57_browser_status(fields: list[str] | None = None):
+    """Drive the real prepare_application_in_browser with a mock adapter.
+
+    `fields` is the lever that matters: with resume/cover_letter on the page the
+    missing package pushes them into fields_skipped, and the readiness branch is
+    suppressed by that - not by anything the package check does. Passing only
+    name/email leaves nothing to skip, so the branch is decided by the is_valid
+    expression alone (browser_executor.py:2227).
+    """
+    _q57_clear_preparations()
+    mock = be.MockBrowserAdapter(simulate={
+        "page_title": "Test Vacancy",
+        "final_url": "https://hh.ru/vacancy/57",
+        "fields": fields if fields is not None else ["name", "email"],
+        "apply_button": True,
+    })
+    return be.prepare_application_in_browser(_Q57_SID, adapter=mock)
+
+
+@pytest.mark.parametrize(
+    "shape,raw",
+    _q57_unreadable_shapes(),
+    ids=lambda v: v if isinstance(v, str) and len(v) < 20 else "",
+)
+def test_an_unreadable_package_record_is_flagged_by_the_audit(_q57_ready, shape, raw):
+    """The row the operator cannot see must at least be named.
+
+    Measured before the fix: with the package column unreadable the auditor
+    reported no finding at all, while the same damage in submission_verifications
+    was named INVALID_VERIFICATION_JSON. Nothing anywhere said "this package
+    cannot be read" - and the approval path read it as an empty package.
+    """
+    _q57_write_package(raw)
+    _q57_clear_preparations()
+
+    assert "INVALID_PACKAGE_JSON" in _q57_audit_codes(_q57_ready), shape
+
+
+@pytest.mark.parametrize(
+    "shape,raw",
+    _q57_readable_shapes(),
+    ids=lambda v: v if isinstance(v, str) and len(v) < 20 else "",
+)
+def test_a_readable_package_record_is_not_flagged_by_the_audit(_q57_ready, shape, raw):
+    """A healthy row must stay quiet, or the check is noise."""
+    _q57_write_package(raw)
+    _q57_clear_preparations()
+
+    assert "INVALID_PACKAGE_JSON" not in _q57_audit_codes(_q57_ready), shape
+
+
+@pytest.mark.parametrize(
+    "shape,raw",
+    _q57_unreadable_shapes(),
+    ids=lambda v: v if isinstance(v, str) and len(v) < 20 else "",
+)
+def test_approving_against_an_unreadable_package_is_refused(_q57_ready, shape, raw):
+    """A human cannot approve a package nobody read.
+
+    Measured before the fix: approve_review() raised nothing, flipped the review
+    to APPROVED and left the package unreadable - so the record said "approved"
+    about a package whose contents were never available to the approver.
+    """
+    from ai_assistant.application_review import approve_review, get_application_review
+
+    _q57_write_package(raw)
+    _q57_write_review("PENDING_REVIEW")
+
+    with pytest.raises(ValueError) as exc:
+        approve_review(_Q57_SID)
+
+    assert "cannot be read" in str(exc.value).lower(), shape
+    rev = get_application_review(_Q57_SID)
+    assert rev is not None and rev.status.value == "PENDING_REVIEW", shape
+
+
+@pytest.mark.parametrize(
+    "shape,raw",
+    _q57_unreadable_shapes(),
+    ids=lambda v: v if isinstance(v, str) and len(v) < 20 else "",
+)
+def test_the_refused_approval_does_not_write_a_fingerprint_of_an_empty_package(
+    _q57_ready, shape, raw
+):
+    """The fingerprint is the anti-stale guard for submission - it must attest.
+
+    Measured before the fix: compute_review_fingerprint() reads an unreadable
+    row as {} (application_review.py:31-34), so approve_review() wrote the
+    fingerprint of an EMPTY package onto the review. The stored fingerprint then
+    attested to a package nobody had read, and it no longer matched the package
+    the human thought they approved.
+    """
+    from ai_assistant.application_review import approve_review, get_application_review
+
+    _q57_write_package(raw)
+    _q57_write_review("PENDING_REVIEW")
+
+    with pytest.raises(ValueError):
+        approve_review(_Q57_SID)
+
+    rev = get_application_review(_Q57_SID)
+    assert rev is not None and rev.form_fingerprint == "a" * 64, shape
+
+
+@pytest.mark.parametrize(
+    "shape,raw",
+    _q57_readable_shapes(),
+    ids=lambda v: v if isinstance(v, str) and len(v) < 20 else "",
+)
+def test_a_readable_package_is_still_approvable_and_gets_marked_valid(
+    _q57_ready, shape, raw
+):
+    """The control: the refusal must not spread to healthy packages.
+
+    Approval is the bridge the three submit gates rely on - they require
+    validation_status == "VALID" and do not read the review, so approval has to
+    leave the package VALID or the human's decision silently does not count.
+    """
+    from ai_assistant.application_review import approve_review, get_application_review
+
+    _q57_write_package(raw)
+    _q57_write_review("PENDING_REVIEW")
+
+    approve_review(_Q57_SID)
+
+    rev = get_application_review(_Q57_SID)
+    assert rev is not None and rev.status.value == "APPROVED", shape
+    assert _q57_package_status() == "VALID", shape
+
+
+@pytest.mark.parametrize(
+    "shape,raw",
+    _q57_unreadable_shapes(),
+    ids=lambda v: v if isinstance(v, str) and len(v) < 20 else "",
+)
+def test_the_browser_preparer_does_not_call_an_unreadable_package_ready(
+    _q57_ready, shape, raw
+):
+    """A package that was never read is not a package ready for submission.
+
+    Measured before the fix (tools/ble001_package_read_probe.py, section 3b):
+    with nothing left to skip on the page, an unreadable package plus an
+    APPROVED review produced READY_FOR_REVIEW - byte-identical to a fully valid
+    VALID package - while the cover letter and the answers had never been read
+    at all. Section 3a hid this: with resume/cover_letter on the page the
+    missing package pushed them into fields_skipped, and THAT is what
+    suppressed readiness, not the package check.
+    """
+    _q57_write_package(raw)
+    _q57_write_review("APPROVED")
+
+    result = _q57_browser_status(fields=["name", "email"])
+
+    assert result.status != be.BrowserStatus.READY_FOR_REVIEW, shape
+    assert any("unreadable" in w.lower() for w in result.warnings), (shape, result.warnings)
+
+
+def test_a_readable_package_with_an_approved_review_is_still_ready(_q57_ready):
+    """The control: the honest warning must not block the normal bridge.
+
+    A package the QA validator left at NEEDS_REVIEW, approved by a human, is
+    exactly the state READY_FOR_REVIEW exists for - and it must keep working.
+    """
+    _q57_write_package(json.dumps(_q57_package("NEEDS_REVIEW")))
+    _q57_write_review("APPROVED")
+
+    result = _q57_browser_status(fields=["name", "email"])
+
+    assert result.status == be.BrowserStatus.READY_FOR_REVIEW, result.warnings
+
+
+def test_a_repeat_approval_still_marks_the_package_valid(_q57_ready):
+    """Approving an already-approved review must still repair the package.
+
+    Measured before the fix (probe section 6): approve_review() returns at the
+    idempotent branch (application_review.py:392) BEFORE the validation_status
+    sync at :407, so a second approval on a package that had drifted back to
+    NEEDS_REVIEW did nothing - and the gate then refused with "package.
+    validation_status is NEEDS_REVIEW (must be VALID)" about a review that
+    reads APPROVED. Two subsystems, one row, opposite stories.
+    """
+    from ai_assistant.application_review import approve_review
+
+    _q57_write_package(json.dumps(_q57_package("NEEDS_REVIEW")))
+    _q57_write_review("APPROVED")
+    assert _q57_package_status() == "NEEDS_REVIEW"
+
+    approve_review(_Q57_SID)
+
+    assert _q57_package_status() == "VALID"
+
+
+@pytest.mark.parametrize(
+    "shape,raw",
+    _q57_unreadable_shapes(),
+    ids=lambda v: v if isinstance(v, str) and len(v) < 20 else "",
+)
+def test_the_submit_policy_refuses_an_unreadable_package_by_name(_q57_ready, shape, raw):
+    """A raw JSONDecodeError is not a refusal a human can act on.
+
+    Measured before the fix (red run, .pytest_ble001_57_red2.xml): the policy
+    mishandled all five unreadable shapes, in two different ways. Two of them
+    (empty-string, broken-json) crashed it outright with json.decoder.
+    JSONDecodeError - hh_submit_policy.py:195, pre-fix address, called
+    json.loads() with no guard. The other three did not crash: the column read
+    back falsy, so the fingerprint was computed from the APPLICATION DRAFT
+    instead of the package, and the refusal that followed named
+    ['fingerprint_match', 'letter_not_empty'] - fail-closed, but by accident and
+    about the wrong object. Both are false records; only the reason was missing.
+    """
+    from ai_assistant.hh_submit_policy import evaluate
+
+    _q57_write_package(raw)
+
+    decision = evaluate({"vacancy_stable_id": _Q57_SID, "application_id": "app_57"})
+
+    assert decision.approve is False, shape
+    assert "package_json_unreadable" in decision.checks_failed, (shape, decision.checks_failed)
+
+
+@pytest.mark.parametrize(
+    "shape,raw",
+    _q57_readable_shapes(),
+    ids=lambda v: v if isinstance(v, str) and len(v) < 20 else "",
+)
+def test_the_submit_policy_does_not_invent_an_unreadable_package(_q57_ready, shape, raw):
+    """The control: a readable package must not be reported as damaged."""
+    from ai_assistant.hh_submit_policy import evaluate
+
+    _q57_write_package(raw)
+
+    decision = evaluate({"vacancy_stable_id": _Q57_SID, "application_id": "app_57"})
+
+    assert "package_json_unreadable" not in decision.checks_failed, shape
+
+
+def test_the_audit_and_the_preparer_agree_that_the_package_is_damaged(_q57_ready):
+    """One row, one story - the same agreement #56 pinned for reviews.
+
+    The auditor will name the row INVALID_PACKAGE_JSON and the browser preparer
+    will refuse to call it ready. Before the fix the auditor was silent and the
+    preparer called it ready: the two were wrong in opposite directions, which
+    is the failure mode where nothing looks inconsistent.
+    """
+    _q57_write_package('{"validation_status": "VALID"')
+    _q57_write_review("APPROVED")
+
+    assert "INVALID_PACKAGE_JSON" in _q57_audit_codes(_q57_ready)
+    result = _q57_browser_status(fields=["name", "email"])
+    assert result.status != be.BrowserStatus.READY_FOR_REVIEW

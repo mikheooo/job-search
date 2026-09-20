@@ -212,8 +212,8 @@ def pin_tag(node_ids: list[str]) -> str:
     return hashlib.sha1("|".join(sorted(node_ids)).encode()).hexdigest()[:8]
 
 
-def run_pins(node_ids: list[str]) -> tuple[dict[str, str], bool]:
-    """Return ({pin: PASS/FAIL/UNKNOWN}, every pin was actually measured).
+def run_pins(node_ids: list[str]) -> tuple[dict[str, str], dict[str, tuple[int, int]], bool]:
+    """Return ({pin: PASS/FAIL/UNKNOWN}, {pin: (failed_cases, total)}, measured).
 
     Verdicts come from --junitxml, not from the console summary. The repo's
     bulk-delete guard fires during pytest's own temp-dir cleanup, after the last
@@ -222,6 +222,12 @@ def run_pins(node_ids: list[str]) -> tuple[dict[str, str], bool]:
     file is written as the run progresses and survives that. Judging by the
     console alone gave "5/5 SURVIVED" once; judging by "no FAILED line" would
     give the same answer for a run that never started.
+
+    A parametrized pin is aggregated over ALL its cases: FAIL if any case failed.
+    Taking the last case's verdict - which this tool did at first, and which the
+    #57 tool inherited - reported ``no_empty_fingerprint=PASS`` there while three
+    of its five cases had in fact failed. A pin is only as blind as its worst
+    case.
 
     A pin that is missing from the junit is UNKNOWN, never PASS. A test that did
     not run is not a test that passed, and the whole point of this tool is to
@@ -236,19 +242,30 @@ def run_pins(node_ids: list[str]) -> tuple[dict[str, str], bool]:
         check=False,
     )
     verdicts = dict.fromkeys(node_ids, "UNKNOWN")
+    counts: dict[str, tuple[int, int]] = {p: (0, 0) for p in node_ids}
     if xml.exists():
         root = ElementTree.parse(xml).getroot()
+        tally = {p: [0, 0] for p in node_ids}  # [failed, total]
         for case in root.iter("testcase"):
             name = case.get("name", "")
             broken = any(child.tag in ("failure", "error") for child in case)
             for pin in node_ids:
                 if name == pin or name.startswith(f"{pin}["):
-                    verdicts[pin] = "FAIL" if broken else "PASS"
+                    tally[pin][1] += 1
+                    if broken:
+                        tally[pin][0] += 1
+        for pin in node_ids:
+            failed, total = tally[pin]
+            counts[pin] = (failed, total)
+            if failed:
+                verdicts[pin] = "FAIL"
+            elif total:
+                verdicts[pin] = "PASS"
     else:
         out = proc.stdout + proc.stderr
         print(f"     !! no junit written (returncode {proc.returncode}); "
               f"output tail: {(out[-300:] or '<empty>')!r}")
-    return verdicts, all(v != "UNKNOWN" for v in verdicts.values())
+    return verdicts, counts, all(v != "UNKNOWN" for v in verdicts.values())
 
 
 def main() -> int:
@@ -291,7 +308,7 @@ def main() -> int:
 
             target.write_bytes(mutated)
             try:
-                verdicts, reported = run_pins(pins)
+                verdicts, counts, reported = run_pins(pins)
             finally:
                 target.write_bytes(originals[target])
 
@@ -307,7 +324,12 @@ def main() -> int:
             caught = any(verdicts[p] == "FAIL" for p in pins)
             status = "caught" if caught else "SURVIVED"
             print(f"{name:4s} {status:9s} {description}")
-            print(f"     evidence: {', '.join(f'{SHORT[p]}={verdicts[p]}' for p in pins)}")
+            evidence = []
+            for p in pins:
+                failed, total = counts[p]
+                suffix = f"({failed}/{total})" if total > 1 else ""
+                evidence.append(f"{SHORT[p]}={verdicts[p]}{suffix}")
+            print(f"     evidence: {', '.join(evidence)}")
             if not caught:
                 failures.append(name)
     finally:

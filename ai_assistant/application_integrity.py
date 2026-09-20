@@ -393,6 +393,71 @@ class IntegrityAuditor:
                     {"version": version, "status": status, "error": str(exc)},
                 )
 
+    def _check_package_json_records(self, tracked_sids: set[str]):
+        """Validate persisted package JSON independently of the model getters.
+
+        BLE001 finding #57, the fourth sister of the family #33 (queue) / #55
+        (verifications) / #56 (reviews) - except that this one is the source.
+        package_json is what the review fingerprint is computed from, where the
+        answers and the cover letter come from, and what three submit gates
+        read; the auditor read this table only for the existence of a row
+        (:202) and never for its contents. Measured: grep for "package_json" or
+        "application_packages" in this module returned nothing at all, while the
+        same damage in submission_verifications was named
+        INVALID_VERIFICATION_JSON.
+
+        The drift door here is different from its three sisters. #55 and #56
+        hinge on a model with extra="forbid", where one removed or renamed field
+        makes every historical row unreadable at once. This column is not read
+        through a model, so the door is any change in WHAT THE COLUMN HOLDS - a
+        different serializer, a nested payload, a migration that nulls it. Today
+        that is unreachable; the first such change makes it mass, which is why
+        the check is structural rather than schema-based.
+
+        The check deliberately does NOT ask ApplicationPackage. Measured
+        2026-09-20: the fixtures in test_hh_submit_policy, test_stage50 and the
+        four stage30* prepare tests write two- and five-key dicts, and this
+        column is read everywhere as json.loads() + .get() with defaults. The
+        model's eleven required fields are a writer's contract; flagging rows that
+        the readers handle fine would be a regression dressed as safety. The
+        check names what the readers cannot use - see
+        application_prep.package_record_is_unreadable() for the same definition.
+        """
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT vacancy_stable_id, generator_version, package_json "
+            "FROM application_packages"
+        )
+        rows = cur.fetchall()
+        conn.close()
+        for sid, version, raw in rows:
+            if self.scope == "tracked" and sid not in tracked_sids:
+                continue
+            try:
+                if not raw:
+                    raise ValueError("empty column")
+                payload = json.loads(raw)
+                if not isinstance(payload, dict):
+                    raise ValueError(
+                        f"payload is {type(payload).__name__}, not an object"
+                    )
+                if not payload:
+                    raise ValueError("payload is an empty object")
+                inner = payload.get("vacancy_stable_id")
+                if inner and inner != sid:
+                    raise ValueError(
+                        "JSON vacancy_stable_id does not match the indexed column"
+                    )
+            except Exception as exc:
+                self._err(
+                    "INVALID_PACKAGE_JSON",
+                    sid,
+                    None,
+                    "Application package has unreadable persisted JSON",
+                    {"version": version, "error": str(exc)},
+                )
+
     def _check_orphan_artifacts(self, cid: str, aliases: list[tuple[Any, str]]):
         for _, sid in aliases:
             tr = get_application_status(sid)
@@ -529,6 +594,7 @@ class IntegrityAuditor:
         self._check_verification_json_records(tracked_sids)
         self._check_queue_json_records(tracked_sids)
         self._check_review_json_records(tracked_sids)
+        self._check_package_json_records(tracked_sids)
         self.issues.sort()
         err = sum(1 for i in self.issues if i.severity == IntegritySeverity.ERROR)
         warn = sum(1 for i in self.issues if i.severity == IntegritySeverity.WARNING)

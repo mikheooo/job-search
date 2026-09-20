@@ -190,7 +190,18 @@ def evaluate(
     pkg_row = db.get_application_package(vac_stable_id) if vac_stable_id else None
     pkg_data = None
     if pkg_row:
-        if isinstance(pkg_row, tuple):
+        # BLE001 finding #57: this read had no guard, so an unreadable package
+        # mishandled the policy two ways (measured, .pytest_ble001_57_red2.xml):
+        # empty-string and broken-json crashed it with a raw JSONDecodeError;
+        # the other three read back falsy, so the fingerprint came from the
+        # APPLICATION DRAFT and the refusal named fingerprint_match - fail-closed
+        # by accident, about the wrong object. Readability is asked of one helper.
+        from .application_prep import package_record_is_unreadable
+
+        if package_record_is_unreadable(vac_stable_id):
+            checks_failed.append("package_json_unreadable")
+            reasons.append("package_json_unreadable")
+        elif isinstance(pkg_row, tuple):
             raw_json = pkg_row[2] if len(pkg_row) > 2 else None
             pkg_data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
         elif isinstance(pkg_row, dict):

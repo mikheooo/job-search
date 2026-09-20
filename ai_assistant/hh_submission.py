@@ -1224,6 +1224,24 @@ def execute_hh_submission(
     # 2. Form snapshot preparation
     review = get_application_review(vacancy_stable_id)
     pkg_row = get_application_package(vacancy_stable_id)
+    # BLE001 finding #57: this read had no guard at all, so an unreadable package
+    # crashed the whole submit path with a raw JSONDecodeError instead of naming
+    # the damaged record - nothing was submitted, but a traceback is not a
+    # refusal. package_record_is_unreadable() is the same definition the auditor
+    # and the approval guard use, so the four readers agree on "unreadable".
+    from .application_prep import package_record_is_unreadable
+    if pkg_row and package_record_is_unreadable(vacancy_stable_id):
+        return SubmissionExecutionResult(
+            ok=False,
+            status="BLOCKED",
+            reason=(
+                f"package record for {vacancy_stable_id} exists but cannot be read "
+                "- refusing to submit against a package nobody read"
+            ),
+            vacancy_stable_id=vacancy_stable_id,
+            submit_count=0,
+            submission_id=sub_id,
+        )
     pkg_data = json.loads(pkg_row[2]) if (pkg_row and pkg_row[2]) else {}
     cover_letter = pkg_data.get("cover_letter") or (getattr(review, "cover_letter", "") if review else "")
     actual_pkg_fp = compute_review_fingerprint(vacancy_stable_id, pkg_data) if pkg_data else None

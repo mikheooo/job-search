@@ -347,6 +347,40 @@ def create_application_review(vacancy_stable_id: str) -> ApplicationReview:
     save_application_review(review)
     return review
 
+def _mark_package_valid(vacancy_stable_id: str, pkg_row: Any) -> bool:
+    """Write validation_status="VALID" into the package a human just approved.
+
+    Returns True when the column actually changed.
+
+    BLE001 finding #57. Three submit gates require the PACKAGE to say VALID and
+    never look at the review (hh_submission.py:280, auto_apply_modes.py:359,
+    application_review_gate.py:148), while browser_executor.py:2227 accepts an
+    approval as a substitute. Approval is therefore the bridge between the two
+    readings, and it has to leave the package VALID or the human's decision
+    silently does not count.
+
+    Raises when the package cannot be read as a JSON object. Callers must have
+    refused that case already - this is a second line, not the guard.
+    """
+    from .db import save_application_package
+
+    if not pkg_row or not pkg_row[2]:
+        return False
+    pkg_data = json.loads(pkg_row[2])
+    if not isinstance(pkg_data, dict):
+        raise ValueError(
+            f"Application package for {vacancy_stable_id} is not a JSON object "
+            "- refusing to mark it VALID"
+        )
+    if pkg_data.get("validation_status") == "VALID":
+        return False
+    pkg_data["validation_status"] = "VALID"
+    save_application_package(
+        vacancy_stable_id, pkg_row[1], json.dumps(pkg_data, ensure_ascii=False)
+    )
+    return True
+
+
 def approve_review(vacancy_stable_id: str, note: str | None = None, force: bool = False) -> ApplicationReview:
     _ensure_table()
     rev = get_application_review(vacancy_stable_id, REVIEW_VERSION)
@@ -364,6 +398,24 @@ def approve_review(vacancy_stable_id: str, note: str | None = None, force: bool 
     pkg_row = get_application_package(vacancy_stable_id)
     if not pkg_row:
         raise ValueError(f"Application package not found for {vacancy_stable_id}: сначала подготовьте пакет")
+
+    # BLE001 finding #57: a package nobody can read is not an approvable package.
+    #
+    # Measured before this guard (tools/ble001_package_read_probe.py, section 2):
+    # with the package column unreadable, approve_review() raised nothing, flipped
+    # the review to APPROVED and wrote onto it the fingerprint of an EMPTY package
+    # - compute_review_fingerprint() reads an unreadable row as {} (line 31-34) -
+    # while the validation_status sync below failed on the same row and was
+    # swallowed. The record then said "approved" about a package whose contents
+    # were never available to the approver, and the fingerprint that is supposed
+    # to attest to the approved package attested to nothing.
+    from .application_prep import package_record_is_unreadable
+    if package_record_is_unreadable(vacancy_stable_id):
+        raise ValueError(
+            f"Application package for {vacancy_stable_id} exists but cannot be read "
+            "- refusing to approve a package nobody read"
+        )
+
     fp = compute_review_fingerprint(vacancy_stable_id, pkg_row)
 
     # Check browser status
@@ -386,6 +438,14 @@ def approve_review(vacancy_stable_id: str, note: str | None = None, force: bool 
         if note and note != rev.note:
             rev.note = note
             modified = True
+        # BLE001 finding #57: this path must sync too. The sync used to sit after
+        # the early return below, so approving an already-approved review of a
+        # package that had drifted back to NEEDS_REVIEW did nothing - and the
+        # three submit gates, which read the package and not the review, then
+        # refused with "package.validation_status is NEEDS_REVIEW (must be VALID)"
+        # about a review that reads APPROVED. Measured: probe section 6.
+        if _mark_package_valid(vacancy_stable_id, pkg_row):
+            modified = True
         if modified:
             rev.updated_at = _now()
             save_application_review(rev)
@@ -402,17 +462,15 @@ def approve_review(vacancy_stable_id: str, note: str | None = None, force: bool 
     if note:
         rev.note = note
     rev.updated_at = _now()
-    save_application_review(rev)
 
-    # Sync validation_status in application_packages table upon human approval
-    try:
-        from .db import save_application_package
-        if pkg_row and pkg_row[2]:
-            pkg_data = json.loads(pkg_row[2])
-            pkg_data["validation_status"] = "VALID"
-            save_application_package(vacancy_stable_id, pkg_row[1], json.dumps(pkg_data, ensure_ascii=False))
-    except Exception:
-        pass
+    # BLE001 finding #57: sync BEFORE the approval is written, and without the
+    # old `except Exception: pass`. The order is the point - if the sync fails
+    # now, the exception propagates and the review stays unapproved, so the two
+    # records cannot disagree. The old order saved APPROVED first and then
+    # swallowed a sync failure, which left a review claiming an approval that
+    # the gates could not see next to a package still saying NEEDS_REVIEW.
+    _mark_package_valid(vacancy_stable_id, pkg_row)
+    save_application_review(rev)
 
     return rev
 

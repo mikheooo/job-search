@@ -1983,6 +1983,16 @@ def prepare_application_in_browser(
         raise ValueError(f"Application package not found for {vacancy_stable_id}")
 
     # Parse package
+    #
+    # BLE001 finding #57: pkg_row exists (checked above), so a parse failure here
+    # means a row that CANNOT BE READ, not a missing package - and the old code
+    # collapsed both into pkg = None. The distinction is asked of the model, not
+    # inferred from an exception: an empty string or a SQL NULL column does not
+    # make json.loads() raise, it silently yields {}, which then looks exactly
+    # like a healthy package whose status is NEEDS_REVIEW.
+    from .application_prep import package_record_is_unreadable
+
+    package_unreadable = package_record_is_unreadable(vacancy_stable_id)
     try:
         pkg_data = json.loads(pkg_row[2]) if pkg_row[2] else {}
         # pkg_data contains cover_letter etc
@@ -1996,6 +2006,7 @@ def prepare_application_in_browser(
         pkg = PkgObj(pkg_data)
     except Exception:
         pkg = None
+        package_unreadable = True
 
     # Idempotency: if existing and not force, return existing as BrowserResult
     if existing and not force:
@@ -2216,9 +2227,21 @@ def prepare_application_in_browser(
                 is_valid = (validation_status == "VALID") or (is_approved and validation_status != "INVALID")
 
                 if status == BrowserStatus.FORM_DETECTED:
-                    if is_valid and not fields_skipped:
+                    if is_valid and not fields_skipped and not package_unreadable:
                         status = BrowserStatus.READY_FOR_REVIEW
                         warnings.append("Manual submission required. DO NOT SUBMIT automatically. - READY_FOR_REVIEW")
+                    elif package_unreadable:
+                        # BLE001 finding #57. Measured before the fix
+                        # (tools/ble001_package_read_probe.py, section 3b): with
+                        # nothing left to skip on the page, an unreadable package
+                        # plus an APPROVED review produced READY_FOR_REVIEW -
+                        # byte-identical to a fully valid VALID package - while
+                        # the cover letter and the answers had never been read.
+                        # Section 3a hid this: with resume/cover_letter on the
+                        # page the missing package pushed them into
+                        # fields_skipped, and THAT is what suppressed readiness,
+                        # not any check on the package.
+                        warnings.append("Package record unreadable - NOT READY_FOR_REVIEW")
                     elif fields_skipped:
                         warnings.append(f"Fields skipped ({len(fields_skipped)}) - NOT READY_FOR_REVIEW")
                     else:
