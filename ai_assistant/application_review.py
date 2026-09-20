@@ -192,6 +192,35 @@ def get_application_review(vacancy_stable_id: str, review_version: str | None = 
 def is_review_created(vacancy_stable_id: str, review_version: str | None = None) -> bool:
     return get_application_review(vacancy_stable_id, review_version) is not None
 
+def review_record_is_unreadable(vacancy_stable_id: str, review_version: str | None = None) -> bool:
+    """True when a review row exists for this vacancy but cannot be parsed.
+
+    get_application_review() answers None both when there is no row and when
+    there is a row ApplicationReview refuses to parse. Callers that report to a
+    human need the two told apart (BLE001 finding #56): a row that exists must
+    not be described as absent. Mirrors _verification_record_is_unreadable() in
+    submission_recovery, which closed the same hole for verifications (#55).
+
+    Returns False when there is no row at all - that is the caller's "missing"
+    case, and this function must not blur it.
+    """
+    _ensure_table()
+    conn = get_connection()
+    cur = conn.cursor()
+    if review_version:
+        cur.execute("SELECT review_json FROM application_reviews WHERE vacancy_stable_id=? AND review_version=?", (vacancy_stable_id, review_version))
+    else:
+        cur.execute("SELECT review_json FROM application_reviews WHERE vacancy_stable_id=?", (vacancy_stable_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return False
+    try:
+        ApplicationReview.model_validate_json(row[0] or "{}")
+    except (ValueError, TypeError):
+        return True
+    return False
+
 def list_application_reviews(status: str | None = None, limit: int = 100) -> list[ApplicationReview]:
     _ensure_table()
     conn = get_connection()

@@ -349,6 +349,50 @@ class IntegrityAuditor:
                     {"error": str(exc)},
                 )
 
+    def _check_review_json_records(self, tracked_sids: set[str]):
+        """Validate persisted review JSON independently of the model getters.
+
+        BLE001 finding #56: get_application_review() answers None for a row it
+        cannot parse, and list_application_reviews() drops that row silently -
+        so the reviewer-facing listing hides exactly the rows that are broken,
+        while _count_artifacts() counts them by SQL and the report looks
+        consistent. Verifications have had this check for a long time
+        (INVALID_VERIFICATION_JSON) and the queue got one in #33; the reviews
+        table was the one left out. Gate 2 reads the same getter, so a damaged
+        row was also explained to a human as "No review found for vacancy".
+        """
+        from .application_review import ApplicationReview
+
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT vacancy_stable_id, review_version, status, review_json "
+            "FROM application_reviews"
+        )
+        rows = cur.fetchall()
+        conn.close()
+        for sid, version, status, raw in rows:
+            if self.scope == "tracked" and sid not in tracked_sids:
+                continue
+            try:
+                payload = json.loads(raw) if raw else None
+                parsed = ApplicationReview.model_validate(payload)
+                parsed_status = (
+                    parsed.status.value
+                    if hasattr(parsed.status, "value")
+                    else str(parsed.status)
+                )
+                if parsed_status != status or parsed.review_version != version:
+                    raise ValueError("JSON fields do not match indexed columns")
+            except Exception as exc:
+                self._err(
+                    "INVALID_REVIEW_JSON",
+                    sid,
+                    None,
+                    "Review has unreadable persisted JSON",
+                    {"version": version, "status": status, "error": str(exc)},
+                )
+
     def _check_orphan_artifacts(self, cid: str, aliases: list[tuple[Any, str]]):
         for _, sid in aliases:
             tr = get_application_status(sid)
@@ -484,6 +528,7 @@ class IntegrityAuditor:
             self._check_global_orphans()
         self._check_verification_json_records(tracked_sids)
         self._check_queue_json_records(tracked_sids)
+        self._check_review_json_records(tracked_sids)
         self.issues.sort()
         err = sum(1 for i in self.issues if i.severity == IntegritySeverity.ERROR)
         warn = sum(1 for i in self.issues if i.severity == IntegritySeverity.WARNING)

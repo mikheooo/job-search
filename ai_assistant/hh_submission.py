@@ -48,7 +48,11 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger("ai_assistant.hh_submission")
 
 from . import config
-from .application_review import ReviewStatus, get_application_review
+from .application_review import (
+    ReviewStatus,
+    get_application_review,
+    review_record_is_unreadable,
+)
 from .candidate_profile import CandidateProfile
 
 # In-memory set of review_ids that have already had a submit attempt.
@@ -514,6 +518,25 @@ class HHSubmissionGates:
         """Gate 2: GATE_REVIEW_APPROVED."""
         review = review_obj or get_application_review(vacancy_stable_id)
         if not review:
+            # A row that exists but cannot be parsed is not the same as no row
+            # (BLE001 finding #56). Saying "No review found" about a row that is
+            # there sends a human to create the review that already exists - and
+            # create_application_review() preserves created_at only when the
+            # existing row reads, so the repair overwrites what it cannot see.
+            # The gate keeps refusing either way; only the sentence changes.
+            if review_obj is None and review_record_is_unreadable(vacancy_stable_id):
+                return (
+                    GateCheckResult(
+                        passed=False,
+                        failed_gate=GateName.GATE_REVIEW_APPROVED,
+                        reason=(
+                            f"Review record for {vacancy_stable_id} exists but "
+                            "cannot be read - approval state unknown"
+                        ),
+                    ),
+                    None,
+                    None,
+                )
             return (
                 GateCheckResult(
                     passed=False,

@@ -5916,3 +5916,322 @@ def test_the_audit_and_the_recovery_report_agree_that_the_record_is_damaged(_q55
     result = inspect_submission_state(_q55_submitted)
     assert "cannot be read" in result.reason.lower(), (shape, result.reason)
 
+
+# ===========================================================================
+# BLE001 finding #56 - a review row nobody can read was not a review row
+# ===========================================================================
+#
+# The third sister. #33 closed the queue column and #55 the verification column;
+# both times the fix was to stop letting one reader answer "nothing here" for a
+# row it could not parse. application_reviews was never given the same treatment.
+#
+# Measured before the fix (tools/ble001_review_read_probe.py), with the row
+# written by SQL the way another version of the schema would have written it:
+#
+#   * get_application_review() answers None for 7 of 9 stored forms - and two of
+#     them have APPROVED in the row, so "approved review exists" is reported as
+#     "no review".
+#   * the auditor has no check on review_json at all: all 7 broken rows produce
+#     nothing, while the same broken JSON in submission_verifications produces
+#     INVALID_VERIFICATION_JSON (that check exists since before #33).
+#   * list_application_reviews() drops the row silently - 1 row in SQL, 0 rows
+#     listed - so the listing a human reads hides exactly the broken ones.
+#   * Gate 2 refuses with "No review found for vacancy" for a row that is there.
+#
+# What this finding is NOT, measured rather than assumed:
+#
+#   * It is not #55 over again. inspect_submission_state() reads the review too
+#     (submission_recovery.py:177), but the value it computes is passed to
+#     _determine_recovery_status() as `review_status` and never read in the body.
+#     The report is byte-identical for a readable APPROVED row and a broken one,
+#     so the recovery report does not lie about reviews - it ignores them.
+#   * The orphan check is not blind. _check_orphan_artifacts() uses the model
+#     getter, but _check_global_orphans() reads the table by SQL
+#     (application_integrity.py:387) and REVIEW_ORPHAN fires for a broken row
+#     just the same. Only the per-canonical copy misses it, and the global one
+#     covers the same ground.
+#
+# Reachability is not speculative here either: ReviewStatus has already grown
+# once. baseline_stage14_snapshot and snapshot_stage15_current both carry three
+# members; COMPLETED was added on 2026-09-08. A process still running the older
+# code reads a row the newer code wrote and answers None for it. Unlike
+# SubmissionVerification, ApplicationReview has no extra="forbid", so an added
+# field is harmless (pinned below) - the enum is the door that actually moves.
+
+_Q56_SID = "hh:56"
+
+
+def _q56_payload(status: str = "APPROVED") -> dict:
+    """A review row the current model parses without complaint."""
+    from ai_assistant.application_review import REVIEW_VERSION
+
+    return {
+        "vacancy_stable_id": _Q56_SID,
+        "company": "TestCo",
+        "title": "Старший разработчик Python",
+        "source": "hh",
+        "vacancy_url": "https://hh.ru/vacancy/56",
+        "status": status,
+        "cover_letter": "Здравствуйте! Готов обсудить.",
+        "form_fingerprint": "a" * 64,
+        "review_id": "rev_56",
+        "created_at": "2026-09-20T00:00:00",
+        "updated_at": "2026-09-20T00:00:00",
+        "review_version": REVIEW_VERSION,
+    }
+
+
+def _q56_unreadable_shapes() -> list[tuple[str, str | None, str]]:
+    """(id, review_json, indexed status column) for every form the model refuses.
+
+    The status column is passed in rather than hardcoded: the unknown-status row
+    must carry EXPIRED in the column too, the way the version that knew that
+    member would have written it. The row is consistent; it is this reader whose
+    enum is stale. Writing the column as APPROVED would make the mismatch branch
+    fire instead and prove the wrong thing.
+    """
+    valid = _q56_payload()
+    return [
+        ("unknown-status", json.dumps(_q56_payload(status="EXPIRED")), "EXPIRED"),
+        (
+            "dropped-required",
+            json.dumps({k: v for k, v in valid.items() if k != "vacancy_stable_id"}),
+            "APPROVED",
+        ),
+        ("empty-object", "{}", "APPROVED"),
+        ("null-column", None, "APPROVED"),
+        ("empty-string", "", "APPROVED"),
+        ("broken-json", '{"status": "APPROVED"', "APPROVED"),
+        (
+            "wrong-type",
+            json.dumps({**valid, "match_score": "not-a-number"}),
+            "APPROVED",
+        ),
+    ]
+
+
+def _q56_readable_shapes() -> list[tuple[str, str, str]]:
+    """(id, review_json, indexed status column) for rows that must NOT be flagged.
+
+    The extra-key row is the asymmetry with SubmissionVerification worth pinning:
+    that model sets extra="forbid", this one does not, so an added field is
+    readable here. A fix that flagged it would be a regression dressed as safety.
+    """
+    valid = _q56_payload()
+    return [
+        ("valid", json.dumps(valid), "APPROVED"),
+        ("extra-key", json.dumps({**valid, "screenshot_sha256": "deadbeef"}), "APPROVED"),
+        ("rejected", json.dumps(_q56_payload(status="REJECTED")), "REJECTED"),
+    ]
+
+
+def _q56_write_review(raw: str | None, indexed_status: str = "APPROVED") -> None:
+    """Put exactly `raw` in the review column, replacing whatever was there.
+
+    By SQL, not by save_application_review(): the point is a row another version
+    of the schema wrote, which today's writer cannot produce.
+    """
+    import sqlite3
+
+    from ai_assistant import config
+    from ai_assistant.application_review import REVIEW_VERSION
+
+    conn = sqlite3.connect(config.DB_FILE)
+    try:
+        conn.execute("DELETE FROM application_reviews")
+        conn.execute(
+            """
+            INSERT INTO application_reviews
+                (vacancy_stable_id, review_json, status, note,
+                 created_at, updated_at, review_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _Q56_SID, raw, indexed_status, None,
+                "2026-09-20T00:00:00", "2026-09-20T00:00:00", REVIEW_VERSION,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _q56_clear_reviews() -> None:
+    """Leave no review row at all - the true "missing" case.
+
+    Distinct from a NULL column: that is a row which exists and says nothing.
+    """
+    import sqlite3
+
+    from ai_assistant import config
+
+    conn = sqlite3.connect(config.DB_FILE)
+    try:
+        conn.execute(
+            "DELETE FROM application_reviews WHERE vacancy_stable_id=?", (_Q56_SID,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def _q56_ready():
+    """A vacancy in READY_TO_APPLY with a review row waiting to be damaged."""
+    from ai_assistant.application_tracking import (
+        ApplicationStatus,
+        set_application_status,
+    )
+    from ai_assistant.schema import Vacancy
+
+    db.init_db()
+    db.save_vacancy(Vacancy(
+        source="hh", source_job_id="56", title="Старший разработчик Python",
+        company="TestCo",
+        description="Python, PostgreSQL, FastAPI.",
+        job_url="https://hh.ru/vacancy/56", location="Remote",
+    ))
+    set_application_status(
+        _Q56_SID, ApplicationStatus.READY_TO_APPLY, company="TestCo",
+        title="Старший разработчик Python", source="hh",
+        vacancy_url="https://hh.ru/vacancy/56",
+    )
+    return _Q56_SID
+
+
+def _q56_audit_codes(sid: str) -> set[str]:
+    from ai_assistant.application_integrity import run_integrity_audit
+
+    report = run_integrity_audit(scope="full")
+    return {i.code for i in report.issues if i.vacancy_stable_id == sid}
+
+
+@pytest.mark.parametrize(
+    "shape,raw,indexed",
+    _q56_unreadable_shapes(),
+    ids=lambda v: v if isinstance(v, str) and len(v) < 20 else "",
+)
+def test_an_unreadable_review_record_is_flagged_by_the_audit(_q56_ready, shape, raw, indexed):
+    """The row the operator cannot see must at least be named.
+
+    Every other table on this path has a check of this shape - the queue got one
+    in #33, the verifications had one already. Without it the auditor reports a
+    clean bill of health for a database whose review column is unreadable, and
+    nothing anywhere says otherwise.
+    """
+    _q56_write_review(raw, indexed)
+
+    codes = _q56_audit_codes(_q56_ready)
+
+    assert "INVALID_REVIEW_JSON" in codes, (shape, codes)
+
+
+@pytest.mark.parametrize(
+    "shape,raw,indexed",
+    _q56_readable_shapes(),
+    ids=lambda v: v if isinstance(v, str) and len(v) < 20 else "",
+)
+def test_a_readable_review_record_is_not_flagged_by_the_audit(_q56_ready, shape, raw, indexed):
+    """The control that keeps the check honest.
+
+    A row whose JSON the model parses and whose indexed columns agree must stay
+    quiet. This is what stops the new check from being satisfied by flagging
+    everything - which would make the audit useless in the other direction.
+    """
+    _q56_write_review(raw, indexed)
+
+    codes = _q56_audit_codes(_q56_ready)
+
+    assert "INVALID_REVIEW_JSON" not in codes, (shape, codes)
+
+
+@pytest.mark.parametrize(
+    "shape,raw,indexed",
+    _q56_unreadable_shapes(),
+    ids=lambda v: v if isinstance(v, str) and len(v) < 20 else "",
+)
+def test_the_review_gate_does_not_call_an_unreadable_record_missing(_q56_ready, shape, raw, indexed):
+    """The false sentence, at the moment it does the most damage.
+
+    Gate 2 is where a human is told why the submission did not go out. "No
+    review found" about a row that exists sends them to create a review that is
+    already there - and create_application_review() preserves created_at only
+    when the existing row reads, so the repair overwrites what it cannot see.
+    The gate must keep refusing; it must stop explaining the refusal wrongly.
+    """
+    from ai_assistant.hh_submission import HHSubmissionGates
+
+    _q56_write_review(raw, indexed)
+
+    gate, _fp, _rid = HHSubmissionGates._check_review_gate(_q56_ready)
+
+    assert gate is not None and not gate.passed, (shape, gate)
+    assert "no review found" not in gate.reason.lower(), (shape, gate.reason)
+    assert "cannot be read" in gate.reason.lower(), (shape, gate.reason)
+
+
+def test_a_missing_review_record_is_still_reported_as_missing(_q56_ready):
+    """The true half of the same sentence.
+
+    Without this, the fix could be satisfied by never using the phrase at all,
+    which would hide the genuinely absent review instead of the damaged one.
+    """
+    from ai_assistant.hh_submission import HHSubmissionGates
+
+    _q56_clear_reviews()
+
+    gate, _fp, _rid = HHSubmissionGates._check_review_gate(_q56_ready)
+
+    assert gate is not None and not gate.passed
+    assert "no review found" in gate.reason.lower(), gate.reason
+
+
+def test_a_readable_approved_review_still_passes_the_gate(_q56_ready):
+    """The control: nothing about the fix may disturb the working path."""
+    from ai_assistant.hh_submission import HHSubmissionGates
+
+    _q56_write_review(json.dumps(_q56_payload()))
+
+    gate, _fp, _rid = HHSubmissionGates._check_review_gate(_q56_ready)
+
+    assert gate is None or gate.passed, gate
+
+
+def test_a_readable_rejected_review_still_fails_with_its_own_reason(_q56_ready):
+    """A review that exists and is REJECTED must not borrow the damaged wording.
+
+    The new branch is for rows nobody can read. A row that reads perfectly and
+    says REJECTED has its own sentence, and it must stay that sentence.
+    """
+    from ai_assistant.hh_submission import HHSubmissionGates
+
+    _q56_write_review(json.dumps(_q56_payload(status="REJECTED")), "REJECTED")
+
+    gate, _fp, _rid = HHSubmissionGates._check_review_gate(_q56_ready)
+
+    assert gate is not None and not gate.passed
+    assert "cannot be read" not in gate.reason.lower(), gate.reason
+    assert "REJECTED" in gate.reason, gate.reason
+
+
+@pytest.mark.parametrize(
+    "shape,raw,indexed",
+    _q56_unreadable_shapes(),
+    ids=lambda v: v if isinstance(v, str) and len(v) < 20 else "",
+)
+def test_the_audit_and_the_gate_agree_that_the_record_is_damaged(_q56_ready, shape, raw, indexed):
+    """One row, one story.
+
+    The auditor will name the row INVALID_REVIEW_JSON; the gate will refuse it.
+    If the gate kept saying "no review found", the project would be telling a
+    human two different things about one row - which is the same defect #55
+    closed between the auditor and the recovery report.
+    """
+    from ai_assistant.hh_submission import HHSubmissionGates
+
+    _q56_write_review(raw, indexed)
+
+    assert "INVALID_REVIEW_JSON" in _q56_audit_codes(_q56_ready), shape
+    gate, _fp, _rid = HHSubmissionGates._check_review_gate(_q56_ready)
+    assert "cannot be read" in gate.reason.lower(), (shape, gate.reason)
+
