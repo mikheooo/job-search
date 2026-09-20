@@ -6960,3 +6960,210 @@ def test_an_existing_review_is_still_returned_idempotently(_q58_ready):
 
     assert rev.vacancy_stable_id == _Q58_SID
     assert rev.form_fingerprint == "a" * 64
+
+
+# ===========================================================================
+# №59. Смена статуса трекинга без записи в историю - и аудит, который её не видит
+# ===========================================================================
+_Q59_SID = "hh:59"
+
+
+def _q59_status(sid: str) -> str:
+    from ai_assistant.application_tracking import get_application_status
+
+    rec = get_application_status(sid)
+    assert rec is not None, f"нет строки трекинга для {sid}"
+    return rec.status.value
+
+
+def _q59_history_tail(sid: str) -> str | None:
+    from ai_assistant.application_tracking import get_application_history
+
+    hist = get_application_history(sid)
+    return hist[-1].new_status if hist else None
+
+
+def _q59_audit_codes(sid: str) -> set[str]:
+    from ai_assistant.application_integrity import run_integrity_audit
+
+    report = run_integrity_audit(scope="full")
+    return {i.code for i in report.issues if i.vacancy_stable_id == sid}
+
+
+def _q59_seed(sid: str = _Q59_SID) -> str:
+    """Строка трекинга, созданная обычным путём: история заканчивается на DISCOVERED."""
+    from ai_assistant.application_tracking import (
+        ApplicationStatus,
+        set_application_status,
+    )
+
+    db.init_db()
+    set_application_status(
+        sid, ApplicationStatus.DISCOVERED, company="TestCo", title="T"
+    )
+    return sid
+
+
+def test_a_status_change_that_leaves_no_record_is_reported_by_the_audit():
+    """Измерено 2026-09-20.
+
+    `set_application_status()` документирован как «Direct set without validation
+    (for sync)». По СУЩЕСТВУЮЩЕЙ строке он пишет `status` и
+    `last_status_change_at` - и больше ничего. Единственный писатель
+    `application_status_history` - `transition_application()`; единственный, кто
+    читает эту таблицу ради законности переходов, -
+    `application_integrity._check_lifecycle_transitions()`. Значит записи, которые
+    обходят автомат состояний, - ровно те, которых сторож не видит.
+
+    Боевые вызовы пишут так на существующую строку: `watcher.py:391,408,424,440`
+    (REJECTED), `hh_submission.py:1199` (SUBMITTED), плюс `telegram_feedback` и
+    `hh_autonomous_agent`. Переход DISCOVERED -> REJECTED автомат запрещает
+    (`_ALLOWED[DISCOVERED] = [ANALYZED]`), и аудит об этом молчит.
+    """
+    from ai_assistant.application_tracking import (
+        ApplicationStatus,
+        set_application_status,
+    )
+
+    _q59_seed()
+    set_application_status(
+        _Q59_SID, ApplicationStatus.REJECTED, notes="watcher: ineligible"
+    )
+
+    assert _q59_status(_Q59_SID) == "REJECTED"
+    # Строка и запись расходятся: это и есть предмет находки.
+    assert _q59_history_tail(_Q59_SID) == "DISCOVERED"
+    assert "UNRECORDED_STATUS_CHANGE" in _q59_audit_codes(_Q59_SID)
+
+
+def test_a_legal_transition_keeps_the_audit_quiet():
+    """Контроль: законный путь пишется в историю и находки не рождает."""
+    from ai_assistant.application_tracking import (
+        ApplicationStatus,
+        transition_application,
+    )
+
+    _q59_seed()
+    transition_application(_Q59_SID, ApplicationStatus.ANALYZED)
+
+    assert _q59_history_tail(_Q59_SID) == "ANALYZED"
+    assert "UNRECORDED_STATUS_CHANGE" not in _q59_audit_codes(_Q59_SID)
+
+
+def test_a_score_only_refresh_is_not_an_unrecorded_status_change():
+    """Ложное срабатывание, которое дал бы наивный детектор.
+
+    `set_application_status` двигает `last_status_change_at` даже когда статус не
+    меняется (COALESCE-обновление на уровне SQL). Детектор, сравнивающий только
+    отметки времени, объявил бы незаписанным переходом каждое обновление скора.
+    Поэтому судить надо по СТАТУСУ, до которого дошла история.
+    """
+    from ai_assistant.application_tracking import (
+        ApplicationStatus,
+        set_application_status,
+    )
+
+    _q59_seed()
+    set_application_status(_Q59_SID, ApplicationStatus.DISCOVERED, match_score=91.0)
+
+    assert _q59_history_tail(_Q59_SID) == "DISCOVERED"
+    assert "UNRECORDED_STATUS_CHANGE" not in _q59_audit_codes(_Q59_SID)
+
+
+def test_a_row_created_directly_in_a_status_is_not_flagged():
+    """Контроль: создание строки СРАЗУ в статусе - это запись, а не пропуск.
+
+    `set_application_status` на несуществующей строке вставляет историю
+    (`None -> status`), поэтому такие вызовы (`watcher.py:457` и прочие места
+    заведения) не должны попадать под находку. Иначе детектор зашумит на всём
+    парке и его выключат.
+    """
+    from ai_assistant.application_tracking import (
+        ApplicationStatus,
+        set_application_status,
+    )
+
+    db.init_db()
+    set_application_status("hh:59-fresh", ApplicationStatus.SUBMITTED, company="TestCo")
+
+    assert _q59_history_tail("hh:59-fresh") == "SUBMITTED"
+    assert "UNRECORDED_STATUS_CHANGE" not in _q59_audit_codes("hh:59-fresh")
+
+
+def test_the_submission_sync_write_is_reported_too():
+    """Форма `hh_submission.py:1199`: SUBMITTED, когда страница говорит «уже откликнулся».
+
+    Отчёт (стр. 2627) уже судил сам вызов как честный - он следует за фактом. Это
+    не отменяет того, что строки истории он не оставляет, и переход
+    DISCOVERED -> SUBMITTED (запрещённый: `_ALLOWED[DISCOVERED] = [ANALYZED]`)
+    сторож законности не увидит. Ловит его другая проверка и только потому, что
+    рядом нет записи отправки, - то есть по совпадению, а не по назначению.
+    """
+    from ai_assistant.application_tracking import (
+        ApplicationStatus,
+        set_application_status,
+    )
+
+    _q59_seed()
+    set_application_status(_Q59_SID, ApplicationStatus.SUBMITTED)
+
+    assert _q59_status(_Q59_SID) == "SUBMITTED"
+    assert _q59_history_tail(_Q59_SID) == "DISCOVERED"
+    assert "UNRECORDED_STATUS_CHANGE" in _q59_audit_codes(_Q59_SID)
+
+
+def test_the_sync_fallback_that_writes_the_refused_status_is_reported(
+    monkeypatch, tmp_path
+):
+    """`application_tracking.py:443-445` - фолбэк, который пишет ОТКАЗАННЫЙ статус.
+
+    Автомат отказал (`transition_application` бросил), и именно этот отказ
+    обработчик взял триггером: `set_application_status(sid, target)` без валидации.
+    Соседний обработчик того же файла (`:486-501`) устроен правильно - он пишет
+    `cur_status`, то есть отказ уважает, и он же логирует (класс A). Здесь
+    пишется `target`, и молча (класс B).
+
+    Пин не чинит писателя - он делает получившуюся незаписанную смену видимой и
+    документирует прыжок: строка уходит в READY_TO_APPLY, минуя ANALYZED.
+    """
+    import json as _json
+
+    from ai_assistant import application_tracking as tracking
+    from ai_assistant.application_tracking import sync_application_tracking
+    from ai_assistant.candidate_profile import CandidateProfile
+    from ai_assistant.schema import Vacancy
+
+    db.init_db()
+    vac = Vacancy(
+        source="test", source_job_id="59", title="Test Engineer",
+        company="Acme", description="python remote",
+        job_url="https://example.com/59_test", location="Remote",
+        country_restrictions=[], timezone_restrictions=[],
+        salary_min=5000, salary_max=5000, salary_currency="USD",
+        employment_type="Full Time",
+    )
+    db.save_vacancy(vac)
+    sid = vac.stable_id()
+    db.save_application_package(
+        sid, "probe-v1", _json.dumps({"cover_letter": "x", "answers": {}})
+    )
+    profile = CandidateProfile(
+        desired_roles=["Test Engineer"], alternative_roles=[], skills=["python"],
+        preferred_seniority=[], remote_required=False, allowed_locations=[],
+        allowed_timezones=[], languages=[], employment_types=[],
+        minimum_salary=None, excluded_roles=[], excluded_companies=[],
+        excluded_countries=[], excluded_industries=[],
+    )
+    prof_path = tmp_path / "profile.json"
+    prof_path.write_text(_json.dumps(profile.to_dict()), encoding="utf-8")
+
+    def _refuse(*_a, **_k):
+        raise ValueError("Invalid transition DISCOVERED -> READY_TO_APPLY")
+
+    monkeypatch.setattr(tracking, "transition_application", _refuse)
+    sync_application_tracking(profile_path=str(prof_path))
+
+    # Отказанный статус всё равно записан, и ступень ANALYZED пропущена.
+    assert _q59_status(sid) == "READY_TO_APPLY"
+    assert _q59_history_tail(sid) == "DISCOVERED"
+    assert "UNRECORDED_STATUS_CHANGE" in _q59_audit_codes(sid)

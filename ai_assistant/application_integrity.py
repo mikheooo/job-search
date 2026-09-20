@@ -264,6 +264,64 @@ class IntegrityAuditor:
                     if oe in allowed and ne not in allowed[oe]:
                         self._err("INVALID_LIFECYCLE_TRANSITION", sid, cid, f"Invalid {old} -> {new}", {"from": old, "to": new, "current": ts})
 
+    def _check_unrecorded_status_changes(self, cid: str, aliases: list[tuple[Any, str]]):
+        """A status change that never reached application_status_history.
+
+        BLE001 finding #59. `application_tracking.set_application_status()` is
+        documented as "Direct set without validation (for sync)": for a row that
+        already exists it writes `status` and `last_status_change_at` and nothing
+        else. `transition_application()` is the only writer of
+        application_status_history, and _check_lifecycle_transitions() is the
+        only reader of that table for legality - so the writes that skip the
+        state machine are exactly the writes that guard cannot see.
+
+        Measured 2026-09-20 on the production database: 25 of 1407 tracked rows
+        carry a status their recorded history never reaches, and before this
+        check not one of them produced an issue. Two of the 25 are
+        `DISCOVERED -> READY_TO_APPLY`, the signature of
+        application_tracking.py:443-445, where the handler's recovery for a
+        REFUSED transition is to write the refused status directly, skipping
+        ANALYZED.
+
+        WARNING, not ERROR, on purpose: the writes are deliberate (the writer
+        says so in its own docstring), so the audit's job here is to stop
+        vouching for the row, not to declare the system unsafe. Raising this to
+        ERROR - which would match INVALID_LIFECYCLE_TRANSITION, the same defect
+        seen through a history row that does exist - takes error_count on
+        production from 1 to 26; that is a decision about the writers, not about
+        this check.
+
+        The comparison is on the STATUS the history ends at, never on
+        timestamps: set_application_status bumps last_status_change_at even when
+        the status does not move (a score-only refresh), so a timestamp test
+        would report every score update as an unrecorded transition.
+        """
+        for _, sid in aliases:
+            tr = get_application_status(sid)
+            if not tr:
+                continue
+            hist = get_application_history(sid)
+            if not hist:
+                # Nothing claims a path, so nothing contradicts the row. A row
+                # with no history at all is a different defect, and the
+                # production database has none (measured: 0 of 1407).
+                continue
+            recorded = hist[-1].new_status
+            current = tr.status.value if hasattr(tr.status, "value") else str(tr.status)
+            if recorded != current:
+                self._warn(
+                    "UNRECORDED_STATUS_CHANGE",
+                    sid,
+                    cid,
+                    f"tracking says {current} but the recorded history ends at {recorded}",
+                    {
+                        "current": current,
+                        "recorded_tail": recorded,
+                        "history_rows": len(hist),
+                        "last_status_change_at": tr.last_status_change_at,
+                    },
+                )
+
     def _check_submission_records(self, cid: str, aliases: list[tuple[Any, str]]):
         for _, sid in aliases:
             subs = get_all_submissions(sid)
@@ -587,6 +645,7 @@ class IntegrityAuditor:
             self._check_submission_tracking_consistency(cid, als)
             self._check_verification_submission_consistency(cid, als)
             self._check_lifecycle_transitions(cid, als)
+            self._check_unrecorded_status_changes(cid, als)
             self._check_submission_records(cid, als)
             self._check_orphan_artifacts(cid, als)
         if self.scope == "full":
