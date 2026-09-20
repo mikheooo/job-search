@@ -6749,3 +6749,214 @@ def test_the_audit_and_the_preparer_agree_that_the_package_is_damaged(_q57_ready
     assert "INVALID_PACKAGE_JSON" in _q57_audit_codes(_q57_ready)
     result = _q57_browser_status(fields=["name", "email"])
     assert result.status != be.BrowserStatus.READY_FOR_REVIEW
+
+
+# ---------------------------------------------------------------------------
+# BLE001 finding #58 - the same column, read by the WRITER of the record
+#
+# #57 closed the four readers of application_packages.package_json. This is the
+# fifth reading of it, and the one that writes: create_application_review()
+# builds the review OUT of the package and stores form_fingerprint as the
+# attestation of what the human is about to approve. Its own read degraded
+# silently too (application_review.py:296-301, "except Exception:
+# pkg_json = {}"), so a damaged row produced a review with an empty cover
+# letter, empty skills, empty experience - and form_fingerprint equal to the
+# fingerprint of an empty package. That is a value, not a refusal, so every
+# later comparison against it passes.
+#
+# Helpers are #57's on purpose: same column, so one definition of "damaged"
+# (_q57_unreadable_shapes / _q57_readable_shapes / _q57_write_package), and
+# _Q58_SID is #57's vacancy plus the browser preparation review creation needs.
+# ---------------------------------------------------------------------------
+
+_Q58_SID = _Q57_SID
+
+
+@pytest.fixture
+def _q58_ready(_q57_ready):
+    """#57's READY_TO_APPLY vacancy plus the browser session a review needs."""
+    from datetime import datetime, timezone
+
+    be.save_browser_session(
+        be.BrowserApplicationSession(
+            vacancy_stable_id=_Q58_SID,
+            url="https://hh.ru/vacancy/57",
+            status=be.BrowserStatus.READY_FOR_REVIEW,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            updated_at=datetime.now(timezone.utc).isoformat(),
+            form_detected=True,
+        )
+    )
+    return _Q58_SID
+
+
+def _q58_create():
+    from ai_assistant.application_review import create_application_review
+
+    return create_application_review(_Q58_SID)
+
+
+def _q58_stored_fingerprint() -> str | None:
+    from ai_assistant.application_review import get_application_review
+
+    rev = get_application_review(_Q58_SID)
+    return rev.form_fingerprint if rev else None
+
+
+@pytest.mark.parametrize(
+    "shape,raw",
+    _q57_unreadable_shapes(),
+    ids=lambda v: v if isinstance(v, str) and len(v) < 20 else "",
+)
+def test_creating_a_review_against_an_unreadable_package_is_refused(
+    _q58_ready, shape, raw
+):
+    """A review of a package nobody could read is not a review."""
+    _q57_write_package(raw)
+
+    with pytest.raises(ValueError, match="cannot be read"):
+        _q58_create()
+
+
+@pytest.mark.parametrize(
+    "shape,raw",
+    _q57_unreadable_shapes(),
+    ids=lambda v: v if isinstance(v, str) and len(v) < 20 else "",
+)
+def test_the_refused_review_is_not_written_at_all(_q58_ready, shape, raw):
+    """The false record must not exist - not merely be marked as doubtful."""
+    _q57_write_package(raw)
+
+    with pytest.raises(ValueError):
+        _q58_create()
+
+    assert _q58_stored_fingerprint() is None, shape
+
+
+@pytest.mark.parametrize(
+    "shape,raw",
+    _q57_unreadable_shapes(),
+    ids=lambda v: v if isinstance(v, str) and len(v) < 20 else "",
+)
+def test_the_fingerprint_of_an_empty_package_is_never_recorded(
+    _q58_ready, shape, raw
+):
+    """The false attestation itself.
+
+    Measured before the fix: the review was created, its form_fingerprint was
+    fp({}), and the operator's own tool (cli review-list) printed FP=YES for it
+    - the check that exists to find a stale fingerprint reported the damaged row
+    as healthy, and its --missing-fingerprint filter hid exactly this row.
+    """
+    from ai_assistant.application_review import compute_review_fingerprint
+
+    _q57_write_package(raw)
+    try:
+        _q58_create()
+    except ValueError:
+        pass
+
+    empty_fp = compute_review_fingerprint(_Q58_SID, {})
+    assert _q58_stored_fingerprint() != empty_fp, shape
+
+
+@pytest.mark.parametrize(
+    "shape,raw",
+    _q57_readable_shapes(),
+    ids=lambda v: v if isinstance(v, str) and len(v) < 20 else "",
+)
+def test_a_readable_package_still_creates_a_review_with_the_real_fingerprint(
+    _q58_ready, shape, raw
+):
+    """The control: the refusal must not spread to rows production writes.
+
+    Only the "real fingerprint" half is asserted here. The other half - that the
+    real fingerprint differs from fp({}) - is false for the dropped-required
+    shape, and that is a property of the column, not a defect: the canonical
+    payload is only {answers, cover_letter, vacancy_stable_id}, so a letterless
+    row with no answers hashes to the same value as an empty dict. Measured in
+    test_a_letterless_package_hashes_to_the_empty_fingerprint_legitimately.
+    """
+    from ai_assistant.application_review import compute_review_fingerprint
+
+    _q57_write_package(raw)
+
+    rev = _q58_create()
+
+    assert rev.form_fingerprint == compute_review_fingerprint(_Q58_SID, raw), shape
+
+
+def test_a_letterless_package_hashes_to_the_empty_fingerprint_legitimately(_q58_ready):
+    """Measured 2026-09-20 - and it is why the guard judges the ROW, not the value.
+
+    A readable package without cover_letter and without answers hashes to exactly
+    the same sha256 as {} (application_review.py:69-75). So
+    "form_fingerprint == fp({})" is not evidence of damage, and a detector built
+    on that comparison would flag every letterless application. The damaged row
+    is indistinguishable BY VALUE from a legitimate letterless one - which is
+    what makes the false FP=YES in cli review-list dangerous rather than merely
+    wrong.
+    """
+    from ai_assistant.application_review import compute_review_fingerprint
+
+    _q57_write_package(json.dumps({"vacancy_stable_id": _Q58_SID}))
+
+    rev = _q58_create()
+
+    assert rev.cover_letter is None
+    assert rev.form_fingerprint == compute_review_fingerprint(_Q58_SID, {})
+
+
+def test_a_readable_package_still_fills_the_review_from_the_package(_q58_ready):
+    """The fields the review exists to carry must still come from the package."""
+    pkg = _q57_package()
+    _q57_write_package(json.dumps(pkg))
+
+    rev = _q58_create()
+
+    assert rev.cover_letter == pkg["cover_letter"]
+    assert rev.tailored_skills == pkg["tailored_skills"]
+
+
+def test_a_package_that_degrades_between_the_two_reads_is_refused_loudly(
+    _q58_ready, monkeypatch
+):
+    """The second line of defence, and it has to stay loud.
+
+    The guard reads the row and then the same row is parsed again - two reads,
+    not one transaction. Unreachable for every shape measured above, and that is
+    exactly why it is kept: it turns the remaining race into a refusal instead
+    of the silent {} this code did before the fix. The patch goes to
+    application_prep, because the guard imports the helper by name at call time.
+    """
+    _q57_write_package('{"cover_letter": ')
+    monkeypatch.setattr(
+        "ai_assistant.application_prep.package_record_is_unreadable",
+        lambda sid: False,
+    )
+
+    with pytest.raises(ValueError, match="could not be parsed"):
+        _q58_create()
+
+
+def test_an_absent_package_row_still_says_not_found(_q58_ready):
+    """The guard must not swallow the row that is genuinely missing."""
+    _q57_clear_packages()
+
+    with pytest.raises(ValueError, match="Application package not found"):
+        _q58_create()
+
+
+def test_an_existing_review_is_still_returned_idempotently(_q58_ready):
+    """The guard sits after the idempotent branch, and must stay there.
+
+    A review approved before the package was damaged is a true record of what
+    was prepared; re-running the command must return it, not start refusing.
+    """
+    _q57_write_review("PENDING_REVIEW")
+    _q57_write_package('{"cover_letter": ')
+
+    rev = _q58_create()
+
+    assert rev.vacancy_stable_id == _Q58_SID
+    assert rev.form_fingerprint == "a" * 64

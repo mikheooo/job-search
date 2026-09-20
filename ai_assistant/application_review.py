@@ -240,6 +240,7 @@ def list_application_reviews(status: str | None = None, limit: int = 100) -> lis
     return res
 
 def _get_required_data(vacancy_stable_id: str):
+    from .application_prep import package_record_is_unreadable
     from .application_queue import get_queue_item
     from .application_tracking import ApplicationStatus, get_application_status
     from .browser_executor import BrowserStatus, get_browser_session
@@ -293,12 +294,29 @@ def _get_required_data(vacancy_stable_id: str):
             deep = None
 
     # package json
+    # BLE001 finding #58. This read used to degrade to {} silently, and the
+    # review it built recorded form_fingerprint = fp({}) as if that attested to
+    # the prepared form - empty cover letter, empty skills, empty experience -
+    # and every later comparison against that value passed. "Readable" is judged
+    # by the readers of the column (application_prep.package_record_is_unreadable),
+    # not by the writer's model: the same definition #57 used.
+    if package_record_is_unreadable(vacancy_stable_id):
+        raise ValueError(
+            f"Application package for {vacancy_stable_id} exists but cannot be read"
+            " - refusing to build a review out of an unreadable package"
+        )
     pkg_json = {}
     if pkg_row and pkg_row[2]:
         try:
             pkg_json = json.loads(pkg_row[2])
-        except Exception:
-            pkg_json = {}
+        except Exception as exc:
+            # Unreachable for the shapes measured in #58 (the guard runs the
+            # same json.loads on the same bytes); kept loud for the race where
+            # the row changes between the two reads.
+            raise ValueError(
+                f"Application package for {vacancy_stable_id} could not be parsed"
+                f" while building the review ({exc.__class__.__name__})"
+            ) from exc
 
     return track, q, pkg_json, sess, vac, deep
 
