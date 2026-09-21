@@ -3075,9 +3075,32 @@ def ui_cmd(host: str = "127.0.0.1", port: int = 8000) -> int:
     """Launch the interactive web dashboard."""
     try:
         import uvicorn
-        print(f"Starting Job-Search Web Dashboard on http://{host}:{port}")
-        uvicorn.run("ai_assistant.ui.app:app", host=host, port=port, reload=False)
-        return 0
+        hosts = [h.strip() for h in host.split(",") if h.strip()]
+        if len(hosts) > 1:
+            import socket
+            sockets = []
+            for h in hosts:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    s.bind((h, port))
+                    s.listen(128)
+                    sockets.append(s)
+                except Exception as ex:
+                    print(f"Warning: could not bind {h}:{port}: {ex}", file=sys.stderr)
+                    s.close()
+            if not sockets:
+                raise RuntimeError(f"Could not bind to any of requested hosts: {hosts}")
+            print(f"Starting Job-Search Web Dashboard on {', '.join(f'http://{h}:{port}' for h in hosts)}")
+            config = uvicorn.Config("ai_assistant.ui.app:app", port=port, log_level="info")
+            server = uvicorn.Server(config)
+            server.run(sockets=sockets)
+            return 0
+        else:
+            single_host = hosts[0] if hosts else "127.0.0.1"
+            print(f"Starting Job-Search Web Dashboard on http://{single_host}:{port}")
+            uvicorn.run("ai_assistant.ui.app:app", host=single_host, port=port, reload=False)
+            return 0
     except Exception as e:
         print(f"Failed to launch Web UI: {e}", file=sys.stderr)
         return 1
