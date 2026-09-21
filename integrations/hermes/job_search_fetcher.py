@@ -125,6 +125,72 @@ def send_to_telegram(text: str, reply_markup: dict = None) -> bool:
     return False
 
 
+def score_unscored_vacancies() -> int:
+    """Проставить match_score вакансиям, у которых он пуст. Ничего не отправляет.
+
+    Зачем это здесь. Раньше оценки в базу не писал никто, кроме ручного
+    `python -m ai_assistant.cli analyze --persist`, который в ежедневном прогоне
+    не вызывался. В итоге между 29 августа и 22 сентября match_score оставался
+    NULL у 1516 вакансий. Дайджест и очередь отклика считают оценку заново на
+    лету, поэтому пустой колонки они не замечают, — но два места её читают:
+    агрегаты дашборда и резервный путь дайджеста, когда профиль не загрузился
+    (там NULL превращается в 70.0 и решение APPLY, то есть канал забивается
+    мусором). Чтобы колонка не протухала, заполняем её каждый прогон.
+
+    Оцениваем ТОЛЬКО пустые строки: повторный счёт всех 2107 вакансий занимает
+    около четырёх минут (коммит на каждую), а нужен только для новых.
+
+    Возвращает число оценённых вакансий. Любая ошибка не должна ломать доставку,
+    поэтому вызывающий обязан обернуть вызов в try/except.
+    """
+    import sqlite3
+
+    from ai_assistant import config
+    from ai_assistant.candidate_profile import load_candidate_profile
+    from ai_assistant.db import _row_to_vacancy, init_db
+    from ai_assistant.matcher import JobMatcher
+
+    init_db()
+    conn = sqlite3.connect(config.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    rows = cur.execute("SELECT * FROM vacancies WHERE match_score IS NULL").fetchall()
+    if not rows:
+        conn.close()
+        return 0
+
+    profile = load_candidate_profile()
+    matcher = JobMatcher(profile)
+
+    scored = 0
+    for row in rows:
+        vacancy = _row_to_vacancy(row)
+        if not vacancy:
+            continue
+        try:
+            res = matcher.match(vacancy)
+        except Exception as e:  # noqa: BLE001 - one bad vacancy must not cost the scores of all the others
+            print(f"[WARNING] Match failed for {row['stable_id']}: {e}", file=sys.stderr)
+            continue
+        cur.execute(
+            "UPDATE vacancies SET match_score=?, match_decision=?, match_reasons=?,"
+            " match_strengths=?, match_gaps=? WHERE stable_id=?",
+            (
+                res.score,
+                res.decision,
+                json.dumps(res.reasons, ensure_ascii=False),
+                json.dumps(res.strengths, ensure_ascii=False),
+                json.dumps(res.gaps, ensure_ascii=False),
+                vacancy.stable_id(),
+            ),
+        )
+        scored += 1
+
+    conn.commit()
+    conn.close()
+    return scored
+
+
 def run_canonical_discovery_and_export(limit: int = 5, min_score: float = 60.0, dry_run: bool = False) -> tuple[str, list]:
     """Execute canonical discovery cycle via job-search and export validated digest from state.db."""
     from ai_assistant.watcher import Watcher, WatcherConfig
@@ -150,6 +216,17 @@ def run_canonical_discovery_and_export(limit: int = 5, min_score: float = 60.0, 
         print(f"[SUCCESS] Canonical discovery completed: fetched {poll_res.fetched_count}, new {poll_res.new_vacancies_count}, matched {poll_res.matched_count}")
     except Exception as e:
         print(f"[WARNING] Canonical poll warning (will still export from state.db): {e}", file=sys.stderr)
+
+    # 1b. Score only the vacancies that have no match_score yet, so the column
+    # never goes stale again. Failure here must not break delivery.
+    try:
+        scored = score_unscored_vacancies()
+        if scored:
+            print(f"[SUCCESS] Scored {scored} previously unscored vacancies in state.db.")
+        else:
+            print("[SUCCESS] All vacancies already scored.")
+    except Exception as e:  # noqa: BLE001 - scoring is a side errand; it must never break the daily delivery
+        print(f"[WARNING] Scoring step failed (delivery continues): {e}", file=sys.stderr)
 
     # 2. Export validated digest from state.db
     stdout_buf = io.StringIO()
