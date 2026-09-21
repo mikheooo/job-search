@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -129,6 +130,26 @@ def _build_user_prompt(vacancy: Vacancy, profile: CandidateProfile, resume_text:
     )
 
 
+# Google отдаёт 503 «high demand» и 429 «quota» пачками, а вызывающий
+# (`analyze_job_deep`) на любой сбой уходит в детерминированную заглушку и теряет
+# качество разбора. Замер 2026-09-22: по три попытки на модель дают 0/3 на
+# перегруженной и 3/3 на свободной, то есть разовая 503 — вопрос везения.
+# Поэтому пробуем несколько раз с нарастающей паузой, но НЕ повторяем заведомо
+# постоянные ошибки (401/403/404): иначе плохой ключ стоит трёх таймаутов.
+LLM_ATTEMPTS = 3
+LLM_BACKOFF_SECONDS = 2.0
+
+
+def _is_retryable(error: Exception) -> bool:
+    """Транзиентный ли сбой. Сеть, 5xx и 429 — да; остальные 4xx — нет."""
+    status = getattr(error, "status_code", None)
+    if not isinstance(status, int):
+        return True  # таймаут, обрыв, SSL — повторить имеет смысл
+    if status == 429:
+        return True  # квота: пауза помогает
+    return not 400 <= status < 500
+
+
 def _call_llm(system_prompt: str, user_prompt: str) -> str:
     if os.getenv("JOB_ANALYZER_OFFLINE") == "1":
         raise RuntimeError("Offline mode - skip LLM")
@@ -140,18 +161,35 @@ def _call_llm(system_prompt: str, user_prompt: str) -> str:
         base_url=config.LLM_BASE_URL if config.LLM_BASE_URL else "https://api.x.ai/v1",
         timeout=90,
     )
-    resp = client.chat.completions.create(
-        model=config.LLM_MODEL,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        response_format={"type": "json_object"},
-    )
-    content = resp.choices[0].message.content
-    if not content:
-        raise RuntimeError("Empty LLM response")
-    return content
+
+    logger = logging.getLogger(__name__)
+    last_error: Exception | None = None
+    for attempt in range(1, LLM_ATTEMPTS + 1):
+        try:
+            resp = client.chat.completions.create(
+                model=config.LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format={"type": "json_object"},
+            )
+            content = resp.choices[0].message.content
+            if not content:
+                raise RuntimeError("Empty LLM response")
+            return content
+        except Exception as e:  # noqa: BLE001 - the loop must see every failure to decide whether to retry
+            last_error = e
+            if not _is_retryable(e) or attempt == LLM_ATTEMPTS:
+                break
+            delay = LLM_BACKOFF_SECONDS * attempt
+            logger.warning(
+                "LLM attempt %d/%d failed (%s), retrying in %.0fs",
+                attempt, LLM_ATTEMPTS, type(e).__name__, delay,
+            )
+            time.sleep(delay)
+
+    raise last_error if last_error is not None else RuntimeError("LLM call failed")
 
 
 def _fallback_analysis(vacancy: Vacancy, profile: CandidateProfile, match: MatchResult | None) -> DeepAnalysisResult:
