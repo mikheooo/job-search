@@ -71,8 +71,9 @@ def confirm_human_submission(
     # never fires and narrowing it closes nothing. The fix has to be
     # structural. Same rule as finding #32 in hh_submission.py, deliberately
     # identical so the two copies cannot drift apart: absent (None) is
-    # legitimate - reviews written before gate data existed - and stays a skip;
-    # anything else is an anomaly and fails closed.
+    # legitimate - reviews written before gate data existed - and stays a skip
+    # (recorded as such since finding #54, which closed the reachable half of
+    # that skip); anything else is an anomaly and fails closed.
     gate_data = entry.get("gate")
     if gate_data is None:
         gate_vacancy = ""
@@ -86,11 +87,31 @@ def confirm_human_submission(
                 "so the approved vacancy cannot be confirmed"
             ),
         }
-    if gate_vacancy and gate_vacancy != vacancy_stable_id:
-        return {"ok": False, "reason": f"vacancy mismatch vs approved review: {gate_vacancy} != {vacancy_stable_id}"}
+    if gate_vacancy:
+        if gate_vacancy != vacancy_stable_id:
+            return {"ok": False, "reason": f"vacancy mismatch vs approved review: {gate_vacancy} != {vacancy_stable_id}"}
+        # The comparison ran and passed, so the record says nothing extra.
+        reason = "human confirmation recorded"
+    else:
+        # BLE001 finding #54: there is no approved vacancy on record, so the
+        # comparison above cannot be made. The shape is legitimate rather than
+        # an anomaly - HumanReviewGate.vacancy_stable_id defaults to "", and
+        # build_review_gate() writes it whenever neither the package nor the
+        # form carries one - so it must NOT be refused; refusing blocks real
+        # reviews. What it must not do is report a comparison that never ran.
+        # The confirmation is recorded with that fact stated, which is what
+        # finding #52 does to a gate that cannot measure language
+        # (language_match_without_description): stop asserting a check, do not
+        # block what there is nothing to block. Of the three options weighed in
+        # the report, this is B; A refuses legitimate reviews and C is the false
+        # record this whole triage is about.
+        reason = (
+            "human confirmation recorded "
+            "(vacancy comparison not made: no approved vacancy on record)"
+        )
     # One confirmation per review; re-confirmation overwrites (human re-affirms).
     _human_confirmations[review_id] = (fingerprint, vacancy_stable_id)
-    return {"ok": True, "reason": "human confirmation recorded"}
+    return {"ok": True, "reason": reason}
 
 
 def is_human_confirmed(review_id: str, fingerprint: str, vacancy_stable_id: str) -> bool:

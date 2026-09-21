@@ -340,8 +340,10 @@ def preflight_submission(
     # was not a mapping silently disabled the check. Measured, same mismatched
     # vacancy both times: a dict produced FAIL_CLOSED, a string produced
     # READY_TO_SUBMIT. A field that is absent (None) is legitimate - reviews
-    # written before gate data existed - and stays a skip; anything else is an
-    # anomaly and fails closed.
+    # written before gate data existed - and stays a skip (recorded as such
+    # since finding #54, which closed the reachable half of that skip); anything
+    # else is an anomaly and fails closed.
+    vacancy_note = ""
     gate_data = entry.get("gate")
     if gate_data is None:
         gate_vacancy = ""
@@ -354,10 +356,21 @@ def preflight_submission(
             "so the approved vacancy cannot be confirmed"
         )
         return report
-    if gate_vacancy and gate_vacancy != report.vacancy_stable_id:
-        report.status = SubmissionStatus.FAIL_CLOSED
-        report.reason = f"vacancy_stable_id mismatch vs approved review: {gate_vacancy} != {report.vacancy_stable_id}"
-        return report
+    if gate_vacancy:
+        if gate_vacancy != report.vacancy_stable_id:
+            report.status = SubmissionStatus.FAIL_CLOSED
+            report.reason = f"vacancy_stable_id mismatch vs approved review: {gate_vacancy} != {report.vacancy_stable_id}"
+            return report
+    else:
+        # BLE001 finding #54: the same skip as in
+        # hh_human_submission.confirm_human_submission(), and the same
+        # reachability - HumanReviewGate.vacancy_stable_id defaults to "", so a
+        # review built from a package and a form that both lack a vacancy lands
+        # here. Reaching READY_TO_SUBMIT is still right, because there is
+        # nothing to compare against; what is not right is a reason that claims
+        # the comparison ran. Both copies are changed together so they cannot
+        # drift apart, which is what finding #44 was about.
+        vacancy_note = " (vacancy comparison not made: no approved vacancy on record)"
 
     # Find the real submit button (read-only).
     try:
@@ -378,7 +391,7 @@ def preflight_submission(
         return report
 
     report.status = SubmissionStatus.READY_TO_SUBMIT
-    report.reason = "all gates passed; submit button found and enabled"
+    report.reason = "all gates passed; submit button found and enabled" + vacancy_note
     return report
 
 

@@ -5659,6 +5659,122 @@ def test_confirm_human_submission_cannot_run_the_gates_it_claimed(_q53_clean):
     assert "check_readonly_gates" not in source
 
 
+# ---------------------------------------------------------------------------
+# BLE001 finding #54: the same skip one door further in - and this door is
+# reachable.
+#
+# Finding #53 closed the branch where "gate" is not a mapping at all. This is
+# the branch beside it: a mapping that carries no vacancy. `gate_data.get(
+# "vacancy_stable_id") or ""` yields "", and "" skips the comparison - so the
+# review is confirmed and the record reports a comparison that never ran.
+#
+# Unlike #53's door, this one is reachable by construction: HumanReviewGate.
+# vacancy_stable_id defaults to "", and build_review_gate() writes
+# `getattr(package, "vacancy_stable_id", "") or form.vacancy_stable_id or ""`,
+# so a package and a form that both lack a vacancy produce exactly
+# {"vacancy_stable_id": ""}. #53 closed doors the store never opens; this is the
+# one it opens whenever there is no vacancy to write.
+#
+# Three options were weighed in the report, and B was chosen:
+#   A - call a mapping without a vacancy an anomaly and refuse. Wrong on the
+#       merits: the shape is legitimate, so refusing blocks real reviews.
+#   B - confirm, but say in the record that the comparison was not made. This is
+#       what finding #52 does to a gate that cannot measure language
+#       (language_match_without_description): stop asserting a check, do not
+#       block what there is nothing to block.
+#   C - leave it. Rejected: it is the false record this triage is about.
+#
+# Both copies carry the skip, and both are pinned here, because fixing one and
+# not the other is finding #44 (copies that drift).
+#
+# The pins assert a shared phrase, not a sentence: an assertion that has to
+# match wording breaks on its own correction, which is the lesson the #53
+# docstring pin records.
+# ---------------------------------------------------------------------------
+
+VACANCY_NOT_MADE = "vacancy comparison not made"
+
+
+@pytest.mark.parametrize(
+    "gate_value",
+    [None, {}, {"vacancy_stable_id": ""}],
+    ids=["absent", "empty-dict", "blank-vacancy"],
+)
+def test_a_confirmation_with_no_vacancy_on_record_does_not_claim_the_comparison(
+        _q53_clean, gate_value):
+    """The confirmation stands; it no longer reports a check it did not run.
+
+    All three shapes mean the same thing - there is no approved vacancy to
+    compare against, so the comparison cannot be made. `None` is #32's
+    "legitimate absence", the other two are #54. None of them may be refused,
+    and none of them may be reported as a passed comparison.
+    """
+    store, rid = _q53_approved_store()
+    store.get(rid)["gate"] = gate_value
+
+    result = _q53_confirm(store, rid, _Q53_WRONG)
+
+    assert result["ok"] is True, result
+    assert VACANCY_NOT_MADE in result["reason"], result
+    assert hcs._human_confirmations[rid] == (_Q53_FP, _Q53_WRONG)
+
+
+def test_a_matching_vacancy_still_records_a_plain_confirmation(_q53_clean):
+    """Counter-pin: a comparison that ran and passed gets no marker added.
+
+    Passes before the fix too. Without it, marking every confirmation would look
+    green while the honest path quietly lost its plain wording.
+    """
+    store, rid = _q53_approved_store()
+    store.get(rid)["gate"] = {"vacancy_stable_id": _Q53_APPROVED}
+
+    result = _q53_confirm(store, rid, _Q53_APPROVED)
+
+    assert result["ok"] is True, result
+    assert VACANCY_NOT_MADE not in result["reason"], result
+
+
+def test_a_refused_mismatch_does_not_carry_the_not_made_marker(_q53_clean):
+    """Counter-pin: a refusal is a comparison that DID run, and it says so."""
+    store, rid = _q53_approved_store()
+    store.get(rid)["gate"] = {"vacancy_stable_id": _Q53_APPROVED}
+
+    result = _q53_confirm(store, rid, _Q53_WRONG)
+
+    assert result["ok"] is False, result
+    assert VACANCY_NOT_MADE not in result["reason"], result
+
+
+@pytest.mark.parametrize(
+    "gate_value",
+    [None, {}, {"vacancy_stable_id": ""}],
+    ids=["absent", "empty-dict", "blank-vacancy"],
+)
+def test_the_sibling_preflight_reports_the_same_not_made_marker(
+        monkeypatch, tmp_path, gate_value):
+    """The second copy: hh_submission.preflight_submission().
+
+    Same skip, same reachability, same demand - it may still reach
+    READY_TO_SUBMIT, but its reason may not claim the vacancy comparison ran.
+    """
+    from ai_assistant.hh_submission import SubmissionStatus
+
+    rep = _ble32_preflight(monkeypatch, tmp_path, gate_value)
+
+    assert rep.status == SubmissionStatus.READY_TO_SUBMIT, rep.reason
+    assert VACANCY_NOT_MADE in rep.reason, rep.reason
+
+
+def test_the_sibling_preflight_stays_plain_on_a_real_match(monkeypatch, tmp_path):
+    """Counter-pin for the sibling: a made-and-passed comparison stays plain."""
+    from ai_assistant.hh_submission import SubmissionStatus
+
+    rep = _ble32_preflight(monkeypatch, tmp_path, {"vacancy_stable_id": "hh:136591579"})
+
+    assert rep.status == SubmissionStatus.READY_TO_SUBMIT, rep.reason
+    assert VACANCY_NOT_MADE not in rep.reason, rep.reason
+
+
 # ===========================================================================
 # BLE001 finding #55 - the recovery report called a damaged record "missing"
 # ===========================================================================
