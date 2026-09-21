@@ -24,14 +24,49 @@ the restore did not match.
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - не Windows
+    msvcrt = None
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "tools"))
 
 import report_line_refs as R
+
+# Тот же замок, что у мутационных инструментов и у `ble001_ruff_parity.py`.
+# Нужен потому, что `by_source` подменяет файлы, а два экземпляра, запущенные
+# одновременно, сохранят «оригиналом» уже подменённые байты и восстановят их
+# навсегда: инструмент напечатает `tree restored`, а дерево останется чужим.
+# Замок снимает ядро при смерти процесса, поэтому файл замка не удаляется.
+LOCK = Path(tempfile.gettempdir()) / "job-search-mutation.lock"
+
+
+def acquire_lock():
+    fd = os.open(LOCK, os.O_CREAT | os.O_RDWR)
+    if msvcrt is None:
+        return fd
+    try:
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def release_lock(fd) -> None:
+    try:
+        if msvcrt is not None:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    finally:
+        os.close(fd)
 
 DOC = "docs/ble001_triage.md"
 
@@ -99,6 +134,13 @@ def by_commit() -> int:
 
 
 def by_source() -> int:
+    lock_fd = acquire_lock()
+    if lock_fd is None:
+        print(f"ОТКАЗ: {LOCK} держит другой экземпляр — подмена файлов "
+              f"одновременно из двух процессов оставляет дерево чужим, "
+              f"а инструмент при этом печатает `tree restored`.")
+        return 2
+
     saved = {f: (REPO / f).read_bytes() for f in FILES}
     before = {f: sha(b) for f, b in saved.items()}
     current_text = (REPO / DOC).read_bytes().decode("utf-8")
@@ -114,6 +156,7 @@ def by_source() -> int:
     finally:
         for f, data in saved.items():
             (REPO / f).write_bytes(data)
+        release_lock(lock_fd)
 
     bad = [f for f, h in before.items() if sha((REPO / f).read_bytes()) != h]
     if bad:

@@ -338,12 +338,17 @@ def main(argv: list[str]) -> int:
               "neighbour moved):")
         for line in controls_broken:
             print(f"  {line}")
-    if survived or ill_formed:
+    if survived or ill_formed or controls_broken:
         if survived:
             print(f"RESULT: {len(survived)} mutation(s) survived: {', '.join(survived)}")
         if ill_formed:
             print(f"RESULT: {len(ill_formed)} mutation(s) malformed: "
                   f"{', '.join(ill_formed)}")
+        if controls_broken:
+            # Без этой ветки инструмент печатал «controls intact» строкой ниже
+            # блока `CONTROL BREAKAGE` - то есть утверждал ровно то, что сам
+            # только что опроверг. Найдено на инструменте №65, исправлено здесь.
+            print(f"RESULT: {len(controls_broken)} mutation(s) broke a control")
         return 1
     print(f"RESULT: all {len(selected)} mutations caught, controls intact, "
           f"tree restored.")

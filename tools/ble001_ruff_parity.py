@@ -13,6 +13,17 @@
 восстанавливаются ИЗ ПАМЯТИ, а хеши печатаются до и после: без совпадения хешей
 вердикта нет.
 
+Замок против второго экземпляра
+-------------------------------
+Сохранение «до» в память защищает от ошибки в собственном `finally`, но не от
+ВТОРОГО экземпляра: если два процесса подменяют один файл, второй прочитает себе в
+«исходные байты» подмену первого и восстановит её навсегда. Именно так №65 потерял
+строку в `submission_recovery.py`. Поэтому замок здесь тот же, что у мутационного
+инструмента (`%TEMP%\\job-search-mutation.lock`, `msvcrt.locking`), и он ОБЩИЙ:
+подмена файлов и мутация файлов не имеют права идти одновременно. Замок снимает
+ядро при смерти процесса, поэтому убитый сторожем прогон не оставляет вечного
+замка.
+
 Запуск:
     .venv/Scripts/python.exe tools/ble001_ruff_parity.py ai_assistant/db.py
     .venv/Scripts/python.exe tools/ble001_ruff_parity.py --rev HEAD~1 ai_assistant/db.py ai_assistant/hh_questionnaire.py
@@ -21,12 +32,44 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+try:  # Windows-only, как и весь проект.
+    import msvcrt
+except ImportError:  # pragma: no cover
+    msvcrt = None
 
 REPO = Path(__file__).resolve().parent.parent
 RUFF = ["uvx", "ruff@0.16.6"]
+LOCK = Path(tempfile.gettempdir()) / "job-search-mutation.lock"
+
+
+def _acquire_lock():
+    fd = os.open(LOCK, os.O_CREAT | os.O_RDWR)
+    if msvcrt is None:
+        return fd
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def _release_lock(fd) -> None:
+    try:
+        if msvcrt is not None:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def sha(path: Path) -> str:
@@ -65,22 +108,36 @@ def main(argv: list[str]) -> int:
             print(f"нет файла: {path}")
             return 2
 
+    lock_fd = _acquire_lock()
+    if lock_fd is None:
+        print(f"ОТКАЗ: {LOCK} держит другой экземпляр (подмена файлов или "
+              f"мутационный прогон). Два процесса на одних файлах означают, что "
+              f"один прочитает подмену другого как «исходные байты» и запишет её "
+              f"навсегда. Дождись его.")
+        return 2
+    try:
+        return _measure(paths, args.files, args.rev)
+    finally:
+        _release_lock(lock_fd)
+
+
+def _measure(paths: list[Path], rels: list[str], rev: str) -> int:
     # Байты «после» - в память. Это и есть восстановление; перечитывание файла
     # восстановлением не является.
     after_bytes = {path: path.read_bytes() for path in paths}
     before_bytes: dict[Path, bytes] = {}
-    for path, rel in zip(paths, args.files):
+    for path, rel in zip(paths, rels):
         proc = subprocess.run(
-            ["git", "show", f"{args.rev}:{rel}"], cwd=REPO,
+            ["git", "show", f"{rev}:{rel}"], cwd=REPO,
             capture_output=True, check=False,
         )
         if proc.returncode != 0:
-            print(f"нет {rel} в {args.rev}: {proc.stderr.decode(errors='replace').strip()}")
+            print(f"нет {rel} в {rev}: {proc.stderr.decode(errors='replace').strip()}")
             return 2
         before_bytes[path] = proc.stdout
 
     after_hash = {path: hashlib.sha256(data).hexdigest() for path, data in after_bytes.items()}
-    print(f"ревизия «до»: {args.rev}")
+    print(f"ревизия «до»: {rev}")
     for path in paths:
         print(f"  sha256 после  {path.name:32} {after_hash[path]}")
 

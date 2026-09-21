@@ -8532,3 +8532,398 @@ def test_the_discovery_status_literal_matches_the_enum():
     assert db_module._DISCOVERY_STATUS == _Q64_DISCOVERY_STATUS, (
         "стенд и писатель разошлись в том, что такое мнение по умолчанию"
     )
+
+
+# ===========================================================================
+# №65. Строка `application_submissions`, у которой не читается payload, теряет
+#      свой submission_id — и отчёт говорит «сверки не было» о записи VERIFIED
+# ===========================================================================
+#
+# Четвёртая сестра той же семьи, что №33 (очередь), №55 (верификации) и №56
+# (ревью): строка есть, а читатель отвечает так, будто её нет. Дверь здесь
+# другая — **колонки строки**, а не парсер модели.
+#
+# `get_submission()` отдаёт кортеж
+#   (0 vacancy_stable_id, 1 submission_id, 2 executor_version, 3 submission_json,
+#    4 status, 5 submitted_at, 6 created_at, 7 updated_at)
+# и в `inspect_submission_state()` индекс 1 присваивался **после** разбора
+# индекса 3, в том же `try`. Разбор падал — `except` выбрасывал вместе с ним и
+# `submission_id`, а тот от payload не зависит вовсе. Ключ `(vacancy,
+# submission_id)` — это ключ поиска верификации, поэтому верификация не
+# искалась, `last_verification` оставался None, и отчёт произносил
+# «Submission exists but no verification performed» с советом идти проверять
+# результат на сайт. Ровно то предложение, которое №55 запретил.
+#
+# Разобранное значение при этом **не используется нигде**: `sub_json` в функции
+# встречается один раз — в присваивании. То есть разбор — мёртвая работа,
+# единственный возможный эффект которой — потерять id.
+#
+# Дверь живая и не экзотическая: в боевой `state.db` **девять строк из
+# пятнадцати** лежат со сдвигом — `submission_json` содержит submission_id,
+# `submitted_at` содержит payload, `created_at` содержит настоящий вердикт.
+# Их записал прежний вызов `save_submission()` с другим представлением о
+# подписи: `save_submission(sid, sub_id, EXECUTOR_VERSION, json, status)` и, в
+# девятом случае, `save_submission(sid, sub_id, "SUBMITTED", json)`. Сегодня все
+# шесть мест вызова передают `status=`/`submission_id=` по имени, поэтому
+# писатель такой строки больше не делает — но строки остались, и четыре из них
+# имеют верификацию `VERIFIED`, которую отчёт называет отсутствующей.
+#
+# Отдельная деталь, видная только на боевой базе: `submission_id` в колонке 1 у
+# этих строк **сгенерирован самим `save_submission`** (`hh:<id>_<YYYYmmdd_HHMMSS>`),
+# потому что прежний вызов его не передавал. Верификация же подписана тем самым
+# `sub_<id>_<epoch>`, который уехал в колонку payload. Поэтому пин ниже не
+# требует «найти верификацию» для живой формы — он требует **не утверждать, что
+# её не было**, когда строка нечитаема. Догадка о том, что значение в колонке
+# payload и есть ключ, была бы правдой о сегодняшних данных и догадкой о
+# читателе; такой догадки здесь нет.
+#
+# Вторая и третья двери — тот же индекс, но в CLI:
+#   * `cli.py:1022` (`submissions show`) разбирает `sub_row[3]` **вне** `try`:
+#     команда падает с JSONDecodeError, не напечатав ничего. `sub_data` там тоже
+#     не используется нигде.
+#   * `cli.py:1097` (`submissions verify`) разбирает `sub_row[1]` — а индекс 1
+#     это submission_id, не JSON. Не разбирается ни у одной из **15** живых
+#     строк, то есть команда мертва на любой вакансии, и запасной вариант
+#     `sub_row[0]` указывает на vacancy_stable_id вместо идентификатора попытки.
+
+_Q65_SID = "hh:65"
+# Ключ, которым подписана верификация. На живой форме он лежит в колонке payload.
+_Q65_VERIFICATION_KEY = "sub_65_1787999999"
+# То, что `save_submission()` генерирует себе сам, когда id не передали.
+_Q65_GENERATED_ID = "hh:65_20260920_000000"
+
+
+def _q65_verification_payload() -> dict:
+    """Строка верификации, которую текущая модель разбирает без претензий."""
+    from ai_assistant.submission_verifier import VERIFICATION_VERSION
+
+    return {
+        "vacancy_stable_id": _Q65_SID,
+        "submission_id": _Q65_VERIFICATION_KEY,
+        "verification_status": "VERIFIED",
+        "evidence": {"body_marker": True},
+        "final_url": "https://hh.ru/applicant/negotiations",
+        "page_title": "Отклик отправлен",
+        "verified_at": "2026-09-20T00:00:00",
+        "warnings": [],
+        "verification_version": VERIFICATION_VERSION,
+    }
+
+
+def _q65_write_verification(raw: str | None, submission_id: str = _Q65_VERIFICATION_KEY) -> None:
+    """Положить ровно `raw` в колонку верификации, заменив всё, что было."""
+    import sqlite3
+
+    from ai_assistant import config
+    from ai_assistant.submission_verifier import VERIFICATION_VERSION
+
+    conn = sqlite3.connect(config.DB_FILE)
+    try:
+        conn.execute("DELETE FROM submission_verifications")
+        conn.execute(
+            """
+            INSERT INTO submission_verifications
+                (vacancy_stable_id, submission_id, verification_version,
+                 verification_status, verification_json, verified_at,
+                 created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _Q65_SID, submission_id, VERIFICATION_VERSION, "VERIFIED", raw,
+                "2026-09-20T00:00:00", "2026-09-20T00:00:00", "2026-09-20T00:00:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _q65_clear_verifications() -> None:
+    import sqlite3
+
+    from ai_assistant import config
+
+    conn = sqlite3.connect(config.DB_FILE)
+    try:
+        conn.execute("DELETE FROM submission_verifications")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _q65_write_submission(
+    payload_column: str | None,
+    submission_id: str = _Q65_GENERATED_ID,
+) -> None:
+    """Положить в `submission_json` ровно `payload_column`.
+
+    Пишется SQL-ом намеренно, как и в №55: сегодняшний `save_submission()`
+    всегда кладёт сюда `json.dumps(...)`, поэтому воспроизвести живую строку
+    (её записал вызов с другим порядком аргументов) им нельзя.
+    """
+    import sqlite3
+
+    from ai_assistant import config
+
+    conn = sqlite3.connect(config.DB_FILE)
+    try:
+        conn.execute("DELETE FROM application_submissions")
+        conn.execute(
+            """
+            INSERT INTO application_submissions
+                (vacancy_stable_id, submission_id, executor_version,
+                 submission_json, status, submitted_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _Q65_SID, submission_id, "v1", payload_column, "SUBMITTED",
+                "2026-09-20T00:00:00", "2026-09-20T00:00:00", "2026-09-20T00:00:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def _q65_submitted():
+    """Вакансия в SUBMITTED — единственное состояние, в котором отчёт идёт за верификацией."""
+    from ai_assistant.application_tracking import (
+        ApplicationStatus,
+        set_application_status,
+        transition_application,
+    )
+    from ai_assistant.schema import Vacancy
+
+    db.init_db()
+    db.save_vacancy(Vacancy(
+        source="hh", source_job_id="65", title="Старший разработчик Python",
+        company="TechCo",
+        description="Python, PostgreSQL, FastAPI.",
+        job_url="https://hh.ru/vacancy/65", location="Remote",
+    ))
+    set_application_status(
+        _Q65_SID, ApplicationStatus.DISCOVERED, company="TechCo",
+        title="Старший разработчик Python", source="hh",
+        vacancy_url="https://hh.ru/vacancy/65",
+    )
+    transition_application(_Q65_SID, ApplicationStatus.ANALYZED)
+    transition_application(_Q65_SID, ApplicationStatus.READY_TO_APPLY)
+    transition_application(_Q65_SID, ApplicationStatus.SUBMITTED)
+    return _Q65_SID
+
+
+def _q65_haystack(result) -> str:
+    return " | ".join([result.reason, *result.warnings]).lower()
+
+
+def test_an_unreadable_submission_payload_does_not_become_no_verification_performed(_q65_submitted):
+    """Живая форма: колонка 1 сгенерирована, верификация подписана ключом из payload.
+
+    Найти верификацию здесь читатель не обязан — ключа у него нет. Обязан он
+    другого: не утверждать, что сверки не было, о строке, которую не прочитал.
+    """
+    from ai_assistant.submission_recovery import inspect_submission_state
+
+    _q65_write_submission(_Q65_VERIFICATION_KEY, submission_id=_Q65_GENERATED_ID)
+    _q65_write_verification(json.dumps(_q65_verification_payload()))
+
+    result = inspect_submission_state(_q65_submitted)
+    haystack = _q65_haystack(result)
+
+    assert "no verification performed" not in haystack, haystack
+    assert "no verification" not in haystack, haystack
+    assert "cannot be read" in haystack, haystack
+
+
+def test_an_unreadable_submission_payload_does_not_send_a_human_to_the_website(_q65_submitted):
+    """Совет, а не только предложение.
+
+    «Run verification to check submission result on the website» — действие для
+    отклика без сверки. Отправлять по нему к нечитаемой строке значит звать
+    человека смотреть живую вакансию за тем, что уже лежит в базе.
+    """
+    from ai_assistant.submission_recovery import inspect_submission_state
+
+    _q65_write_submission(_Q65_VERIFICATION_KEY, submission_id=_Q65_GENERATED_ID)
+    _q65_write_verification(json.dumps(_q65_verification_payload()))
+
+    result = inspect_submission_state(_q65_submitted)
+    action = result.recommended_action.lower()
+
+    assert "run verification" not in action, result.recommended_action
+    assert "on the website" not in action, result.recommended_action
+
+
+def test_a_broken_payload_no_longer_costs_the_submission_id(_q65_submitted):
+    """Половина, которая возвращает улику.
+
+    Колонка 1 здесь — настоящий ключ верификации, а payload сломан. Раньше
+    разбор payload падал и уносил ключ с собой; теперь ключ читается первым, и
+    верификация находится.
+    """
+    from ai_assistant.submission_recovery import inspect_submission_state
+
+    _q65_write_submission('{"status": "SUBMITTED"', submission_id=_Q65_VERIFICATION_KEY)
+    _q65_write_verification(json.dumps(_q65_verification_payload()))
+
+    result = inspect_submission_state(_q65_submitted)
+
+    assert result.submission_id == _Q65_VERIFICATION_KEY, result.submission_id
+    assert result.last_verification is not None, _q65_haystack(result)
+    assert result.last_verification["verification_status"] == "VERIFIED"
+
+
+def test_the_submission_id_comes_from_the_column_and_not_from_the_payload(_q65_submitted):
+    """Индекс 1 — это submission_id. Он не зависит от того, что лежит в индексе 3."""
+    from ai_assistant.submission_recovery import inspect_submission_state
+
+    for payload in (None, "sub_65_payload_id_not_json", '{"broken', json.dumps({"a": 1})):
+        _q65_write_submission(payload, submission_id=_Q65_GENERATED_ID)
+        _q65_clear_verifications()
+
+        result = inspect_submission_state(_q65_submitted)
+
+        assert result.submission_id == _Q65_GENERATED_ID, (payload, result.submission_id)
+
+
+def test_a_readable_submission_still_finds_its_verification(_q65_submitted):
+    """Контроль: рабочий путь не сдвинулся."""
+    from ai_assistant.submission_recovery import (
+        RecoveryStatus,
+        inspect_submission_state,
+    )
+
+    _q65_write_submission(json.dumps({"status": "SUBMITTED"}), submission_id=_Q65_VERIFICATION_KEY)
+    _q65_write_verification(json.dumps(_q65_verification_payload()))
+
+    result = inspect_submission_state(_q65_submitted)
+
+    assert result.recovery_status == RecoveryStatus.NO_ACTION, result.reason
+    assert result.last_verification is not None
+    assert result.last_verification["verification_status"] == "VERIFIED"
+    assert not result.warnings
+
+
+def test_a_missing_verification_is_still_reported_as_missing(_q65_submitted):
+    """Честная половина: строки верификации нет вовсе, и отчёт обязан это сказать.
+
+    Без этого пина правку можно было бы удовлетворить, вообще перестав
+    пользоваться предложением, — и спрятать настоящий непроверенный отклик.
+    """
+    from ai_assistant.submission_recovery import (
+        RecoveryStatus,
+        inspect_submission_state,
+    )
+
+    _q65_write_submission(json.dumps({"status": "SUBMITTED"}), submission_id=_Q65_VERIFICATION_KEY)
+    _q65_clear_verifications()
+
+    result = inspect_submission_state(_q65_submitted)
+
+    assert result.recovery_status == RecoveryStatus.NEEDS_VERIFICATION
+    assert "no verification performed" in result.reason.lower(), result.reason
+    assert "no verification performed" in " ".join(result.warnings).lower()
+
+
+def test_an_unreadable_verification_record_is_still_named(_q65_submitted):
+    """Контроль №55: его дверь обязана остаться закрытой."""
+    from ai_assistant.submission_recovery import inspect_submission_state
+
+    _q65_write_submission(json.dumps({"status": "SUBMITTED"}), submission_id=_Q65_VERIFICATION_KEY)
+    _q65_write_verification('{"verification_status": "VERIFIED"')
+
+    result = inspect_submission_state(_q65_submitted)
+
+    assert "cannot be read" in result.reason.lower(), result.reason
+    assert "no verification performed" not in _q65_haystack(result), _q65_haystack(result)
+
+
+def test_an_unreadable_submission_record_still_fails_closed(_q65_submitted):
+    """Направление, которое не имеет права поехать.
+
+    `reconcile_submission_state()` — единственное место, где запись верификации
+    двигает жизненный цикл в APPLIED, и оно закрыто на `last_verification`.
+    Нечитаемая строка отклика не имеет права открыть эту дверь — в том числе
+    через «а вдруг там была сверка».
+    """
+    from ai_assistant.application_tracking import (
+        ApplicationStatus,
+        get_application_status,
+    )
+    from ai_assistant.submission_recovery import (
+        RecoveryStatus,
+        inspect_submission_state,
+        reconcile_submission_state,
+    )
+
+    _q65_write_submission(_Q65_VERIFICATION_KEY, submission_id=_Q65_GENERATED_ID)
+    _q65_clear_verifications()
+
+    result = inspect_submission_state(_q65_submitted)
+    assert result.recovery_status in (
+        RecoveryStatus.NEEDS_VERIFICATION,
+        RecoveryStatus.NEEDS_REVIEW,
+    ), result.reason
+    assert result.last_verification is None
+
+    reconcile_submission_state(_q65_submitted)
+
+    track = get_application_status(_q65_submitted)
+    assert track.status != ApplicationStatus.APPLIED, track.status
+
+
+def test_submissions_show_survives_an_unreadable_submission_record(_q65_submitted, capsys):
+    """Команда, которую человек запускает, чтобы разобраться, не имеет права падать.
+
+    До правки `submissions show` умирала на `json.loads(sub_row[3])` вне `try`,
+    не напечатав ни строки, — и уносила с собой единственный разбор, который
+    человек мог получить.
+    """
+    from ai_assistant import cli
+
+    _q65_write_submission(_Q65_VERIFICATION_KEY, submission_id=_Q65_GENERATED_ID)
+    _q65_write_verification(json.dumps(_q65_verification_payload()))
+
+    rc = cli.submissions_show(_q65_submitted)
+    out = capsys.readouterr().out
+
+    assert isinstance(rc, int), rc
+    assert out.strip(), "команда обязана что-то напечатать"
+    assert "cannot be read" in out.lower(), out[:400]
+    assert "No verification performed yet." not in out, out[:400]
+
+
+def test_submissions_verify_reads_the_submission_id_column(_q65_submitted, monkeypatch):
+    """Индекс 1 — submission_id, индекс 3 — payload. Раньше команда путала их.
+
+    `json.loads(sub_row[1])` не разбирается ни у одной из 15 живых строк, то
+    есть `submissions verify` падала на любой вакансии, а её запасной вариант
+    `sub_row[0]` указывал на vacancy_stable_id. Здесь проверяется и то, что
+    команда доходит до верификации, и то, каким ключом.
+    """
+    from ai_assistant import cli
+    from ai_assistant.submission_verifier import VerificationStatus
+
+    _q65_write_submission(_Q65_VERIFICATION_KEY, submission_id=_Q65_GENERATED_ID)
+
+    seen: list[str] = []
+
+    def _fake_verify(vacancy_stable_id, submission_id, *args, **kwargs):
+        seen.append(submission_id)
+        return SimpleNamespace(
+            verification_status=VerificationStatus.FAILED,
+            verified_at="2026-09-20T00:00:00",
+            final_url="https://hh.ru/vacancy/65",
+            page_title="HeadHunter",
+            success_signal=None,
+            screenshot_path=None,
+            warnings=[],
+        )
+
+    monkeypatch.setattr(cli, "_verify_submission", _fake_verify)
+
+    rc = cli.submissions_verify(_q65_submitted)
+
+    assert rc == 0, rc
+    assert seen == [_Q65_GENERATED_ID], seen

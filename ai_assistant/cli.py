@@ -1019,7 +1019,19 @@ def submissions_show(vacancy_stable_id: str) -> int:
         return 1
     
     # New schema: 0=vacancy_stable_id, 1=submission_id, 2=executor_version, 3=submission_json, 4=status, 5=submitted_at, 6=created_at, 7=updated_at
-    sub_data = json.loads(sub_row[3]) if sub_row[3] else {}
+    #
+    # BLE001 finding #65. This line used to parse sub_row[3] right here,
+    # outside any try: a payload column that is not JSON - 9 of 15 rows in the
+    # live state.db, written by an older save_submission() argument order -
+    # killed the command with JSONDecodeError before it printed a single line.
+    # The parsed value was never used anywhere, so the parse is replaced by a
+    # readability probe instead of being wrapped in a swallow.
+    payload_unreadable = False
+    if sub_row[3]:
+        try:
+            json.loads(sub_row[3])
+        except (ValueError, TypeError):
+            payload_unreadable = True
     sub_id = sub_row[1]
     status = sub_row[4]
     submitted_at = sub_row[5]
@@ -1076,9 +1088,24 @@ def submissions_show(vacancy_stable_id: str) -> int:
             print(f"Tracking Status: {track.status.value if hasattr(track.status, 'value') else track.status}")
     else:
         print("=== VERIFICATION ===")
-        print("No verification performed yet.")
-        print()
-        print("Run: python -m ai_assistant.cli submissions verify <vacancy_stable_id>")
+        if payload_unreadable:
+            # BLE001 finding #65: the same false sentence as #55, reached one
+            # record earlier. The lookup above is keyed by the submission_id of
+            # this row; when the payload cannot be parsed, this may not be the
+            # shape the row was written in, so "no verification" is not
+            # something this command can state.
+            print(
+                "No verification found for this submission record, and its payload "
+                "cannot be read - whether a verification exists is unknown."
+            )
+            print()
+            print("The stored row is:")
+            print(f"  submission_id: {sub_id}")
+            print(f"  status:        {status}")
+        else:
+            print("No verification performed yet.")
+            print()
+            print("Run: python -m ai_assistant.cli submissions verify <vacancy_stable_id>")
     
     return 0
 
@@ -1093,9 +1120,12 @@ def submissions_verify(vacancy_stable_id: str) -> int:
         print(f"No submission found for {vacancy_stable_id}", file=__import__('sys').stderr)
         return 1
     
-    import json
-    sub_data = json.loads(sub_row[1]) if sub_row[1] else {}
-    sub_id = sub_data.get("submission_id", sub_row[0])
+    # BLE001 finding #65. Index 1 is the submission_id column, not JSON; index 3
+    # is the payload. The two were swapped here, so json.loads() raised
+    # JSONDecodeError for every one of the 15 rows in the live state.db and the
+    # command never reached the verification at all. The fallback pointed at
+    # sub_row[0], the vacancy id, instead of the attempt's own id.
+    sub_id = sub_row[1] or sub_row[0]
     
     print(f"Verifying submission {sub_id} for {vacancy_stable_id}...")
     print("NOTE: This only checks the current page state, does NOT re-submit.")

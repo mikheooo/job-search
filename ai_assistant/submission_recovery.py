@@ -133,26 +133,41 @@ def inspect_submission_state(vacancy_stable_id: str) -> RecoveryResult:
     submission_row = get_submission(vacancy_stable_id)
     submission_id = None
     last_submission = None
+    submission_payload_unreadable = False
     if submission_row:
-        try:
-            # New schema: 0=vacancy_stable_id, 1=submission_id, 2=executor_version, 3=submission_json, 4=status, 5=submitted_at, 6=created_at, 7=updated_at
-            sub_json = json.loads(submission_row[3]) if submission_row[3] else {}
-            submission_id = submission_row[1]  # submission_id is at index 1
-            last_submission = {
-                "submission_id": submission_id,
-                "status": submission_row[4],
-                "submitted_at": submission_row[5],
-                "created_at": submission_row[6],
-                "updated_at": submission_row[7],
-                "executor_version": submission_row[2],
-            }
-        except Exception as e:
-            logger.warning(
-                "submission_recovery: submission row for %s is not readable "
-                "(%s: %s); losing submission_id also loses the verification lookup",
-                vacancy_stable_id, type(e).__name__, e,
-            )
-            last_submission = {"raw": str(submission_row)}
+        # BLE001 finding #65. submission_id is index 1 and owes nothing to the
+        # payload at index 3, so it is read FIRST and the parse below can no
+        # longer take it away. The old shape parsed index 3 inside the same try
+        # that assigned submission_id, and its except discarded both - while the
+        # parsed value was never read anywhere in this function, so the parse
+        # was dead work whose only possible effect was to lose the key the
+        # verification lookup is made of.
+        #
+        # Measured on the live state.db: 9 of 15 rows have a payload column that
+        # is not JSON (an older save_submission() argument order put the
+        # submission_id there and the payload in submitted_at), and four of them
+        # have a VERIFIED verification on file that this report then described
+        # as "no verification performed" - the sentence #55 forbade.
+        submission_id = submission_row[1]  # submission_id is at index 1
+        if submission_row[3]:
+            try:
+                json.loads(submission_row[3])
+            except (ValueError, TypeError) as e:
+                submission_payload_unreadable = True
+                logger.warning(
+                    "submission_recovery: submission payload for %s is not readable "
+                    "(%s: %s); submission_id %r survives, because it is not made of it",
+                    vacancy_stable_id, type(e).__name__, e, submission_id,
+                )
+        last_submission = {
+            "submission_id": submission_id,
+            "status": submission_row[4],
+            "submitted_at": submission_row[5],
+            "created_at": submission_row[6],
+            "updated_at": submission_row[7],
+            "executor_version": submission_row[2],
+            "payload_unreadable": submission_payload_unreadable,
+        }
 
     # Get latest verification
     ver = get_verification(vacancy_stable_id, submission_id) if submission_id else None
@@ -189,6 +204,7 @@ def inspect_submission_state(vacancy_stable_id: str) -> RecoveryResult:
         review_status,
         browser_status,
         verification_unreadable=verification_unreadable,
+        submission_payload_unreadable=submission_payload_unreadable,
     )
 
     warnings = []
@@ -199,6 +215,14 @@ def inspect_submission_state(vacancy_stable_id: str) -> RecoveryResult:
     if verification_unreadable:
         warnings.append(
             "Verification record exists but cannot be read - its content is unknown"
+        )
+    elif submission_payload_unreadable:
+        # BLE001 finding #65, the same shape as #55 one record earlier: the row
+        # is there and this reader could not read it, so "no verification was
+        # performed" is not a sentence it is entitled to say.
+        warnings.append(
+            "Submission record exists but its payload cannot be read - "
+            "whether a verification exists is unknown"
         )
     elif not last_verification and last_submission:
         warnings.append("Submission exists but no verification performed")
@@ -223,6 +247,7 @@ def _determine_recovery_status(
     review_status: str | None,
     browser_status: str | None,
     verification_unreadable: bool = False,
+    submission_payload_unreadable: bool = False,
 ) -> tuple[RecoveryStatus, str, str]:
     """Determine recovery status based on all available state.
 
@@ -231,6 +256,12 @@ def _determine_recovery_status(
     so the report does not assert the first (#55). The status stays
     NEEDS_VERIFICATION either way - an unreadable record must not look more
     settled than a missing one.
+
+    `submission_payload_unreadable` carries the same distinction one record
+    earlier (#65): the submission row is there, but its payload column cannot be
+    parsed, so the reader has no business saying that no verification was
+    performed. It says the record cannot be read instead. The status stays
+    NEEDS_VERIFICATION for the same reason as above.
     """
 
     # Terminal states - no action needed
@@ -274,6 +305,22 @@ def _determine_recovery_status(
                         "Inspect the stored verification record - it exists but cannot "
                         "be parsed, so whether the submission succeeded is unknown. "
                         "Do not assume it was never verified"
+                    ),
+                )
+            if submission_payload_unreadable:
+                # BLE001 finding #65. The advice must not be "go and check the
+                # website": the record is in the database and this reader could
+                # not read it, so the honest action is to look at the record.
+                return (
+                    RecoveryStatus.NEEDS_VERIFICATION,
+                    (
+                        "Submission record cannot be read - whether its verification "
+                        "exists is unknown"
+                    ),
+                    (
+                        "Inspect the stored submission record - its payload cannot be "
+                        "parsed, so a verification stored under a different key would be "
+                        "invisible here. Do not assume it was never verified"
                     ),
                 )
             return (
