@@ -7599,7 +7599,8 @@ def test_the_writer_is_a_setter_not_a_merger_so_the_argument_is_the_defect():
 _Q61_VAC = "hh:136591579"
 
 
-def _q61_dom(*, break_click_response: str | None = None, markers=()):
+def _q61_dom(*, break_click_response: str | None = None, markers=(),
+             refuse_click: str | None = None):
     """Поддельный браузер: клик считает по-настоящему, транспорт можно сломать.
 
     `break_click_response`:
@@ -7611,6 +7612,11 @@ def _q61_dom(*, break_click_response: str | None = None, markers=()):
     нажимает кнопку строкой :83 и только потом возвращает JSON строкой :84:
     потеря ответа CDP приходит как исключение уже после нажатия, и отличить её
     от падения до JS вызывающий код не может.
+
+    `refuse_click` (№62) - JS отказался кликать и сказал об этом прямо: кнопки
+    нет или она выключена. Клика при этом НЕ происходит, и `clicks` это
+    подтверждает; payload с маркером `refused: true` измерен на настоящем JS
+    пробой `tools/ble001_submit_click_refusal_probe.py`.
     """
 
     class _Dom:
@@ -7637,6 +7643,11 @@ def _q61_dom(*, break_click_response: str | None = None, markers=()):
                 self.click_js_runs += 1
                 if break_click_response == "before":
                     raise _Boom("CDP evaluate failed before the JS ran")
+                if refuse_click is not None:
+                    # JS отказался кликать до нажатия - `clicks` остаётся нулём,
+                    # и это тот же факт, что `ok: false` в payload.
+                    return json.dumps({"ok": False, "refused": True,
+                                       "reason": refuse_click})
                 self.clicks += 1
                 if break_click_response == "after":
                     raise _Boom("CDP evaluate response lost after the JS clicked")
@@ -7818,3 +7829,121 @@ def test_a_gate_refusal_still_records_zero_clicks():
     assert dom.click_js_runs == 0
     assert dom.clicks == 0
     assert rid not in _submitted_reviews
+
+
+# ---------------------------------------------------------------------------
+# №62. Отказ JS записан как клик, которого не было
+# ---------------------------------------------------------------------------
+# Payload отказа здесь не выдуман, а ИЗМЕРЕН на настоящем `_SUBMIT_CLICK_JS`:
+# `tools/ble001_submit_click_refusal_probe.py` исполняет его на node в трёх
+# формах DOM и печатает, что JS отдал и сколько раз вызвал `click()`. В формах
+# "missing" (кнопки нет) и "disabled" (кнопка выключена) он отдаёт
+# `{"ok": false, "reason": ...}` и не нажимает ничего. Строки причин ниже - те же
+# самые, что в JS, и пин проверяет это совпадение отдельно: иначе
+# переформулировка причины в JS разведёт пин с кодом молча.
+_Q62_REFUSAL_REASONS = ("submit button not found", "submit button is disabled")
+
+
+def test_the_submit_click_script_says_it_refused_before_it_clicks():
+    """Отказ обязан быть помечен и обязан случаться ДО нажатия.
+
+    Тот же урок, что в №34: отличать «мы не кликали» от «клик мог быть» по
+    тексту человекочитаемой причины нельзя - формулировку можно поменять, ничего
+    не заметив. Поэтому у отказа есть машинный маркер, и он стоит на возврате.
+    """
+    from ai_assistant.hh_submission import _SUBMIT_CLICK_JS
+
+    js = _SUBMIT_CLICK_JS
+    refusals = [ln for ln in js.splitlines() if "refused: true" in ln]
+    assert len(refusals) == 2, (
+        "обе причины отказа (кнопки нет, кнопка выключена) обязаны нести маркер")
+    for ln in refusals:
+        assert "return JSON.stringify" in ln, (
+            "отказ обязан ВОЗВРАЩАТЬСЯ, а не строиться и не мешать клику")
+    assert js.index("refused: true") < js.index("el.click()"), (
+        "отказ, приехавший после нажатия, - не отказ")
+
+    for reason in _Q62_REFUSAL_REASONS:
+        assert f"refused: true, reason: '{reason}'" in js, (
+            f"пин кормит обработчик причиной {reason!r}, которой в JS нет, - "
+            "пин и код разошлись")
+
+
+def _q62_submit_application(store, rid, gate, pkg, plan, orch, dom):
+    from ai_assistant.hh_submission import submit_application
+
+    return submit_application(
+        store, rid, gate.fingerprint, pkg, plan, orch, dom.evaluate)
+
+
+@pytest.mark.parametrize("reason", _Q62_REFUSAL_REASONS)
+def test_a_refused_click_records_no_click_in_the_controlled_path(reason):
+    """Отказ JS - это «клика не было», и счётчик обязан говорить именно это."""
+    gate, plan, orch, pkg, store, rid = _q61_approved_setup()
+    dom = _q61_dom(refuse_click=reason)
+    rep = _q61_submit(store, rid, gate, pkg, plan, orch, dom)
+
+    assert dom.click_js_runs == 1, (
+        "стенд не дошёл до клик-скрипта - пин ничего не мерит")
+    assert dom.clicks == 0, "стенд нажал кнопку - мерить нечего"
+    assert rep.verdict == "FAILED", rep.stop_reason
+    assert rep.click_count == 0, (
+        "клика не было, а запись считает клик: причина отказа говорит об этом "
+        "прямо")
+    assert rep.submit_count == 0
+    assert rep.failed_submit == 1
+    assert rep.successful_submit == 0
+
+
+@pytest.mark.parametrize("reason", _Q62_REFUSAL_REASONS)
+def test_a_refused_click_records_no_click_in_the_human_confirmed_path(reason):
+    """Вторая копия того же обработчика обязана говорить то же самое."""
+    from ai_assistant.hh_submission import SubmissionStatus
+
+    gate, plan, orch, pkg, store, rid = _q61_approved_setup()
+    dom = _q61_dom(refuse_click=reason)
+    rep = _q62_submit_application(store, rid, gate, pkg, plan, orch, dom)
+
+    assert dom.click_js_runs == 1
+    assert dom.clicks == 0
+    assert rep.status == SubmissionStatus.FAILED, rep.reason
+    assert rep.click_count == 0, (
+        "копия-близнец разошлась с первой - это ровно №44")
+    assert rep.submit_count == 0
+    assert rep.failed_submit == 1
+
+
+def test_a_click_answer_without_the_refusal_marker_still_counts_as_an_attempt():
+    """Встречная: ответ без маркера по-прежнему считается попыткой.
+
+    Так выглядит форма легаси-пинов (`test_stage20i_submission.py:402`,
+    `test_stage20j_human_confirmed.py:315`, `test_stage20k_submit.py`):
+    `{"ok": false, "reason": "click intercepted"}`. Нажатие здесь могло
+    состояться, а судьба его неизвестна, поэтому счётчик остаётся единицей -
+    правка №62 эту форму не трогает, и легаси-пины остаются осмысленными.
+    """
+    gate, plan, orch, pkg, store, rid = _q61_approved_setup()
+    inner = _q61_dom()
+
+    class _Shim:
+        """Тот же стенд, но на клик отвечает ответом без маркера."""
+
+        def __init__(self) -> None:
+            self.click_js_runs = 0
+            self.clicks = 0
+
+        def evaluate(self, expression: str) -> str:
+            if "el.click()" in expression:
+                self.click_js_runs += 1
+                return json.dumps({"ok": False, "reason": "click intercepted"})
+            return inner.evaluate(expression)
+
+    dom = _Shim()
+    rep = _q61_submit(store, rid, gate, pkg, plan, orch, dom)
+
+    assert dom.click_js_runs == 1
+    assert dom.clicks == 0
+    assert rep.verdict == "FAILED", rep.stop_reason
+    assert (rep.click_count, rep.submit_count) == (1, 1), (
+        "ответ без маркера - это попытка с неизвестной судьбой, а не отказ")
+    assert rep.failed_submit == 1

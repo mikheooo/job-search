@@ -168,8 +168,15 @@ def controlled_real_submit(
         report.errors.append(report.stop_reason)
         return report
 
-    report.click_count = 1
-    report.submit_count = 1
+    # BLE001 finding #62: the same refusal as in the sibling
+    # hh_submission.submit_application(), read the same way - both copies are
+    # changed together so they cannot drift apart, which is what finding #44 was
+    # about. The JS refuses before it clicks, so a refusal records no click; an
+    # answer without the marker stays an attempt, and the exception path above
+    # keeps its own reading, which finding #61 settled.
+    is_pre_click = bool(res.get("refused"))
+    report.click_count = 0 if is_pre_click else 1
+    report.submit_count = 0 if is_pre_click else 1
 
     if not res.get("ok"):
         report.failed_submit = 1

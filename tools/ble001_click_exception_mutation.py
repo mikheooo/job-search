@@ -120,14 +120,16 @@ STEP2_ARMED_EARLY = L(
 )
 
 HEALTHY_COUNTS = L(
-    "    report.click_count = 1",
-    "    report.submit_count = 1",
+    '    is_pre_click = bool(res.get("refused"))',
+    "    report.click_count = 0 if is_pre_click else 1",
+    "    report.submit_count = 0 if is_pre_click else 1",
     "",
     '    if not res.get("ok"):',
 )
 HEALTHY_ZERO = L(
-    "    report.click_count = 0",
-    "    report.submit_count = 1",
+    '    is_pre_click = bool(res.get("refused"))',
+    "    report.click_count = 0 if is_pre_click else 0",
+    "    report.submit_count = 0 if is_pre_click else 1",
     "",
     '    if not res.get("ok"):',
 )

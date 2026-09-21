@@ -75,11 +75,16 @@ _SUBMIT_BTN_JS = """(() => {
 })()"""
 
 # JS: click that exact button (only the submit mutation in this module).
+# BLE001 finding #62: both refusals carry `refused: true`, the machine-readable
+# marker finding #34 introduced in the sibling script of
+# execute_hh_submission(). Without it the only way to tell "we did not click"
+# from "we may have clicked" is the wording of the human-readable reason, and
+# the two callers of this script recorded a refusal as a click.
 _SUBMIT_CLICK_JS = """// hh_submit_click
 (() => {
     const el = document.querySelector('[data-qa="vacancy-response-submit-popup"]');
-    if (!el) return JSON.stringify({ok: false, reason: 'submit button not found'});
-    if (el.disabled) return JSON.stringify({ok: false, reason: 'submit button is disabled'});
+    if (!el) return JSON.stringify({ok: false, refused: true, reason: 'submit button not found'});
+    if (el.disabled) return JSON.stringify({ok: false, refused: true, reason: 'submit button is disabled'});
     el.click();
     return JSON.stringify({ok: true});
 })()"""
@@ -446,8 +451,14 @@ def submit_application(
         report.failed_submit = 1
         return report
 
-    report.click_count = 1
-    report.submit_count = 1
+    # BLE001 finding #62: `_SUBMIT_CLICK_JS` refuses before it clicks and says so
+    # with `refused: true`, so a refusal records no click. Any other `ok: false`
+    # (a caller-supplied answer such as "click intercepted") keeps the older
+    # reading - a click was attempted and its fate is unknown - which is the shape
+    # test_stage20i_submission.py and test_stage20j_human_confirmed.py pin.
+    is_pre_click = bool(res.get("refused"))
+    report.click_count = 0 if is_pre_click else 1
+    report.submit_count = 0 if is_pre_click else 1
     if not res.get("ok"):
         report.status = SubmissionStatus.FAILED
         report.reason = res.get("reason") or "submit click failed"
