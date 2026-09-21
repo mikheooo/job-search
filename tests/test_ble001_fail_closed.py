@@ -8254,3 +8254,281 @@ def test_the_cli_door_does_not_erase_the_unreadable_column():
     assert _q63_raw_column(qid) == _Q63_BROKEN, (
         "CLI стёр нечитаемую колонку: " f"{_q63_raw_column(qid)!r}"
     )
+
+
+# ===========================================================================
+# №64. Повторное обнаружение анкеты откатывает её статус: запись «человек ещё
+#      не ответил» поверх «отправлено»
+# ===========================================================================
+#
+# Третья колонка той же таблицы и та же асимметрия, что у №41, №60 и №63.
+# `db.save_hh_questionnaire()` - upsert с ключом, детерминированным по форме: id
+# анкеты есть sha256 от (вакансия, беседа, фингерпринт вопросов), поэтому
+# обнаружение той же формы второй раз попадает в ту же строку. Так и задумано.
+#
+# Колонки в этом upsert защищены по-разному. Четыре обёрнуты в COALESCE
+# (`vacancy_stable_id`, `conversation_id`, `title`, `employer`), а `answers_json`
+# защищена осознанно: №41 завёл `_serialise_answers_json()`, возвращающий NULL
+# для пустого словаря, и докстрока прямо говорит зачем - «a questions-only
+# re-discovery must not write "{}" here - that would erase the answers instead of
+# leaving them alone». `status` не защищён ничем, а полезная нагрузка всегда
+# несёт статус: `extract_hh_questionnaire_from_snapshot()` собирает модель с
+# жёстко проставленным `NEEDS_HUMAN_REVIEW`.
+#
+# Значит повторное обнаружение пишет NEEDS_HUMAN_REVIEW поверх того, что лежит в
+# строке. Дверь живая: `record_questionnaire_for_vacancy()` зовётся из CLI-команды
+# подготовки (`cli.py:448`) и срабатывает на КАЖДОМ прогоне по той же вакансии, у
+# которой форма нашлась.
+#
+# Проба `tools/ble001_questionnaire_rediscovery_probe.py` намерила это прямо:
+#
+#   S1: SUBMITTED -> NEEDS_HUMAN_REVIEW;
+#   S4: после отката `submit_questionnaire_response` больше не узнаёт строку -
+#       вместо «already submitted» отказывает «Explicit confirmation required»;
+#   S5: тот же откат через живого вызывающего `record_questionnaire_for_vacancy`;
+#   S2/S3 (контроли): новая анкета по-прежнему создаётся как NEEDS_HUMAN_REVIEW,
+#       а ответы переживают повторное обнаружение (это чинил №41).
+#
+# Два существующих теста двойного обнаружения (`test_stage34:386`,
+# `test_stage38:359`) дефект не видят ПО ПОСТРОЕНИЮ: оба обнаруживают форму дважды
+# ДО того, как статус куда-либо сдвинулся, поэтому откатывать нечего. Их молчание
+# не является доказательством безвредности.
+#
+# Почему это запись, а не дыра: one-shot инвариант в
+# `submit_questionnaire_response()` держится РОВНО на статусе. Материальной
+# отправки дубля не показано - раннер требует READY_TO_SUBMIT/SUBMITTED в
+# предпроверке и останавливается, - поэтому вред здесь в записи: строка говорит
+# «человек ещё не ответил» об анкете, которая уже отправлена, и предохранитель,
+# который для этого и заведён, перестаёт её узнавать.
+#
+# Правка узкая и стоит в той же точке, что у №63 - на границе записи, потому что
+# только она видит, что лежит в строке: полезная нагрузка, у которой статус есть
+# мнение по умолчанию («нужен человек»), не перезаписывает статус существующей
+# строки. Всё остальное записывается как раньше: новая строка по-прежнему
+# рождается с NEEDS_HUMAN_REVIEW, а нагрузка, которая статус ДВИГАЕТ, двигает его.
+
+_Q64_DISCOVERY_STATUS = "NEEDS_HUMAN_REVIEW"
+
+
+def _q64_status(qid: str) -> str | None:
+    """Статус строки. Читатель тот же, что у №63: таблица одна."""
+    return _q63_status(qid)
+
+
+def _q64_raw_answers(qid: str) -> str | None:
+    return _q63_raw_column(qid)
+
+
+def _q64_snapshot(sid: str, conversation: str, text: str = "Сколько лет опыта?") -> dict:
+    return {
+        "vacancy_stable_id": sid,
+        "conversation_id": conversation,
+        "title": "Python Engineer",
+        "questions": [
+            {"id": "q1", "text": text, "type": "number", "required": True},
+        ],
+    }
+
+
+def _q64_discover(sid: str, conversation: str, text: str = "Сколько лет опыта?"):
+    """Один прогон обнаружения - ровно то, что делает CLI-команда подготовки."""
+    from ai_assistant.hh_questionnaire import discover_hh_questionnaire_from_snapshot
+
+    snap = _q64_snapshot(sid, conversation, text)
+    quest = discover_hh_questionnaire_from_snapshot(snap, vacancy_stable_id=sid)
+    assert quest is not None, "стенд: обнаружение не нашло ни одного вопроса"
+    return quest.questionnaire_id, snap
+
+
+def _q64_rediscover(snap: dict) -> None:
+    from ai_assistant.hh_questionnaire import discover_hh_questionnaire_from_snapshot
+
+    discover_hh_questionnaire_from_snapshot(
+        snap, vacancy_stable_id=snap["vacancy_stable_id"]
+    )
+
+
+def _q64_advance(qid: str, status: str) -> None:
+    """Сдвинуть статус так, как это делает конвейер: писателем ответов."""
+    db.update_hh_questionnaire_answers(qid, {"q1": "7"}, new_status=status)
+
+
+def test_a_rediscovery_does_not_rewind_a_submitted_questionnaire():
+    """Дефект №64: повторный прогон подготовки не имеет права откатить SUBMITTED.
+
+    Отправка - поступок во внешнем мире, а обнаружение знает только о ФОРМЕ.
+    Форма та же (id детерминирован по фингерпринту), значит нового знания о
+    статусе у полезной нагрузки нет, и записывать своё мнение по умолчанию
+    поверх уже принятого решения она не вправе.
+    """
+    from ai_assistant.hh_questionnaire import HHQuestionStatus
+
+    qid, snap = _q64_discover("hh:64a", "conv64a")
+    _q64_advance(qid, HHQuestionStatus.SUBMITTED.value)
+    assert _q64_status(qid) == HHQuestionStatus.SUBMITTED.value, "стенд не сдвинул статус"
+
+    _q64_rediscover(snap)
+
+    assert _q64_status(qid) == HHQuestionStatus.SUBMITTED.value, (
+        "повторное обнаружение откатило SUBMITTED в "
+        f"{_q64_status(qid)!r}: запись говорит «человек ещё не ответил» об анкете,"
+        " которая уже отправлена"
+    )
+
+
+def test_a_rediscovery_does_not_rewind_a_ready_to_submit_questionnaire():
+    """Тот же откат на шаг раньше: человек уже ответил, анкета ждёт отправки.
+
+    Материальное следствие здесь другое, чем у SUBMITTED, но того же рода:
+    предпроверка раннера принимает READY_TO_SUBMIT и НЕ принимает
+    NEEDS_HUMAN_REVIEW, поэтому откат молча останавливает готовую к отправке
+    заявку и требует от человека ответить заново.
+    """
+    from ai_assistant.hh_questionnaire import HHQuestionStatus
+
+    qid, snap = _q64_discover("hh:64b", "conv64b")
+    _q64_advance(qid, HHQuestionStatus.READY_TO_SUBMIT.value)
+
+    _q64_rediscover(snap)
+
+    assert _q64_status(qid) == HHQuestionStatus.READY_TO_SUBMIT.value, (
+        "повторное обнаружение вернуло анкету в "
+        f"{_q64_status(qid)!r}, хотя человек на неё уже ответил"
+    )
+
+
+def test_a_rediscovery_does_not_flatten_a_blocked_questionnaire():
+    """И третий сохранённый статус: BLOCKED - это запись о причине отказа.
+
+    Предохранитель не выбирает «два сдвинутых статуса» - он держит ЛЮБОЙ
+    сохранённый статус от мнения по умолчанию. Здесь это видно на BLOCKED:
+    запись «валидация отказала» не подменяется записью «нужен человек», которая
+    о причине не говорит ничего.
+    """
+    from ai_assistant.hh_questionnaire import HHQuestionStatus
+
+    qid, snap = _q64_discover("hh:64c", "conv64c")
+    _q64_advance(qid, HHQuestionStatus.BLOCKED.value)
+
+    _q64_rediscover(snap)
+
+    assert _q64_status(qid) == HHQuestionStatus.BLOCKED.value, (
+        "повторное обнаружение стёрло запись о причине отказа: "
+        f"{_q64_status(qid)!r}"
+    )
+
+
+def test_a_rediscovery_still_creates_a_new_questionnaire_as_needs_review():
+    """Контроль: предохранитель, запрещающий записывать статус вообще, сломал бы
+    обнаружение. Новая форма обязана появляться с NEEDS_HUMAN_REVIEW."""
+    from ai_assistant.hh_questionnaire import HHQuestionStatus
+
+    qid, _snap = _q64_discover("hh:64d", "conv64d")
+
+    assert _q64_status(qid) == HHQuestionStatus.NEEDS_HUMAN_REVIEW.value, (
+        f"новая анкета родилась со статусом {_q64_status(qid)!r}"
+    )
+
+
+def test_a_rediscovery_still_keeps_the_answers():
+    """Контроль №41: ответы переживают повторное обнаружение, и №64 это не сломал."""
+    import json as _json
+
+    from ai_assistant.hh_questionnaire import HHQuestionStatus
+
+    qid, snap = _q64_discover("hh:64e", "conv64e")
+    _q64_advance(qid, HHQuestionStatus.SUBMITTED.value)
+
+    _q64_rediscover(snap)
+
+    raw = _q64_raw_answers(qid)
+    assert _json.loads(raw) == {"q1": "7"}, f"ответы не пережили повторное обнаружение: {raw!r}"
+
+
+def test_the_one_shot_invariant_still_fires_after_a_rediscovery():
+    """Наблюдаемое следствие: инвариант «уже отправлено» держится на статусе.
+
+    До правки после повторного обнаружения он не срабатывал и отказ приходил
+    другой - «Explicit confirmation required», то есть строка снова выглядела
+    как неотправленная.
+    """
+    from ai_assistant.hh_questionnaire import HHQuestionStatus, submit_questionnaire_response
+
+    qid, snap = _q64_discover("hh:64f", "conv64f")
+    _q64_advance(qid, HHQuestionStatus.SUBMITTED.value)
+    _q64_rediscover(snap)
+
+    res = submit_questionnaire_response(qid, {"q1": "7"}, confirm_submit=False)
+
+    assert "already submitted" in (res.reason or ""), (
+        "one-shot инвариант не узнал отправленную анкету: " f"{res.reason!r}"
+    )
+
+
+def test_a_payload_that_advances_the_status_is_still_written():
+    """Контроль узости: запрещён ОТКАТ к мнению по умолчанию, а не запись статуса.
+
+    Писатель не имеет права игнорировать статус вообще - иначе строка, которую
+    конвейер двигает вперёд, перестала бы двигаться.
+    """
+    from ai_assistant.hh_questionnaire import HHQuestionStatus
+
+    qid, _snap = _q64_discover("hh:64g", "conv64g")
+    assert _q64_status(qid) == HHQuestionStatus.NEEDS_HUMAN_REVIEW.value, "стенд: строка не новая"
+
+    db.save_hh_questionnaire({
+        "questionnaire_id": qid,
+        "questions": _q64_snapshot("hh:64g", "conv64g")["questions"],
+        "answers": {"q1": "7"},
+        "status": HHQuestionStatus.SUBMITTED.value,
+    })
+
+    assert _q64_status(qid) == HHQuestionStatus.SUBMITTED.value, (
+        "полезная нагрузка, которая статус ДВИГАЕТ, обязана его двигать: "
+        f"{_q64_status(qid)!r}"
+    )
+
+
+def test_the_live_cli_caller_does_not_rewind_the_status():
+    """Дверь: не только `discover_*`, но и живой вызывающий из CLI.
+
+    Пин держит именно `record_questionnaire_for_vacancy`, потому что чинить это
+    в CLI значило бы чинить семь вызывающих вместо одной границы записи.
+    """
+    from ai_assistant.hh_questionnaire import (
+        HHQuestionStatus,
+        record_questionnaire_for_vacancy,
+    )
+
+    sid = "hh:64h"
+    snap = _q64_snapshot(sid, "conv64h")
+    qid = record_questionnaire_for_vacancy(snap, sid, title="Python Engineer")
+    assert qid, "стенд: CLI-вызывающий не записал анкету"
+    _q64_advance(qid, HHQuestionStatus.SUBMITTED.value)
+
+    record_questionnaire_for_vacancy(snap, sid, title="Python Engineer")
+
+    assert _q64_status(qid) == HHQuestionStatus.SUBMITTED.value, (
+        "повторный прогон CLI-команды подготовки откатил статус в "
+        f"{_q64_status(qid)!r}"
+    )
+
+
+def test_the_discovery_status_literal_matches_the_enum():
+    """Литерал в `db.py` не имеет права разойтись с `HHQuestionStatus`.
+
+    `db.py` не может импортировать `hh_questionnaire` (тот импортирует его), и
+    это ровно тот случай, когда строка-литерал в SQL тихо протухает при
+    переименовании члена перечисления. Пин держит их вместе.
+    """
+    from ai_assistant import db as db_module
+    from ai_assistant.hh_questionnaire import HHQuestionStatus
+
+    values = {status.value for status in HHQuestionStatus}
+
+    assert db_module._DISCOVERY_STATUS in values, (
+        f"{db_module._DISCOVERY_STATUS!r} не член HHQuestionStatus"
+    )
+    assert db_module._DISCOVERY_STATUS == _Q64_DISCOVERY_STATUS, (
+        "стенд и писатель разошлись в том, что такое мнение по умолчанию"
+    )

@@ -13,6 +13,14 @@ logger = logging.getLogger(__name__)
 
 _DRY_RUN = False
 
+# BLE001 finding #64. The value of HHQuestionStatus.NEEDS_HUMAN_REVIEW, repeated
+# here as a literal because db.py must not import hh_questionnaire (that module
+# imports this one). It is the status a discovery payload always carries, and the
+# one a re-discovery is not allowed to write over a stored status. A literal in
+# SQL rots silently when the enum member is renamed, so
+# test_the_discovery_status_literal_matches_the_enum holds the two together.
+_DISCOVERY_STATUS = "NEEDS_HUMAN_REVIEW"
+
 
 def _serialise_answers_json(data: dict[str, Any]) -> str | None:
     """Return the value for an ``answers_json`` column from a save_* payload.
@@ -855,7 +863,24 @@ def list_hh_message_events(conversation_id: str | None = None, limit: int = 50) 
 # ---------------------------------------------------------------------------
 
 def save_hh_questionnaire(data: dict[str, Any]) -> None:
-    """Save or update an HH questionnaire in state.db."""
+    """Save or update an HH questionnaire in state.db.
+
+    BLE001 finding #64: on update, a payload whose status is the discovery default
+    (``NEEDS_HUMAN_REVIEW``) does not overwrite the stored status. The key is
+    deterministic in the form - sha256 over (vacancy, conversation, question
+    fingerprint) - so a conflict means the SAME form was discovered again, and a
+    re-discovery carries no new information about the status. Writing the default
+    over a row the pipeline had already advanced rewound ``SUBMITTED`` to
+    ``NEEDS_HUMAN_REVIEW`` (measured: tools/ble001_questionnaire_rediscovery_probe.py,
+    S1 and S5, through the live CLI caller). That is the record a human acts on,
+    and the only thing the one-shot invariant in submit_questionnaire_response()
+    checks (S4).
+
+    Narrow on purpose: an INSERT still starts at NEEDS_HUMAN_REVIEW, and a payload
+    that names any OTHER status still moves the row. The rule lives here rather
+    than at the seven callers because only the writer can see the stored status -
+    the same boundary finding #63 chose one column over.
+    """
     conn = get_connection()
     cur = conn.cursor()
     import json
@@ -882,7 +907,10 @@ def save_hh_questionnaire(data: dict[str, Any]) -> None:
             fingerprint = excluded.fingerprint,
             questions_json = excluded.questions_json,
             answers_json = COALESCE(excluded.answers_json, hh_questionnaires.answers_json),
-            status = excluded.status,
+            status = CASE
+                WHEN excluded.status = ? THEN hh_questionnaires.status
+                ELSE excluded.status
+            END,
             updated_at = excluded.updated_at
     ''', (
         q_id,
@@ -896,6 +924,7 @@ def save_hh_questionnaire(data: dict[str, Any]) -> None:
         data.get("status", "NEEDS_HUMAN_REVIEW"),
         created_at,
         updated_at,
+        _DISCOVERY_STATUS,
     ))
     conn.commit()
     conn.close()
