@@ -1019,17 +1019,78 @@ def list_hh_questionnaires(status: str | None = None, limit: int = 50) -> list[d
     return [_row_to_questionnaire(r) for r in rows if r is not None]
 
 
+def _answers_json_is_unreadable(cur, questionnaire_id: str) -> bool:
+    """Whether the answers column holds non-empty bytes that are not JSON.
+
+    BLE001 finding #63. An empty column is deliberately not protected: writing
+    empty over empty loses nothing. The decode message is not built here - the
+    reader already builds it in ``_row_to_questionnaire``, and the whole point of
+    the guard below is that this message must not be made to disappear.
+    """
+    cur.execute(
+        "SELECT answers_json FROM hh_questionnaires WHERE questionnaire_id = ?",
+        (questionnaire_id,),
+    )
+    row = cur.fetchone()
+    if not row or not row[0]:
+        return False
+    try:
+        json.loads(row[0])
+    except (TypeError, ValueError):
+        return True
+    return False
+
+
 def update_hh_questionnaire_answers(
     questionnaire_id: str,
     answers: dict[str, Any],
     new_status: str | None = None,
 ) -> bool:
-    """Update answers and status for a questionnaire."""
+    """Update answers and status for a questionnaire.
+
+    BLE001 finding #63: an unreadable ``answers_json`` is not replaced by an empty
+    one. ``_row_to_questionnaire`` reports a corrupt column as ``answers={}`` plus
+    ``answers_error`` (#46), and the callers that decide whether a submission is
+    safe read the answers back out of that same row - the runner at
+    ``hh_application_runner.py:531``, the CLI at ``cli.py:3372``. Writing that
+    ``{}`` back turned "the answers could not be read" into "there are no
+    answers", and because ``"{}"`` parses, ``answers_error`` came back ``None``:
+    the unreadable row became indistinguishable from one nobody ever filled in,
+    and the bytes - the only evidence - were gone. Measured in
+    tools/ble001_unreadable_answers_probe.py (S2, S5): the runner's
+    validation-refusal branch and the CLI answer command both erased the column
+    this way.
+
+    Only an EMPTY write over an UNREADABLE NON-EMPTY column is refused, and the
+    status still moves: the status is the caller's judgement about the row, not
+    evidence about the column. Real answers replace the corrupt payload exactly as
+    before - that is how such a row is repaired.
+    """
     import json
     conn = get_connection()
     cur = conn.cursor()
-    answers_json = json.dumps(answers, ensure_ascii=False)
+    qid = str(questionnaire_id).strip()
     now = datetime.utcnow().isoformat()
+    if not answers and _answers_json_is_unreadable(cur, qid):
+        if new_status:
+            cur.execute(
+                '''
+                UPDATE hh_questionnaires
+                SET status = ?, updated_at = ?
+                WHERE questionnaire_id = ?
+                ''',
+                (new_status, now, qid),
+            )
+            affected = cur.rowcount
+        else:
+            cur.execute(
+                "SELECT 1 FROM hh_questionnaires WHERE questionnaire_id = ?", (qid,)
+            )
+            affected = 1 if cur.fetchone() else 0
+        conn.commit()
+        conn.close()
+        return affected > 0
+    answers_json = json.dumps(answers, ensure_ascii=False)
     if new_status:
         cur.execute('''
             UPDATE hh_questionnaires

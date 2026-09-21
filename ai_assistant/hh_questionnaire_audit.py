@@ -148,6 +148,44 @@ def audit_questionnaire(
             pipeline_py="NOT RUN",
         )
 
+    # BLE001 finding #63. Same refusal, one column over. #46 gave both columns a
+    # marker, but only questions_error is read here: an unreadable answers_json
+    # arrives as `answers = {}` below, the loop then reports every question as
+    # "No answer provided" and this report - whose verdict the runner reads back
+    # as a PASS - describes the candidate instead of the column. The outcome was
+    # already NEEDS_CORRECTION, so what this fixes is the record, and the record is
+    # what a human acts on. Narrow on purpose: it fires only when there is no other
+    # source of answers, so a row repaired with real answers still audits normally.
+    if quest.answers_error and not answers:
+        app_id = application_id
+        if not app_id and quest.vacancy_stable_id:
+            app_id = f"app_hh_{quest.vacancy_stable_id.split(':')[-1]}"
+        return QuestionnaireAuditReport(
+            application_id=app_id,
+            questionnaire_id=quest.questionnaire_id,
+            vacancy_title=quest.title or quest.vacancy_stable_id,
+            items=[
+                QuestionnaireAuditItem(
+                    question_id="",
+                    question_text="(answers could not be read)",
+                    current_answer=None,
+                    source_of_truth="hh_questionnaires.answers_json",
+                    rationale=(
+                        f"{quest.answers_error}. Auditing an empty answer set would "
+                        "report every question as unanswered, which is a statement "
+                        "about the candidate and not about the column, so the audit "
+                        "is inconclusive and the application needs correction before "
+                        "any submission."
+                    ),
+                    is_confirmed_by_profile=False,
+                    verdict=AuditVerdict.REVIEW,
+                )
+            ],
+            overall=OverallAuditStatus.NEEDS_CORRECTION,
+            real_hh_submit="NO",
+            pipeline_py="NOT RUN",
+        )
+
     audit_items: list[QuestionnaireAuditItem] = []
     all_pass = True
 

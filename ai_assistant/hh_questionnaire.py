@@ -479,6 +479,29 @@ def validate_human_answers(
         res.status = HHQuestionStatus.NEEDS_HUMAN_REVIEW.value
         return res
 
+    # BLE001 finding #63. Invariant 0, second column. #46 built a marker for both
+    # columns, but only questions_error is read anywhere: an unreadable
+    # answers_json arrives here as answers={} (#46 left the fallback value in
+    # place, display code reads it), and {} in this function means "the human
+    # answered nothing". The record then speaks about the candidate - measured:
+    # "Required question(s) without answer: q_exp, q_city" - when the truth is
+    # that the column could not be read.
+    #
+    # The refusal is deliberately narrow: it fires only when the caller had
+    # nothing to supply, because then the unreadable column is the only source.
+    # Answers a human or the CLI actually provided are a real source, and they are
+    # how such a row gets repaired - refusing them would make the row
+    # unrepairable. Same reasoning as the writer guard in
+    # db.update_hh_questionnaire_answers().
+    if questionnaire.answers_error and not human_answers:
+        res.reason = (
+            "Questionnaire answers could not be read from the database "
+            f"({questionnaire.answers_error}); refusing to validate an empty answer "
+            "set that came from an unreadable column"
+        )
+        res.status = HHQuestionStatus.NEEDS_HUMAN_REVIEW.value
+        return res
+
     # Invariant 6: Changed questionnaire DOM -> fail closed
     if current_dom_fingerprint and current_dom_fingerprint != questionnaire.fingerprint:
         res.reason = "Questionnaire structure on page has changed; human review required"

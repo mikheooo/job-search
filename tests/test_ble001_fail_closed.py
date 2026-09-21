@@ -7947,3 +7947,310 @@ def test_a_click_answer_without_the_refusal_marker_still_counts_as_an_attempt():
     assert (rep.click_count, rep.submit_count) == (1, 1), (
         "ответ без маркера - это попытка с неизвестной судьбой, а не отказ")
     assert rep.failed_submit == 1
+
+
+# ===========================================================================
+# №63. Нечитаемая колонка ответов: пометка есть, но её не читает ни читатель,
+#      ни писатель - улика исчезает, а запись говорит «человек не ответил»
+# ===========================================================================
+#
+# Сосед №46 и его вторая половина. №46 научил ЧИТАТЕЛЯ не выдавать ошибку
+# разбора за пустоту: `_row_to_questionnaire` кладёт в словарь `questions_error`
+# и `answers_error`, а `HHQuestionnaire` носит их полями. Три предохранителя
+# читают `questions_error` (`hh_questionnaire.py:473`,
+# `hh_questionnaire_audit.py:123`, `hh_submit_policy.py:316`) - и НИ ОДИН не
+# читает `answers_error`.
+#
+# Проба `tools/ble001_unreadable_answers_probe.py` намерила две вещи:
+#
+#   S1: пометка есть, но все три читателя говорят о ЧЕЛОВЕКЕ («Required
+#       question(s) without answer: q_exp, q_city», «No answer provided for this
+#       question», `missing_answer_for_q_exp`), а не о колонке;
+#   S2/S5: писатель кладёт `{}` поверх нечитаемых байтов - и `"{}"` валидный
+#       JSON, поэтому `answers_error` после записи становится None. Нечитаемая
+#       строка делается неотличимой от строки, которую никогда не заполняли,
+#       а единственная улика (сами байты) исчезает.
+#
+# Форма `{}` приходит к писателю не из воздуха: раннер берёт ответы чтением той
+# же колонки (`hh_application_runner.py:531`), а CLI - тем же чтением
+# (`cli.py:3372`). То есть чинится это на границе «прочитанное обратно стало
+# записью», а не в каждом вызывающем.
+
+_Q63_BROKEN = '{"q_exp": "7"'
+
+
+def _q63_raw_column(qid: str) -> str | None:
+    conn = db.get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT answers_json FROM hh_questionnaires WHERE questionnaire_id=?", (qid,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def _q63_status(qid: str) -> str | None:
+    conn = db.get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT status FROM hh_questionnaires WHERE questionnaire_id=?", (qid,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def _q63_quest(qid: str):
+    """Строка так, как её видит читатель - вместе с пометкой №46."""
+    from ai_assistant.hh_questionnaire import HHQuestionnaire
+
+    return HHQuestionnaire(**db.get_hh_questionnaire(qid))
+
+
+def _q63_gate5(qid: str, app_answers: dict | None = None) -> tuple[list[str], list[str], list[str]]:
+    """Гейт 5 с ответами приложения, если они есть.
+
+    `hh_submit_policy.py:309` берёт `app.get("answers") or quest.answers or {}`:
+    ответы приложения - настоящий источник, и когда они есть, нечитаемая колонка
+    анкеты в проверке не участвует. Контроль ниже держит именно это.
+    """
+    from ai_assistant.hh_submit_policy import evaluate
+
+    app: dict = {
+        "application_id": f"app-{qid}",
+        "vacancy_stable_id": f"hh:{qid}",
+        "questionnaire_id": qid,
+        "title": "Python Developer",
+        "employer": "Acme",
+    }
+    if app_answers is not None:
+        app["answers"] = app_answers
+    decision = evaluate(app)
+    passed = [c for c in decision.checks_passed if c.startswith("questionnaire")]
+    failed = [c for c in decision.checks_failed if c.startswith("questionnaire")]
+    return passed, failed, list(decision.reasons)
+
+
+def test_an_unreadable_answers_column_is_not_laundered_into_an_empty_one():
+    """Писатель, получив прочитанное обратно, не имеет права стереть улику.
+
+    Это ровно тот вызов, который делают все пять боевых вызывающих: раннер
+    (`hh_application_runner.py:710`), четыре места в `hh_questionnaire.py` и CLI.
+    До правки колонка превращалась в `"{}"`, а пометка №46 - в `None`.
+    """
+    from ai_assistant.hh_questionnaire import HHQuestionStatus
+
+    qid = "q63-writer"
+    _insert_questionnaire_row(qid, json.dumps(_READABLE_QUESTIONS), _Q63_BROKEN)
+    quest = _q63_quest(qid)
+    assert quest.answers == {} and quest.answers_error, (
+        "стенд не воспроизвёл нечитаемую колонку: " f"{quest.answers!r} {quest.answers_error!r}"
+    )
+
+    db.update_hh_questionnaire_answers(
+        qid, quest.answers, new_status=HHQuestionStatus.BLOCKED.value
+    )
+
+    assert _q63_raw_column(qid) == _Q63_BROKEN, (
+        "писатель заменил нечитаемые байты пустым словарём - улика исчезла,"
+        " и строка стала неотличима от никогда не заполнявшейся"
+    )
+    assert _q63_quest(qid).answers_error, (
+        "пометка №46 пропала: нечитаемая колонка стала читаемой пустой"
+    )
+    assert _q63_status(qid) == HHQuestionStatus.BLOCKED.value, (
+        "статус обязан обновиться и при отказе от записи ответов: статус - это"
+        " суждение вызывающего о строке, а не улика о содержимом колонки"
+    )
+
+
+def test_real_answers_still_replace_an_unreadable_column():
+    """Контроль: предохранитель не имеет права отказывать всегда.
+
+    Строку с нечитаемой колонкой чинят именно так - человек вводит ответы, и они
+    ложатся в колонку поверх нечитаемых байтов. Запрет этой записи сделал бы
+    строку неремонтируемой.
+    """
+    from ai_assistant.hh_questionnaire import HHQuestionStatus
+
+    qid = "q63-writer-real"
+    _insert_questionnaire_row(qid, json.dumps(_READABLE_QUESTIONS), _Q63_BROKEN)
+
+    db.update_hh_questionnaire_answers(
+        qid, {"q1": "7"}, new_status=HHQuestionStatus.READY_TO_SUBMIT.value
+    )
+
+    assert _q63_raw_column(qid) == '{"q1": "7"}', "настоящие ответы до колонки не дошли"
+    assert _q63_quest(qid).answers_error is None
+
+
+def test_a_readable_column_is_still_overwritten_by_an_empty_write():
+    """Контроль №60: сеттер остаётся сеттером там, где терять нечего.
+
+    Пин `test_the_writer_is_a_setter_not_a_merger_so_the_argument_is_the_defect`
+    держит семантику писателя для читаемой колонки, и правка №63 её не трогает:
+    защищается только НЕЧИТАЕМАЯ непустая колонка, потому что только её замена
+    пустотой необратима.
+    """
+    from ai_assistant.hh_questionnaire import HHQuestionStatus
+
+    qid = "q63-writer-readable"
+    _insert_questionnaire_row(qid, json.dumps(_READABLE_QUESTIONS), '{"q1": "7"}')
+
+    db.update_hh_questionnaire_answers(qid, {}, new_status=HHQuestionStatus.BLOCKED.value)
+
+    assert _q63_raw_column(qid) == "{}", (
+        "читаемая колонка обязана перезаписываться как раньше, иначе предохранитель"
+        " стал шире дефекта"
+    )
+
+
+def test_validate_human_answers_names_the_unreadable_answers_column():
+    """Читатель обязан назвать колонку, а не судить о человеке.
+
+    До правки причина звучала «Required question(s) without answer: q1» - это
+    утверждение о кандидате, а правда в том, что колонку не удалось прочитать.
+    """
+    from ai_assistant.hh_questionnaire import HHQuestionStatus, validate_human_answers
+
+    qid = "q63-validate"
+    _insert_questionnaire_row(qid, json.dumps(_READABLE_QUESTIONS), _Q63_BROKEN)
+    quest = _q63_quest(qid)
+
+    res = validate_human_answers(quest, quest.answers)
+
+    assert not res.ok
+    assert res.status == HHQuestionStatus.NEEDS_HUMAN_REVIEW.value, (
+        "нечитаемую колонку надо перечитать человеком, а не «повторить попытку»"
+    )
+    assert "answers_json" in res.reason, (
+        f"причина не называет нечитаемую колонку: {res.reason!r}"
+    )
+    assert "without answer" not in res.reason, (
+        "запись снова говорит о человеке («ответа нет») вместо колонки"
+    )
+
+
+def test_validate_still_accepts_answers_the_human_supplied():
+    """Контроль: свои ответы человека проверяются как раньше.
+
+    Инвариант №63 срабатывает только когда предъявлять нечего (`not
+    human_answers`). Ответы, пришедшие от человека или из CLI, - настоящий
+    источник, и отказ на них сделал бы ремонт строки невозможным.
+    """
+    from ai_assistant.hh_questionnaire import validate_human_answers
+
+    qid = "q63-validate-ctl"
+    _insert_questionnaire_row(qid, json.dumps(_READABLE_QUESTIONS), _Q63_BROKEN)
+    quest = _q63_quest(qid)
+
+    res = validate_human_answers(quest, {"q1": "7"})
+
+    assert res.ok, res.reason
+    assert res.missing_required == []
+
+
+def test_gate_5_names_the_unreadable_answers_column():
+    """Гейт 5 обязан отличать «ответа нет» от «ответы не прочитались».
+
+    Ответов приложения нет, значит единственный источник - нечитаемая колонка
+    анкеты, и до правки гейт записывал `missing_answer_for_q1` - факт о человеке.
+    """
+    qid = "q63-gate"
+    _insert_questionnaire_row(qid, json.dumps(_READABLE_QUESTIONS), _Q63_BROKEN)
+
+    _passed, failed, reasons = _q63_gate5(qid)
+
+    assert "questionnaire_complete" in failed, (
+        f"гейт 5 засчитал анкету с нечитаемой колонкой ответов: {failed} {reasons[:3]}"
+    )
+    unreadable = [r for r in reasons if "answers_unreadable" in r]
+    assert unreadable, f"причина не называет колонку: {reasons[:4]}"
+    assert "answers_json" in unreadable[0]
+    assert not [r for r in reasons if r.startswith("missing_answer_for_")], (
+        "запись снова говорит о человеке вместо колонки"
+    )
+
+
+def test_gate_5_still_uses_the_applications_answers_when_they_exist():
+    """Контроль: ответы приложения - настоящий источник, и гейт им доверяет.
+
+    Без этого пина предохранитель мог бы валить гейт на любой нечитаемой колонке,
+    даже когда ответы для проверки взяты не из неё.
+    """
+    qid = "q63-gate-ctl"
+    _insert_questionnaire_row(qid, json.dumps(_READABLE_QUESTIONS), _Q63_BROKEN)
+
+    passed, failed, reasons = _q63_gate5(qid, app_answers={"q1": "7"})
+
+    assert "questionnaire_complete" in passed, f"{failed} {reasons[:3]}"
+    assert not [r for r in reasons if "answers_unreadable" in r]
+
+
+def test_the_audit_names_the_unreadable_answers_column():
+    """Аудит: отказ до цикла, с указанием колонки - форма №46, одной колонкой левее."""
+    from ai_assistant.hh_questionnaire_audit import audit_questionnaire
+
+    qid = "q63-audit"
+    _insert_questionnaire_row(qid, json.dumps(_READABLE_QUESTIONS), _Q63_BROKEN)
+
+    report = audit_questionnaire(qid)
+
+    assert report.overall.value == "NEEDS_CORRECTION"
+    assert report.items, "отказ без причины - так исходный дефект и оставался невидимым"
+    assert report.items[0].source_of_truth == "hh_questionnaires.answers_json", (
+        "пункт обязан указывать на нечитаемую колонку, иначе пин пройдёт и на"
+        " аудите, который просто отказывает всегда"
+    )
+    assert len(report.items) == 1, (
+        "цикл по вопросам отработать не мог: пункт на каждый вопрос снова говорил бы"
+        " о человеке, а не о колонке"
+    )
+
+
+def test_the_runner_path_does_not_erase_the_unreadable_column():
+    """Путь раннера: его собственное выражение на нечитаемой колонке.
+
+    `hh_application_runner.py:531` берёт `quest_data.get("answers") or
+    app.get("answers") or {}`; при нечитаемой колонке и заявке без ответов это
+    `{}`, и до правки `submit_questionnaire_response` записывал его в колонку на
+    ветке отказа валидации (`hh_questionnaire.py:760`). Проба намерила это
+    целиком (S5, `RUNNER-PATH-ERASES-EVIDENCE`); здесь достаточно той же ветки:
+    навигация не нужна, отказ валидации приходит раньше неё.
+    """
+    qid = "q63-runner"
+    _insert_questionnaire_row(qid, json.dumps(_READABLE_QUESTIONS), _Q63_BROKEN)
+    quest_data = db.get_hh_questionnaire(qid) or {}
+    app = db.get_hh_application("q63-runner-app") or {}
+    human_answers = quest_data.get("answers") or app.get("answers") or {}
+    assert human_answers == {}, f"стенд не воспроизвёл форму раннера: {human_answers!r}"
+
+    res = submit_questionnaire_response(
+        questionnaire_id=qid,
+        human_answers=human_answers,
+        confirm_submit=True,
+    )
+
+    assert res.verdict == "BLOCKED"
+    assert _q63_raw_column(qid) == _Q63_BROKEN, (
+        "путь раннера стёр нечитаемую колонку: " f"{_q63_raw_column(qid)!r}"
+    )
+
+
+def test_the_cli_door_does_not_erase_the_unreadable_column():
+    """Вторая дверь: `questionnaire answer` без флагов.
+
+    `cli.py:3372` берёт `answers = dict(quest.answers or {})` - то же прочитанное
+    обратно, и `cli.py:3396` пишет его на ветке отказа валидации. То есть команда,
+    которую человек запускает, чтобы разобраться в непонятной строке, стирала
+    улику. Правится это не в CLI, а на границе записи, поэтому пин держит дверь,
+    не трогая `cli.py`.
+    """
+    from ai_assistant import cli
+
+    qid = "q63-cli"
+    _insert_questionnaire_row(qid, json.dumps(_READABLE_QUESTIONS), _Q63_BROKEN)
+
+    rc = cli.questionnaire_answer_cmd(qid)
+
+    assert rc == 1, "команда обязана отказать: ответов для записи нет"
+    assert _q63_raw_column(qid) == _Q63_BROKEN, (
+        "CLI стёр нечитаемую колонку: " f"{_q63_raw_column(qid)!r}"
+    )

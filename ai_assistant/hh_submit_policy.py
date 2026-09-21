@@ -318,19 +318,37 @@ def evaluate(
                 reasons.append(f"questionnaire_{qid}_questions_unreadable: {quest.questions_error}")
             else:
                 answers = app.get("answers") or quest.answers or {}
-                q_errors = []
-                for item in quest.questions:
-                    if item.required:
-                        ans = answers.get(item.question_id)
-                        if ans is None or str(ans).strip() == "":
-                            q_errors.append(f"missing_answer_for_{item.question_id}")
-                        elif str(ans).strip().lower() in UNCERTAIN_ANSWER_VALUES:
-                            q_errors.append(f"uncertain_answer_for_{item.question_id}")
-                if q_errors:
+                # BLE001 finding #63. Same class as #46 above, one column over: #46
+                # gave both columns a marker, but only questions_error was read
+                # here, so an unreadable answers_json arrived as `{}` and the loop
+                # below recorded missing_answer_for_* - a statement about the
+                # candidate where the truth is that the column could not be read.
+                # The gate fails either way; the record is what changes, and the
+                # record is what a human acts on. The application's own answers are
+                # a real source, so a corrupt questionnaire column only matters when
+                # it is the source being judged (the readers disagree on
+                # precedence: this gate prefers the application's answers, the
+                # runner at hh_application_runner.py:531 prefers the
+                # questionnaire's).
+                if quest.answers_error and not app.get("answers"):
                     checks_failed.append("questionnaire_complete")
-                    reasons.extend(q_errors)
+                    reasons.append(
+                        f"questionnaire_{qid}_answers_unreadable: {quest.answers_error}"
+                    )
                 else:
-                    checks_passed.append("questionnaire_complete")
+                    q_errors = []
+                    for item in quest.questions:
+                        if item.required:
+                            ans = answers.get(item.question_id)
+                            if ans is None or str(ans).strip() == "":
+                                q_errors.append(f"missing_answer_for_{item.question_id}")
+                            elif str(ans).strip().lower() in UNCERTAIN_ANSWER_VALUES:
+                                q_errors.append(f"uncertain_answer_for_{item.question_id}")
+                    if q_errors:
+                        checks_failed.append("questionnaire_complete")
+                        reasons.extend(q_errors)
+                    else:
+                        checks_passed.append("questionnaire_complete")
     else:
         # BLE001 finding #37: nothing on record says this vacancy has a
         # questionnaire, and the old line recorded "questionnaire_complete" - a

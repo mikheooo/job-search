@@ -141,6 +141,11 @@ FALSE_POSITIVE_CLASSES = (
      "the line whose address was the runner's). The fix is not a wider window: "
      "name the symbol the cited line actually has, on the line that carries "
      "the address -- then the reference is CHECKED instead of skipped"),
+    ("the probe's own uppercase status tokens are read as symbol names "
+     "(hh_application_runner.py:531 + EVIDENCE-KEPT; found in #63, 2026-09-21). "
+     "A backticked probe verdict is a measurement, not a symbol"),
+    ("a git ref in prose is read as a symbol name (db.py:1193 + HEAD; found in "
+     "#63, 2026-09-21). HEAD names a revision, not the cited line"),
 )
 SYMBOL_STOP = {
     "py", "md", "js", "json", "toml", "sh", "yaml", "yml",
