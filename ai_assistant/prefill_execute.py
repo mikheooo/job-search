@@ -107,9 +107,19 @@ def _mutation_js(op: PrefillOperation) -> str:
 }})()"""
     if t in ("textarea", "text"):
         tag = "TEXTAREA" if t == "textarea" else "INPUT"
+        data_qa = _js_str(op.target.dataQa or "")
+        target_id = _js_str(op.target.id or "")
         return f"""(() => {{
     const name = {name}, label = {label}, value = {value};
-    const els = Array.from(document.querySelectorAll("{tag.lower()}[name=" + JSON.stringify(name) + "]"));
+    const dataQa = {data_qa}, targetId = {target_id};
+    let els = [];
+    if (name) els = Array.from(document.querySelectorAll("{tag.lower()}[name=" + JSON.stringify(name) + "]"));
+    if (!els.length && dataQa) els = Array.from(document.querySelectorAll("{tag.lower()}[data-qa=" + JSON.stringify(dataQa) + "]"));
+    if (!els.length && targetId) {{
+        const elById = document.getElementById(targetId);
+        if (elById && elById.tagName === '{tag}') els = [elById];
+    }}
+    if (!els.length) els = Array.from(document.querySelectorAll("{tag.lower()}"));
     for (const el of els) {{
         let lab = '';
         try {{
@@ -169,9 +179,19 @@ def _verify_js(op: PrefillOperation) -> str:
 }})()"""
     if t in ("textarea", "text"):
         tag = "TEXTAREA" if t == "textarea" else "INPUT"
+        data_qa = _js_str(op.target.dataQa or "")
+        target_id = _js_str(op.target.id or "")
         return f"""(() => {{
     const name = {name};
-    const els = Array.from(document.querySelectorAll("{tag.lower()}[name=" + JSON.stringify(name) + "]"));
+    const dataQa = {data_qa}, targetId = {target_id};
+    let els = [];
+    if (name) els = Array.from(document.querySelectorAll("{tag.lower()}[name=" + JSON.stringify(name) + "]"));
+    if (!els.length && dataQa) els = Array.from(document.querySelectorAll("{tag.lower()}[data-qa=" + JSON.stringify(dataQa) + "]"));
+    if (!els.length && targetId) {{
+        const elById = document.getElementById(targetId);
+        if (elById && elById.tagName === '{tag}') els = [elById];
+    }}
+    if (!els.length) els = Array.from(document.querySelectorAll("{tag.lower()}"));
     for (const el of els) {{
         return JSON.stringify({{found: true, value: el.value, disabled: el.disabled, readOnly: el.readOnly}});
     }}

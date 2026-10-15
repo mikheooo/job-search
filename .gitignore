@@ -11,9 +11,12 @@ __pycache__/
 .venv/
 venv/
 node_modules/
+.worktrees/
 
 # Logs & Data
+logs/
 *.log
+*.lock
 *.sqlite
 *.db
 *.json
@@ -24,6 +27,36 @@ node_modules/
 # Browser artifacts (runtime screenshots/state; tracked fixture exceptions below)
 artifacts/*
 !artifacts/hh_manual_form_snapshot.json
+# GIG-SEARCH-P1: fixture-датасет заказов — это вход контура Gig Search и данные
+# для его тестов, а не рантайм-артефакт. Без него pipeline нечем прогнать.
+!artifacts/gig_fixture_sample.json
+# GIG-SEARCH-P2: сохранённые публичные страницы Contra, на которых построены
+# deterministic parser-тесты P2. Это вход тестов, а не рантайм-скриншот.
+!artifacts/contra_hire_page_snapshot.html
+!artifacts/contra_hire_web_developers_snapshot.html
+# GIG-SEARCH-P2.1: реальный ответ авторизованной ленты заказов Contra
+# (только записи заказов, без токенов сессии) — фикстура парсер-тестов.
+!artifacts/contra_jobs_feed_response.json
+# CONTRA-WORK-ITEMS-PREP: кандидаты медиа для карточек Work. Это вход для ручного
+# добавления работ, а не рантайм-скриншот, поэтому файлы сохраняются.
+!artifacts/contra_work_dashboard_8000.png
+!artifacts/contra_work_dashboard_8050.png
+# Папка должна быть разисключена до её файлов, иначе git не может re-include файл.
+!artifacts/contra_work_items/
+!artifacts/contra_work_items/reels_jules_drawer.png
+!artifacts/contra_work_items/reels_tasks.png
+!artifacts/contra_work_items/job-search-vacancies.png
+# Остальные кандидаты этой папки не нужны в репозитории.
+artifacts/contra_work_items/reels_dashboard.png
+artifacts/contra_work_items/reels_jules_search.png
+artifacts/contra_work_items/job-search-funnel.png
+# GIG-SEARCH-P3: сохранённые публичные страницы Freelancer.com — вход deterministic
+# парсер-тестов (tests/gig/test_freelancer_source.py). Без них тесты не запустятся офлайн.
+!artifacts/freelancer_jobs_listing_snapshot.html
+!artifacts/freelancer_project_detail.html
+# P4: снимок проекта в не-USD валюте (HKD, курс 0.12745) — без него конверсия
+# проверялась бы только на USD, где она вырождается в тождество.
+!artifacts/freelancer_project_detail_hkd.html
 # Exported row deleted from the production state.db on 2026-09-17. Kept as a
 # tracked fixture because docs/ble001_triage.md cites this row as evidence that
 # the "live read -> db -> live read" path converges (findings #27 and #38).
@@ -45,6 +78,14 @@ _tmp_*
 *.bak*
 *.backup
 *.new
+# Копия базы перед разовой правкой. Тот же класс, что `*.bak-ГГГГММДД` выше, но
+# имя построено иначе (`state.db.before_backfill_20260930` — расширения `.db`
+# нет, поэтому `*.db` её НЕ ловил): 35 МБ, один `git add tools/` от истории.
+# Правило по имени, а не по маске базы: копия называется по шагу, который её
+# сделал, и заводить вторую маску под каждую схему имени — то же самое, только
+# длиннее.
+tools/*/state.db.before_*
+*state.db.before_*
 graphify-out/
 scratch_*
 
@@ -62,3 +103,89 @@ snapshot_stage15_manifest.txt
 
 # Personal resume (not part of the product)
 resume.md
+
+
+# Progress markers written by the test runner while a long suite is running.
+# `.pytest_*.xml` was already ignored but its sibling `.pytest_*.started` was not:
+# a killed run leaves 18 of them behind, they show as untracked forever, and they
+# are pure noise - the junit file is the verdict, the marker is only bookkeeping.
+.pytest_*.started
+.pytest_*.done
+
+# Root-level probe dumps (`git status` scratch, one-off id lists, pytest tails).
+# The leading dot is the convention that already marks them as throwaway.
+/.t[0-9]*.txt
+/.t[0-9]*_*.txt
+# Saved web pages from T7.9 employer research: 35 files, 18 MB of raw HTML that
+# is already superseded by docs/t79_report.md. A page dump is reproducible by
+# re-fetching the URL; it is not evidence the report cites by hash.
+/.t[0-9]*_*.html
+/.t[0-9]*_probe
+
+# Scratch dumps that live beside the scripts they were produced by. The scripts
+# ARE kept (they are how a measurement is reproduced); the payloads they printed
+# are not - 240 .py / 120 .txt / 44 .html would otherwise enter history verbatim.
+# Exception patterns like `!tools/.t7*/*.py` above are re-narrowed here.
+tools/.t[0-9]*.txt
+tools/.t[0-9]*.html
+tools/.t[0-9]*.md
+tools/.t[0-9]*_*.txt
+tools/.t[0-9]*_*.html
+tools/.t[0-9]*_*.md
+tools/cr_payloads/*.txt
+tools/.t7*/*.html
+
+# Task scratch directories: tools/.t7xx/ hold the live evidence of a task.
+# The scripts belong in history - they are how the next run reproduces the
+# measurement. The raw .json snapshots do NOT: each task adds ~1-2 MB and they
+# are byte-identical to what a rerun produces from the same live board.
+# Their inventory lives in docs/task_artifacts.md (path, size, sha256), so a
+# snapshot is never lost silently - but the repository does not carry it.
+!tools/.t7*/
+!tools/.t7*/*.py
+!tools/.t7*/*.ps1
+!tools/.t7*/*.sh
+!tools/.t7*/README.md
+# Re-exclude the data snapshots and raw run logs inside those directories.
+# `*.txt` is deliberately NOT excluded wholesale: some commands print their report
+# to stdout, and that stdout IS the evidence (e.g. tools/.t728/watcher_once_*.txt,
+# the only written proof that the watcher saw 12 conversations while triage saw 0).
+# The un-ignore below keeps those; the numbered dump patterns above still catch
+# the throwaway payloads that a probe script prints.
+tools/.t7*/*.json
+tools/.t7*/*.out
+tools/.t7*/*.err
+tools/.t7*/desc_*.txt
+# Named reports are evidence; numbered dumps (`probe_01.txt`) are not.
+!tools/.t7*/watcher_once_*.txt
+!tools/.t7*/triage_empty_*.txt
+!tools/.t7*/list_winerror_*.txt
+!tools/.t7*/card_lines_*.txt
+!tools/.t7*/employers_after_*.txt
+# `card_lines_<дата>.json` — НЕ дамп, а вход harness'а (tools/.t728/filter_harness.js):
+# он читает живой замер карточек и правило даты из этого файла. Без него harness
+# невоспроизводим из свежего клона, а он единственная проверка дефекта C на
+# настоящих данных (JS не исполняется ни одним тестом Python). Данные не
+# секретные: те же 12 карточек лежат открытым текстом в card_lines_*.txt.
+!tools/.t7*/card_lines_*.json
+# Console captures of live browser runs (T7.21/T7.23 window probes). Excluded on
+# purpose, and not because they are junk: `window_probe_c1.txt` is the record of
+# chrome_procs/visible_chrome_windows over time, and it is written in the *Windows
+# console* convention - 40 bare CR against 40 bare LF. The moment two of them
+# become tracked, `tools/bare_cr_census.py` reports 5 bare-CR files instead of the
+# 3 declared in `docs/ble001_triage.md`, and `tests/test_report_line_refs.py`
+# fails on `files carrying bare CR : 3`. Their content is already distilled into
+# `docs/t721_report.md` / `docs/t723_report.md`; the raw capture is reproducible
+# by rerunning the probe. Scripts (`window_probe.ps1`) still go into git.
+tools/.t7*/*_c1.txt
+tools/.t7*/*_stock.txt
+# Preserved copies of files modified outside the session (T7.26 captured `cli.py`
+# as another feature branch was editing it). These are byte-for-byte snapshots of
+# a source file, not source: the T7.26 copy carries 6425 bare CR, and the moment
+# it becomes *tracked* the bare-CR census sees a fourth undeclared file and
+# `tests/test_report_line_refs.py` fails. The finding it documents is written up
+# in EXTERNAL_MODIFICATION_DETECTED.md, which stays.
+tools/.t7*/*.external_*.py
+tools/.t7*/*.patched
+
+portfolio_site/

@@ -36,7 +36,7 @@ import hashlib
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any
 from collections.abc import Callable
@@ -1404,6 +1404,140 @@ def fetch_hh_dialogs_readonly(
                 "pageIsMessages": False}
 
 
+# ---------------------------------------------------------------------------
+# Дата сообщения из карточки переписки (T7.28)
+# ---------------------------------------------------------------------------
+#
+# Замер T7.28: `hh_message_events.sent_at` пуст в 37 событиях из 38 (97 %), и
+# по базе нельзя узнать, КОГДА пришло письмо. Живая страница при этом дату
+# отдаёт — она лежит в `rawLines[1]` каждой карточки:
+#
+#     [0] 'Специалист технической поддержки / IT-ассистент…'   заголовок
+#     [1] 'вчера'                                             ЭТО ДАТА
+#     [2] 'Кадровое агентство Dream Team'                     работодатель
+#     [3] 'Отказ'                                             текст
+#     [4] '1'                                                 непрочитано
+#
+# Проверено по всем 12 карточкам живого списка: индекс 1 стабилен, форматов два.
+# Старый код дату именно ВЫФИЛЬТРОВЫВАЛ (`!/вчера|сегодня|назад/i`) — она была
+# нужна ему как фильтр и не нужна как данные. Здесь она становится данными.
+
+#: Сокращения дней недели, как их печатает HH. Порядок — `datetime.weekday()`.
+_WEEKDAYS: dict[str, int] = {
+    "пн": 0, "вт": 1, "ср": 2, "чт": 3, "пт": 4, "сб": 5, "вс": 6,
+}
+
+#: `ДД.ММ` и `Д.ММ` — HH не всегда добивает день нулём.
+_DAY_MONTH_RE = re.compile(r"^(\d{1,2})\.(\d{1,2})$")
+
+#: Один день — вынесен, потому что `timedelta(days=1)` в трёх ветках читается
+#: как три разных правила, хотя правило одно.
+_ONE_DAY = timedelta(days=1)
+
+#: Ядро JS-регулярки «эта строка карточки — дата». Одна константа на три места:
+#: два фильтра в `_CONVERSATIONS_LIST_JS` (работодатель и сниппет) и она же —
+#: как источник истины для теста.
+#:
+#: **Дефект C (T7.28), который здесь закрывается.** Старый фильтр знал только
+#: `/вчера|сегодня|назад/`. Если `subtitleEl` однажды перестанет совпадать —
+#: а он совпадает по `[data-qa*="subtitle"], [class*="subtitle"],
+#: [class*="employer"]`, то есть по трём гадательным селекторам, — fallback
+#: пойдёт по `rawLines`, и первая же подходящая строка станет работодателем.
+#: Строка `[1]` — дата. `пн` под старый фильтр не попадала (`вчера` попадала,
+#: `пн` нет), `20.09` тоже: `^[0-9:]+$` её не ловит из-за точки. То есть в
+#: «Академия Йоги» работодателем стала бы дата.
+#:
+#: Почему регулярка живёт в Python, а не набирается в JS дважды: JS-строка не
+#: исполняется ни в одном тесте (нужен живой браузер), поэтому правило,
+#: записанное только в ней, проверить нечем. Так проверяется ровно то, что
+#: уезжает на страницу.
+CARD_DATE_LINE_JS_PATTERN = (
+    r"^(?:вчера|сегодня|позавчера"
+    r"|пн|вт|ср|чт|пт|сб|вс"
+    r"|\d{1,2}\.\d{1,2})$"
+)
+
+
+def _is_valid_mmdd(year: int, month: int, day: int) -> bool:
+    """Существует ли такая календарная дата. False — для ``31.02``, ``99.99``.
+
+    Без явной проверки пришлось бы ловить ``ValueError`` вокруг конструктора, а
+    ``noqa: DTZ001`` на каждой ветке читается как три разных исключения вместо
+    одного правила.
+    """
+    try:
+        datetime(year, month, day)  # noqa: DTZ001 — валидность, не момент времени
+    except ValueError:
+        return False
+    return True
+
+
+def parse_card_date(raw: str | None, today: str | None = None) -> datetime | None:
+    """Дата последнего сообщения из строки карточки, или ``None``.
+
+    Возвращает ``datetime`` (полночь соответствующих суток) либо ``None``, если
+    строка не является датой. **Отказ — это часть контракта, а не побочный
+    эффект:** именно на угадывании родился дефект, когда дата становилась именем
+    работодателя, а наш собственный текст — письмом работодателя.
+
+    ``today`` — опорная дата для относительных форм (`ISO`, по умолчанию сегодня
+    по локальным часам). Параметр существует, чтобы поведение было
+    воспроизводимым: тест на «вчера» не должен зависеть от дня запуска.
+
+    Точность — **сутки, не время**: карточка показывает только день, и притвориться,
+    что мы знаем час, значило бы выдумать данные. Время суток всегда 00:00.
+    """
+    if not raw:
+        return None
+
+    text = str(raw).strip().replace("\xa0", " ")
+    if not text:
+        return None
+
+    # Опорная дата: либо из аргумента, либо сегодня.
+    if today:
+        try:
+            base = datetime.fromisoformat(str(today)[:10])
+        except ValueError:
+            return None
+    else:
+        base = datetime.now()  # noqa: DTZ005 — местный день; см. ниже
+    # Наивное время осознанно: карточка даёт ТОЛЬКО день, без часа и без зоны,
+    # и сравнивать его предполагается с другим наивным днём (см. «Точность» в
+    # docstring). tzinfo здесь создал бы ложную точность и сломал бы равенство
+    # с датой, разобранной из `today`. Часовой пояс сравнивающей стороны —
+    # забота вызывающего, не парсера.
+    base_day = datetime(base.year, base.month, base.day)  # noqa: DTZ001
+
+    lowered = text.lower()
+
+    # --- относительные формы -------------------------------------------------
+    if lowered == "вчера":
+        return base_day - _ONE_DAY
+
+    # `пн`..`вс` — БЛИЖАЙШИЙ ПРОШЛЫЙ такой день, включая сегодня.
+    # Если брать ближайший вперёд, сообщение от понедельника, прочитанное во
+    # вторник, получит дату следующего понедельника — то есть будущее, и
+    # «свежесть» сообщения окажется больше реальной.
+    if lowered in _WEEKDAYS:
+        target = _WEEKDAYS[lowered]
+        delta = (base.weekday() - target) % 7
+        return base_day - timedelta(days=delta)
+
+    # --- абсолютная форма `ДД.ММ` -------------------------------------------
+    m = _DAY_MONTH_RE.match(text)
+    if m:
+        day, month = int(m.group(1)), int(m.group(2))
+        # `31.02` и `99.99` похожи на дату, датой не являются. Отказ, а не
+        # подгонка: подогнанная дата хуже отсутствующей — она выглядит настоящей.
+        if not _is_valid_mmdd(base.year, month, day):
+            return None
+        return base_day.replace(month=month, day=day)
+
+    # Всё прочее — заголовок, работодатель, текст письма, счётчик непрочитанного.
+    return None
+
+
 _CONVERSATIONS_LIST_JS = r"""() => {
     const out = [];
     
@@ -1424,17 +1558,36 @@ _CONVERSATIONS_LIST_JS = r"""() => {
         const title = titleEl ? (titleEl.innerText || '').trim() : (rawLines[0] || null);
         let employer = subtitleEl ? (subtitleEl.innerText || '').trim() : null;
         let snippet = snippetEl ? (snippetEl.innerText || '').trim() : null;
-        
+
+        // T7.28: the card's date line. Measured on 12 live cards (2026-09-30):
+        // rawLines[1] is ALWAYS the date - 'вчера', 'пн'..'вс', or '20.09' - while
+        // [0] is the vacancy title, [2] the employer, [3] the message text, and
+        // [4] the unread counter. The old code *discarded* this line (the
+        // employer-fallback filter below skips /вчера|сегодня|назад/), which is
+        // why hh_message_events.sent_at was empty in 37 of 38 rows: the date was
+        // read as noise instead of as data. It is reported here in its own field
+        // and parsed in Python (parse_card_date) - TS-side date arithmetic in a
+        // page context is not testable, and the two formats need real validation.
+        //
+        // Deliberately NOT removed from rawLines: the filters below still need to
+        // recognise it in order to skip it, and removing it would shift every
+        // index that the note above depends on.
+        const dateCandidate = (rawLines.length > 1) ? rawLines[1] : null;
+
         if (!employer) {
             for (let i = 1; i < rawLines.length; i++) {
-                if (!/^[0-9:]+$/.test(rawLines[i]) && !/вчера|сегодня|назад/i.test(rawLines[i]) && rawLines[i].length < 60) {
+                // Дата, день недели и `ДД.ММ` не могут стать работодателем даже
+                // если ни один селектор subtitle не совпал (дефект C). Регулярка
+                // подставлена из CARD_DATE_LINE_JS_PATTERN в Python -- правило
+                // одно на два фильтра и на тест.
+                if (!/^[0-9:]+$/.test(rawLines[i]) && !__CARD_DATE_LINE__.test(rawLines[i]) && rawLines[i].length < 60) {
                     employer = rawLines[i];
                     break;
                 }
             }
         }
         if (!snippet || snippet === employer || snippet === title) {
-            const candidates = rawLines.filter(l => l !== title && l !== employer && !/^[0-9:]+$/.test(l) && !/^[0-9]+$/.test(l) && !/^(вчера|сегодня|минут|часов)/i.test(l));
+            const candidates = rawLines.filter(l => l !== title && l !== employer && !/^[0-9:]+$/.test(l) && !/^[0-9]+$/.test(l) && !__CARD_DATE_LINE__.test(l) && !/^(минут|часов)/i.test(l));
             if (candidates.length > 0) {
                 snippet = candidates[candidates.length - 1];
             }
@@ -1446,6 +1599,7 @@ _CONVERSATIONS_LIST_JS = r"""() => {
             title: title,
             employer: employer,
             snippet: snippet,
+            last_message_date_raw: dateCandidate,
             is_selected: isSelected
         });
     }
@@ -1460,6 +1614,7 @@ _CONVERSATIONS_LIST_JS = r"""() => {
             title: hTitle ? (hTitle.innerText || '').trim() : document.title,
             employer: hEmp ? (hEmp.innerText || '').trim() : null,
             snippet: null,
+            last_message_date_raw: null,
             is_selected: true
         });
     }
@@ -1472,12 +1627,27 @@ _CONVERSATIONS_LIST_JS = r"""() => {
 }"""
 
 
+def _conversations_list_js() -> str:
+    """JS списка переписок с подставленным правилом «эта строка — дата».
+
+    Подстановка, а не литерал в двух местах: правило одно (``CARD_DATE_LINE_JS_PATTERN``),
+    и именно его проверяют тесты. Литерал в JS-строке не исполняет ни один тест —
+    нужен живой браузер, — поэтому продублированное правило было бы непроверяемым.
+
+    ``flags`` не нужны: образец уже регистронезависим там, где надо (``пн`` и
+    ``Пн`` на странице не встречаются, а ``вчера`` HH печатает строчными).
+    """
+    return _CONVERSATIONS_LIST_JS.replace(
+        "__CARD_DATE_LINE__", f"/(?:{CARD_DATE_LINE_JS_PATTERN})/"
+    )
+
+
 def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> dict[str, Any]:
     """Stage 30D.9: Read-only enumeration of all visible conversations in HH chat interface.
     Returns:
         conversations: List[Dict[str, Any]] (conversation_id, url, title, employer, snippet, is_selected)
     """
-    expr = _CONVERSATIONS_LIST_JS
+    expr = _conversations_list_js()
     if expr.lstrip().startswith("() =>"):
         expr = "(" + expr + ")()"
     raw = evaluate_fn(expr)
@@ -1563,37 +1733,36 @@ def fetch_hh_conversation_readonly(evaluate_fn: Callable[[str], str]) -> dict[st
 
 # ---------------- Stage 25: limited AUTO (opt-in, allowlisted) --------------
 
-# Auto-safety sensitivity patterns. Anything matching here forbids AUTO even
-# when classification is REPLY_REQUIRED (salary, dates, experience, previous
-# interviews, candidate status, tech stack, offers, legal/financial terms...).
+# Auto-safety sensitivity patterns strictly requiring HUMAN_REVIEW:
+# external links/forms/questionnaires, test tasks/projects, and final offer acceptance or interview slot scheduling.
 _AUTO_FORBIDDEN_RE = re.compile(
-    r"зарплат|salary|оклад|оплат|компенсац|ставк|денег|сколько.*получ|"
-    r"уровень дохода|опыт|years of experience|лет опыта|года опыта|"
-    r"когда.*(мож|смож|доступ)|в какое время|какую дату|start date|available to start|"
-    r"when can you|when could you|интервью|собеседован|interview|проходили|прошлых|"
-    r"предыдущ.*(интерв|собес)|did you.*interview|"
-    r"статус|статусе|status|решение по ваканси|"
-    r"стек|технологи|навык|python|n8n|llm|java|golang|telegram|"
-    r"принять предлож|отклон|accept.*offer|offer|контракт|договор|юридич|финанс|"
-    r"условия работы|work conditions|часовой пояс",
+    r"тестов\w*\s+(?:задани|проект)|ссылк\w*\s+на\s+тестов|test\s+task|test\s+assignment|"
+    r"анкет\w*|опросник|questionnaire|forms\.gle|docs\.google\.com/forms|"
+    r"соглас\w*\s+время|удобн\w*\s+время|выбрать\s+слот|слот\s+для\s+интервью|"
+    r"принять\s+оффер|принять\s+предложен|accept.*offer|подпис\w*\s+договор",
     re.IGNORECASE,
 )
 
-# Minimal confirmations that a reply can be built without any candidate facts:
-# the message must be answerable purely from profile truth (role interest).
-# AUTO is only attempted for these very simple "interest/availability to talk"
-# messages, and only when the profile confirms the role interest.
+# Allowed probes: interest/relevance, stack/skills, experience, remote format, salary expectations
 _AUTO_ALLOWED_PROBE = re.compile(
-    r"(интересн|заинтересован|interested|want to discuss|готовы обсудить|"
-    r"можем ли|would you like|still interested|ещё интересует|по-прежнему)",
+    r"(интересн|заинтересован|interested|want to discuss|обсуд|готов|"
+    r"можем ли|would you like|still interested|ещё интересует|по-прежнему|актуальн|рассматрива|"
+    r"стек|навык|технологи|python|n8n|fastapi|docker|sql|api|инструмент|автоматизац|"
+    r"опыт|стаж|работали ли|подскажите|уточните|расскажите|"
+    r"удален|remote|формат работ|локаци|город|где вы|"
+    r"зарплат|salary|оклад|доход|ставка|ожидания|вилка)",
     re.IGNORECASE,
 )
 
 
 def _auto_enabled(env: dict[str, str] | None = None) -> bool:
-    """Kill switch: AUTO requires HH_AUTO_REPLY_ENABLED=true (explicit)."""
-    val = (env if env is not None else os.environ).get(_AUTO_ENV_VAR, "")
-    return str(val).strip().lower() == "true"
+    """Kill switch: AUTO requires HH_AUTO_REPLY_ENABLED=true or HH_AUTONOMOUS_REPLY_ENABLED=true."""
+    e = env if env is not None else os.environ
+    for var in (_AUTO_ENV_VAR, "HH_AUTONOMOUS_REPLY_ENABLED"):
+        val = e.get(var, "")
+        if str(val).strip().lower() == "true":
+            return True
+    return False
 
 
 def is_safe_for_auto_reply(
@@ -1611,14 +1780,20 @@ def is_safe_for_auto_reply(
         reasons.append("classification is not REPLY_REQUIRED")
     context = _context_texts(dialog)
     if _AUTO_FORBIDDEN_RE.search(context):
-        reasons.append("sensitive/forbidden topic in conversation")
+        reasons.append("sensitive/forbidden topic in conversation (external form, test task, or final offer/interview slot)")
     last = (dialog.last_message().text or "") if dialog.last_message() else ""
-    if not _AUTO_ALLOWED_PROBE.search(last):
-        reasons.append("message is not a plain interest/availability probe")
+    if not _AUTO_ALLOWED_PROBE.search(last) and not _AUTO_ALLOWED_PROBE.search(context):
+        reasons.append("message is not an allowlisted inquiry (interest, stack, experience, remote, or salary)")
     prof = profile if profile is not None else _load_profile()
     roles = prof.get("desired_roles") or []
     if not roles:
-        reasons.append("no desired_roles truth source for interest reply")
+        reasons.append("no desired_roles truth source for reply")
+
+    # If inquiry involves salary, ensure profile contains confirmed minimum_salary facts
+    if re.search(r"зарплат|salary|оклад|доход|ставка|вилка|ожидания", context, re.IGNORECASE):
+        if not prof.get("minimum_salary"):
+            reasons.append("salary inquiry requires confirmed minimum_salary in candidate profile")
+
     return {"safe": not reasons, "reasons": reasons}
 
 

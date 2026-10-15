@@ -1,5 +1,9 @@
 import os
 
+# Canonical project root — DB and vacancies.json resolve against it so that the
+# working directory never changes which database is used (cron, CLI, agents).
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # Kill-switch snapshot, taken BEFORE load_dotenv(..., override=True) below.
 # That call overwrites a real environment variable with the value from .env, so
 # `SUBMIT_ALLOWED=false python -m ai_assistant.cli ...` used to be silently
@@ -9,17 +13,13 @@ _OPERATOR_SUBMIT_ALLOWED = os.getenv("SUBMIT_ALLOWED")
 try:
     from dotenv import load_dotenv
 
-    load_dotenv(override=True)
+    load_dotenv(os.path.join(PROJECT_ROOT, ".env"), override=True)
     if not os.getenv("TELEGRAM_BOT_TOKEN"):
         hermes_env = os.path.expanduser(r"~\AppData\Local\hermes\.env")
         if os.path.exists(hermes_env):
             load_dotenv(hermes_env)
 except Exception:
     pass
-
-# Canonical project root — DB and vacancies.json resolve against it so that the
-# working directory never changes which database is used (cron, CLI, agents).
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 VACANCIES_FILE = os.getenv("VACANCIES_FILE") or os.path.join(PROJECT_ROOT, "vacancies.json")
 DB_FILE = os.getenv("DB_FILE") or os.path.join(PROJECT_ROOT, "state.db")
@@ -32,8 +32,13 @@ LLM_MODEL = os.getenv("LLM_MODEL", "google/gemini-1.5-pro")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", os.getenv("TG_BOT_TOKEN", ""))
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", os.getenv("TG_CHAT_ID", os.getenv("TELEGRAM_ALLOWED_USERS", os.getenv("TELEGRAM_HOME_CHANNEL", ""))))
 TELEGRAM_OWNER_ID = os.getenv("TELEGRAM_OWNER_ID", os.getenv("TELEGRAM_ADMIN_ID", os.getenv("TELEGRAM_USER_ID", os.getenv("TELEGRAM_ALLOWED_USERS", ""))))
+TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "-1004399255305")
 TG_BOT_TOKEN = TELEGRAM_BOT_TOKEN
 TG_CHAT_ID = TELEGRAM_CHAT_ID
+
+# Dedicated HeadHunter bot configuration (isolates HH chat / employer alerts from Hermes bot)
+HH_TELEGRAM_BOT_TOKEN = os.getenv("HH_TELEGRAM_BOT_TOKEN", "")
+HH_TELEGRAM_CHAT_ID = os.getenv("HH_TELEGRAM_CHAT_ID", os.getenv("TELEGRAM_CHAT_ID", ""))
 
 UNIPILE_API_KEY = os.getenv("UNIPILE_API_KEY", "")
 UNIPILE_DSN = os.getenv("UNIPILE_DSN", "")
@@ -94,7 +99,6 @@ def submit_allowed() -> bool:
     if explicit:
         return all(_parse_bool_env(v) for v in explicit)
     return bool(SUBMIT_ALLOWED)
+
+
 DASHBOARD_TOKEN = os.getenv("DASHBOARD_TOKEN", "").strip()
-
-
-

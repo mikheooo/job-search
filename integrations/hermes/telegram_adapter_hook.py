@@ -7,6 +7,15 @@ to TelegramFeedbackProcessor.
 
 HERMES_CALLBACK_HOOK_MARKER = "# --- Job search feedback callbacks (fb:action:id) ---"
 
+# Injected immediately AFTER the anchor line inside _handle_callback_query,
+# because the body below reads both `data` and the `cb` context dict that the
+# upstream method builds on the line just above the anchor. The adapter is
+# upstream Hermes code and is rewritten wholesale on every Hermes self-update,
+# so a hard-coded anchor eventually rots -- which is exactly what produced the
+# DRIFTED adapter on 2026-10-02: the previous anchor ("# --- Update prompt
+# callbacks ---") vanished in the 15:20 upstream rewrite of this method.
+ADAPTER_HOOK_ANCHOR = "        cb = self._callback_ctx(query)\n"
+
 HERMES_CALLBACK_HOOK_CODE = '''        # --- Job search feedback callbacks (fb:action:id) ---
         if data.startswith("fb:"):
             try:
@@ -16,17 +25,19 @@ HERMES_CALLBACK_HOOK_CODE = '''        # --- Job search feedback callbacks (fb:a
                     sys.path.insert(0, job_search_root)
                 from ai_assistant.telegram_feedback import TelegramFeedbackProcessor
 
+                query_user = getattr(query, "from_user", None)
+                query_message = getattr(query, "message", None)
                 processor = TelegramFeedbackProcessor()
                 raw_cb = {
-                    "id": str(query.id),
+                    "id": str(getattr(query, "id", "") or ""),
                     "from": {
-                        "id": getattr(query.from_user, "id", None),
-                        "username": getattr(query.from_user, "username", None),
-                        "first_name": getattr(query.from_user, "first_name", None),
+                        "id": getattr(query_user, "id", None),
+                        "username": getattr(query_user, "username", None),
+                        "first_name": getattr(query_user, "first_name", None),
                     },
                     "message": {
                         "message_id": getattr(query_message, "message_id", None),
-                        "chat": {"id": query_chat_id},
+                        "chat": {"id": cb.get("chat_id")},
                     },
                     "data": data,
                 }

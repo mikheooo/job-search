@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from integrations.hermes.telegram_adapter_hook import (
+    ADAPTER_HOOK_ANCHOR,
     HERMES_CALLBACK_HOOK_CODE,
     HERMES_CALLBACK_HOOK_MARKER,
 )
@@ -151,18 +152,41 @@ def sync_hermes_integration(base_dir: Path | None = None, dry_run: bool = False)
     # 2. Sync Adapter Hook
     adapter_deployed = paths["adapter_deployed"]
     if adapter_deployed.exists():
-        adapter_text = adapter_deployed.read_text(encoding="utf-8")
+        # Bytes, not text. The upstream adapter is LF-only, and on Windows a
+        # read_text()/write_text() round-trip applies universal-newline
+        # translation, so the sync rewrites all ~7400 of its line endings as
+        # CRLF -- mutating the entire file instead of only adding the hook.
+        adapter_text = adapter_deployed.read_bytes().decode("utf-8")
         if HERMES_CALLBACK_HOOK_MARKER not in adapter_text:
-            # Inject hook before '# --- Update prompt callbacks ---' or in _handle_callback_query
-            target_insertion = "        # --- Update prompt callbacks ---"
-            if target_insertion in adapter_text:
-                new_text = adapter_text.replace(
-                    target_insertion,
-                    HERMES_CALLBACK_HOOK_CODE + "\n" + target_insertion,
-                    1,
+            # Inject the hook immediately AFTER the anchor line (see
+            # ADAPTER_HOOK_ANCHOR: the hook body reads `data` and the `cb` context
+            # dict that _handle_callback_query builds on that very line). Anchoring
+            # on the older "# --- Update prompt callbacks ---" comment is what
+            # silently rotted when Hermes rewrote the method upstream.
+            #
+            # The anchor is matched WITHOUT its terminator, so the injection works
+            # in both LF and CRLF files, and the hook is re-terminated with the
+            # file's own convention. Matching on "...\n" would silently miss every
+            # CRLF file -- including the ones the tests write on Windows.
+            anchor = ADAPTER_HOOK_ANCHOR.rstrip("\n")
+            idx_anchor = adapter_text.find(anchor)
+            if idx_anchor != -1:
+                line_end = idx_anchor + len(anchor)
+                if adapter_text.startswith("\r\n", line_end):
+                    newline = "\r\n"
+                elif adapter_text.startswith("\n", line_end):
+                    newline = "\n"
+                else:
+                    newline = ""  # anchor at EOF: nothing to consume
+                hook = HERMES_CALLBACK_HOOK_CODE.replace("\n", newline or "\n")
+                new_text = (
+                    adapter_text[:line_end]
+                    + newline
+                    + hook
+                    + adapter_text[line_end + len(newline):]
                 )
                 if not dry_run:
-                    adapter_deployed.write_text(new_text, encoding="utf-8")
+                    adapter_deployed.write_bytes(new_text.encode("utf-8"))
                 actions_taken.append(f"INJECTED_ADAPTER_HOOK: {adapter_deployed}")
             else:
                 actions_taken.append(f"ERROR_ADAPTER_INSERTION_POINT_NOT_FOUND: {adapter_deployed}")

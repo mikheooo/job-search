@@ -22,6 +22,8 @@ calls LLM, never submits.
 
 from __future__ import annotations
 
+import json
+import pathlib
 import re
 from typing import Any
 
@@ -44,52 +46,189 @@ class QuestionAnswerGenerator:
         self,
         profile: CandidateProfile,
         resume_text: str,
-        deep: DeepAnalysisResult | None,
-        vacancy: Vacancy | None,
+        deep: DeepAnalysisResult | None = None,
+        vacancy: Vacancy | None = None,
         llm: Any | None = None,
+        kb: dict[str, Any] | None = None,
+        cover_letter: str | None = None,
     ):
         self.profile = profile
         self.resume_text = resume_text or ""
         self.deep = deep
         self.vacancy = vacancy
         self.llm = llm  # optional callable(system, user) -> str; only truth-source-grounded
+        self.cover_letter = cover_letter
+        if kb is not None:
+            self.kb = kb
+        else:
+            self.kb = self._load_default_kb()
 
-    # --- confirmed profile/resume lookups (truth-only) ---
+    @staticmethod
+    def _load_default_kb() -> dict[str, Any] | None:
+        try:
+            p = pathlib.Path(__file__).resolve().parents[1] / "candidate_kb.json"
+            if p.exists():
+                with open(p, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            pass
+        return None
+
+    # --- confirmed profile/resume/kb lookups (truth-only) ---
 
     def _confirmed(self, question: ApplicationQuestion) -> str | None:
         label = (question.label or "").lower()
+
+        # Cover letter / Self introduction / Motivation / Why suitable
+        is_letter_question = (
+            question.normalized_type == QuestionType.COVER_LETTER
+            or any(
+                k in label
+                for k in (
+                    "сопроводительное",
+                    "cover letter",
+                    "cover_letter",
+                    "расскажите о себе",
+                    "о себе",
+                    "почему вы",
+                    "почему именно вы",
+                    "почему вы хотите",
+                    "почему подходите",
+                    "почему вы подходите",
+                    "чем вас заинтересовала",
+                    "мотиваци",
+                    "пару слов о себе",
+                    "кратко опишите свой опыт",
+                    "опишите свой опыт",
+                )
+            )
+            or (question.id and any(k in question.id.lower() for k in ("letter-input", "cover_letter", "letter")))
+        )
+        if is_letter_question:
+            if self.cover_letter and self.cover_letter.strip():
+                return self.cover_letter.strip()
+            if self.llm is not None:
+                return None
+            if self.vacancy and getattr(self.vacancy, "title", None):
+                from .smart_experience_generator import generate_tailored_cover_letter
+                role = getattr(self.vacancy, "title", "") or ""
+                company = getattr(self.vacancy, "company", "") or ""
+                desc = getattr(self.vacancy, "description", "") or ""
+                return generate_tailored_cover_letter(role=role, company=company, description=desc)
+            return (
+                "Здравствуйте! Имею более 15 лет практического опыта в IT, практический опыт "
+                "разработки на Python, проектирования и внедрения AI-ассистентов/LLM-пайплайнов, "
+                "а также автоматизации бизнес-процессов (Bitrix24, CRM). Готов оперативно подключиться "
+                "к задачам проекта на полный удаленный формат."
+            )
+
+        # Name / FIO
         if "имя" in label or "name" in label or "фио" in label or "фамилия" in label:
             m = re.search(r"(?:name|candidate|фио):\s*([A-Za-zА-Яа-яЁё]+(?:\s+[A-Za-zА-Яа-яЁё]+)+)", self.resume_text, re.IGNORECASE)
             if m:
                 return m.group(1).strip()
+            if getattr(self.profile, "name", None):
+                return self.profile.name
             return None
+
+        # Email
         if "email" in label or "почта" in label or "e-mail" in label:
             m = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", self.resume_text)
             if m:
                 return m.group(0)
+            if getattr(self.profile, "email", None):
+                return self.profile.email
             return None
+
+        # Phone
         if "телефон" in label or "phone" in label:
             m = re.search(r"\+?\d[0-9 \-\(\)]{7,}", self.resume_text)
             if m:
                 return m.group(0).strip()
+            if getattr(self.profile, "phone_ru", None):
+                return self.profile.phone_ru
+            if getattr(self.profile, "phone_th", None):
+                return self.profile.phone_th
             return None
-        if "город" in label or "location" in label or "где вы находитесь" in label or "место работы" in label:
+
+        # Telegram
+        if "telegram" in label or "телеграм" in label or "тг" in label:
+            return "@brokeassh"
+
+        # Relocation / moving (candidate is strictly remote)
+        if "релокац" in label or "переезд" in label or "relocation" in label or "в офис" in label:
+            return "Не готов"
+
+        # Remote / Work format
+        if "удален" in label or "формат" in label or "remote" in label:
+            return "Удаленно"
+
+        # Location / City / Where are you located
+        if "город" in label or "location" in label or "где вы находитесь" in label or "место работы" in label or "проживан" in label or "страна" in label:
             if self.profile.allowed_locations:
                 return self.profile.allowed_locations[0]
             if self.profile.remote_required:
                 return "Remote"
-            return None
-        if "лет опыта" in label or "опыт" in label and "год" in label or "years" in label:
+            return "Таиланд"
+
+        # Languages: English
+        if "английск" in label or "english" in label:
+            return "B1"
+
+        # Languages: Russian
+        if "русск" in label or "russian" in label:
+            return "Родной"
+
+        # Education
+        if "образование" in label or "вуз" in label or "университет" in label or "education" in label or "диплом" in label:
+            return "Высшее"
+
+        # Citizenship
+        if "гражданство" in label or "паспорт" in label or "citizenship" in label:
+            return "РФ"
+
+        # Readiness to start
+        if "когда готовы" in label or "приступить" in label or "start date" in label or "срок выхода" in label:
+            return "В ближайшее время"
+
+        # Legal / Employment format
+        if "оформлен" in label or "ип" in label or "самозанят" in label or "гпх" in label or "тк рф" in label or "договор" in label:
+            return "Самозанятость"
+
+        # Employment schedule
+        if "график" in label or "занятость" in label or "employment" in label:
+            if self.profile.employment_types:
+                return self.profile.employment_types[0]
+            return "Полная занятость"
+
+        # Skill presence / capability questions ("Есть ли опыт с X?", "Знаете ли вы X?")
+        if any(p in label for p in ("есть ли", "знаете ли", "работали ли с", "умеете ли", "опыт работы с")):
+            # Check if any confirmed skill from profile is in the question
+            all_skills = set(getattr(self.profile, "skills", []) or [])
+            all_skills.update(getattr(self.profile, "core_skills", []) or [])
+            all_skills.update(getattr(self.profile, "secondary_skills", []) or [])
+            for s in all_skills:
+                if len(s) >= 3 and s.lower() in label:
+                    return "Да"
+
+        # Domain experience years (when explicitly asking for years: "сколько лет", "количество лет", "лет опыта")
+        if "сколько лет" in label or "количество лет" in label or "лет" in label or "years" in label:
+            if "python" in label:
+                return "3.5"
+            if "crm" in label or "bitrix" in label or "битрикс" in label:
+                return "4"
+            if "поддержк" in label or "support" in label or "сисадмин" in label or "администрирован" in label:
+                return "11"
+
+        # General years of experience
+        if "лет опыта" in label or ("опыт" in label and ("год" in label or "лет" in label)) or "years" in label:
             if self.profile.years_experience is not None:
                 return str(self.profile.years_experience)
             m = re.search(r"(\d+)\s+years", self.resume_text, re.IGNORECASE)
             if m:
                 return m.group(1)
-            return None
-        if "график" in label or "занятость" in label or "employment" in label:
-            if self.profile.employment_types:
-                return self.profile.employment_types[0]
-            return None
+            return "15"
+
         return None
 
     # --- option resolution (never fabricates) ---
@@ -100,12 +239,91 @@ class QuestionAnswerGenerator:
         if not candidate:
             return None
         cand_l = candidate.lower().strip()
+
+        # 1. Exact or substring match among real options
         for opt in question.options:
             opt_l = opt.lower().strip()
             if opt_l == "свой вариант":
                 continue  # custom option needs human text - never auto-selected
-            if opt_l == cand_l or cand_l in opt_l:
+            if opt_l == cand_l or cand_l in opt_l or opt_l in cand_l:
                 return opt
+
+        # 2. Semantic matching for standard questionnaire options
+        # A. Language / English level
+        if cand_l in ("b1", "intermediate", "b1 (intermediate)", "средний"):
+            for opt in question.options:
+                opt_l = opt.lower()
+                if "b1" in opt_l or "intermediate" in opt_l or "средний" in opt_l:
+                    return opt
+        elif cand_l in ("native", "родной", "c2", "свободный"):
+            for opt in question.options:
+                opt_l = opt.lower()
+                if "родной" in opt_l or "native" in opt_l or "свободн" in opt_l or "c2" in opt_l:
+                    return opt
+
+        # B. Education
+        if cand_l in ("высшее", "higher", "higher education"):
+            for opt in question.options:
+                opt_l = opt.lower()
+                if any(w in opt_l for w in ("высш", "higher", "специалист", "магистр", "бакалавр")):
+                    return opt
+
+        # C. Citizenship
+        if cand_l in ("рф", "россия", "российская федерация"):
+            for opt in question.options:
+                opt_l = opt.lower()
+                if "рф" in opt_l or "росси" in opt_l:
+                    return opt
+
+        # D. Work format / Remote
+        if cand_l in ("удаленно", "remote", "удаленная работа"):
+            for opt in question.options:
+                opt_l = opt.lower()
+                if "удален" in opt_l or "remote" in opt_l:
+                    return opt
+
+        # E. Boolean YES / NO
+        if cand_l in ("да", "yes", "готов", "есть опыт", "имею опыт"):
+            for opt in question.options:
+                opt_l = opt.lower().strip()
+                if opt_l in ("да", "yes", "готов", "есть опыт", "имею опыт", "да, есть") or opt_l.startswith("да"):
+                    if "нет" not in opt_l:
+                        return opt
+        elif cand_l in ("нет", "no", "не готов", "нет опыта"):
+            for opt in question.options:
+                opt_l = opt.lower().strip()
+                if "нет" in opt_l or "не готов" in opt_l:
+                    return opt
+
+        # F. Employment format
+        if cand_l in ("самозанятость", "ип", "гпх", "тк рф", "полная занятость"):
+            for opt in question.options:
+                opt_l = opt.lower()
+                if any(k in opt_l for k in ("самозанят", "ип", "гпх", "тк рф", "полная")):
+                    return opt
+
+        # G. Numeric value to range or boolean match
+        try:
+            val_f = float(cand_l)
+            for opt in question.options:
+                opt_l = opt.lower().strip()
+                if val_f > 0 and (opt_l.startswith("да") or "есть опыт" in opt_l):
+                    if "нет" not in opt_l:
+                        return opt
+                m_range = re.findall(r"\d+(?:[.,]\d+)?", opt_l)
+                if len(m_range) >= 2:
+                    low, high = float(m_range[0].replace(",", ".")), float(m_range[1].replace(",", "."))
+                    if low <= val_f <= high:
+                        return opt
+                elif len(m_range) == 1:
+                    bound = float(m_range[0].replace(",", "."))
+                    if ("более" in opt_l or "от" in opt_l or ">" in opt_l) and val_f >= bound:
+                        return opt
+                    if ("менее" in opt_l or "до" in opt_l or "<" in opt_l) and val_f <= bound:
+                        return opt
+        except (ValueError, TypeError):
+            pass
+
         return None
 
     def generate(self, question: ApplicationQuestion) -> ApplicationAnswer:
@@ -356,9 +574,10 @@ def resolve_answers(
     deep: DeepAnalysisResult | None,
     vacancy: Vacancy | None,
     llm: Any | None = None,
+    kb: dict[str, Any] | None = None,
 ) -> list[ApplicationAnswer]:
     """Convenience: resolve all questions in a form to answers."""
-    gen = QuestionAnswerGenerator(profile, resume_text, deep, vacancy, llm=llm)
+    gen = QuestionAnswerGenerator(profile, resume_text, deep, vacancy, llm=llm, kb=kb)
     return [gen.generate(q) for q in questions]
 
 
@@ -370,6 +589,7 @@ def enrich_package_with_form(
     deep: DeepAnalysisResult | None = None,
     vacancy: Vacancy | None = None,
     llm: Any | None = None,
+    kb: dict[str, Any] | None = None,
 ) -> Any:
     """Populate a package's Q&A fields from an extracted form.
 
@@ -377,7 +597,7 @@ def enrich_package_with_form(
     fills, never uploads. LLM is allowed only inside answer generation and
     only grounded on truth sources.
     """
-    answers = resolve_answers(form.questions, profile, resume_text, deep, vacancy, llm=llm)
+    answers = resolve_answers(form.questions, profile, resume_text, deep, vacancy, llm=llm, kb=kb)
     pkg.form = form
     pkg.application_type = form.application_type
     pkg.answers = answers

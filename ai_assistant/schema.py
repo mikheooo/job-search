@@ -106,7 +106,21 @@ def _parse_dt(value: str | None) -> datetime | None:
     return None
 
 
-ACTIVE_PRODUCTION_SOURCES: set[str] = {"himalayas", "weworkremotely", "remoteok", "habrcareer", "hh"}
+ACTIVE_PRODUCTION_SOURCES: set[str] = {
+    "himalayas",
+    "weworkremotely",
+    "remoteok",
+    "habrcareer",
+    "hh",
+    "geekjob",
+    "hirify",
+}
+
+
+def is_active_production_source(source: str | None) -> bool:
+    """Check if source is in ACTIVE_PRODUCTION_SOURCES or has a tg_ prefix."""
+    src = (source or "").strip().lower()
+    return src in ACTIVE_PRODUCTION_SOURCES or src.startswith("tg_")
 
 SYNTHETIC_ID_PATTERNS = [
     r"dryrun", r"dry-run", r"dry_run", r"^test[-_]?\d+$", r"^fake", r"^mock",
@@ -148,7 +162,7 @@ def is_genuine_production_vacancy(vacancy: Any) -> tuple[bool, str]:
 
     # 3. In production environment (outside pytest), enforce strict production provenance
     if not is_test_env:
-        if src not in ACTIVE_PRODUCTION_SOURCES:
+        if not is_active_production_source(src):
             return False, f"Source '{src}' is not an active production source"
 
         for dom in SYNTHETIC_DOMAINS:
@@ -171,7 +185,7 @@ def is_genuine_production_vacancy(vacancy: Any) -> tuple[bool, str]:
         return True, "GENUINE_PRODUCTION"
 
     # 3. Source qualification
-    if src in ACTIVE_PRODUCTION_SOURCES:
+    if is_active_production_source(src):
         if not (url.startswith("http://") or url.startswith("https://")):
             return False, "Invalid URL scheme"
         return True, "GENUINE_PRODUCTION"

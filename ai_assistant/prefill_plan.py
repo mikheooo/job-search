@@ -246,7 +246,7 @@ def build_prefill_plan(
             matched = None
             q_name = q.id.replace("hh__ctrl_", "")
             for c in controls:
-                if (c.get("name") or "") == q_name:
+                if (c.get("name") or "") == q_name or (c.get("dataQa") or "") == q_name or (c.get("id") or "") == q_name:
                     matched = c
                     break
             if matched is None:
