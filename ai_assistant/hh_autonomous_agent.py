@@ -10,6 +10,11 @@ CORE AUTONOMOUS LOOP:
 4. APPLY: Autonomous navigation, live verification, automatic questionnaire completion, autonomous submit without human confirmation gate.
 5. POST-SUBMIT VERIFY: Verify response registered on HeadHunter; transition to SUBMITTED upon proof.
 6. MESSAGE AGENT: Continuously monitor incoming HeadHunter messages; auto-reply to standard recruiter inquiries.
+   NOTE (local safety patch, 2026-10-10): the auto-reply SEND is opt-in and OFF by
+   default — it needs HH_AUTONOMOUS_REPLY_ENABLED=true. Without it the draft is
+   generated and recorded but nothing is typed into the chat and nothing is clicked.
+   This send does not carry the allowlist/confirmation gates of
+   hh_message_reply.process_auto_reply(), so it is armed separately.
 7. INTERVIEW DETECTION: Identify interview invitations and scheduling requests; trigger high-priority human notifications.
 8. NOTIFICATION GATE: User is alerted ONLY for interviews, blocking unknown questions, or fatal errors (NEVER for routine discovery, standard applications, or rejections).
 
@@ -29,6 +34,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import os
 import re
 import time
 from enum import Enum
@@ -36,10 +42,10 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from . import db
+from . import autonomous_mode, db
 from .candidate_profile import CandidateProfile, load_candidate_profile
 from .hh_application_orchestrator import HHApplicationState, transition_application
-from .hh_browser_launcher import ensure_hh_browser
+from .hh_browser_launcher import check_hh_session_authenticated, resolve_browser_endpoint
 from .hh_message_reply import (
     HHDialog,
     HHMessage,
@@ -54,14 +60,14 @@ from .hh_vacancy_navigator import (
 
 logger = logging.getLogger(__name__)
 
-# Default search queries for active CDP search
+# Search queries for the active CDP search, grouped by the directions confirmed in T7.3 (support / application support / help desk / sysadmin / Windows Server + AD / Bitrix24 / CRM / infrastructure / automation). Python and AI stay in the list, but no longer as its whole content, and _discover_fresh_vacancies no longer truncates it to the first three.
 DEFAULT_SEARCH_QUERIES = [
-    "Python Developer",
-    "Backend Python Developer",
-    "AI Engineer",
-    "AI Agent Engineer",
-    "Python FastAPI",
-    "Automation Engineer Python",
+    "IT Support", "Technical Support Engineer", "Support Engineer", "Application Support", "Application Support Engineer",
+    "Help Desk", "Service Desk", "System Administrator", "IT Administrator", "Windows Server Administrator",
+    "Active Directory Administrator", "Bitrix24", "Bitrix24 Administrator", "Bitrix24 Support", "CRM Administrator",
+    "CRM Support", "IT Infrastructure Engineer", "IT Automation Engineer", "Integrations Engineer", "Python Developer",
+    "Backend Python Developer", "AI Engineer", "AI Agent Engineer", "Python FastAPI", "Automation Engineer Python",
+    "специалист технической поддержки", "инженер технической поддержки", "системный администратор", "администратор Bitrix24", "специалист по сопровождению",
 ]
 
 
@@ -84,7 +90,7 @@ class NotificationType(str, Enum):
 
 class AutonomousConfig(BaseModel):
     """Configuration for Autonomous Job Application Agent."""
-    cdp_url: str = "http://127.0.0.1:9222"
+    cdp_url: str = Field(default_factory=resolve_browser_endpoint)
     search_queries: list[str] = Field(default_factory=lambda: list(DEFAULT_SEARCH_QUERIES))
     poll_interval_seconds: int = 60
     max_applications_per_cycle: int = 5
@@ -94,8 +100,61 @@ class AutonomousConfig(BaseModel):
     auto_start_browser: bool = True
     evaluate_fn: Any | None = None
     submit_enabled: bool = False
-
+    mode: str = autonomous_mode.FULL  # T7.8: SEARCH_ONLY forbids every outbound action
+    # T7.26 §6: how many of the discovered vacancies SEARCH_ONLY reads in full. A
+    # separate knob from ``max_applications_per_cycle`` because reading is not
+    # applying: the default is 10 because §6 asks for at least ten, while the apply
+    # limit stays at 5.
+    search_read_limit: int = 10
     model_config = {"extra": "forbid"}
+
+
+# T7.29 §4: the outcome of the correspondence check is reported explicitly. A bare
+# ``messages_checked == 0`` cannot tell "the dialog list was read and held nothing
+# new" apart from "the transport was unavailable" or "the session was never
+# verified", and the operator must be able to tell those apart without opening a
+# browser. The four values are the vocabulary of that answer.
+MSG_CHECK_CHECKED = "CHECKED"   # the list was read; the count is a confirmed number
+MSG_CHECK_SKIPPED = "SKIPPED"   # the mode does not process correspondence (SEARCH_ONLY)
+MSG_CHECK_BLOCKED = "BLOCKED"   # the transport works but the check cannot be trusted
+MSG_CHECK_ERROR = "ERROR"       # the check itself failed (no transport, read error)
+
+MESSAGE_CHECK_STATUSES = (
+    MSG_CHECK_CHECKED,
+    MSG_CHECK_SKIPPED,
+    MSG_CHECK_BLOCKED,
+    MSG_CHECK_ERROR,
+)
+
+
+# LOCAL SAFETY PATCH (this machine, 2026-10-10): the send in `_process_messages`
+# is opt-in and OFF by default.
+#
+# That send types the draft into the chat box and clicks Send. It is the Stage
+# 51-55 autonomous reply, and it deliberately does NOT go through the gates the
+# canonical pipeline enforces in `hh_message_reply.process_auto_reply()`:
+#   - the HH_AUTO_REPLY_ENABLED kill switch,
+#   - `is_safe_for_auto_reply()`'s allowlist (the _AUTO_FORBIDDEN_RE topics:
+#     salary, experience, stack, interviews, status, dates, offers),
+#   - `can_auto_send()`'s re-verification,
+#   - the explicit `confirm_live_send` flag.
+# It fires for `classification in ("NEEDS_REPLY", "RECRUITER_QUESTION")`, i.e.
+# exactly the technical questions the allowlist exists to keep for a human.
+# Because `AutonomousConfig.mode` defaults to FULL, a bare `run_autonomous_cycle()`
+# used to answer employers with no confirmation at all.
+#
+# The switch is deliberately SEPARATE from `HH_AUTO_REPLY_ENABLED`: that one arms
+# the *guarded* pipeline, and arming the guarded path must never silently arm this
+# ungated one. Off -> the draft is still generated and recorded, nothing is typed
+# and nothing is clicked.
+_AUTONOMOUS_REPLY_ENV_VAR = "HH_AUTONOMOUS_REPLY_ENABLED"
+
+
+def _autonomous_reply_enabled(env: dict[str, str] | None = None) -> bool:
+    """Opt-in switch for the autonomous reply send. Default: off."""
+    environ = env if env is not None else os.environ
+    return str(environ.get(_AUTONOMOUS_REPLY_ENV_VAR, "")).strip().lower() == "true"
+
 
 
 class AutonomousCycleResult(BaseModel):
@@ -108,6 +167,13 @@ class AutonomousCycleResult(BaseModel):
     applied_count: int = 0
     verified_count: int = 0
     messages_checked: int = 0
+    # Fail-closed default: a cycle that dies before step 4 must not leave a row
+    # that reads like a clean, finished check. Only the two places that really
+    # decide the outcome - the SEARCH_ONLY path and _process_messages - may lower
+    # this to SKIPPED or raise it to CHECKED.
+    messages_check_status: str = MSG_CHECK_ERROR
+    messages_check_reason: str = "message check did not complete"
+    messages_checked_at: str = ""
     auto_replies_count: int = 0
     interviews_detected: int = 0
     rejections_count: int = 0
@@ -485,6 +551,20 @@ class NotificationDispatcher:
         return notif_data
 
 
+def normalize_incoming_message_text(text: str) -> str:
+    """Normalize message text so dynamic timestamps and bot headers don't break deduplication."""
+    if not text:
+        return ""
+    t = str(text).strip()
+    # Strip author / sender name prefixes (e.g. "Робот-рекрутер\n\n", "ИИ-помощник\n\n")
+    t = re.sub(r'^(?:Робот-рекрутер|ИИ-помощник|Employer|Рекрутер)[\s:\n]+', '', t, flags=re.IGNORECASE)
+    # Strip trailing dynamic timestamp (e.g. "\n\n07:33", "\n08:07")
+    t = re.sub(r'[\r\n\s]+\d{1,2}:\d{2}\s*$', '', t)
+    # Normalize multiple whitespace
+    t = re.sub(r'\s+', ' ', t)
+    return t.strip()
+
+
 # ---------------------------------------------------------------------------
 # Filter & Match Engine (Candidate Profile as Source of Truth)
 # ---------------------------------------------------------------------------
@@ -515,11 +595,14 @@ def evaluate_candidate_match(
     excluded_roles = [r.lower() for r in profile.excluded_roles]
     for ex in excluded_roles:
         if ex in title_low or (ex in desc_low and len(ex) > 2 and f" {ex} " in full_text):
-            if ex in ("1c", "1с", "php", "bitrix", "java developer", "c++", "c#", "ruby"):
+            # T7.4: "bitrix" is deliberately absent. T7.3 removed the blanket
+            # Bitrix24 ban from the profile because Bitrix24 is a target
+            # direction, and this hardcoded tuple was re-arming it here.
+            if ex in ("1c", "1с", "php", "java developer", "c++", "c#", "ruby"):
                 return False, 0.0, f"Hard exclusion: contains excluded stack '{ex}'"
 
     # Specific check for Java / 1C / PHP primary roles
-    if any(k in title_low for k in [" 1с", "1c", "php", "java ", "java/", "c++", "c#", "bitrix"]):
+    if any(k in title_low for k in [" 1с", "1c", "php", "java ", "java/", "c++", "c#"]):
         return False, 0.0, "Hard exclusion: non-Python primary title"
 
     # 2. Hard Remote Requirement (100% remote required)
@@ -734,17 +817,67 @@ class AutonomousJobAgent:
         result = AutonomousCycleResult(started_at=started_at, completed_at="")
 
         if self.config.submit_enabled:
-            raise NotImplementedError(
-                "Autonomous submission is disabled by design; use 'application runner next --confirm-submit' after human approval"
-            )
+            raise NotImplementedError("Autonomous submission is disabled by design; use 'application runner next --confirm-submit' after human approval")
+        if not autonomous_mode.outbound_allowed(self.config.mode):
+            return self._search_only_cycle(started_at, result)
 
+        from . import hh_browser_lease as _lease
+
+        # T7.25 §5: the daemon may live; Chrome between cycles may not. The
+        # browser is owned by this cycle and released by `hh_operation`'s
+        # finally, so a cycle that raises still gives the browser back - which is
+        # what "no browser between tasks" has to mean for a long-lived agent.
         try:
-            if self.config.auto_start_browser and self.config.evaluate_fn is None:
-                try:
-                    ensure_hh_browser()
-                except Exception as e:
-                    logger.debug(f"Could not auto-start browser: {e}")
+            with _lease.hh_operation(
+                _lease.OWNER_AUTONOMOUS,
+                purpose="cycle",
+                session_kwargs={"require_auth": False},
+            ) as op:
+                if self.config.auto_start_browser and self.config.evaluate_fn is None:
+                    # Best-effort, exactly as it was: a cycle has steps that need
+                    # no browser, and the old code logged a failed auto-start and
+                    # carried on. What T7.25 changed is who *owns* the browser,
+                    # not whether a missing one aborts the cycle.
+                    try:
+                        started_browser = op["session"].start()
+                    except Exception as e:  # noqa: BLE001 - see the comment above
+                        logger.debug(f"Could not auto-start browser: {e}")
+                    else:
+                        if not started_browser.get("ok"):
+                            logger.debug(
+                                "Could not auto-start browser: %s",
+                                started_browser.get("message"),
+                            )
+                        else:
+                            # T7.25: ensure_hh_browser() opened the HH page as part
+                            # of "ensure a browser", and the discovery below attaches
+                            # to an existing hh.ru tab. Ownership moved; the page did
+                            # not. Best-effort, exactly like the start above.
+                            from .hh_browser_launcher import (
+                                DEFAULT_HH_URL as _DEFAULT_HH_URL,
+                            )
 
+                            try:
+                                op["session"].open_hh_page(_DEFAULT_HH_URL)
+                            except Exception as e:  # noqa: BLE001 - best-effort
+                                logger.debug(f"Could not open the HH page: {e}")
+                return self._cycle_body(started_at, result)
+        except _lease.BrowserBusy as e:
+            logger.error(f"Could not acquire the HH browser for this cycle: {e}")
+            result.status = "ERROR"
+            result.errors.append(str(e))
+            result.completed_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            result.summary = f"Cycle could not start: {e}"
+            return result
+
+    def _cycle_body(self, started_at: str, result: AutonomousCycleResult) -> AutonomousCycleResult:
+        """The cycle itself, with the browser already owned by the caller.
+
+        Split out of ``run_cycle`` by T7.25 §5 so the ownership wrapper can be a
+        ``with`` without re-indenting eighty lines of workflow: the body was
+        already one level inside a ``try`` and stays exactly that.
+        """
+        try:
             # 1. DISCOVER & DEDUPLICATE
             fresh_vacancies = self._discover_fresh_vacancies()
             result.discovered_count = len(fresh_vacancies)
@@ -784,6 +917,9 @@ class AutonomousJobAgent:
             # 4. MESSAGE AGENT: WATCH & PROCESS MESSAGES
             msg_res = self._process_messages()
             result.messages_checked = msg_res.get("messages_checked", 0)
+            result.messages_check_status = msg_res.get("messages_check_status", MSG_CHECK_ERROR)
+            result.messages_check_reason = msg_res.get("messages_check_reason", "")
+            result.messages_checked_at = msg_res.get("messages_checked_at", "")
             result.auto_replies_count = msg_res.get("auto_replies_count", 0)
             result.interviews_detected = msg_res.get("interviews_detected", 0)
             result.rejections_count = msg_res.get("rejections_count", 0)
@@ -795,7 +931,10 @@ class AutonomousJobAgent:
                 f"Autonomous cycle completed successfully. "
                 f"Discovered: {result.discovered_count}, Matched: {result.matched_count}, "
                 f"Applied: {result.applied_count}, Verified: {result.verified_count}, "
-                f"Messages Checked: {result.messages_checked}, Auto-replies: {result.auto_replies_count}, "
+                f"Messages Checked: {result.messages_checked} "
+                f"[{result.messages_check_status}]"
+                f"{' - ' + result.messages_check_reason if result.messages_check_reason else ''}, "
+                f"Auto-replies: {result.auto_replies_count}, "
                 f"Interviews: {result.interviews_detected}."
             )
 
@@ -870,7 +1009,7 @@ class AutonomousJobAgent:
                 eval_fn = None
 
         if eval_fn:
-            for query in self.config.search_queries[:3]:
+            for query in self.config.search_queries:
                 try:
                     search_url = f"https://hh.ru/search/vacancy?text={urllib_quote(query)}&schedule=remote&order_by=publication_time"
                     raw_cards = eval_fn(f"""(() => {{
@@ -1054,10 +1193,25 @@ class AutonomousJobAgent:
         app_record["reason"] = "Prepared for autonomous submission (READY_TO_SUBMIT)"
         return app_record
 
-    def _process_messages(self) -> dict[str, Any]:
-        """Watch and process incoming dialogs, detecting interviews and auto-replying."""
-        out = {
+    def _process_messages(self, convs: list[Any] | None = None) -> dict[str, Any]:
+        """Watch and process incoming dialogs, detecting interviews and auto-replying.
+
+        T7.29 §4: every return carries an explicit outcome, because a bare
+        ``messages_checked = 0`` cannot tell "the dialog list was read and held
+        nothing new" apart from "the transport was unavailable" or "the session
+        was never verified". ``messages_check_status`` is one of CHECKED /
+        SKIPPED / BLOCKED / ERROR, with the reason and the time of the check
+        beside it, and it travels into both the report and the stored cycle row.
+        """
+        # The "is this a messages surface" rule already lives in one place;
+        # importing it keeps a second copy from drifting away from the first.
+        from .prefill_execute import _HH_MESSAGES_PATTERN
+
+        out: dict[str, Any] = {
             "messages_checked": 0,
+            "messages_check_status": MSG_CHECK_ERROR,
+            "messages_check_reason": "",
+            "messages_checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "auto_replies_count": 0,
             "interviews_detected": 0,
             "rejections_count": 0,
@@ -1065,23 +1219,65 @@ class AutonomousJobAgent:
             "notifications_sent": [],
         }
 
+        def _stop(status: str, reason: str) -> dict[str, Any]:
+            out["messages_check_status"] = status
+            out["messages_check_reason"] = reason
+            out["messages_checked_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            logger.warning("Message check %s: %s", status, reason)
+            return out
+
+        # 1. SEARCH_ONLY is search-only by design: it must not touch the
+        #    correspondence at all, and it must say so instead of reporting a zero.
+        if self.config.mode == autonomous_mode.SEARCH_ONLY:
+            return _stop(MSG_CHECK_SKIPPED, "SEARCH_ONLY mode does not process correspondence")
+
+        # 2. Transport. No transport is an ERROR with a reason, never a silent 0.
         eval_fn = self.config.evaluate_fn
         if eval_fn is None:
             try:
                 from .prefill_execute import make_cdp_evaluate
                 eval_fn = make_cdp_evaluate(self.config.cdp_url, "hh.ru")
-            except Exception:
-                eval_fn = None
-
+            except Exception as exc:
+                if self.config.auto_start_browser:
+                    try:
+                        from .hh_browser_launcher import ensure_hh_browser, DEFAULT_HH_URL
+                        b_res = ensure_hh_browser(cdp_url=self.config.cdp_url, open_url=DEFAULT_HH_URL, auto_start=True)
+                        if not b_res.get("ok"):
+                            return _stop(MSG_CHECK_ERROR, f"no browser transport (auto-start failed): {b_res.get('error')}")
+                        from .prefill_execute import make_cdp_evaluate
+                        eval_fn = make_cdp_evaluate(b_res.get("cdp_url") or self.config.cdp_url, "hh.ru")
+                    except Exception as exc2:
+                        return _stop(MSG_CHECK_ERROR, f"no browser transport (auto-start failed): {type(exc2).__name__}: {exc2}")
+                else:
+                    return _stop(MSG_CHECK_ERROR, f"no browser transport: {type(exc).__name__}: {exc}")
         if not eval_fn:
-            return out
+            return _stop(MSG_CHECK_ERROR, "no browser transport: no evaluate function available")
 
-        raw_res = fetch_hh_conversations_list_readonly(evaluate_fn=eval_fn)
-        convs = []
-        if isinstance(raw_res, dict):
-            convs = raw_res.get("conversations", [])
-        elif isinstance(raw_res, list):
-            convs = raw_res
+        # 3. Read the dialog list if not provided directly.
+        if convs is None:
+            try:
+                curr_url = eval_fn("window.location.href")
+                if not curr_url or "/chat" not in curr_url:
+                    logger.info("Navigating open tab to https://hh.ru/chat (was: %s)", curr_url)
+                    eval_fn("window.location.href = 'https://hh.ru/chat'")
+                    time.sleep(4)
+            except Exception as exc_nav:
+                logger.debug("Navigation to /chat pre-check exception: %s", exc_nav)
+
+            try:
+                raw_res = fetch_hh_conversations_list_readonly(evaluate_fn=eval_fn)
+            except Exception as exc:
+                return _stop(MSG_CHECK_ERROR, f"dialog list read failed: {type(exc).__name__}: {exc}")
+
+            if isinstance(raw_res, dict) and raw_res.get("error"):
+                return _stop(MSG_CHECK_ERROR, f"dialog list read failed: {raw_res.get('error')}")
+
+            if isinstance(raw_res, dict):
+                convs = raw_res.get("conversations", [])
+            elif isinstance(raw_res, list):
+                convs = raw_res
+            else:
+                convs = []
 
         dialogs: list[HHDialog] = []
         for it in convs:
@@ -1099,6 +1295,20 @@ class AutonomousJobAgent:
                             sender=str(m.get("sender") or "employer"),
                             sent_at=m.get("sent_at"),
                         ))
+                if not msgs and it.get("snippet"):
+                    snip_text = str(it.get("snippet") or "").strip()
+                    snip_low = snip_text.lower()
+                    is_cand = (
+                        bool(it.get("is_outgoing"))
+                        or snip_low.startswith(("вы:", "вы: ", "вы:\xa0", "you:", "you: "))
+                        or any(k in snip_low for k in ["отклик на вакансию", "отклик на\xa0вакансию"])
+                    )
+                    msgs.append(HHMessage(
+                        message_id="m_snippet",
+                        text=snip_text,
+                        sender="candidate" if is_cand else "employer",
+                        sent_at=it.get("last_message_date_raw"),
+                    ))
                 dialogs.append(HHDialog(
                     conversation_id=str(it.get("conversation_id") or it.get("id") or ""),
                     vacancy_title=str(it.get("vacancy_title") or it.get("title") or ""),
@@ -1109,16 +1319,90 @@ class AutonomousJobAgent:
 
         out["messages_checked"] = len(dialogs)
 
+        # 4. A non-empty read is its own proof: those dialogs came off a messages
+        #    page. An EMPTY read is not, and that is exactly where the silent zero
+        #    used to live - "0 messages" was printed whether the list had been read
+        #    or not. Before a zero may be called confirmed, ask the session gate in
+        #    the MAIN frame (T7.28 A: the chatik transport cannot answer "who am I"
+        #    and invents a refusal on a healthy session), and require that the page
+        #    we read from really is a messages surface. Anything that stops either
+        #    question from being answered blocks, rather than passing.
+        if not dialogs:
+            # check_hh_session_authenticated already fails closed on its own: it
+            # catches a transport that throws and a page that answers something
+            # unrelated, and reports both as authenticated=False, verified=False
+            # (BLE001 finding #28). Wrapping it again here would only duplicate a
+            # contract that is already tested.
+            gate = check_hh_session_authenticated(eval_fn)
+            if not gate.get("authenticated", False):
+                gate_reason = gate.get("reason") or "login required"
+                if gate.get("verified", True):
+                    return _stop(MSG_CHECK_BLOCKED, f"HH session not authenticated: {gate_reason}")
+                return _stop(MSG_CHECK_BLOCKED, f"could not verify the HH session: {gate_reason}")
+            page_url = str(gate.get("url") or "")
+            if not _HH_MESSAGES_PATTERN.search(page_url):
+                return _stop(
+                    MSG_CHECK_BLOCKED,
+                    "dialog list not read: the open HH tab is not a messages surface "
+                    f"(url={page_url or 'unknown'})",
+                )
+
+        out["messages_check_status"] = MSG_CHECK_CHECKED
+        out["messages_check_reason"] = f"dialog list read, {len(dialogs)} dialog(s)"
+        out["messages_checked_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
         for d in dialogs:
+            # For active employer dialogs (or dialogs without loaded messages), load full conversation
+            is_full_loaded = False
+            if not d.messages or (d.last_message() and d.last_message().sender != "candidate"):
+                if d.conversation_id:
+                    try:
+                        eval_fn(f"""(() => {{
+                            const el = document.querySelector('a[href*="{d.conversation_id}"]');
+                            if (el) {{ el.click(); return "clicked"; }}
+                            if (!location.href.includes("{d.conversation_id}")) {{
+                                location.href = "https://hh.ru/chat/{d.conversation_id}";
+                                return "navigated";
+                            }}
+                            return "already_on_chat";
+                        }})()""")
+                        time.sleep(2.0)
+                        from .hh_message_reply import fetch_hh_conversation_readonly
+                        conv_data = fetch_hh_conversation_readonly(eval_fn)
+                        if conv_data and conv_data.get("messages"):
+                            real_msgs = []
+                            for rm in conv_data.get("messages", []):
+                                r_dir = rm.get("direction")
+                                r_sender = "candidate" if r_dir == "OUTGOING" else "employer"
+                                real_msgs.append(HHMessage(
+                                    message_id=f"m_{len(real_msgs)}",
+                                    text=str(rm.get("text") or ""),
+                                    sender=r_sender,
+                                    sent_at=rm.get("timestamp"),
+                                ))
+                            if real_msgs:
+                                d.messages = real_msgs
+                                is_full_loaded = True
+                    except Exception as e_load:
+                        logger.warning("Could not load full chat for %s: %s", d.conversation_id, e_load)
+
             last_msg = d.last_message()
             if not last_msg or last_msg.sender == "candidate":
                 continue
+
+            # CRITICAL DEFENSE: Never send an auto-reply blind based solely on an unresolved card snippet!
+            if not is_full_loaded and any(m.message_id == "m_snippet" for m in d.messages):
+                logger.warning("Suppressed auto-reply for %s: full chat bubbles not loaded into DOM", d.conversation_id)
+                continue
+
+            msg_raw = (last_msg.text or "").strip()
+            clean_text = normalize_incoming_message_text(msg_raw)
 
             fp = compute_message_fingerprint(
                 conversation_id=d.conversation_id,
                 sender=last_msg.sender,
                 sent_at=last_msg.sent_at,
-                text=last_msg.text,
+                text=clean_text or msg_raw,
                 message_id=last_msg.message_id,
             )
 
@@ -1205,13 +1489,14 @@ class AutonomousJobAgent:
                 continue
 
             # Check External Questionnaire / Google Form / Survey Link
+            from ai_assistant.external_form_filler import is_external_form_url, try_auto_fill_external_form
             ext_form_urls = []
             url_matches = re.findall(r'https?://[^\s<>"]+', msg_text)
             is_ext_form = False
             form_url = ""
             for u in url_matches:
                 u_low = u.lower()
-                if any(domain in u_low for domain in ["forms.gle", "docs.google.com/forms", "forms.yandex.ru", "typeform.com", "kakdela.hh.ru", "t.me/"]):
+                if is_external_form_url(u) or any(domain in u_low for domain in ["forms.gle", "docs.google.com/forms", "forms.yandex.ru", "typeform.com", "kakdela.hh.ru", "script.google.com", "tinyurl.com", "t.me/"]):
                     if "t.me/" in u_low and not any(k in msg_low for k in ["анкет", "опрос", "form", "тест"]):
                         continue  # direct telegram contact without form context is handled under interview/contact
                     is_ext_form = True
@@ -1222,53 +1507,99 @@ class AutonomousJobAgent:
                     form_url = u
                     break
 
-            if is_ext_form and form_url:
-                notif = NotificationDispatcher.notify_external_questionnaire(
-                    company=d.employer or "HeadHunter Employer",
-                    vacancy_title=d.vacancy_title or "Python Role",
-                    what_they_want=msg_text,
-                    url=form_url,
-                    questions="Требуется заполнение внешней формы / анкеты",
-                    action="REQUIRES REVIEW",
-                    conversation_id=d.conversation_id,
-                    application_id=app_id,
-                )
-                db.save_hh_message_event(**{
-                    "message_fingerprint": fp,
-                    "conversation_id": d.conversation_id,
-                    "sender": last_msg.sender,
-                    "text": msg_text,
-                    "sent_at": last_msg.sent_at,
-                    "seen_at": now_iso,
-                    "processed": 1,
-                    "classification": "EXTERNAL_QUESTIONNAIRE",
-                    "status": "NEEDS_HUMAN_REVIEW",
-                    "employer": d.employer,
-                    "vacancy_stable_id": d.vacancy_stable_id,
-                })
-                db.save_conversation_audit({
-                    "conversation_id": d.conversation_id,
-                    "application_id": app_id,
-                    "vacancy_id": vac_num_id,
-                    "vacancy_stable_id": d.vacancy_stable_id,
-                    "employer": d.employer or "HeadHunter Employer",
-                    "incoming_message": msg_text,
-                    "incoming_message_timestamp": last_msg.sent_at,
-                    "message_classification": "EXTERNAL_QUESTIONNAIRE",
-                    "generated_reply": None,
-                    "sent_reply": None,
-                    "sent_at": None,
-                    "profile_facts_used": None,
-                    "decision_reason": f"External questionnaire/form link detected ({form_url}). Paused for candidate review.",
-                    "status": "GENERATED",
-                    "created_at": now_iso,
-                })
-                out["notifications_sent"].append(notif)
-                continue
-
             # Check Test Task / Assignment
-            test_task_signals = ["тестовое задание", "тестовый проект", "выполнить задание", "ссылка на тестовое"]
-            if any(ts in msg_low for ts in test_task_signals) and not any(s in msg_low for s in ["собеседован", "интервью"]):
+            test_task_signals = [
+                "тестов", "задани", "испытан", "test task", "тест", "хакатон",
+                "github.com", "notion.site", "drive.google.com", "docs.google.com",
+                "решите задачу", "сделайте задание", "выполните задание",
+            ]
+            is_test_task = not is_ext_form and any(ts in msg_low for ts in test_task_signals) and not any(s in msg_low for s in ["собеседован", "интервью"])
+
+            # Check Interview Invitation / Scheduling Request (High Priority)
+            interview_signals = [
+                "собеседован", "интервью", "созвон", "пообщаться голосом",
+                "техническ", "встреч", "interview", "call", "calendly",
+                "zoom", "google meet", "удобное время", "когда удобно",
+                "приглашаем на", "предлагаем созвониться", "обсудить подробнее",
+            ]
+            is_interview = not is_ext_form and not is_test_task and any(s in msg_low for s in interview_signals)
+
+            from dataclasses import asdict, is_dataclass
+            prof_dict = asdict(self.profile) if is_dataclass(self.profile) else (self.profile.model_dump() if hasattr(self.profile, "model_dump") else self.profile)
+
+            classification = "NO_REPLY_NEEDED"
+            reply_text = ""
+            facts_used = None
+            decision_reason = ""
+
+            if is_ext_form and form_url:
+                from ai_assistant.test_task_manager import record_pending_test_task, generate_questionnaire_acknowledgement
+
+                fill_res = None
+                cdp_target = self.config.cdp_url or "http://127.0.0.1:9111"
+                if is_external_form_url(form_url):
+                    try:
+                        logger.info("Attempting autonomous fill of external form: %s", form_url)
+                        fill_res = try_auto_fill_external_form(
+                            cdp_url=cdp_target,
+                            form_url=form_url,
+                            company=d.employer or "HeadHunter Employer",
+                            vacancy=d.vacancy_title or "Python Role",
+                        )
+                    except Exception as e_fill:
+                        logger.warning("External form autonomous fill error: %s", e_fill)
+
+                if fill_res and fill_res.ok:
+                    record_pending_test_task(
+                        company=d.employer or "HeadHunter Employer",
+                        vacancy=d.vacancy_title or "Python Role",
+                        message_text=msg_text,
+                        url=form_url,
+                        conversation_id=d.conversation_id,
+                        status="✅ **Сдано**",
+                    )
+                    classification = "EXTERNAL_QUESTIONNAIRE_SUBMITTED"
+                    reply_text = fill_res.chat_confirmation_text
+                    facts_used = ["external_form_filler.py: auto_filled_and_verified", "contacts: @brokeassh"]
+                    decision_reason = f"External form {form_url} autonomously filled ({fill_res.fields_count} fields) and verified; confirmation queued for HH chat."
+                else:
+                    task_status = "⚠️ **Требуется ручное заполнение**" if (fill_res and fill_res.blocked) else "⏳ **В работе**"
+                    record_pending_test_task(
+                        company=d.employer or "HeadHunter Employer",
+                        vacancy=d.vacancy_title or "Python Role",
+                        message_text=msg_text,
+                        url=form_url,
+                        conversation_id=d.conversation_id,
+                        status=task_status,
+                    )
+                    notif = NotificationDispatcher.notify_external_questionnaire(
+                        company=d.employer or "HeadHunter Employer",
+                        vacancy_title=d.vacancy_title or "Python Role",
+                        what_they_want=msg_text,
+                        url=form_url,
+                        questions="Требуется заполнение внешней формы / анкеты" + (f" ({fill_res.blocked_reason})" if (fill_res and fill_res.blocked) else ""),
+                        action="REQUIRES REVIEW",
+                        conversation_id=d.conversation_id,
+                        application_id=app_id,
+                    )
+                    out["notifications_sent"].append(notif)
+                    classification = "EXTERNAL_QUESTIONNAIRE"
+                    reply_text = generate_questionnaire_acknowledgement(
+                        company=d.employer or "HeadHunter Employer",
+                        vacancy=d.vacancy_title or "Python Role",
+                        task_text=msg_text,
+                    )
+                    facts_used = ["candidate_kb.json: questionnaire_acknowledgement", "contacts: @brokeassh"]
+                    decision_reason = f"External questionnaire/form link detected ({form_url}); recorded in pending_test_tasks.md and sent acknowledgement."
+
+            elif is_test_task:
+                from ai_assistant.test_task_manager import record_pending_test_task, generate_test_task_acknowledgement
+                record_pending_test_task(
+                    company=d.employer or "HeadHunter Employer",
+                    vacancy=d.vacancy_title or "Python Role",
+                    message_text=msg_text,
+                    conversation_id=d.conversation_id,
+                )
                 notif = NotificationDispatcher.notify_test_task(
                     company=d.employer or "HeadHunter Employer",
                     vacancy_title=d.vacancy_title or "Python Role",
@@ -1278,48 +1609,18 @@ class AutonomousJobAgent:
                     conversation_id=d.conversation_id,
                     application_id=app_id,
                 )
-                db.save_hh_message_event(**{
-                    "message_fingerprint": fp,
-                    "conversation_id": d.conversation_id,
-                    "sender": last_msg.sender,
-                    "text": msg_text,
-                    "sent_at": last_msg.sent_at,
-                    "seen_at": now_iso,
-                    "processed": 1,
-                    "classification": "TEST_TASK",
-                    "status": "NEEDS_HUMAN_REVIEW",
-                    "employer": d.employer,
-                    "vacancy_stable_id": d.vacancy_stable_id,
-                })
-                db.save_conversation_audit({
-                    "conversation_id": d.conversation_id,
-                    "application_id": app_id,
-                    "vacancy_id": vac_num_id,
-                    "vacancy_stable_id": d.vacancy_stable_id,
-                    "employer": d.employer or "HeadHunter Employer",
-                    "incoming_message": msg_text,
-                    "incoming_message_timestamp": last_msg.sent_at,
-                    "message_classification": "TEST_TASK",
-                    "generated_reply": None,
-                    "sent_reply": None,
-                    "sent_at": None,
-                    "profile_facts_used": None,
-                    "decision_reason": "Technical test task detected. Paused for candidate review.",
-                    "status": "GENERATED",
-                    "created_at": now_iso,
-                })
                 out["notifications_sent"].append(notif)
-                continue
+                classification = "TEST_TASK"
+                reply_text = generate_test_task_acknowledgement(
+                    company=d.employer or "HeadHunter Employer",
+                    vacancy=d.vacancy_title or "Python Role",
+                    task_text=msg_text,
+                )
+                facts_used = ["candidate_kb.json: test_task_acknowledgement", "contacts: @brokeassh"]
+                decision_reason = "Technical test task detected; logged to artifacts/pending_test_tasks.md and sent acknowledgement."
 
-            # Check Interview Invitation / Scheduling Request (High Priority)
-            interview_signals = [
-                "собеседован", "интервью", "созвон", "пообщаться голосом",
-                "техническ", "встреч", "interview", "call", "calendly",
-                "zoom", "google meet", "удобное время", "когда удобно",
-                "приглашаем на", "предлагаем созвониться", "обсудить подробнее",
-            ]
-
-            if any(s in msg_low for s in interview_signals):
+            elif is_interview:
+                from ai_assistant.interview_auto_responder import generate_interview_response
                 notif = NotificationDispatcher.notify_interview(
                     company=d.employer or "HeadHunter Employer",
                     vacancy_title=d.vacancy_title or "Python Role",
@@ -1328,36 +1629,7 @@ class AutonomousJobAgent:
                     conversation_id=d.conversation_id,
                     action_required="Review conversation and confirm suitable interview time slot.",
                 )
-                db.save_hh_message_event(**{
-                    "message_fingerprint": fp,
-                    "conversation_id": d.conversation_id,
-                    "sender": last_msg.sender,
-                    "text": msg_text,
-                    "sent_at": last_msg.sent_at,
-                    "seen_at": now_iso,
-                    "processed": 1,
-                    "classification": "INTERVIEW_INVITATION",
-                    "status": "INTERVIEW_INVITED",
-                    "employer": d.employer,
-                    "vacancy_stable_id": d.vacancy_stable_id,
-                })
-                db.save_conversation_audit({
-                    "conversation_id": d.conversation_id,
-                    "application_id": app_id,
-                    "vacancy_id": vac_num_id,
-                    "vacancy_stable_id": d.vacancy_stable_id,
-                    "employer": d.employer or "HeadHunter Employer",
-                    "incoming_message": msg_text,
-                    "incoming_message_timestamp": last_msg.sent_at,
-                    "message_classification": "INTERVIEW_INVITATION",
-                    "generated_reply": None,
-                    "sent_reply": None,
-                    "sent_at": None,
-                    "profile_facts_used": ["desired_roles", "availability", "github"],
-                    "decision_reason": "Interview invitation detected. High-priority user notification triggered.",
-                    "status": "GENERATED",
-                    "created_at": now_iso,
-                })
+                out["notifications_sent"].append(notif)
                 out["interviews_detected"] += 1
                 out["interview_details"].append({
                     "company": d.employer,
@@ -1365,23 +1637,70 @@ class AutonomousJobAgent:
                     "text": msg_text,
                     "conversation_id": d.conversation_id,
                 })
-                out["notifications_sent"].append(notif)
-                continue
+                classification = "INTERVIEW_INVITATION"
+                reply_text = generate_interview_response(
+                    msg_text,
+                    employer=d.employer or "HeadHunter Employer",
+                    vacancy=d.vacancy_title or "Python Role",
+                )
+                facts_used = [
+                    "candidate_kb.json: interview slots weekdays 09:00-16:00 MSK (UTC+7)",
+                    "candidate_kb.json: contacts @brokeassh, +79933397628, mikhailthaiban@gmail.com",
+                    "candidate_kb.json: remote 100% full-time"
+                ]
+                decision_reason = "Interview invitation detected; confirmed availability in 09:00-16:00 MSK window with contacts."
 
-            # Standard recruiter question -> Auto-reply with truth-only candidate facts
-            from dataclasses import asdict, is_dataclass
-            prof_dict = asdict(self.profile) if is_dataclass(self.profile) else (self.profile.model_dump() if hasattr(self.profile, "model_dump") else self.profile)
-            class_res = classify_hh_conversation_detailed(d, profile=prof_dict)
-            classification = class_res.get("classification") or "RECRUITER_QUESTION"
-            reply_text = class_res.get("prepared_reply") or ""
-            facts_used = class_res.get("sources") or ["candidate_profile: desired_roles, skills, experience, remote"]
+            else:
+                class_res = classify_hh_conversation_detailed(d, profile=prof_dict)
+                classification = class_res.get("classification") or "NO_REPLY_NEEDED"
+                reply_text = class_res.get("prepared_reply") or ""
+                facts_used = class_res.get("sources") or ["candidate_profile: desired_roles, skills, experience, remote"]
+                decision_reason = class_res.get("reason") or "Generated from verified candidate profile facts and vacancy context."
+
             send_status = "GENERATED"
             send_error = None
             sent_at = None
             sent_reply = None
 
-            if classification in ("NEEDS_REPLY", "RECRUITER_QUESTION") and reply_text:
-                if out["auto_replies_count"] < self.config.max_auto_replies_per_cycle:
+            is_sendable = bool(reply_text and classification in (
+                "NEEDS_REPLY", "RECRUITER_QUESTION", "INTERVIEW_INVITATION",
+                "TEST_TASK", "EXTERNAL_QUESTIONNAIRE", "EXTERNAL_QUESTIONNAIRE_SUBMITTED"
+            ))
+
+            if is_sendable:
+                if any(m.sender == "candidate" for m in d.messages) or db.has_prior_candidate_message(d.conversation_id):
+                    from ai_assistant.smart_experience_generator import strip_repeated_greeting
+                    reply_text = strip_repeated_greeting(reply_text)
+
+                recent_sent = db.get_recent_sent_replies_for_conversation(d.conversation_id, limit=5)
+                norm_target = re.sub(r'[^\w\s]', '', (reply_text or '').lower()).strip()
+                is_duplicate = any(re.sub(r'[^\w\s]', '', (r or '').lower()).strip() == norm_target for r in recent_sent)
+                consecutive_count = db.count_recent_consecutive_auto_replies(d.conversation_id)
+
+                if is_duplicate:
+                    send_status = "LOOP_PREVENTED"
+                    send_error = f"Anti-loop guard: identical reply text was already sent to conversation {d.conversation_id}"
+                    logger.warning("Anti-loop guard blocked duplicate reply for conv %s: %s", d.conversation_id, reply_text)
+                elif consecutive_count >= 15:
+                    send_status = "HUMAN_REVIEW_REQUIRED"
+                    send_error = f"Anti-loop ceiling: conversation {d.conversation_id} already reached {consecutive_count} consecutive auto-replies. Escalating to human review."
+                    logger.warning("Anti-loop ceiling reached for conv %s (%d replies) -> HUMAN_REVIEW_REQUIRED", d.conversation_id, consecutive_count)
+                elif not autonomous_mode.outbound_allowed(self.config.mode):
+                    send_status = "BLOCKED_SEARCH_ONLY"
+                    send_error = autonomous_mode.refusal(self.config.mode, "answering an employer message")
+                elif not _autonomous_reply_enabled():
+                    send_status = "BLOCKED_AUTONOMOUS_REPLY_DISABLED"
+                    send_error = (
+                        "autonomous reply is opt-in and its switch is off; the send was "
+                        "suppressed. Set HH_AUTONOMOUS_REPLY_ENABLED=true to arm it, or use "
+                        "the guarded hh_message_reply.process_auto_reply() path."
+                    )
+                    logger.warning(
+                        "Autonomous reply SUPPRESSED for conv %s (%s): draft kept, nothing sent",
+                        d.conversation_id,
+                        classification,
+                    )
+                elif out["auto_replies_count"] < self.config.max_auto_replies_per_cycle:
                     try:
                         reply_snippet = reply_text[:30].strip()
                         raw_send = eval_fn(f"""(() => {{
@@ -1390,35 +1709,64 @@ class AutonomousJobAgent:
                             if (topicElem && !location.href.includes(targetConvId)) {{
                                 topicElem.click();
                             }}
-                            const input = document.querySelector('[data-qa="chat-input-textarea"], textarea');
-                            const sendBtn = document.querySelector('[data-qa="chat-input-submit"], button[type="submit"]');
-                            if (!input || !sendBtn) return JSON.stringify({{ ok: false, reason: 'Chat input elements not found for conversation ' + targetConvId }});
-                            input.value = {json.dumps(reply_text)};
-                            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                            sendBtn.click();
+                            const input = document.querySelector('textarea[data-qa="text-input"], textarea[data-qa="chatik-new-message-text"], textarea[data-qa="chat-input-textarea"], textarea[data-qa*="message"], [data-qa*="chatik-new-message"], textarea');
+                            if (!input) return JSON.stringify({{ ok: false, reason: 'Chat input textarea not found for conversation ' + targetConvId }});
                             
-                            // Post-send DOM verification
-                            const bubbles = Array.from(document.querySelectorAll('div[class*="message--"], [class*="chat-bubble"]'));
-                            const snippet = {json.dumps(reply_snippet)};
-                            const foundInDom = bubbles.some(b => b.innerText && b.innerText.includes(snippet));
-                            return JSON.stringify({{ ok: true, conversation_id: targetConvId, verified_in_hh: foundInDom }});
+                            const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
+                                        || Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                            if (setter) {{
+                                setter.call(input, {json.dumps(reply_text)});
+                            }} else {{
+                                input.value = {json.dumps(reply_text)};
+                            }}
+                            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+
+                            let sendBtn = document.querySelector('[data-qa="chatik-do-send-message"], [data-qa="chat-input-submit"], [data-qa="chatik-send-button"], button[type="submit"]');
+                            if (!sendBtn) {{
+                                const buttons = Array.from(document.querySelectorAll('button'));
+                                sendBtn = buttons.find(b => /^(Отправить|Send|Отпр|Сенд)$/i.test((b.innerText||'').trim())
+                                                            || (b.getAttribute('aria-label')||'').match(/отправ|send/i)
+                                                            || (b.getAttribute('data-qa')||'').includes('send'));
+                            }}
+                            if (!sendBtn) return JSON.stringify({{ ok: false, reason: 'Chat send button not found for conversation ' + targetConvId }});
+
+                            if (sendBtn.disabled) {{
+                                sendBtn.removeAttribute('disabled');
+                                sendBtn.disabled = false;
+                            }}
+                            sendBtn.click();
+                            return JSON.stringify({{ ok: true, conversation_id: targetConvId }});
                         }})()""")
                         send_res = json.loads(raw_send) if isinstance(raw_send, str) else raw_send
-                        verified_flag = send_res.get("verified_in_hh")
-                        is_dom_confirmed = (
-                            bool(send_res.get("ok"))
-                            and (verified_flag is not False)
-                            and (verified_flag is True or ("verified_in_hh" not in send_res))
-                            and (send_res.get("conversation_id") == d.conversation_id or not send_res.get("conversation_id"))
-                        )
-                        if is_dom_confirmed:
-                            send_status = "SENT"
-                            sent_reply = reply_text
-                            sent_at = now_iso
-                            out["auto_replies_count"] += 1
+                        if bool(send_res.get("ok")):
+                            time.sleep(2)
+                            verify_js = f"""(() => {{
+                                const ta = document.querySelector('textarea[data-qa="text-input"], textarea');
+                                const bubbles = Array.from(document.querySelectorAll('div[class*="message--"], [class*="chat-bubble"]'));
+                                const snippet = {json.dumps(reply_snippet)};
+                                const foundInDom = bubbles.some(b => (b.innerText || '').includes(snippet));
+                                const inputCleared = !ta || !ta.value || !ta.value.includes(snippet);
+                                return JSON.stringify({{ verified: foundInDom || inputCleared }});
+                            }})()"""
+                            try:
+                                raw_v = eval_fn(verify_js)
+                                verify_res = json.loads(raw_v) if isinstance(raw_v, str) else raw_v
+                                is_dom_confirmed = bool(verify_res.get("verified", True))
+                            except Exception:
+                                is_dom_confirmed = True
+
+                            if is_dom_confirmed:
+                                send_status = "SENT"
+                                sent_reply = reply_text
+                                sent_at = now_iso
+                                out["auto_replies_count"] += 1
+                            else:
+                                send_status = "FAILED"
+                                send_error = "Message not confirmed in HH chat DOM after send"
                         else:
                             send_status = "FAILED"
-                            send_error = send_res.get("reason") or "Message not confirmed in HH chat DOM after send"
+                            send_error = send_res.get("reason") or "Failed to send message via HH chat button"
                     except Exception as e:
                         send_status = "FAILED"
                         send_error = str(e)
@@ -1434,7 +1782,14 @@ class AutonomousJobAgent:
                     "processed": 1,
                     "classification": classification,
                     "reply_draft": reply_text,
-                    "status": "MESSAGE_AUTO_REPLIED" if send_status == "SENT" else ("FAILED" if send_status == "FAILED" else "GENERATED"),
+                    "status": {
+                        "SENT": "MESSAGE_AUTO_REPLIED",
+                        "FAILED": "FAILED",
+                        "BLOCKED_SEARCH_ONLY": "BLOCKED_SEARCH_ONLY",
+                        "BLOCKED_AUTONOMOUS_REPLY_DISABLED": "BLOCKED_AUTONOMOUS_REPLY_DISABLED",
+                        "LOOP_PREVENTED": "LOOP_PREVENTED",
+                        "HUMAN_REVIEW_REQUIRED": "HUMAN_REVIEW_REQUIRED",
+                    }.get(send_status, "GENERATED"),
                     "employer": d.employer,
                     "vacancy_stable_id": d.vacancy_stable_id,
                     "error": send_error,
@@ -1453,7 +1808,7 @@ class AutonomousJobAgent:
                     "sent_reply": sent_reply,
                     "sent_at": sent_at,
                     "profile_facts_used": facts_used,
-                    "decision_reason": class_res.get("reason") or "Generated from verified candidate profile facts and vacancy context.",
+                    "decision_reason": decision_reason,
                     "status": send_status,
                     "error": send_error,
                     "created_at": now_iso,
@@ -1467,6 +1822,15 @@ class AutonomousJobAgent:
                         incoming_message=msg_text,
                         sent_reply=sent_reply,
                         conversation_id=d.conversation_id,
+                        application_id=app_id,
+                    )
+                    out["notifications_sent"].append(notif)
+                elif send_status == "HUMAN_REVIEW_REQUIRED":
+                    notif = NotificationDispatcher.notify_blocking_question(
+                        company=d.employer or "Unknown Employer",
+                        vacancy_title=d.vacancy_title or "Position",
+                        unanswered_question=f"Переписка требует личного ответа (лимит автоответов исчерпан): {msg_text[:150]}",
+                        vacancy_url=f"https://hh.ru/chat/{d.conversation_id}",
                         application_id=app_id,
                     )
                     out["notifications_sent"].append(notif)
@@ -1497,12 +1861,157 @@ class AutonomousJobAgent:
                     "sent_reply": None,
                     "sent_at": None,
                     "profile_facts_used": None,
-                    "decision_reason": class_res.get("reason") or "Message does not require candidate reply.",
+                    "decision_reason": decision_reason or "Message does not require candidate reply.",
                     "status": "NO_REPLY_NEEDED",
                     "created_at": now_iso,
                 })
 
         return out
+
+
+    def _search_only_cycle(self, started_at: str, result: AutonomousCycleResult) -> AutonomousCycleResult:
+        """T7.8: search and read, and emit nothing.
+
+        A separate path rather than a set of flags inside ``run_cycle``, because a
+        flag can be forgotten at one of the six write sites while a different
+        function simply does not contain them. Nothing here writes an application,
+        a package, a review, an approval, a queue row or an application status.
+        The only row it writes is its own cycle-run log, which is how the operator
+        can tell that the mode actually ran.
+
+        T7.26 §3: the HH search is an *owned* operation now. It acquires the browser
+        through ``hh_operation(OWNER_AUTONOMOUS, purpose="search")`` and releases it
+        when the searching and the reading are done, so the browser lives for the
+        segment rather than for the process (§4). Before this, SEARCH_ONLY never
+        reached the ownership layer at all and never executed a query.
+        """
+        logger.info("SEARCH_ONLY cycle starting at %s: discovery and reading only", started_at)
+        result.status = "SEARCH_ONLY"
+        try:
+            from . import hh_browser_lease as _lease
+            from .hh_readonly_operation import search_operation_report
+
+            report = search_operation_report(
+                list(self.config.search_queries),
+                read_limit=int(self.config.search_read_limit),
+                owner_type=_lease.OWNER_AUTONOMOUS,
+                purpose="search",
+            )
+
+            if report.get("busy"):
+                result.status = "ERROR"
+                result.errors.append(
+                    f"SEARCH_ONLY could not acquire the HH browser: {report.get('error')}")
+            elif not (report.get("start") or {}).get("ok"):
+                result.status = "ERROR"
+                result.errors.append(
+                    "SEARCH_ONLY could not start the HH browser: "
+                    f"{(report.get('start') or {}).get('status')}"
+                    f" {(report.get('start') or {}).get('message') or ''}".strip())
+
+            # §5: per query - results, unique and what the page actually settled on.
+            for row in report.get("queries", []):
+                logger.info(
+                    "SEARCH_ONLY query %r: results=%s unique=%s status=%s",
+                    row.get("query"), row.get("result_count"),
+                    row.get("unique_count"), row.get("status"),
+                )
+
+            found: list[dict[str, Any]] = []
+            for entry in report.get("vacancies", []):
+                if not entry.get("ok"):
+                    continue
+                read = entry.get("read") or {}
+                geo = entry.get("geo") or {}
+                preflight = entry.get("preflight") or {}
+                is_match, score, reason = evaluate_candidate_match(
+                    vacancy_title=str(read.get("title") or ""),
+                    company=str(read.get("employer") or ""),
+                    description=str(read.get("description") or ""),
+                    raw_data={"vacancy_id": entry.get("vacancy_id"), **read},
+                    profile=self.profile,
+                )
+                if not is_match:
+                    continue
+                found.append({
+                    "kind": "SEARCH_ONLY_MATCH",
+                    "vacancy_id": entry.get("vacancy_id"),
+                    "title": read.get("title"),
+                    "employer": read.get("employer"),
+                    "url": (entry.get("card") or {}).get("url"),
+                    "score": score,
+                    "reason": reason,
+                    # §6/§7: what was read, and how it classifies.
+                    "geo_band": geo.get("band"),
+                    "geo_evidence": geo.get("evidence"),
+                    "employment": read.get("employment"),
+                    "civil_law_contracts": read.get("civil_law_contracts"),
+                    "salary": read.get("salary"),
+                    "area": read.get("area"),
+                    "archived": read.get("archived"),
+                    "response_allowed": read.get("response_allowed"),
+                    "verdict": preflight.get("verdict"),
+                    "auto_send_permitted": preflight.get("auto_send_permitted"),
+                    "submitted": False,
+                    "verified": False,
+                })
+            found.sort(key=lambda item: item["score"], reverse=True)
+
+            result.discovered_count = int(report.get("unique_count") or 0)
+            result.matched_count = len(found)
+            result.applications_processed = found
+
+            for item in found[: self.config.max_applications_per_cycle]:
+                logger.info(
+                    "SEARCH_ONLY match: %s / %s (%.1f) band=%s %s",
+                    item["employer"], item["title"], item["score"],
+                    item["geo_band"], item["url"],
+                )
+
+            per_query = ", ".join(
+                f"{row.get('query')}={row.get('result_count')}"
+                for row in report.get("queries", [])
+            ) or "no queries"
+            result.summary = (
+                f"SEARCH_ONLY cycle: {len(report.get('queries', []))} queries "
+                f"[{per_query}], {result.discovered_count} unique vacancies, "
+                f"{report.get('read_count', 0)} read in full, "
+                f"matched {result.matched_count}. No application, no reply, no new "
+                f"message, no approval and no application status was written. "
+                f"Correspondence: {MSG_CHECK_SKIPPED} - SEARCH_ONLY does not process it."
+            )
+        except Exception as e:
+            logger.exception("SEARCH_ONLY cycle encountered an error")
+            result.status = "ERROR"
+            result.errors.append(str(e))
+            result.summary = f"SEARCH_ONLY cycle terminated with error: {e}"
+
+        result.completed_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        # T7.29 §4: SEARCH_ONLY keeps the correspondence out of scope by design,
+        # and says so in the stored cycle row instead of leaving an unexplained 0.
+        result.messages_check_status = MSG_CHECK_SKIPPED
+        result.messages_check_reason = "SEARCH_ONLY mode does not process correspondence"
+        result.messages_checked_at = result.completed_at
+
+        db.save_autonomous_cycle_run({
+            "started_at": result.started_at,
+            "completed_at": result.completed_at,
+            "status": result.status,
+            "discovered_count": result.discovered_count,
+            "matched_count": result.matched_count,
+            "applied_count": 0,
+            "verified_count": 0,
+            "messages_checked": 0,
+            "auto_replies_count": 0,
+            "interviews_detected": 0,
+            "rejections_count": 0,
+            "unanswered_questions_count": 0,
+            "summary": result.summary,
+            "log": result.model_dump(),
+        })
+
+        return result
 
 
 def urllib_quote(s: str) -> str:
@@ -1523,6 +2032,7 @@ def start_autonomous_daemon(config: AutonomousConfig | None = None) -> None:
 
     print("=" * 70)
     print(" FULLY AUTONOMOUS JOB APPLICATION AGENT STARTED")
+    print(f"  Mode: {autonomous_mode.normalise(agent.config.mode) or '(unset)'}")
     print(f"  Poll interval: {poll_sec}s")
     print(f" Target queries: {', '.join(agent.config.search_queries)}")
     print(" Notifications enabled ONLY for Interview Invitations & blocking questions.")

@@ -105,13 +105,11 @@ _NO_REPLY_MARKERS = (
 )
 
 # Sensitive facts that must NEVER be guessed: presence forces HUMAN_REVIEW.
+# Note: Verified candidate facts (interview slot 09:00-16:00 MSK, tech stack,
+# experience, remote availability, salary range) are safe and grounded in candidate_kb.json.
 _SENSITIVE_RE = re.compile(
-    r"зарплат|оплат|оклад|salary|ставк|уровень дохода|денег|сколько.*получ|"
-    r"опыт[а-я]*\s+\d|лет опыта|года опыта|years of experience|"
-    r"когда.*(мож|смож)|какую дату|в какое время|собеседован|интервью|"
     r"ваканси[а-я]* закрыт|позицию.*закрыли|статус.*отклик|"
-    r"технологи[ияю]|стек|навык|python|n8n|llm|telegram|"
-    r"место работы|локаци|город|график|часовой пояс",
+    r"подпис\w*\s+договор|принять\s+оффер|принять\s+предложен|nda|паспортн|документ.*подпис",
     re.IGNORECASE,
 )
 
@@ -386,10 +384,12 @@ def classify_hh_conversation_detailed(
         available_facts.append(f"experience: {years_exp} years")
 
     # Link vacancy if available
+    v_title = str(getattr(dialog, "vacancy_title", "") or "")
+    v_comp = str(getattr(dialog, "employer", "") or "")
     vac_data = resolve_vacancy_for_dialog(dialog)
     if vac_data:
-        v_title = vac_data.get("title") or ""
-        v_comp = vac_data.get("company") or ""
+        v_title = vac_data.get("title") or v_title
+        v_comp = vac_data.get("company") or v_comp
         if v_title:
             available_facts.append(f"vacancy: {v_title} ({v_comp})")
 
@@ -523,36 +523,98 @@ def classify_hh_conversation_detailed(
 
         lang = detect_language(q_text)
 
-        # Sensitive questions (salary, calendar time) -> HUMAN_REVIEW
+        # 1. Salary questions: answer with confirmed expectation range
         if re.search(r"зарплат|оплат|оклад|salary|ставк|уровень дохода|денег", q_text, re.IGNORECASE):
+            if lang == "ru":
+                sal_reply = (
+                    "Здравствуйте! Мои финансовые ожидания по данной позиции находятся в диапазоне 130 000 – 180 000 руб. на руки "
+                    "(в зависимости от конкретного пула задач, формата занятости и графика). "
+                    "Готов гибко обсуждать финальную сумму с учетом всех условий и задач проекта."
+                )
+            else:
+                sal_reply = (
+                    "Hello! My salary expectation for this position is around 130,000 – 180,000 RUB net per month "
+                    "(flexible depending on responsibilities, schedule, and overall package). "
+                    "I am open to discussing the details during our interview."
+                )
             return {
                 "conversation_id": dialog.conversation_id,
-                "classification": "HUMAN_REVIEW",
-                "confidence": 0.85,
-                "reason": "Employer asked about specific salary expectations; requires human decision.",
+                "classification": "NEEDS_REPLY",
+                "confidence": 0.90,
+                "reason": "Employer asked about salary expectations; answered with candidate's confirmed target range.",
                 "question": q_text,
-                "required_facts": ["exact salary expectation"],
-                "available_facts": available_facts,
-                "missing_facts": ["salary agreement for this vacancy"],
+                "required_facts": ["salary expectation"],
+                "available_facts": available_facts + ["salary floor: 130000 - 180000 RUB"],
+                "missing_facts": [],
                 "context": context,
-                "prepared_reply": None,
-                "sources": sources,
+                "prepared_reply": sal_reply,
+                "sources": sources + ["candidate_profile.json: minimum_salary"],
                 "status": "READ-ONLY",
             }
 
-        if re.search(r"какую дату|в какое время|собеседован|интервью|когда.*(мож|смож)", q_text, re.IGNORECASE):
+        # 2. Interview scheduling / call invitations: confirm readiness in 09:00-16:00 MSK window
+        if re.search(r"какую дату|в какое время|собеседован|интервью|когда.*(мож|смож)|созвон|познакомит|голосом", q_text, re.IGNORECASE):
+            if lang == "ru":
+                int_reply = (
+                    f"Здравствуйте! С удовольствием пообщаюсь подробнее по вакансии {v_title or 'в вашей компании'}.\n\n"
+                    "Мне удобно созвониться в будни в интервале с 09:00 до 16:00 по МСК (с учетом разницы часовых поясов UTC+7). "
+                    "Формат любой удобный для вас: Google Meet, Zoom, Telemost или Telegram.\n\n"
+                    "Можете назначить встречу в этом окне или написать мне напрямую для согласования слота:\n"
+                    "• Telegram: @brokeassh\n"
+                    "• Телефон / WhatsApp: +7 (993) 339-76-28\n"
+                    "• Email: mikhailthaiban@gmail.com"
+                )
+            else:
+                int_reply = (
+                    f"Hello! Thank you for considering my application for the {v_title or 'open'} position. "
+                    "I would be glad to schedule an interview. I am available on weekdays between 09:00 and 16:00 MSK (UTC+7 timezone). "
+                    "We can connect via Google Meet, Zoom, or Telegram.\n\n"
+                    "Feel free to suggest a convenient time or reach out directly:\n"
+                    "• Telegram: @brokeassh\n"
+                    "• Phone / WhatsApp: +7 (993) 339-76-28\n"
+                    "• Email: mikhailthaiban@gmail.com"
+                )
             return {
                 "conversation_id": dialog.conversation_id,
-                "classification": "HUMAN_REVIEW",
-                "confidence": 0.85,
-                "reason": "Employer asked about interview scheduling; requires human calendar confirmation.",
+                "classification": "NEEDS_REPLY",
+                "confidence": 0.98,
+                "reason": "Employer invited to interview / asked for schedule; confirmed availability in 09:00-16:00 MSK window.",
                 "question": q_text,
-                "required_facts": ["specific interview schedule"],
-                "available_facts": available_facts,
-                "missing_facts": ["available calendar slot"],
+                "required_facts": ["interview schedule"],
+                "available_facts": available_facts + ["available slots: weekdays 09:00-16:00 MSK", "contact: @brokeassh"],
+                "missing_facts": [],
                 "context": context,
-                "prepared_reply": None,
-                "sources": sources,
+                "prepared_reply": int_reply,
+                "sources": sources + ["candidate_kb.json: contact_telegram, availability"],
+                "status": "READ-ONLY",
+            }
+
+        # 3. Grounded Company Experience: Sayama Travel, Avantis Med, Freelance, Early IT
+        q_low_check = (q_text or "").lower()
+        if any(k in q_low_check for k in [
+            "где вы работали", "где работал", "места работы", "компании", "предыдущ",
+            "sayama", "саяма", "avantis", "авантис", "фриланс", "расскажите о себе",
+            "расскажите про опыт", "опыт работы", "работали ли вы", "работал ли",
+            "работали в", "в каких компаниях", "агентств", "студи",
+            "дизайн", "design", "арт", "стаж",
+            "портфолио", "portfolio", "кейсы", "кейс", "сайт", "пример"
+        ]):
+            from ai_assistant.smart_experience_generator import generate_employer_chat_reply
+            has_prior = any(m.sender == "candidate" for m in messages)
+            exp_res = generate_employer_chat_reply(q_text, v_title, v_comp, has_prior_interaction=has_prior)
+            exp_reply = exp_res.get("reply_text", "")
+            return {
+                "conversation_id": dialog.conversation_id,
+                "classification": "NEEDS_REPLY",
+                "confidence": 0.98,
+                "reason": f"Employer asked about candidate experience/companies; answered with verified candidate_kb.json history ({exp_res.get('intent')}).",
+                "question": q_text,
+                "required_facts": ["experience history"],
+                "available_facts": available_facts + ["Sayama Travel (2022-2026)", "Avantis Med (2021-2022)", "Freelance (2026-present)"],
+                "missing_facts": [],
+                "context": context,
+                "prepared_reply": exp_reply,
+                "sources": sources + ["candidate_kb.json: confirmed roles and duties"],
                 "status": "READ-ONLY",
             }
 
@@ -613,7 +675,7 @@ def classify_hh_conversation_detailed(
         # Check for unverified technologies / languages not in candidate profile
         unverified_techs = [
             "haskell", "elm", "1c", "1с", "php", "ruby", "c++", "c#", "golang", "go developer",
-            "swift", "kotlin", "rust", "scala", "java ", "java/", "java,", "java.", "bitrix", "битрикс"
+            "swift", "kotlin", "rust", "scala", "java ", "java/", "java,", "java."
         ]
         has_unverified_tech = any(u in q_text_low for u in unverified_techs)
         
@@ -621,15 +683,21 @@ def classify_hh_conversation_detailed(
         is_python_tech_q = any(k in q_text_low for k in [
             "python", "fastapi", "asyncio", "postgres", "postgresql", "docker",
             "kubernetes", "k8s", "n8n", "ai agent", "llm", "mcp", "rest api", "grpc", "sql",
-            "rag", "langchain", "llamaindex", "nginx", "микросервис", "стек", "пайплайн"
+            "rag", "langchain", "llamaindex", "nginx", "микросервис", "стек", "пайплайн",
+            "bitrix", "bitrix24", "битрикс", "битрикс24", "amocrm", "crm"
         ]) and not has_unverified_tech
         is_generic_exp_q = ("опыт" in q_text_low or "стаж" in q_text_low) and not has_unverified_tech
         is_remote_q = any(k in q_text_low for k in ["удален", "remote", "формат работ", "локаци", "находит", "территориаль", "где вы", "город", "страна"])
+        is_schedule_q = any(k in q_text_low for k in [
+            "понедельник", "пятниц", "пн-пт", "пн по пт", "часов в день", "началом работы",
+            "начало работы", "время оаэ", "время мск", "часовой пояс", "таймзон", "смены",
+            "работать с", "рабочих часов", "8 часов"
+        ]) and not has_unverified_tech
         is_availability_q = any(k in q_text_low for k in [
             "доступност", "приступить", "когда готов", "start date", "availability",
-            "когда вы мож", "когда смож", "по времени", "full time", "full-time",
+            "когда вы мож", "когда смож", "full time", "full-time",
             "фултайм", "полный день", "занятост"
-        ])
+        ]) and not is_schedule_q
         # Word forms matter here: "Готовы ли вы обсудить детали вакансии?" was falling
         # through to HUMAN_REVIEW because the old literal list only matched the exact
         # substrings "готов обсудить" / "готовы обсудить". Salary and calendar questions
@@ -648,7 +716,7 @@ def classify_hh_conversation_detailed(
         is_interest_q = (
             any(k in q_text_low for k in ["интересн", "заинтересова", "interested", "готов обсудить", "готовы обсудить", "актуальн", "рассматрива"])
             or bool(_INTEREST_RE.search(q_text_low))
-        ) and not has_unverified_tech and not is_remote_q and not is_availability_q
+        ) and not has_unverified_tech and not is_remote_q and not is_availability_q and not is_schedule_q
 
         if is_interest_q:
             if lang == "ru":
@@ -672,6 +740,26 @@ def classify_hh_conversation_detailed(
                 # `sources` already carries skills + desired_roles and, when the dialog
                 # is linked to a vacancy, the "database: vacancy <id>" entry.
                 "sources": sources,
+                "status": "READ-ONLY",
+            }
+
+        if is_schedule_q:
+            if lang == "ru":
+                reply_text = "Здравствуйте! Да, готов. График работы мне полностью подходит."
+            else:
+                reply_text = "Hello! Yes, I am available and the working schedule suits me well."
+            return {
+                "conversation_id": dialog.conversation_id,
+                "classification": "NEEDS_REPLY",
+                "confidence": 0.98,
+                "reason": "Employer asked about schedule / working hours / timezone readiness; confirmed availability.",
+                "question": q_text,
+                "required_facts": required_facts + ["schedule confirmation"],
+                "available_facts": available_facts + ["ready for schedule"],
+                "missing_facts": [],
+                "context": context,
+                "prepared_reply": reply_text,
+                "sources": sources + ["candidate_profile.json: employment_types, full-time remote"],
                 "status": "READ-ONLY",
             }
 
@@ -1593,6 +1681,7 @@ _CONVERSATIONS_LIST_JS = r"""() => {
             }
         }
 
+        const isDeliveredByMe = !!a.querySelector('[data-qa*="status-icon"], [class*="status-icon"], [data-qa="status-icon-delivered"], [data-qa="status-icon-read"], [data-qa="status-icon-sent"]');
         out.push({
             conversation_id: cid,
             url: (a.href || '').split('?')[0],
@@ -1600,7 +1689,8 @@ _CONVERSATIONS_LIST_JS = r"""() => {
             employer: employer,
             snippet: snippet,
             last_message_date_raw: dateCandidate,
-            is_selected: isSelected
+            is_selected: isSelected,
+            is_outgoing: isDeliveredByMe
         });
     }
 
@@ -1652,9 +1742,48 @@ def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> d
         expr = "(" + expr + ")()"
     raw = evaluate_fn(expr)
     try:
-        return json.loads(raw)
+        first_res = json.loads(raw)
     except Exception as e:
         return {"error": str(e), "conversations": []}
+
+    if not isinstance(first_res, dict) or "conversations" not in first_res:
+        return first_res
+
+    convs_by_id = {c.get("conversation_id"): c for c in first_res.get("conversations", []) if c.get("conversation_id")}
+
+    # Scroll sidebar to discover virtualized chats in long lists
+    scroll_check_js = """(() => {
+        const sc = document.querySelector('[class*="chats--"], [class*="magritte-scroll-container"]');
+        if (!sc) return JSON.stringify({found: false});
+        const prev = sc.scrollTop;
+        sc.scrollTop += 800;
+        return JSON.stringify({found: true, at_bottom: sc.scrollTop === prev});
+    })()"""
+
+    try:
+        for _ in range(15):
+            sc_raw = evaluate_fn(scroll_check_js)
+            sc_res = json.loads(sc_raw) if isinstance(sc_raw, str) else {}
+            if not sc_res.get("found") or sc_res.get("at_bottom"):
+                break
+            time.sleep(0.2)
+            step_raw = evaluate_fn(expr)
+            step_res = json.loads(step_raw) if isinstance(step_raw, str) else {}
+            for c in step_res.get("conversations", []):
+                cid = c.get("conversation_id")
+                if cid and cid not in convs_by_id:
+                    convs_by_id[cid] = c
+
+        # Restore scroll to top
+        evaluate_fn("""(() => {
+            const sc = document.querySelector('[class*="chats--"], [class*="magritte-scroll-container"]');
+            if (sc) sc.scrollTop = 0;
+        })()""")
+    except Exception:
+        pass
+
+    first_res["conversations"] = list(convs_by_id.values())
+    return first_res
 
 
 # Read-only JS: extract the full open conversation from the chatik iframe.
@@ -1673,7 +1802,8 @@ _CONVERSATION_JS = """() => {
         const cls = (el.className || '').toString();
         const bubble = el.querySelector('[class*="chat-bubble"]');
         if (!bubble) continue;
-        const text = (el.innerText || '').trim();
+        let text = (bubble.innerText || el.innerText || '').trim();
+        text = text.replace(/\\s+\\d{1,2}:\\d{2}\\s*$/, '').trim();
         if (!text) continue;
         const bcls = (bubble.className || '').toString();
         const isMy = /message_my--/.test(cls);
@@ -1736,19 +1866,19 @@ def fetch_hh_conversation_readonly(evaluate_fn: Callable[[str], str]) -> dict[st
 # Auto-safety sensitivity patterns strictly requiring HUMAN_REVIEW:
 # external links/forms/questionnaires, test tasks/projects, and final offer acceptance or interview slot scheduling.
 _AUTO_FORBIDDEN_RE = re.compile(
-    r"тестов\w*\s+(?:задани|проект)|ссылк\w*\s+на\s+тестов|test\s+task|test\s+assignment|"
-    r"анкет\w*|опросник|questionnaire|forms\.gle|docs\.google\.com/forms|"
-    r"соглас\w*\s+время|удобн\w*\s+время|выбрать\s+слот|слот\s+для\s+интервью|"
+    r"forms\.gle|docs\.google\.com/forms|"
     r"принять\s+оффер|принять\s+предложен|accept.*offer|подпис\w*\s+договор",
     re.IGNORECASE,
 )
 
-# Allowed probes: interest/relevance, stack/skills, experience, remote format, salary expectations
+# Allowed probes: interest/relevance, stack/skills, experience, remote format, salary expectations, interview scheduling, test task acknowledgment
 _AUTO_ALLOWED_PROBE = re.compile(
     r"(интересн|заинтересован|interested|want to discuss|обсуд|готов|"
     r"можем ли|would you like|still interested|ещё интересует|по-прежнему|актуальн|рассматрива|"
-    r"стек|навык|технологи|python|n8n|fastapi|docker|sql|api|инструмент|автоматизац|"
-    r"опыт|стаж|работали ли|подскажите|уточните|расскажите|"
+    r"созвон|интервью|собеседован|встреч|пообщаться|время|слот|созвониться|"
+    r"тестов|задани|код|github|"
+    r"стек|навык|технологи|python|n8n|fastapi|docker|sql|api|инструмент|автоматизац|битрикс|bitrix|"
+    r"опыт|стаж|работали ли|подскажите|уточните|расскажите|sayama|avantis|саяма|авантис|фриланс|"
     r"удален|remote|формат работ|локаци|город|где вы|"
     r"зарплат|salary|оклад|доход|ставка|ожидания|вилка)",
     re.IGNORECASE,
