@@ -591,7 +591,7 @@ def make_target_evaluate(endpoint: str, target_id: str) -> Callable[[str], str]:
         msg = _ws_call(
             tab["webSocketDebuggerUrl"],
             "Runtime.evaluate",
-            {"expression": expression, "returnByValue": True, "awaitPromise": False},
+            {"expression": expression, "returnByValue": True, "awaitPromise": True},
         )
         result = (msg.get("result") or {}).get("result") or {}
         if "value" not in result:

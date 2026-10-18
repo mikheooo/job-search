@@ -1243,11 +1243,11 @@ class AutonomousJobAgent:
                         from .hh_browser_launcher import ensure_hh_browser, DEFAULT_HH_URL
                         b_res = ensure_hh_browser(cdp_url=self.config.cdp_url, open_url=DEFAULT_HH_URL, auto_start=True)
                         if not b_res.get("ok"):
-                            return _stop(MSG_CHECK_ERROR, f"no browser transport (auto-start failed): {b_res.get('error')}")
+                            return _stop(MSG_CHECK_ERROR, f"no browser transport: {exc} (auto-start failed: {b_res.get('error')})")
                         from .prefill_execute import make_cdp_evaluate
                         eval_fn = make_cdp_evaluate(b_res.get("cdp_url") or self.config.cdp_url, "hh.ru")
                     except Exception as exc2:
-                        return _stop(MSG_CHECK_ERROR, f"no browser transport (auto-start failed): {type(exc2).__name__}: {exc2}")
+                        return _stop(MSG_CHECK_ERROR, f"no browser transport: {exc} (auto-start failed: {type(exc2).__name__}: {exc2})")
                 else:
                     return _stop(MSG_CHECK_ERROR, f"no browser transport: {type(exc).__name__}: {exc}")
         if not eval_fn:
@@ -1663,7 +1663,7 @@ class AutonomousJobAgent:
             sent_reply = None
 
             is_sendable = bool(reply_text and classification in (
-                "NEEDS_REPLY", "RECRUITER_QUESTION", "INTERVIEW_INVITATION",
+                "NEEDS_REPLY", "RECRUITER_QUESTION",
                 "TEST_TASK", "EXTERNAL_QUESTIONNAIRE", "EXTERNAL_QUESTIONNAIRE_SUBMITTED"
             ))
 
@@ -1779,7 +1779,7 @@ class AutonomousJobAgent:
                     "text": msg_text,
                     "sent_at": last_msg.sent_at,
                     "seen_at": now_iso,
-                    "processed": 1,
+                    "processed": 1 if send_status == "SENT" else 0,
                     "classification": classification,
                     "reply_draft": reply_text,
                     "status": {
@@ -1842,9 +1842,10 @@ class AutonomousJobAgent:
                     "text": msg_text,
                     "sent_at": last_msg.sent_at,
                     "seen_at": now_iso,
-                    "processed": 1,
+                    "processed": 1 if not reply_text else 0,
                     "classification": classification,
-                    "status": "NO_REPLY_NEEDED",
+                    "reply_draft": reply_text or None,
+                    "status": send_status if reply_text else "NO_REPLY_NEEDED",
                     "employer": d.employer,
                     "vacancy_stable_id": d.vacancy_stable_id,
                 })
@@ -1857,12 +1858,12 @@ class AutonomousJobAgent:
                     "incoming_message": msg_text,
                     "incoming_message_timestamp": last_msg.sent_at,
                     "message_classification": classification,
-                    "generated_reply": None,
+                    "generated_reply": reply_text or None,
                     "sent_reply": None,
                     "sent_at": None,
-                    "profile_facts_used": None,
+                    "profile_facts_used": facts_used if reply_text else None,
                     "decision_reason": decision_reason or "Message does not require candidate reply.",
-                    "status": "NO_REPLY_NEEDED",
+                    "status": send_status if reply_text else "NO_REPLY_NEEDED",
                     "created_at": now_iso,
                 })
 

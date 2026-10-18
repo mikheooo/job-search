@@ -204,6 +204,17 @@ def run_daemon_loop() -> None:
                 replies_sent = chat_res.get("auto_replies_count", 0)
                 interviews = chat_res.get("interviews_detected", 0)
 
+                if status == "ERROR" or (chat_res.get("messages_check_reason") and any(k in str(chat_res.get("messages_check_reason")).lower() for k in ["tab is gone", "connection closed", "target closed", "10061", "no browser transport", "failed to fetch"])):
+                    logger.warning("Browser check error: %s (reason: %s); recycling session...", status, chat_res.get("messages_check_reason"))
+                    try:
+                        if session:
+                            session.stop()
+                    except Exception:
+                        pass
+                    session = None
+                    time.sleep(5)
+                    continue
+
                 if replies_sent > 0 or interviews > 0:
                     logger.info(
                         "⚡ Real-time event processed: replies_sent=%d, interviews=%d, status=%s",

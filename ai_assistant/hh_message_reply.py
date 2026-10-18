@@ -1734,9 +1734,76 @@ def _conversations_list_js() -> str:
 
 def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> dict[str, Any]:
     """Stage 30D.9: Read-only enumeration of all visible conversations in HH chat interface.
+    Uses internal chatik API first (100% reliable, direct participant & message metadata),
+    with robust DOM fallback.
     Returns:
-        conversations: List[Dict[str, Any]] (conversation_id, url, title, employer, snippet, is_selected)
+        conversations: List[Dict[str, Any]] (conversation_id, url, title, employer, snippet, is_selected, is_outgoing)
     """
+    # 1. Native Chatik API fetch inside browser context
+    chatik_api_js = """(async () => {
+        try {
+            let allChats = [];
+            let cursor = '';
+            let page = 0;
+            while (page < 5 && allChats.length < 50) {
+                page++;
+                let url = 'https://chatik.hh.ru/chatik/api/chats?filterUnread=false&filterHasTextMessage=false&do_not_track_session_events=false';
+                if (cursor) {
+                    url += '&from=' + encodeURIComponent(cursor);
+                }
+                let r = await fetch(url, {credentials: 'include'});
+                if (!r.ok) {
+                    if (allChats.length > 0) break;
+                    return JSON.stringify({error: 'HTTP ' + r.status});
+                }
+                let data = await r.json();
+                let chatsObj = data.chats || {};
+                let items = chatsObj.items || [];
+                if (!items.length) break;
+                allChats.push(...items);
+                cursor = chatsObj.nextFrom;
+                if (!cursor) break;
+            }
+            if (!allChats.length) return JSON.stringify({error: 'No chats found'});
+            let convs = allChats.map(c => {
+                let lm = c.lastMessage || {};
+                let isMe = (lm.participantId === c.currentParticipantId);
+                let vacs = (c.resources && c.resources.VACANCY) || (lm.resources && lm.resources.VACANCY) || [];
+                let name = (lm.participantDisplay && lm.participantDisplay.name) || null;
+                return {
+                    conversation_id: String(c.id),
+                    url: 'https://hh.ru/chat/' + c.id,
+                    title: name || 'HH Chat',
+                    employer: name,
+                    snippet: lm.text || null,
+                    last_message_date_raw: lm.creationTime || null,
+                    is_selected: location.pathname.includes('/chat/' + c.id),
+                    is_outgoing: isMe,
+                    unread_count: c.unreadCount || 0,
+                    vacancy_id: vacs[0] || null
+                };
+            });
+            return JSON.stringify({
+                url: location.href,
+                title: document.title,
+                conversations: convs,
+                source: 'chatik_api'
+            });
+        } catch (e) {
+            return JSON.stringify({error: e.toString()});
+        }
+    })()"""
+
+    try:
+        api_raw = evaluate_fn(chatik_api_js)
+        if api_raw and api_raw != "{}":
+            api_res = json.loads(api_raw)
+            if isinstance(api_res, dict) and api_res.get("conversations"):
+                return api_res
+    except Exception:
+        pass
+
+    # 2. DOM fallback
     expr = _conversations_list_js()
     if expr.lstrip().startswith("() =>"):
         expr = "(" + expr + ")()"
