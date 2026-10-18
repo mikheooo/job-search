@@ -26,11 +26,16 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Callable
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(override=False)
+except Exception:
+    pass
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_HH_CDP_PORT = 9222
-DEFAULT_HH_CDP_URL = os.getenv("HH_CDP_URL", f"http://127.0.0.1:{DEFAULT_HH_CDP_PORT}")
-
+DEFAULT_HH_CDP_URL = f"http://127.0.0.1:{DEFAULT_HH_CDP_PORT}"
 BROWSEROS_CDP_PORT = 9110
 BROWSEROS_CDP_URL = f"http://127.0.0.1:{BROWSEROS_CDP_PORT}"
 DEFAULT_HH_PROFILE_DIR = os.getenv(
@@ -89,7 +94,7 @@ def resolve_cdp_url(preferred: str | None = None, allow_browseros: bool = True) 
 
 
 def find_chrome_executable() -> str | None:
-    """Locate Google Chrome executable in standard system locations."""
+    """Locate Google Chrome or BrowserOS executable in standard system locations."""
     # 1. Environment override
     env_path = os.getenv("CHROME_PATH")
     if env_path and os.path.isfile(env_path):
@@ -103,6 +108,8 @@ def find_chrome_executable() -> str | None:
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
         candidates.append(os.path.join(local_app_data, r"Google\Chrome\Application\chrome.exe"))
+        # BrowserOS Neo / BrowserClaw fallback
+        candidates.append(os.path.join(local_app_data, r"BrowserClaw\Application\chrome.exe"))
 
     prog_files = os.environ.get("PROGRAMFILES")
     if prog_files:
@@ -296,7 +303,7 @@ def check_hh_session_authenticated(evaluate_fn: Callable[[str], str]) -> dict[st
 
 
 def ensure_hh_browser(
-    cdp_url: str = DEFAULT_HH_CDP_URL,
+    cdp_url: str | None = None,
     profile_dir: str | None = None,
     open_url: str = DEFAULT_HH_URL,
     auto_start: bool = True,
@@ -309,7 +316,35 @@ def ensure_hh_browser(
     2. If not reachable and auto_start is True: launches Chrome with correct profile and remote-debugging-port.
     3. Waits up to timeout_seconds for CDP readiness.
     4. Ensures an HH page target exists.
+
+    T7.21: the browser is now chosen by ``HH_BROWSER_MODE`` (see
+    ``hh_browser_provider``). With no explicit ``cdp_url`` and mode
+    ``headless``, this starts *our own* headless Chrome on the dedicated
+    profile instead of expecting the user to have started BrowserOS. An
+    explicitly passed endpoint is a decision and keeps the historical path.
     """
+    from .hh_browser_provider import (
+        MODE_HEADLESS,
+        browser_mode,
+        ensure_headless_browser,
+        headless_cdp_url,
+    )
+
+    # "No endpoint given" and "the headless endpoint" both mean our own Chrome.
+    # Any *other* explicit endpoint is a decision - it keeps the historical path
+    # (and the profile it names), because overriding an explicit pin is the
+    # fail-open class finding #13 was about.
+    if browser_mode() == MODE_HEADLESS and (cdp_url is None or cdp_url == headless_cdp_url()):
+        return ensure_headless_browser(
+            cdp_url=cdp_url,
+            profile_dir=profile_dir,
+            open_url=open_url,
+            auto_start=auto_start,
+            timeout_seconds=timeout_seconds,
+            check_session=check_session,
+        )
+
+    cdp_url = cdp_url or DEFAULT_HH_CDP_URL
     resolved_profile = profile_dir or DEFAULT_HH_PROFILE_DIR
     result: dict[str, Any] = {
         "ok": False,
@@ -322,6 +357,16 @@ def ensure_hh_browser(
         "authenticated": True,
         "error": None,
     }
+
+    # The browser is already chosen by the branch above, so this is the
+    # historical resolver with its historical semantics: HH_CDP_URL / CDP_URL,
+    # else 9222, and the logged hop to BrowserOS when nothing is pinned. The
+    # mode-aware wrapper (resolve_browser_endpoint) is for callers that have not
+    # decided yet - here the decision has been made.
+    resolved = resolve_cdp_url(cdp_url, allow_browseros=True)
+    if resolved != cdp_url:
+        cdp_url = resolved
+        result["cdp_url"] = cdp_url
 
     # Step 1: Check if already reachable
     if is_cdp_reachable(cdp_url):
@@ -443,10 +488,28 @@ def ensure_hh_browser(
     return result
 
 
+# ---------------------------------------------------------------------------
+# T7.21: the generic endpoint pin, for the mode-aware resolver
+# ---------------------------------------------------------------------------
+# ``CDP_URL`` is the operator saying "drive *this* endpoint", regardless of which
+# browser it happens to be. ``HH_CDP_URL`` is narrower: it names the BrowserOS
+# address, so headless mode must not read it or every headless workflow would be
+# dragged back onto BrowserOS. This accessor keeps both env reads in the one
+# module that finding #14 allows to read them.
+def cdp_url_pin() -> str | None:
+    """The explicit generic endpoint pin, or None. Never ``HH_CDP_URL``."""
+    return os.getenv("CDP_URL") or None
+
+
 def resolve_browser_endpoint(preferred: str | None = None) -> str:
-    """Resolve browser CDP endpoint URL."""
-    try:
-        from .hh_browser_provider import resolve_browser_endpoint as _rbe
-        return _rbe(preferred)
-    except Exception:
-        return resolve_cdp_url(preferred)
+    """T7.21: the mode-aware "which browser" resolver.
+
+    A thin re-export of ``hh_browser_provider.resolve_browser_endpoint``. It
+    lives here because this is the module every caller already imports for that
+    question, so the mode can be introduced without touching a dozen import
+    lines (and without shifting the line numbers this file is cited by).
+    """
+    from .hh_browser_provider import resolve_browser_endpoint as _resolve
+
+    return _resolve(preferred)
+

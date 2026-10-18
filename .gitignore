@@ -189,3 +189,12 @@ tools/.t7*/*.external_*.py
 tools/.t7*/*.patched
 
 portfolio_site/
+
+# The autopilot config is source, not a run artifact: the global `*.json` rule
+# above would otherwise swallow it and every fresh clone would lose the
+# supervisor settings.
+!.autopilot/config.json
+
+# The state.db backup is a local safety net, never a versioned artifact. It is
+# already matched by `*.bak*`; named explicitly so the intent is greppable.
+state.db.bak

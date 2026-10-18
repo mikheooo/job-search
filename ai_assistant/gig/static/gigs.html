@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gig Search — GIG-SEARCH-P1</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #171e2e; --panel-2: #1d2740;
+    --border: #2a3556; --text: #e6ebf5; --muted: #8b97b0;
+    --accent: #4f8cff; --good: #3ecf8e; --warn: #f5b14c; --bad: #f26d6d;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  header { padding: 16px 24px; border-bottom: 1px solid var(--border);
+           display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .tag { color: var(--muted); font-size: 12px; }
+  #stats { color: var(--muted); font-size: 12px; }
+  #stats b { color: var(--text); }
+  main { padding: 16px 24px 48px; }
+  .filters { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; align-items: center; }
+  select, input[type="number"] {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font: inherit;
+  }
+  label { color: var(--muted); font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel);
+          border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { background: var(--panel-2); color: var(--muted); font-size: 12px;
+       text-transform: uppercase; letter-spacing: .04em; cursor: pointer; user-select: none; }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--panel-2); cursor: pointer; }
+  .score { font-weight: 700; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px;
+          font-size: 11px; border: 1px solid var(--border); }
+  .pill.high, .pill.ready, .pill.low-risk { color: var(--good); border-color: var(--good); }
+  .pill.medium, .pill.possible, .pill.unknown { color: var(--warn); border-color: var(--warn); }
+  .pill.blocked, .pill.high-risk { color: var(--bad); border-color: var(--bad); }
+  .pill.live { color: #06121d; background: var(--good); border-color: var(--good); font-weight: 700; }
+  .pill.archive { color: var(--muted); border-style: dashed; }
+  .pill.fixture { color: var(--muted); border-style: dashed; }
+  .muted { color: var(--muted); }
+  a { color: var(--accent); text-decoration: none; }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--border);
+           border-radius: 10px; max-width: 780px; width: 92vw; padding: 20px 24px; }
+  dialog::backdrop { background: rgba(0,0,0,.55); }
+  dialog h2 { margin: 0 0 4px; font-size: 16px; }
+  dialog .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px 20px; margin: 14px 0; }
+  dialog .kv .k { color: var(--muted); font-size: 11px; text-transform: uppercase; }
+  .breakdown table { border: none; }
+  .breakdown th, .breakdown td { padding: 4px 8px; font-size: 12px; }
+  .bar { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; min-width: 60px; }
+  .bar i { display: block; height: 100%; background: var(--accent); }
+  .actions { display: flex; gap: 8px; margin-top: 14px; }
+  button { background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+           border-radius: 6px; padding: 6px 14px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .lists { margin: 10px 0; }
+  .lists li { margin: 3px 0; }
+  .lists .plus::marker { content: "+ "; color: var(--good); }
+  .lists .minus::marker { content: "− "; color: var(--bad); }
+  #err { color: var(--bad); padding: 12px 24px; display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Gig Search</h1>
+  <span class="tag">отдельный контур фриланс-заказов · prepare-only · GIG-SEARCH-P1</span>
+  <span id="stats"></span>
+</header>
+<div id="err"></div>
+<main>
+  <div class="filters">
+    <label>Область источника
+      <select id="f-scope">
+        <option value="authenticated_feed">Актуальные (authenticated feed)</option>
+        <option value="">все области</option>
+        <option value="public_jobs">публичная выдача (Freelancer)</option>
+        <option value="public_hire_pages">архив P2 (/hire)</option>
+        <option value="synthetic_fixture">fixture</option>
+      </select>
+    </label>
+    <label>Источник
+      <select id="f-source-mode">
+        <option value="live">LIVE (реальные заказы)</option>
+        <option value="">все источники</option>
+        <option value="fixture">FIXTURE (тестовые)</option>
+      </select>
+    </label>
+    <label>Статус
+      <select id="f-status">
+        <option value="">все</option>
+        <option value="NEW">NEW</option>
+        <option value="SHORTLISTED">SHORTLISTED</option>
+        <option value="SKIPPED">SKIPPED</option>
+      </select>
+    </label>
+    <label>Сортировка
+      <select id="f-order">
+        <option value="opportunity_score">opportunity score</option>
+        <option value="published_at">дата публикации</option>
+        <option value="effective_hourly_rate">эффективная ставка</option>
+      </select>
+    </label>
+    <label><input type="checkbox" id="f-rejected"> показывать rejected</label>
+    <label>Лимит <input type="number" id="f-limit" value="50" min="1" max="500" style="width:70px"></label>
+    <button id="f-refresh" class="primary">Обновить</button>
+  </div>
+
+  <table id="gig-table">
+    <thead>
+      <tr>
+        <th>Score</th><th>Title</th><th>Budget</th><th>Deliver</th>
+        <th>AI pot.</th><th>Effort</th><th>Rate/h</th><th>Comp.</th>
+        <th>Client</th><th>Pay</th><th>Risk</th><th>Status</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</main>
+
+<dialog id="gig-dialog">
+  <div id="gig-detail"></div>
+</dialog>
+
+<script>
+const $ = (sel) => document.querySelector(sel);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt = (v, suffix="") => v === null || v === undefined ? '<span class="muted">—</span>' : esc(v) + suffix;
+
+function pill(value) {
+  if (!value) return '<span class="muted">—</span>';
+  return `<span class="pill ${esc(value)}">${esc(value)}</span>`;
+}
+
+// P2 §7: live и fixture обязаны быть визуально различимы.
+function modeBadge(g) {
+  if (g.is_authenticated_feed) {
+    return '<span class="pill live">LIVE FEED</span>';
+  }
+  if (g.source_scope === "public_hire_pages") {
+    return '<span class="pill archive">ARCHIVE</span>';
+  }
+  if (g.is_live || g.source_mode === "live") {
+    return '<span class="pill live">LIVE</span>';
+  }
+  if (g.source_mode === "fixture") {
+    return '<span class="pill fixture">FIXTURE</span>';
+  }
+  return '<span class="muted">mode=unknown</span>';
+}
+
+async function api(path, opts) {
+  const resp = await fetch(path, opts);
+  if (!resp.ok) throw new Error(`${path}: HTTP ${resp.status}`);
+  return resp.json();
+}
+
+async function loadStats() {
+  try {
+    const s = await api("/api/gigs-stats");
+    const scopes = s.by_source_scope || {};
+    const scopeText = Object.keys(scopes).length
+      ? Object.entries(scopes).map(([k, v]) => `<span class="muted">${esc(k)}=${esc(v)}</span>`).join(" · ")
+      : "";
+    $("#stats").innerHTML =
+      `total <b>${s.total}</b> · accepted <b>${s.accepted}</b> · ` +
+      `rejected <b>${s.rejected}</b> · duplicates <b>${s.duplicates}</b>` +
+      (scopeText ? `<br>${scopeText}` : "");
+  } catch (e) { /* non-critical */ }
+}
+
+async function loadGigs() {
+  const params = new URLSearchParams({
+    limit: $("#f-limit").value || 50,
+    order: $("#f-order").value,
+  });
+  if ($("#f-status").value) params.set("status", $("#f-status").value);
+  if ($("#f-source-mode").value) params.set("source_mode", $("#f-source-mode").value);
+  if ($("#f-scope").value) params.set("scope", $("#f-scope").value);
+  if ($("#f-rejected").checked) params.set("include_rejected", "true");
+  const body = $("#gig-table tbody");
+  try {
+    const data = await api(`/api/gigs?${params}`);
+    $("#err").style.display = "none";
+    body.innerHTML = (data.gigs || []).map(g => `
+      <tr data-id="${esc(g.id)}">
+        <td class="score">${g.opportunity_score === null ? '<span class="muted">—</span>' : esc(Math.round(g.opportunity_score))}</td>
+        <td>${esc(g.title)}<br><span class="muted">${esc(g.source)} · ${esc(g.status)} · ${modeBadge(g)}</span>${g.source_status ? `<br><span class="muted">source status: ${esc(g.source_status)}</span>` : ""}</td>
+        <td>${fmt(g.budget)}</td>
+        <td>${pill(g.can_deliver)}</td>
+        <td>${fmt(g.ai_automation_potential)}</td>
+        <td>${g.estimated_effort_hours === null ? '<span class="muted">—</span>' : esc(g.estimated_effort_hours) + "h"}</td>
+        <td>${g.effective_hourly_rate === null ? '<span class="muted">—</span>' : esc(g.effective_hourly_rate)}</td>
+        <td>${fmt(g.competition)}</td>
+        <td>${g.client_quality === null ? '<span class="muted">—</span>' : esc(Math.round(g.client_quality))}</td>
+        <td>${pill(g.payment_readiness)}</td>
+        <td>${pill(g.risk_level === "low" ? "low-risk" : g.risk_level === "high" ? "high-risk" : g.risk_level)}</td>
+        <td>${esc(g.status)}</td>
+      </tr>`).join("") ||
+      '<tr><td colspan="12" class="muted">нет гигов — запустите: python -m ai_assistant.cli gig run</td></tr>';
+    body.querySelectorAll("tr[data-id]").forEach(row =>
+      row.addEventListener("click", () => showGig(row.dataset.id)));
+  } catch (e) {
+    const box = $("#err");
+    box.textContent = "API недоступен: " + e.message +
+      ' — запустите: .\\.venv\\Scripts\\python.exe -m uvicorn ai_assistant.gig.api:app --port 8001';
+    box.style.display = "block";
+  }
+}
+
+function breakdownTable(bd) {
+  const comp = bd.components || {}, weights = bd.weights || {}, notes = bd.notes || {};
+  const rows = Object.keys(weights).map(name => `
+    <tr>
+      <td>${esc(name)}</td>
+      <td>${esc(comp[name] ?? "—")}</td>
+      <td>x${esc(weights[name])}</td>
+      <td><div class="bar"><i style="width:${esc(Math.min(100, comp[name] || 0))}%"></i></div></td>
+      <td class="muted">${esc(notes[name] || "")}</td>
+    </tr>`).join("");
+  return `<table><thead><tr><th>Компонент</th><th>Балл</th><th>Вес</th><th></th><th>Почему</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+async function showGig(id) {
+  try {
+    const g = await api(`/api/gigs/${id}`);
+    const bd = g.score_breakdown || {};
+    const list = (items, cls) => (items || []).length
+      ? `<ul class="lists">${items.map(i => `<li class="${cls}">${esc(i)}</li>`).join("")}</ul>` : "";
+    $("#gig-detail").innerHTML = `
+      <h2>${esc(g.title)}</h2>
+      <div class="muted">${esc(g.source)}:${esc(g.id)} · ${esc(g.status)} ·
+        ${g.url ? `<a href="${esc(g.url)}" target="_blank" rel="noopener">открыть заказ ↗</a>` : "без ссылки"}</div>
+      <div class="grid">
+        <div class="kv"><div class="k">Источник</div><div>${modeBadge(g)} ${esc(g.source)}${g.source_scope ? ` <span class="muted">(${esc(g.source_scope)})</span>` : ""}</div></div>
+        <div class="kv"><div class="k">Opportunity score</div><div class="score">${esc(g.opportunity_score ?? "—")}</div></div>
+        <div class="kv"><div class="k">Budget</div><div>${esc(g.budget)} (${esc(g.budget_type)})</div></div>
+        <div class="kv"><div class="k">Can deliver</div><div>${pill(g.can_deliver)}</div></div>
+        <div class="kv"><div class="k">AI automation potential</div><div>${fmt(g.ai_automation_potential)} / 100</div></div>
+        <div class="kv"><div class="k">Estimated effort</div><div>${fmt(g.estimated_effort_hours)}h</div></div>
+        <div class="kv"><div class="k">Effective rate</div><div>${fmt(g.effective_hourly_rate)}/h</div></div>
+        <div class="kv"><div class="k">Competition</div><div>${fmt(g.competition)} откликов</div></div>
+        <div class="kv"><div class="k">Client quality</div><div>${fmt(g.client_quality)}</div></div>
+        <div class="kv"><div class="k">Payment readiness</div><div>${pill(g.payment_readiness)}</div></div>
+        <div class="kv"><div class="k">Platform payment options</div><div>${(g.platform_payment_options || []).length ? (g.platform_payment_options || []).map(esc).join(", ") : '<span class="muted">—</span>'}</div></div>
+        <div class="kv"><div class="k">First seen / last seen</div><div>${esc(g.first_seen_at ?? "—")} / ${esc(g.last_seen_at ?? "—")}</div></div>
+        <div class="kv"><div class="k">Risk</div><div>${pill(g.risk_level)}</div></div>
+      </div>
+      ${g.why_matched && g.why_matched.length ? `<b>Why matched</b>${list(g.why_matched, "plus")}` : ""}
+      ${g.why_risky && g.why_risky.length ? `<b>Why risky</b>${list(g.why_risky, "minus")}` : ""}
+      ${g.risks && g.risks.length ? `<b>Risks</b>${list(g.risks, "minus")}` : ""}
+      ${g.rejection_reasons && g.rejection_reasons.length
+        ? `<b>Rejected:</b> ${g.rejection_reasons.map(esc).join(", ")}` : ""}
+      <h3 style="font-size:13px;color:var(--muted);margin:14px 0 6px">SCORE BREAKDOWN</h3>
+      ${Object.keys(bd).length ? breakdownTable(bd) : '<span class="muted">breakdown недоступен (rejected before scoring)</span>'}
+      <div class="actions">
+        <button data-set="SHORTLISTED" class="primary">Shortlist</button>
+        <button data-set="SKIPPED">Skip</button>
+        <button data-set="NEW">Сбросить в NEW</button>
+        <button onclick="document.getElementById('gig-dialog').close()">Закрыть</button>
+      </div>`;
+    $("#gig-detail").querySelectorAll("button[data-set]").forEach(btn =>
+      btn.addEventListener("click", async () => {
+        await api(`/api/gigs/${g.id}/status`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: btn.dataset.set, note: "set via gigs UI" }),
+        });
+        $("#gig-dialog").close();
+        await Promise.all([loadStats(), loadGigs()]);
+      }));
+    $("#gig-dialog").showModal();
+  } catch (e) {
+    alert("Не удалось загрузить гиг: " + e.message);
+  }
+}
+
+$("#f-refresh").addEventListener("click", () => { loadStats(); loadGigs(); });
+["f-status", "f-order", "f-rejected", "f-source-mode", "f-scope"].forEach(id =>
+  $("#" + id).addEventListener("change", loadGigs));
+loadStats();
+loadGigs();
+</script>
+</body>
+</html>

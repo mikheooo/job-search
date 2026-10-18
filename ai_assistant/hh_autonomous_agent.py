@@ -1193,7 +1193,9 @@ class AutonomousJobAgent:
         app_record["reason"] = "Prepared for autonomous submission (READY_TO_SUBMIT)"
         return app_record
 
-    def _process_messages(self, convs: list[Any] | None = None) -> dict[str, Any]:
+    def _process_messages(
+        self, convs: list[Any] | None = None, _eval_fn: Any | None = None
+    ) -> dict[str, Any]:
         """Watch and process incoming dialogs, detecting interviews and auto-replying.
 
         T7.29 §4: every return carries an explicit outcome, because a bare
@@ -1202,6 +1204,11 @@ class AutonomousJobAgent:
         was never verified". ``messages_check_status`` is one of CHECKED /
         SKIPPED / BLOCKED / ERROR, with the reason and the time of the check
         beside it, and it travels into both the report and the stored cycle row.
+
+        ``_eval_fn`` is the re-entry seam T7.25 needs: the outer call opens an
+        owning ``hh_operation``, starts the browser inside it and calls itself
+        again with the transport set, so the whole dialog pass - not just the
+        launch - runs inside the operation that has to release the browser.
         """
         # The "is this a messages surface" rule already lives in one place;
         # importing it keeps a second copy from drifting away from the first.
@@ -1232,24 +1239,49 @@ class AutonomousJobAgent:
             return _stop(MSG_CHECK_SKIPPED, "SEARCH_ONLY mode does not process correspondence")
 
         # 2. Transport. No transport is an ERROR with a reason, never a silent 0.
-        eval_fn = self.config.evaluate_fn
+        eval_fn = _eval_fn if _eval_fn is not None else self.config.evaluate_fn
         if eval_fn is None:
             try:
                 from .prefill_execute import make_cdp_evaluate
                 eval_fn = make_cdp_evaluate(self.config.cdp_url, "hh.ru")
             except Exception as exc:
-                if self.config.auto_start_browser:
-                    try:
-                        from .hh_browser_launcher import ensure_hh_browser, DEFAULT_HH_URL
-                        b_res = ensure_hh_browser(cdp_url=self.config.cdp_url, open_url=DEFAULT_HH_URL, auto_start=True)
-                        if not b_res.get("ok"):
-                            return _stop(MSG_CHECK_ERROR, f"no browser transport: {exc} (auto-start failed: {b_res.get('error')})")
-                        from .prefill_execute import make_cdp_evaluate
-                        eval_fn = make_cdp_evaluate(b_res.get("cdp_url") or self.config.cdp_url, "hh.ru")
-                    except Exception as exc2:
-                        return _stop(MSG_CHECK_ERROR, f"no browser transport: {exc} (auto-start failed: {type(exc2).__name__}: {exc2})")
-                else:
+                if not self.config.auto_start_browser:
                     return _stop(MSG_CHECK_ERROR, f"no browser transport: {type(exc).__name__}: {exc}")
+                # T7.25: the browser is started by an owning operation, and the
+                # whole dialog pass runs inside it, so a check that raises still
+                # gives the browser back. The re-entrant call below sees
+                # ``_eval_fn`` set and starts nothing of its own.
+                from . import hh_browser_lease as _lease
+                from .hh_browser_launcher import DEFAULT_HH_URL
+                try:
+                    with _lease.hh_operation(
+                        _lease.OWNER_AUTONOMOUS,
+                        purpose="messages",
+                        session_kwargs={"require_auth": False},
+                    ) as op:
+                        started = op["session"].start()
+                        if not started.get("ok"):
+                            return _stop(
+                                MSG_CHECK_ERROR,
+                                f"no browser transport: {exc} (auto-start failed: "
+                                f"{started.get('status')} {started.get('message') or ''})".strip(),
+                            )
+                        # ensure_hh_browser() used to open the HH page as part of
+                        # "ensure a browser"; ownership moved, the page did not.
+                        try:
+                            op["session"].open_hh_page(DEFAULT_HH_URL)
+                        except Exception as e:  # noqa: BLE001 - the page is best-effort
+                            logger.debug("Could not open the HH page: %s", e)
+                        return self._process_messages(
+                            convs,
+                            _eval_fn=make_cdp_evaluate(op["session"].cdp_url, "hh.ru"),
+                        )
+                except Exception as exc2:
+                    return _stop(
+                        MSG_CHECK_ERROR,
+                        f"no browser transport: {exc} (auto-start failed: "
+                        f"{type(exc2).__name__}: {exc2})",
+                    )
         if not eval_fn:
             return _stop(MSG_CHECK_ERROR, "no browser transport: no evaluate function available")
 

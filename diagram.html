@@ -1,0 +1,955 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>job-search — архитектура и потоки данных</title>
+<style>
+  :root{
+    --bg:#0b0f14;
+    --panel:#111823;
+    --panel-2:#0e141c;
+    --border:#1e2a38;
+    --text:#dbe4ee;
+    --muted:#8b9bb0;
+    --accent:#5aa9ff;
+    --accent-2:#3ddc97;
+    --warn:#ffb454;
+    --radius:14px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:
+      radial-gradient(1100px 600px at 12% -10%, #14243a 0%, transparent 60%),
+      radial-gradient(900px 500px at 95% 0%, #142a25 0%, transparent 55%),
+      var(--bg);
+    color:var(--text);
+    font-family:"Segoe UI",Roboto,-apple-system,"Helvetica Neue",Arial,sans-serif;
+    line-height:1.55;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:1500px;margin:0 auto;padding:34px 26px 90px}
+
+  header.hero{
+    border:1px solid var(--border);
+    background:linear-gradient(160deg,#121c29 0%,#0d141d 100%);
+    border-radius:20px;
+    padding:28px 30px;
+    margin-bottom:26px;
+    box-shadow:0 18px 50px rgba(0,0,0,.35);
+  }
+  .kicker{
+    font-size:12px;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--accent-2);font-weight:600;margin-bottom:8px;
+  }
+  h1{margin:0 0 10px;font-size:30px;letter-spacing:-.3px}
+  .lede{margin:0;color:var(--muted);max-width:1000px;font-size:15px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+  .chip{
+    font-size:12.5px;padding:5px 11px;border-radius:999px;
+    border:1px solid #26364a;background:#0f1a26;color:#b9c8da;
+  }
+  .chip b{color:#e9f1fa;font-weight:600}
+
+  nav.toc{
+    display:flex;flex-wrap:wrap;gap:8px;margin:0 0 26px;
+  }
+  nav.toc a{
+    font-size:13px;padding:7px 13px;border-radius:10px;
+    border:1px solid var(--border);background:var(--panel);
+    color:#b8c7d8;
+  }
+  nav.toc a:hover{border-color:#33506f;color:#fff;text-decoration:none}
+
+  h2.section{
+    font-size:20px;margin:38px 0 14px;padding-left:12px;
+    border-left:3px solid var(--accent);letter-spacing:-.2px;
+  }
+  .sub{color:var(--muted);font-size:14px;margin:-6px 0 16px;padding-left:15px}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:14px}
+  .card{
+    background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+    padding:16px 18px;
+  }
+  .card h3{margin:0 0 6px;font-size:14.5px;color:#e8f0fa}
+  .card p{margin:0;font-size:13px;color:var(--muted);overflow-wrap:anywhere}
+  .card code{overflow-wrap:anywhere;word-break:break-word}
+  .card code,code{
+    font-family:"Cascadia Code",Consolas,"SF Mono",monospace;
+    font-size:12.5px;background:#0a121b;border:1px solid #1c2836;
+    padding:1px 6px;border-radius:6px;color:#9fd2ff;
+  }
+  .tag{
+    display:inline-block;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
+    padding:2px 8px;border-radius:999px;margin-bottom:8px;font-weight:700;
+  }
+  .tag.ok{background:#0f2f24;color:#54e0a8;border:1px solid #1c5b45}
+  .tag.warn{background:#33240c;color:#ffbe66;border:1px solid #5d431a}
+  .tag.dead{background:#331418;color:#ff8b93;border:1px solid #5c2028}
+
+  .flow{
+    border:1px solid var(--border);border-radius:var(--radius);
+    background:var(--panel-2);margin-bottom:22px;overflow:hidden;
+  }
+  .flow-head{
+    display:flex;align-items:center;justify-content:space-between;gap:14px;
+    padding:13px 16px;border-bottom:1px solid var(--border);
+    background:linear-gradient(180deg,#131d29,#0f1722);
+  }
+  .flow-head .t{font-size:15px;font-weight:600}
+  .flow-head .d{font-size:12.5px;color:var(--muted);margin-top:2px}
+  .controls{display:flex;gap:6px;flex:none}
+  .controls button{
+    width:32px;height:32px;border-radius:9px;cursor:pointer;
+    background:#16212e;color:#cfe0f2;border:1px solid #26384c;
+    font-size:15px;line-height:1;transition:.15s;
+  }
+  .controls button:hover{background:#1d2c3d;border-color:#3a5574;color:#fff}
+  .controls .reset{width:auto;padding:0 10px;font-size:12px}
+
+  .viewport{
+    position:relative;height:min(78vh,880px);overflow:auto;
+    background:
+      linear-gradient(90deg,#0c1219 1px,transparent 1px) 0 0/26px 26px,
+      linear-gradient(#0c1219 1px,transparent 1px) 0 0/26px 26px,
+      #0a1017;
+    cursor:grab;
+  }
+  .viewport.dragging{cursor:grabbing;user-select:none}
+  .stage{
+    position:relative;display:inline-block;min-width:100%;
+    padding:18px;vertical-align:top;
+  }
+  .stage svg{max-width:none!important;height:auto!important;display:block}
+  .err{padding:20px;color:#ff9aa2;font-family:Consolas,monospace;font-size:13px;white-space:pre-wrap}
+
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:6px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid #17222f;vertical-align:top}
+  th{color:#9fb2c7;font-weight:600;font-size:12px;letter-spacing:.06em;text-transform:uppercase}
+  td code{white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+
+  .callout{
+    border:1px solid #4a3416;background:#1b1408;border-radius:12px;
+    padding:14px 16px;font-size:13.5px;color:#e8cf9e;margin-top:14px;
+  }
+  .callout b{color:#ffc36b}
+  footer{margin-top:50px;color:#5f738a;font-size:12.5px;border-top:1px solid var(--border);padding-top:16px}
+  #loaderr{display:none;border:1px solid #5c2028;background:#1d0f12;color:#ffb3b9;
+    padding:16px 18px;border-radius:12px;margin-bottom:18px;font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="kicker">Архитектура · сгенерировано 18.10.2026</div>
+    <h1>job-search — конвейер вакансий и откликов</h1>
+    <p class="lede">
+      Персональная система: сбор удалённых вакансий и гигов, нормализация и дедупликация,
+      скоринг по профилю кандидата, подготовка пакета отклика, жизненный цикл в SQLite
+      и доставка дайджеста в Telegram. Внешние действия закрыты предохранителями:
+      REVIEW по умолчанию, AUTO только по явному kill-switch, факты не выдумываются.
+    </p>
+    <div class="chips">
+      <span class="chip"><b>Python</b> 3.11</span>
+      <span class="chip"><b>SQLite</b> WAL · state.db</span>
+      <span class="chip"><b>Playwright</b> + raw CDP</span>
+      <span class="chip"><b>OpenAI</b>-совместимый LLM + fallback</span>
+      <span class="chip"><b>FastAPI</b> · дашборд</span>
+      <span class="chip"><b>Windows</b> Task Scheduler</span>
+      <span class="chip"><b>Telegram</b> Bot API</span>
+    </div>
+  </header>
+
+  <div id="loaderr">
+    Не удалось загрузить Mermaid.js с CDN. Проверьте доступ в сеть и перезагрузите страницу —
+    текстовая версия диаграмм лежит в <code>ARCHITECTURE.md</code>.
+  </div>
+
+  <nav class="toc">
+    <a href="#modules">Модули</a>
+    <a href="#stores">Хранилища</a>
+    <a href="#schedule">Расписание</a>
+    <a href="#flow-a">A · Дайджест</a>
+    <a href="#flow-b">B · HH Autopilot</a>
+    <a href="#flow-c">C · Realtime</a>
+    <a href="#flow-d">D · Feedback</a>
+    <a href="#flow-e">E · Ручной CLI</a>
+    <a href="#flow-f">F · Мультисбор</a>
+    <a href="#flow-g">G · Гиги</a>
+    <a href="#risks">Расхождения</a>
+  </nav>
+
+  <h2 class="section" id="modules">Карта модулей</h2>
+  <p class="sub">Один канонический конвейер и несколько независимых точек входа.</p>
+  <div class="grid">
+    <div class="card">
+      <h3>Сбор</h3>
+      <p><code>adapters/*</code> — Himalayas, RemoteOK, WeWorkRemotely, Habr Career.
+      <code>run_multi_source_discovery.py</code> — Hirify, GeekJob, Bangkok ATS, LinkedIn, Telegram-каналы.</p>
+    </div>
+    <div class="card">
+      <h3>Нормализация и дедуп</h3>
+      <p><code>normalizer.py</code> приводит к схеме <code>Vacancy</code>,
+      <code>vacancy_identity.py</code> считает канонический ID и алиасы.</p>
+    </div>
+    <div class="card">
+      <h3>Фильтры</h3>
+      <p><code>eligibility.py</code> — гео и remote-допустимость,
+      <code>remote_filter.py</code> — строгое «100% remote»,
+      <code>prefilter.py</code> — стоп-слова и зарплатный порог.</p>
+    </div>
+    <div class="card">
+      <h3>Скоринг</h3>
+      <p><code>matcher.py</code> — жёсткие ограничения, взвешенный скор,
+      <code>decision_class</code> и <code>role_priority</code>.
+      <code>job_analyzer.py</code> — LLM-анализ с offline-fallback.</p>
+    </div>
+    <div class="card">
+      <h3>Пакет отклика</h3>
+      <p><code>application_prep.py</code> — резюме и письмо,
+      <code>application_qa.py</code> — truth-only ответы,
+      <code>application_queue.py</code> — приоритеты.</p>
+    </div>
+    <div class="card">
+      <h3>Браузер и отправка</h3>
+      <p><code>hh_extractor.py</code>, <code>prefill_plan.py</code>,
+      <code>prefill_execute.py</code> — React-safe заполнение.
+      <code>hh_submission.py</code> — 11 гейтов и один клик.</p>
+    </div>
+    <div class="card">
+      <h3>HH-автономность</h3>
+      <p><code>hh_autopilot.py</code> — цикл откликов,
+      <code>hh_autonomous_agent.py</code> — сообщения и интервью,
+      <code>hh_message_reply.py</code> — read-only чтение диалогов.</p>
+    </div>
+    <div class="card">
+      <h3>Доставка</h3>
+      <p><code>cli.py</code> — <code>export_digest_cmd</code>,
+      <code>integrations/hermes/job_search_fetcher.py</code> — канонический диспетчер,
+      <code>telegram_notifier.py</code> — клавиатура <code>fb:*</code>.</p>
+    </div>
+    <div class="card">
+      <h3>Обратная связь</h3>
+      <p><code>telegram_feedback.py</code> — владелец, идемпотентность, provenance,
+      <code>telegram_control_bot.py</code> — пульт <code>@jobsassistbot</code>.</p>
+    </div>
+    <div class="card">
+      <h3>Эксплуатация</h3>
+      <p><code>runner.py</code> — лок, ротация логов, circuit breaker, маскировка секретов,
+      <code>application_integrity.py</code> — аудит целостности.</p>
+    </div>
+  </div>
+
+  <h2 class="section" id="stores">Хранилища</h2>
+  <p class="sub">Единственный источник правды — <code>state.db</code>.</p>
+  <div class="card">
+    <table>
+      <tr><th>Группа</th><th>Таблицы</th></tr>
+      <tr><td>Вакансии</td><td><code>vacancies</code>, <code>canonical_vacancies</code>, <code>vacancy_aliases</code>, <code>vacancy_eligibility</code></td></tr>
+      <tr><td>Оценка</td><td><code>deep_analysis</code>, <code>application_packages</code>, <code>application_queue</code>, <code>application_reviews</code></td></tr>
+      <tr><td>Жизненный цикл</td><td><code>application_tracking</code>, <code>application_status_history</code>, <code>hh_applications</code>, <code>hh_application_transitions</code></td></tr>
+      <tr><td>Отправка</td><td><code>application_submissions</code>, <code>submission_verifications</code>, <code>submission_claims</code></td></tr>
+      <tr><td>Коммуникации</td><td><code>hh_message_events</code>, <code>hh_questionnaires</code>, <code>autonomous_notifications</code>, <code>interview_events</code></td></tr>
+      <tr><td>Telegram</td><td><code>telegram_delivery_records</code>, <code>telegram_feedback_records</code></td></tr>
+    </table>
+  </div>
+
+  <h2 class="section" id="schedule">Расписание</h2>
+  <p class="sub">Шесть независимых триггеров, каждый со своим локом.</p>
+  <div class="card">
+    <table>
+      <tr><th>Задача</th><th>Период</th><th>Вход</th><th>Результат</th></tr>
+      <tr><td><code>JobSearch_Daily_Digest</code></td><td>10:00 ежедневно</td><td><code>run_job_search_production.ps1</code></td><td>дайджест в @remotejobd</td></tr>
+      <tr><td><code>JobSearch_HH_Autopilot</code></td><td>4 часа</td><td><code>run_hh_autopilot_cycle.py</code></td><td>отклики и алерты</td></tr>
+      <tr><td><code>JobSearch_HH_Realtime</code></td><td>30 секунд</td><td><code>run_hh_realtime_daemon.py</code></td><td>автоответы</td></tr>
+      <tr><td><code>JobSearch_MultiSource</code></td><td>2 часа</td><td><code>run_multi_source_discovery.py</code></td><td>пополнение базы</td></tr>
+      <tr><td><code>JobSearch_Telegram_Bot</code></td><td>long-polling</td><td><code>telegram_control_bot.py</code></td><td>пульт управления</td></tr>
+      <tr><td><code>JobSearch_Gig_Autopilot</code></td><td>2 часа</td><td><code>run_gig_autopilot_cycle.py</code></td><td>карточки заказов (не работает)</td></tr>
+    </table>
+  </div>
+
+  <h2 class="section">Потоки данных</h2>
+  <p class="sub">Колесо мыши прокручивает схему, Ctrl + колесо зумит, перетаскивание панорамирует, кнопка ⤢ вписывает по ширине.</p>
+
+  <div class="flow" id="flow-a">
+    <div class="flow-head">
+      <div>
+        <div class="t">A · Ежедневный производственный дайджест</div>
+        <div class="d">Task Scheduler → runner → fetcher → watcher → matcher → state.db → Telegram</div>
+      </div>
+      <div class="controls">
+        <button data-act="out" title="Уменьшить">−</button>
+        <button data-act="in" title="Увеличить">+</button>
+        <button data-act="fit" class="reset" title="Вписать по ширине">⤢</button>
+        <button data-act="reset" class="reset" title="Сбросить">100%</button>
+      </div>
+    </div>
+    <div class="viewport"><div class="stage" data-diagram="a"></div></div>
+  </div>
+
+  <div class="flow" id="flow-b">
+    <div class="flow-head">
+      <div>
+        <div class="t">B · HH Autopilot: поиск, скрининг, отклик</div>
+        <div class="d">Подъём резюме → поиск через CDP → бриф формы → гейты → клик → сверка</div>
+      </div>
+      <div class="controls">
+        <button data-act="out" title="Уменьшить">−</button>
+        <button data-act="in" title="Увеличить">+</button>
+        <button data-act="fit" class="reset" title="Вписать по ширине">⤢</button>
+        <button data-act="reset" class="reset" title="Сбросить">100%</button>
+      </div>
+    </div>
+    <div class="viewport"><div class="stage" data-diagram="b"></div></div>
+  </div>
+
+  <div class="flow" id="flow-c">
+    <div class="flow-head">
+      <div>
+        <div class="t">C · Realtime-демон сообщений HH</div>
+        <div class="d">Цикл 30 секунд: диалоги → классификация → truth-only черновик → отправка по флагу</div>
+      </div>
+      <div class="controls">
+        <button data-act="out" title="Уменьшить">−</button>
+        <button data-act="in" title="Увеличить">+</button>
+        <button data-act="fit" class="reset" title="Вписать по ширине">⤢</button>
+        <button data-act="reset" class="reset" title="Сбросить">100%</button>
+      </div>
+    </div>
+    <div class="viewport"><div class="stage" data-diagram="c"></div></div>
+  </div>
+
+  <div class="flow" id="flow-d">
+    <div class="flow-head">
+      <div>
+        <div class="t">D · Обратная связь из Telegram-дайджеста</div>
+        <div class="d">Кнопки fb:* → проверка владельца и provenance → переходы статусов</div>
+      </div>
+      <div class="controls">
+        <button data-act="out" title="Уменьшить">−</button>
+        <button data-act="in" title="Увеличить">+</button>
+        <button data-act="fit" class="reset" title="Вписать по ширине">⤢</button>
+        <button data-act="reset" class="reset" title="Сбросить">100%</button>
+      </div>
+    </div>
+    <div class="viewport"><div class="stage" data-diagram="d"></div></div>
+  </div>
+
+  <div class="flow" id="flow-e">
+    <div class="flow-head">
+      <div>
+        <div class="t">E · Ручной human-in-the-loop через CLI</div>
+        <div class="d">collect → analyze → prepare → review → browser → submit с 11 гейтами → verify</div>
+      </div>
+      <div class="controls">
+        <button data-act="out" title="Уменьшить">−</button>
+        <button data-act="in" title="Увеличить">+</button>
+        <button data-act="fit" class="reset" title="Вписать по ширине">⤢</button>
+        <button data-act="reset" class="reset" title="Сбросить">100%</button>
+      </div>
+    </div>
+    <div class="viewport"><div class="stage" data-diagram="e"></div></div>
+  </div>
+
+  <div class="flow" id="flow-f">
+    <div class="flow-head">
+      <div>
+        <div class="t">F · Мультиисточниковый сбор</div>
+        <div class="d">Каждые 2 часа: шесть источников → фильтры → state.db → сводка в канал</div>
+      </div>
+      <div class="controls">
+        <button data-act="out" title="Уменьшить">−</button>
+        <button data-act="in" title="Увеличить">+</button>
+        <button data-act="fit" class="reset" title="Вписать по ширине">⤢</button>
+        <button data-act="reset" class="reset" title="Сбросить">100%</button>
+      </div>
+    </div>
+    <div class="viewport"><div class="stage" data-diagram="f"></div></div>
+  </div>
+
+  <div class="flow" id="flow-g">
+    <div class="flow-head">
+      <div>
+        <div class="t">G · Гиг-автопилот — деградировавший поток</div>
+        <div class="d">Код и тесты есть, пакет ai_assistant/gig отсутствует</div>
+      </div>
+      <div class="controls">
+        <button data-act="out" title="Уменьшить">−</button>
+        <button data-act="in" title="Увеличить">+</button>
+        <button data-act="fit" class="reset" title="Вписать по ширине">⤢</button>
+        <button data-act="reset" class="reset" title="Сбросить">100%</button>
+      </div>
+    </div>
+    <div class="viewport"><div class="stage" data-diagram="g"></div></div>
+  </div>
+
+  <h2 class="section" id="risks">Наблюдения и расхождения</h2>
+  <p class="sub">Что важно знать перед тем, как доверять схеме.</p>
+
+  <div class="grid">
+    <div class="card">
+      <span class="tag warn">расхождение</span>
+      <h3>Документация vs код отправки</h3>
+      <p>README и <code>PROJECT_STATE.md</code> обещают prepare-only и
+      <code>--confirm-submit</code>. Фактически <code>hh_autopilot.submit_vacancy()</code>
+      сам ставит <code>SUBMIT_ALLOWED=true</code> и кликает отправку, а в
+      <code>preflight.json</code> пишет <code>auto_submit_authorized: true</code>.</p>
+    </div>
+    <div class="card">
+      <span class="tag dead">сломано</span>
+      <h3>Отсутствующие модули</h3>
+      <p><code>hh_readonly_operation.py</code> и <code>hh_browser_lease.py</code> не найдены
+      ни на диске, ни в git. Их импортируют автопилот и его раннер, поэтому поиск
+      вакансий падает в <code>{"status": "ERROR"}</code>.</p>
+    </div>
+    <div class="card">
+      <span class="tag warn">риск</span>
+      <h3>Два планировщика на один fetcher</h3>
+      <p>Задача Windows и Hermes cron приходят в один файл. Спасает только отдельный
+      <code>job_search_fetcher.lock</code>, иначе ловится <code>database is locked</code>.</p>
+    </div>
+    <div class="card">
+      <span class="tag warn">риск</span>
+      <h3>Дублирование отправки</h3>
+      <p><code>run_multi_source_discovery.py</code> и <code>hh_autopilot.py</code> шлют в
+      Telegram напрямую через <code>urllib</code>, минуя <code>TelegramNotifier</code>:
+      общей идемпотентности и ретрай-политики у них нет.</p>
+    </div>
+    <div class="card">
+      <span class="tag ok">инвариант</span>
+      <h3>Fail-closed</h3>
+      <p>Неопределённый исход не повторяется: дайджест уходит в <code>AMBIGUOUS</code>,
+      отклик — в <code>SUBMISSION_UNKNOWN</code>. Разбор только вручную.</p>
+    </div>
+    <div class="card">
+      <span class="tag ok">инвариант</span>
+      <h3>Truth-only</h3>
+      <p>Нет подтверждённого факта — нет ответа. Вопрос уходит в
+      <code>HUMAN_REVIEW</code>, а не в догадку.</p>
+    </div>
+  </div>
+
+  <footer>
+    Источник: локальный анализ кода job-search, ветка <code>chore-ruff-cleanup</code>,
+    коммит <code>d1cb64b</code>. Полный текст с диаграммами — <code>ARCHITECTURE.md</code>.
+  </footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+const DIAGRAMS = {
+a: `sequenceDiagram
+    autonumber
+    participant SCH as Планировщик<br/>10:00 ежедневно
+    participant PS as run_job_search_production.ps1
+    participant CLI as ai_assistant.cli<br/>production-run
+    participant RUN as runner.py<br/>run_production_pipeline
+    participant F as job_search_fetcher.py<br/>канонический fetcher
+    participant W as watcher.py<br/>Watcher
+    participant ADP as Адаптеры<br/>Himalayas, RemoteOK, WWR, Habr
+    participant NET as Внешние сайты и RSS
+    participant DB as state.db<br/>SQLite WAL
+    participant M as matcher.py<br/>JobMatcher
+    participant LLM as LLM API<br/>OpenAI-совместимый
+    participant TG as Telegram Bot API
+    participant CH as Канал @remotejobd
+
+    rect rgba(32, 56, 96, 0.45)
+    Note over SCH,CH: Блок 1 — запуск, блокировки, предохранители
+    SCH->>PS: срабатывание триггера
+    PS->>CLI: .venv python -m ai_assistant.cli production-run
+    CLI->>RUN: run_production_pipeline(dry_run)
+    RUN->>RUN: ротация job_search_production.log
+    RUN->>RUN: SingleInstanceLock job_search.lock
+    RUN->>RUN: чтение failure_tracker.json
+    alt circuit открыт и это не dry-run
+        RUN-->>CLI: exit 5 PRODUCTION_CIRCUIT_OPEN
+        CLI-->>SCH: код возврата 5, доставки нет
+    else circuit закрыт
+        RUN->>F: subprocess python job_search_fetcher.py
+    end
+    end
+
+    rect rgba(28, 74, 58, 0.45)
+    Note over F,LLM: Блок 2 — сбор, нормализация, скоринг
+    F->>F: SingleInstanceLock job_search_fetcher.lock
+    F->>W: poll_once(iteration=1, dry_run)
+    W->>ADP: fetch_vacancies()
+    ADP->>NET: HTTP и RSS запросы
+    NET-->>ADP: сырые вакансии
+    ADP-->>W: список Vacancy
+    W->>W: normalize_vacancy и normalize_url
+    W->>DB: save_vacancy INSERT / UPDATED / UNCHANGED
+    W->>DB: vacancy_eligibility, application_tracking
+    W->>M: match(vacancy)
+    M-->>W: score, decision, decision_class, role_priority
+    W->>LLM: analyze_job_deep, промпт с профилем
+    LLM-->>W: DeepAnalysisResult
+    Note over W,LLM: при сбое LLM — детерминированный fallback без выдуманных фактов
+    W->>DB: deep_analysis, application_packages, application_queue
+    W->>DB: application_reviews со статусом PENDING_REVIEW
+    end
+
+    rect rgba(84, 60, 30, 0.45)
+    Note over F,CH: Блок 3 — отбор дайджеста и идемпотентная доставка
+    F->>DB: score_unscored_vacancies заполняет match_score
+    F->>CLI: export_digest_cmd(limit=5, min_score=60)
+    CLI->>DB: list_undigested_vacancies
+    CLI->>CLI: is_genuine_production_vacancy, отсев dryrun/test/mock
+    CLI->>M: match по каждому кандидату
+    CLI->>CLI: сортировка decision_class, role_priority, score, свежесть
+    CLI->>CLI: diversity max 2 на компанию, max 4 на role family
+    CLI-->>F: JSON telegram_post, new_vacancies_data, reply_markup
+    F->>DB: record_digest_attempt, статус ATTEMPTING, batch_key
+    F->>TG: sendMessage Markdown + inline keyboard fb:*
+    alt HTTP 200
+        TG->>CH: публикация дайджеста
+        TG-->>F: message_id
+        F->>DB: mark_digest_delivered, статус DELIVERED
+    else подтверждённая ошибка
+        F->>DB: record_digest_failed, статус FAILED, повтора нет
+    else таймаут или неопределённый ответ
+        F->>DB: record_digest_ambiguous, статус AMBIGUOUS, повтора нет
+    end
+    F-->>RUN: код возврата
+    RUN->>RUN: extract_adapter_failures, record_success или record_failure
+    RUN-->>CLI: 0 healthy, 4 сбой адаптера, 5 circuit, 99 crash
+    RUN->>RUN: release lock
+    end`,
+
+b: `sequenceDiagram
+    autonumber
+    participant SCH as Планировщик<br/>каждые 4 часа
+    participant R as run_hh_autopilot_cycle.py
+    participant BUMP as hh_resume_bumper
+    participant AP as hh_autopilot.py<br/>run_autopilot_cycle
+    participant RO as hh_readonly_operation<br/>поиск через CDP
+    participant BR as HeadlessBrowserSession<br/>Playwright CDP
+    participant HH as hh.ru
+    participant T7 as tools/.t722_send.py
+    participant QA as application_qa<br/>hh_extractor, prefill_plan
+    participant CL as smart_experience_generator
+    participant DB as state.db
+    participant TG as @jobsassistbot
+
+    rect rgba(32, 56, 96, 0.45)
+    Note over SCH,RO: Блок 1 — подъём резюме и поиск вакансий
+    SCH->>R: срабатывание триггера
+    R->>R: acquire_lock logs/autopilot.lock
+    R->>BUMP: bump_hh_resumes()
+    BUMP->>HH: поднятие резюме в выдаче
+    R->>AP: run_autopilot_cycle(max_submits=8, read_limit=45)
+    AP->>DB: get_known_vacancy_ids, отсев уже обработанных
+    AP->>RO: search_operation_report(8 запросов, remote)
+    RO->>BR: аренда браузера и вкладки
+    BR->>HH: поиск и чтение карточек
+    HH-->>RO: карточки и preflight-данные
+    RO-->>AP: raw_report со списком вакансий
+    end
+
+    rect rgba(70, 44, 84, 0.45)
+    Note over AP,TG: Блок 2 — поочерёдный отсев каждой вакансии
+    loop по каждой найденной вакансии
+        AP->>AP: check_salary_floor, минимум 100 000 RUB
+        AP->>T7: brief_vacancy(vid), чтение формы
+        T7->>HH: открыть страницу вакансии
+        HH-->>T7: DOM формы и applicant state
+        alt обнаружен тест работодателя
+            AP->>TG: алерт «требуется тест», вакансия пропущена
+        else обнаружена скрининг-анкета
+            AP->>CL: generate_tailored_letter
+            AP->>QA: build_questions_from_controls
+            QA->>QA: QuestionAnswerGenerator по профилю и candidate_kb
+            alt все ответы подтверждены фактами
+                QA-->>AP: prefill_plan со статусом VALID
+            else есть неподтверждённые вопросы
+                QA-->>AP: REQUIRES_REVIEW
+                AP->>TG: алерт «анкета требует внимания»
+            end
+        end
+        AP->>AP: is_vacancy_eligible_for_auto_apply, проверка 8 условий
+    end
+    end
+
+    rect rgba(30, 78, 66, 0.45)
+    Note over AP,TG: Блок 3 — отклик, сверка, уведомление
+    AP->>AP: select_best_resume_for_vacancy
+    AP->>CL: сопроводительное письмо под вакансию
+    AP->>AP: preflight.json, SUBMIT_ALLOWED=true на время клика
+    AP->>T7: run_submit(vid, resume, letter, prefill_plan)
+    T7->>BR: React-safe заполнение полей
+    BR->>HH: ввод значений без навигации на vacancy_response
+    T7->>HH: ровно один клик «Отправить»
+    HH-->>T7: подтверждение в DOM
+    T7-->>AP: verdict CLICKED, clicked=1
+    AP->>DB: reconcile и application_tracking
+    AP->>TG: алерт «автопилот отправил отклик»
+    AP->>HH: scan_hh_negotiations, проверка переговоров
+    AP-->>R: сводка цикла
+    R->>R: release_lock
+    end`,
+
+c: `sequenceDiagram
+    autonumber
+    participant SCH as Планировщик<br/>каждый час, keep-alive
+    participant D as run_hh_realtime_daemon.py
+    participant L as logs/autopilot.lock
+    participant BR as HeadlessBrowserSession<br/>require_auth=true
+    participant HH as hh.ru/chat
+    participant AG as hh_autonomous_agent<br/>AutonomousJobAgent
+    participant MR as hh_message_reply<br/>read-only
+    participant KB as candidate_kb.json
+    participant DB as state.db
+    participant TG as @jobsassistbot
+
+    SCH->>D: запуск процесса
+    D->>D: acquire_daemon_lock, PID-проверка
+    loop каждые 30 секунд
+        D->>L: проверка активного автопилота
+        alt автопилот держит lock
+            D->>BR: остановить сессию и уступить браузер
+        else автопилот не активен
+            D->>BR: старт или переиспользование сессии
+            BR->>HH: открыть hh.ru/chat
+            D->>AG: _process_messages()
+            AG->>MR: fetch_hh_conversations_list_readonly
+            MR->>HH: чтение списка диалогов
+            HH-->>MR: диалоги и последние сообщения
+            MR-->>AG: HHDialog и HHMessage
+            AG->>AG: classify_hh_conversation_detailed
+            alt NEEDS_REPLY и факт подтверждён
+                AG->>KB: поиск подтверждённых фактов
+                AG->>AG: генерация черновика без выдумывания
+                alt HH_AUTONOMOUS_REPLY_ENABLED=true
+                    AG->>HH: ввод текста и клик отправки
+                else флаг выключен
+                    AG->>DB: сохранить только черновик
+                end
+            else HUMAN_REVIEW
+                AG->>TG: уведомление владельцу
+            else INTERVIEW_INVITATION
+                AG->>TG: HIGH-приоритет, приглашение на интервью
+            end
+            AG->>DB: hh_message_events, autonomous_notifications
+        end
+        opt раз в 10 минут
+            D->>HH: scan_hh_negotiations
+            D->>TG: алерты по новым карточкам переговоров
+        end
+    end`,
+
+d: `sequenceDiagram
+    autonumber
+    participant U as Пользователь<br/>владелец 392046103
+    participant TG as Telegram<br/>клиент и Bot API
+    participant GW as Hermes Gateway<br/>или telegram_control_bot
+    participant FP as telegram_feedback<br/>TelegramFeedbackProcessor
+    participant DB as state.db
+    participant RV as application_reviews
+    participant TR as application_tracking
+    participant Q as application_queue
+
+    U->>TG: нажатие кнопки под вакансией
+    Note over TG: callback_data вида fb:INT:hh:136551280<br/>или fb:RSN:act:reason:hash
+    TG->>GW: callback_query через getUpdates
+    GW->>FP: process_callback_query(callback_query)
+    FP->>FP: проверка from.id == TELEGRAM_OWNER_ID
+    alt не владелец
+        FP-->>GW: отказ, доступ запрещён
+    else владелец
+        FP->>DB: проверка callback_query_id на повтор
+        alt повторное нажатие
+            FP-->>GW: idempotent no-op
+        else новое нажатие
+            FP->>DB: декодирование hash и поиск вакансии
+            FP->>DB: is_genuine_production_vacancy
+            FP->>DB: проверка DELIVERED в telegram_delivery_records
+            FP->>DB: проверка терминального статуса
+            alt проверки не пройдены
+                FP-->>GW: fail-closed с пояснением
+            else проверки пройдены
+                FP->>RV: INTERESTED или REJECTED или APPROVED
+                FP->>TR: ANALYZED или READY_TO_APPLY или WITHDRAWN
+                FP->>Q: постановка в очередь при «Отклик»
+                FP->>DB: запись в telegram_feedback_records
+                FP-->>GW: успех
+            end
+        end
+    end
+    GW->>TG: answerCallbackQuery с коротким тостом
+    TG-->>U: подтверждение действия`,
+
+e: `sequenceDiagram
+    autonumber
+    participant U as Пользователь
+    participant CLI as ai_assistant.cli
+    participant ADP as Адаптеры
+    participant DB as state.db
+    participant M as JobMatcher
+    participant BR as browser_executor<br/>read-only
+    participant HH as hh.ru
+    participant G as HHSubmissionGates<br/>11 гейтов
+    participant V as submission_verifier
+
+    U->>CLI: collect habrcareer himalayas
+    CLI->>ADP: fetch_vacancies()
+    ADP-->>CLI: вакансии
+    CLI->>DB: save_vacancy
+    U->>CLI: analyze и analyze-deep
+    CLI->>M: match и LLM-анализ
+    M-->>CLI: score и decision
+    CLI->>DB: deep_analysis
+    U->>CLI: prepare-applications
+    CLI->>DB: application_packages, application_queue
+    U->>CLI: review list и review approve
+    CLI->>DB: application_reviews APPROVED
+    U->>CLI: browser prepare
+    CLI->>BR: чтение формы без кликов
+    BR->>HH: DOM страницы вакансии
+    HH-->>BR: поля и fingerprint
+    BR-->>CLI: browser_preparations
+    U->>CLI: submit --confirm-submit
+    CLI->>G: последовательная проверка 11 гейтов
+    alt любой гейт не пройден
+        G-->>CLI: fail-closed, 0 мутаций
+    else все гейты пройдены
+        G->>HH: один клик отправки
+        HH-->>G: подтверждение
+        G->>DB: application_submissions
+        CLI->>V: verify, только чтение
+        V->>HH: проверка факта отклика
+        V-->>DB: submission_verifications VERIFIED
+    end
+    U->>CLI: dashboard, audit, submissions
+    CLI->>DB: агрегаты и история переходов`,
+
+f: `sequenceDiagram
+    autonumber
+    participant SCH as Планировщик<br/>каждые 2 часа
+    participant S as run_multi_source_discovery.py
+    participant A1 as Habr Career
+    participant A2 as Hirify API
+    participant A3 as GeekJob
+    participant A4 as Bangkok ATS<br/>Greenhouse и Lever
+    participant A5 as LinkedIn Bangkok
+    participant A6 as Telegram-каналы
+    participant DB as state.db
+    participant TG as Канал @remotejobd
+
+    SCH->>S: запуск через pythonw, без окна консоли
+    S->>S: логирование в logs/multi_source_discovery.log
+    par параллельные источники
+        S->>A1: fetch_vacancies()
+        S->>A2: fetch_vacancies(max_pages=2)
+        S->>A3: fetch_all(max_pages=2)
+        S->>A4: fetch_all()
+        S->>A5: fetch_all()
+        S->>A6: fetch_all()
+    end
+    A1-->>S: вакансии
+    A2-->>S: вакансии
+    A3-->>S: вакансии
+    A4-->>S: вакансии
+    A5-->>S: вакансии
+    A6-->>S: вакансии и гиги
+    S->>S: is_target_role по ключевым словам
+    S->>S: is_acceptable_salary, порог 100 000 RUB
+    S->>DB: INSERT новых stable_id со статусом DISCOVERED
+    opt есть новые записи
+        S->>TG: сводка и примеры вакансий
+    end`,
+
+g: `sequenceDiagram
+    autonumber
+    participant SCH as Планировщик<br/>каждые 2 часа
+    participant G as run_gig_autopilot_cycle.py
+    participant SRC as Freelancer, Kwork,<br/>Telegram-каналы
+    participant P as GigPipeline<br/>normalize, dedup, gates
+    participant DB as state.db
+    participant TG as Личный чат владельца
+
+    SCH->>G: запуск
+    G->>G: acquire_lock logs/gig_autopilot.lock
+    G->>SRC: fetch(limit)
+    SRC-->>G: сырые заказы
+    G->>P: process_raw
+    P-->>G: Gig с оценкой и rejection_reasons
+    G->>DB: save_gig
+    G->>G: отсев non-IT и can_deliver ниже MEDIUM
+    G->>G: first_money_score, порог 48
+    G->>DB: проверка telegram_delivery_records
+    G->>TG: до 3 карточек с готовым питчем
+    G->>DB: record_gig_delivery SHORTLISTED
+    G->>G: release_lock`
+};
+
+(function () {
+  const MAX = 3.2, MIN = 0.25;
+
+  function attachZoom(flowEl) {
+    const viewport = flowEl.querySelector('.viewport');
+    const stage = flowEl.querySelector('.stage');
+    const btnIn = flowEl.querySelector('[data-act="in"]');
+    const btnOut = flowEl.querySelector('[data-act="out"]');
+    const btnReset = flowEl.querySelector('[data-act="reset"]');
+    const btnFit = flowEl.querySelector('[data-act="fit"]');
+
+    let scale = 1;
+    let dragging = false, lastX = 0, lastY = 0;
+
+    function apply() {
+      stage.style.zoom = scale;
+      btnReset.textContent = Math.round(scale * 100) + '%';
+    }
+
+    function setZoom(next, cx, cy) {
+      next = Math.min(MAX, Math.max(MIN, next));
+      if (Math.abs(next - scale) < 0.001) return;
+      const rect = viewport.getBoundingClientRect();
+      const px = (typeof cx === 'number' ? cx : rect.left + rect.width / 2) - rect.left;
+      const py = (typeof cy === 'number' ? cy : rect.top + rect.height / 2) - rect.top;
+      const contentX = (viewport.scrollLeft + px) / scale;
+      const contentY = (viewport.scrollTop + py) / scale;
+      scale = next;
+      apply();
+      viewport.scrollLeft = contentX * scale - px;
+      viewport.scrollTop = contentY * scale - py;
+    }
+
+    function fitWidth() {
+      stage.style.zoom = 1;
+      const natural = stage.getBoundingClientRect().width;
+      if (!natural) return;
+      scale = Math.min(1, Math.max(MIN, (viewport.clientWidth - 4) / natural));
+      apply();
+      viewport.scrollLeft = 0;
+      viewport.scrollTop = 0;
+    }
+
+    viewport.addEventListener('wheel', function (e) {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      setZoom(e.deltaY < 0 ? scale * 1.12 : scale / 1.12, e.clientX, e.clientY);
+    }, { passive: false });
+
+    btnIn.addEventListener('click', function () { setZoom(scale * 1.2); });
+    btnOut.addEventListener('click', function () { setZoom(scale / 1.2); });
+    btnReset.addEventListener('click', function () {
+      setZoom(1);
+      viewport.scrollLeft = 0;
+      viewport.scrollTop = 0;
+    });
+    btnFit.addEventListener('click', fitWidth);
+
+    viewport.addEventListener('mousedown', function (e) {
+      if (e.button !== 0) return;
+      dragging = true;
+      lastX = e.clientX; lastY = e.clientY;
+      viewport.classList.add('dragging');
+    });
+    window.addEventListener('mousemove', function (e) {
+      if (!dragging) return;
+      viewport.scrollLeft -= e.clientX - lastX;
+      viewport.scrollTop -= e.clientY - lastY;
+      lastX = e.clientX; lastY = e.clientY;
+    });
+    window.addEventListener('mouseup', function () {
+      dragging = false;
+      viewport.classList.remove('dragging');
+    });
+
+    apply();
+  }
+
+  async function boot() {
+    if (!window.mermaid) {
+      document.getElementById('loaderr').style.display = 'block';
+      return;
+    }
+
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'dark',
+      securityLevel: 'loose',
+      fontFamily: '"Segoe UI", Roboto, Arial, sans-serif',
+      themeVariables: {
+        darkMode: true,
+        background: '#0a1017',
+        primaryColor: '#17222f',
+        primaryTextColor: '#e3ecf6',
+        primaryBorderColor: '#35506e',
+        secondaryColor: '#101a25',
+        tertiaryColor: '#0d1620',
+        lineColor: '#7e93aa',
+        textColor: '#dbe4ee',
+        mainBkg: '#17222f',
+        noteBkgColor: '#1b2634',
+        noteTextColor: '#cfe0f2',
+        noteBorderColor: '#3a5574',
+        actorBkg: '#16212e',
+        actorBorder: '#3a5574',
+        actorTextColor: '#e3ecf6',
+        signalColor: '#9fb3c9',
+        signalTextColor: '#dbe4ee',
+        labelBoxBkgColor: '#16212e',
+        labelBoxBorderColor: '#3a5574',
+        labelTextColor: '#dbe4ee',
+        loopTextColor: '#dbe4ee',
+        activationBkgColor: '#1d2c3d',
+        activationBorderColor: '#4b6d92',
+        sequenceNumberColor: '#0a1017'
+      },
+      sequence: {
+        useMaxWidth: false,
+        wrap: true,
+        diagramMarginX: 24,
+        diagramMarginY: 24,
+        actorMargin: 58,
+        boxMargin: 12,
+        boxTextMargin: 6,
+        noteMargin: 12,
+        messageMargin: 34,
+        mirrorActors: false,
+        showSequenceNumbers: false,
+        wrapPadding: 12
+      }
+    });
+
+    const keys = Object.keys(DIAGRAMS);
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      const stage = document.querySelector('.stage[data-diagram="' + key + '"]');
+      if (!stage) continue;
+      try {
+        const out = await mermaid.render('svg-' + key + '-' + i, DIAGRAMS[key]);
+        stage.innerHTML = out.svg;
+        const svg = stage.querySelector('svg');
+        if (svg) {
+          svg.style.maxWidth = 'none';
+          svg.style.height = 'auto';
+        }
+        if (typeof out.bindFunctions === 'function') out.bindFunctions(stage);
+      } catch (err) {
+        stage.innerHTML = '<div class="err">Ошибка рендеринга диаграммы ' + key + ':\n' +
+          String(err && err.message ? err.message : err) + '</div>';
+      }
+    }
+
+    document.querySelectorAll('.flow').forEach(attachZoom);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+})();
+</script>
+</body>
+</html>

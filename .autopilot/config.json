@@ -1,0 +1,4 @@
+{
+  "supervisor_provider": "gemini",
+  "browser_offscreen": true
+}
