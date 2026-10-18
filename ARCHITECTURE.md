@@ -61,6 +61,8 @@ HH-автопилот, realtime-демон сообщений, Telegram-пуль
 | `hh_message_reply.py` | Read-only чтение диалогов, truth-only черновики |
 | `hh_message_watcher.py` | Наблюдение за новыми сообщениями |
 | `hh_browser_provider.py`, `hh_browser_launcher.py` | Headless-сессия, CDP, проверка авторизации |
+| `hh_browser_lease.py` | Контракт владения браузером: `hh_operation`, лиз, `BrowserBusy`, освобождение в `finally` |
+| `hh_readonly_operation.py` | Read-only операции на одном owned-браузере: preflight, `run_search_operation` |
 | `hh_chat_monitor.py` | Скан переговоров и алерты |
 | `hh_resume_bumper.py` | Поднятие резюме в выдаче HH |
 
@@ -73,6 +75,12 @@ HH-автопилот, realtime-демон сообщений, Telegram-пуль
 | `telegram_feedback.py` | Обработка callback-кнопок, provenance, идемпотентность |
 | `telegram_control_bot.py` | Пульт `@jobsassistbot`, long-polling |
 | `runner.py` | Лок, ротация логов, circuit breaker, маскировка секретов |
+
+### Гиги
+| Модуль | Роль |
+|--------|------|
+| `ai_assistant/gig/*` | Пакет гиг-поиска: `sources/` (Contra, Freelancer, Kwork, Telegram, fixture), `pipeline`, `first_money`, `grounded`, `notify`, `store`, `submission/` |
+| `ai_assistant/gig_pitch_generator.py` | Питч под заказ и deeplink в чат |
 
 ## 4. Хранилища
 
@@ -479,7 +487,7 @@ sequenceDiagram
 
 ---
 
-## 12. Поток G — гиг-автопилот (деградировавший)
+## 12. Поток G — гиг-автопилот (восстановлен)
 
 ```mermaid
 sequenceDiagram
@@ -506,10 +514,11 @@ sequenceDiagram
     G->>G: release_lock
 ```
 
-Статус: пакет `ai_assistant/gig/*` и `ai_assistant/gig_pitch_generator.py`
-отсутствуют в рабочем дереве (остались только `__pycache__` и тесты в
-`tests/gig/`), поэтому на 2026-10-18 скрипт падает на импорте. Поток описан по
-коду и тестам, но фактически не работает.
+Статус на 2026-10-19: пакет `ai_assistant/gig/*` (48 модулей, включая
+`sources/` и `submission/`) и `ai_assistant/gig_pitch_generator.py`
+восстановлены, поставлены под git (коммит `3c3e6c9`) и работают штатно:
+`run_gig_autopilot_cycle.py` импортируется без ошибок, `tests/gig` — 681
+зелёный тест. Поток описан по коду и совпадает с фактическим исполнением.
 
 ---
 
@@ -530,22 +539,40 @@ sequenceDiagram
 
 ## 14. Наблюдения и расхождения (для супервизора)
 
+Статус на 2026-10-19: пункты 2, 4 и 6 закрыты, пункты 1, 3 и 5 остаются
+открытыми.
+
 1. **Документация и код расходятся по автономной отправке.** README и
    `PROJECT_STATE.md` заявляют «prepare-only, отправка только с
    `--confirm-submit`». Фактически `hh_autopilot.submit_vacancy()` сам выставляет
    `SUBMIT_ALLOWED=true` и кликает отправку, а `preflight.json` пишет
    `auto_submit_authorized: true` без `human_confirmed`. Поток B описан по коду.
-2. **Отсутствующие модули.** `ai_assistant/hh_readonly_operation.py` и
-   `ai_assistant/hh_browser_lease.py` не найдены ни на диске, ни в git. Их
-   импортируют `hh_autopilot.run_autopilot_cycle` и
-   `run_hh_autopilot_cycle.py`, поэтому поиск вакансий и уступка браузера
-   реально падают, а исключение глушится в `{"status": "ERROR"}`.
+2. ~~Отсутствующие модули~~ — **закрыто 2026-10-19.**
+   `ai_assistant/hh_readonly_operation.py` и `ai_assistant/hh_browser_lease.py`
+   восстановлены (26.5 и 23.1 КБ), поставлены под git в коммите `3c3e6c9`,
+   импорты `run_hh_autopilot_cycle.py` и `run_gig_autopilot_cycle.py` проходят.
+   Вместе с ними закрыт разрыв владения браузером: `hh_autonomous_agent.py`
+   больше не вызывает `ensure_hh_browser()` напрямую, весь проход по диалогам
+   идёт внутри `hh_operation`, поэтому браузер освобождается и при исключении
+   (пины T7.24–T7.26 — 83 зелёных теста).
 3. **Два планировщика на один fetcher.** Задача Windows и Hermes cron приходят
    в один и тот же файл; взаимное исключение держится на отдельном
    `job_search_fetcher.lock`, иначе был бы `database is locked`.
-4. **Легаси-данные в отборе.** `vacancies_json:*` и тестовые фикстуры
-   отсекаются `is_genuine_production_vacancy`, но остаются в базе и влияют на
-   агрегаты дашборда.
+4. ~~Легаси-данные в отборе~~ — **закрыто 2026-10-18.** Из `state.db` удалены
+   91 вакансия (83 `vacancies_json:*`, 6 синтетических `remoteok`,
+   `himalayas:dryrun-test-1`, `x:1`) и 361 зависимая строка; 4356 → 4265.
+   254 реальные вакансии снятых источников (`linkedin_bangkok`,
+   `bangkok_careers`) оставлены намеренно. Бэкап — `state.db.bak`, он в
+   `.gitignore`.
 5. **Дублирование кода отправки.** `run_multi_source_discovery.py` и
    `hh_autopilot.py` шлют в Telegram напрямую через `urllib`, минуя
    `TelegramNotifier`, поэтому у них нет общей идемпотентности и ретрай-политики.
+6. ~~Аудит автоответов читал не ту таблицу~~ — **закрыто 2026-10-19.** В
+   `db.py` лежали два определения `get_recent_sent_replies_for_conversation`,
+   `count_recent_consecutive_auto_replies` и `has_prior_candidate_message`;
+   второе (по `autonomous_conversation_audits`) затеняло первое (по
+   `hh_message_events`), поэтому анти-цикл не видел ни дублей, ни серии
+   автоответов. Дубликат удалён. Кроме того, вердикт `verified_in_hh` из
+   ответа отправки больше не переписывается повторным чтением страницы, а
+   внешняя анкета (`EXTERNAL_QUESTIONNAIRE`) остаётся черновиком с
+   уведомлением, без автоответа. Коммит `27e3d48`.

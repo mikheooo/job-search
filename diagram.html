@@ -376,8 +376,8 @@
   <div class="flow" id="flow-g">
     <div class="flow-head">
       <div>
-        <div class="t">G · Гиг-автопилот — деградировавший поток</div>
-        <div class="d">Код и тесты есть, пакет ai_assistant/gig отсутствует</div>
+        <div class="t">G · Гиг-автопилот — восстановленный поток</div>
+        <div class="d">Пакет ai_assistant/gig/* и gig_pitch_generator.py в git и работают</div>
       </div>
       <div class="controls">
         <button data-act="out" title="Уменьшить">−</button>
@@ -402,11 +402,14 @@
       <code>preflight.json</code> пишет <code>auto_submit_authorized: true</code>.</p>
     </div>
     <div class="card">
-      <span class="tag dead">сломано</span>
-      <h3>Отсутствующие модули</h3>
-      <p><code>hh_readonly_operation.py</code> и <code>hh_browser_lease.py</code> не найдены
-      ни на диске, ни в git. Их импортируют автопилот и его раннер, поэтому поиск
-      вакансий падает в <code>{"status": "ERROR"}</code>.</p>
+      <span class="tag ok">восстановлено</span>
+      <h3>Модули на месте и в git</h3>
+      <p><code>hh_readonly_operation.py</code>, <code>hh_browser_lease.py</code>,
+      <code>gig/*</code> и <code>gig_pitch_generator.py</code> восстановлены и
+      закоммичены (<code>3c3e6c9</code>). Оба раннера импортируются без ошибок,
+      <code>tests/gig</code> — 681 зелёный тест. Браузером владеет
+      <code>hh_operation</code>: освобождение в <code>finally</code>, в том числе
+      при исключении.</p>
     </div>
     <div class="card">
       <span class="tag warn">риск</span>
@@ -420,6 +423,23 @@
       <p><code>run_multi_source_discovery.py</code> и <code>hh_autopilot.py</code> шлют в
       Telegram напрямую через <code>urllib</code>, минуя <code>TelegramNotifier</code>:
       общей идемпотентности и ретрай-политики у них нет.</p>
+    </div>
+    <div class="card">
+      <span class="tag ok">вычищено</span>
+      <h3>Легаси-данные убраны из state.db</h3>
+      <p>Удалены 91 вакансия (<code>vacancies_json:*</code>, синтетические
+      <code>remoteok</code>, <code>dryrun</code>, <code>x:1</code>) и 361 зависимая
+      строка: 4356 → 4265. Реальные вакансии снятых источников
+      (<code>linkedin_bangkok</code>, <code>bangkok_careers</code>) оставлены
+      намеренно. Бэкап — <code>state.db.bak</code>.</p>
+    </div>
+    <div class="card">
+      <span class="tag ok">исправлено</span>
+      <h3>Аудит автоответов</h3>
+      <p>Три функции анти-цикла были определены в <code>db.py</code> дважды, и
+      второе определение читало не ту таблицу — дубли и серия автоответов не
+      ловились. Дубликат удалён, вердикт <code>verified_in_hh</code> больше не
+      переписывается повторным чтением страницы (<code>27e3d48</code>).</p>
     </div>
     <div class="card">
       <span class="tag ok">инвариант</span>
@@ -437,7 +457,8 @@
 
   <footer>
     Источник: локальный анализ кода job-search, ветка <code>chore-ruff-cleanup</code>,
-    коммит <code>d1cb64b</code>. Полный текст с диаграммами — <code>ARCHITECTURE.md</code>.
+    коммиты <code>3c3e6c9</code> и <code>27e3d48</code>. Полный текст с диаграммами —
+    <code>ARCHITECTURE.md</code>.
   </footer>
 </div>
 
