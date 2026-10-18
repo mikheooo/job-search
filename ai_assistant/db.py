@@ -1768,6 +1768,66 @@ def get_conversation_audit(audit_id: int) -> dict[str, Any] | None:
     }
 
 
+def has_prior_candidate_message(conversation_id: str) -> bool:
+    """Check if the conversation already contains a message sent by the candidate."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute('''
+        SELECT 1 FROM hh_message_events
+        WHERE conversation_id = ? AND sender = 'candidate'
+        LIMIT 1
+    ''', (str(conversation_id).strip(),))
+    row = cur.fetchone()
+    if row:
+        conn.close()
+        return True
+
+    cur.execute('''
+        SELECT 1 FROM autonomous_conversation_audits
+        WHERE conversation_id = ? AND status = 'SENT'
+        LIMIT 1
+    ''', (str(conversation_id).strip(),))
+    row2 = cur.fetchone()
+    conn.close()
+    return bool(row2)
+
+
+def get_recent_sent_replies_for_conversation(conversation_id: str, limit: int = 5) -> list[str]:
+    """Retrieve recent auto-replies generated or sent for this conversation."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute('''
+        SELECT COALESCE(sent_reply, generated_reply)
+        FROM autonomous_conversation_audits
+        WHERE conversation_id = ? AND (sent_reply IS NOT NULL OR generated_reply IS NOT NULL)
+        ORDER BY id DESC LIMIT ?
+    ''', (str(conversation_id).strip(), limit))
+    rows = cur.fetchall()
+    conn.close()
+    return [r[0] for r in rows if r[0]]
+
+
+def count_recent_consecutive_auto_replies(conversation_id: str) -> int:
+    """Count how many consecutive auto-replies have been sent without employer reply."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute('''
+        SELECT status
+        FROM autonomous_conversation_audits
+        WHERE conversation_id = ?
+        ORDER BY id DESC LIMIT 50
+    ''', (str(conversation_id).strip(),))
+    rows = cur.fetchall()
+    conn.close()
+    count = 0
+    for r in rows:
+        if r[0] == "SENT":
+            count += 1
+        else:
+            break
+    return count
+
+
 def is_telegram_delivered(delivery_key: str) -> bool:
     """Check if a notification or message event has already been delivered to Telegram."""
     if not delivery_key:

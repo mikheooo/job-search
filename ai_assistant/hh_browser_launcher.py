@@ -441,3 +441,12 @@ def ensure_hh_browser(
 
     result["ok"] = True
     return result
+
+
+def resolve_browser_endpoint(preferred: str | None = None) -> str:
+    """Resolve browser CDP endpoint URL."""
+    try:
+        from .hh_browser_provider import resolve_browser_endpoint as _rbe
+        return _rbe(preferred)
+    except Exception:
+        return resolve_cdp_url(preferred)

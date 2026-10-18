@@ -198,3 +198,150 @@ def test_agent_autonomous_external_form_submission_success(monkeypatch, tmp_path
         assert row is not None
         assert row[0] == "EXTERNAL_QUESTIONNAIRE_SUBMITTED"
         assert "Анкета успешно заполнена и отправлена" in row[1]
+
+
+def test_multistep_universal_form_wizard():
+    """Test multi-step HTML wizard passing through Step 1 (Next) -> Step 2 (Submit) -> Confirmation."""
+    from ai_assistant.external_form_filler import _fill_universal_html_form
+
+    calls = []
+
+    def mock_evaluate(ws_url, method, params):
+        expr = params.get("expression", "")
+        calls.append(expr)
+
+        # 1. Confirmation check
+        if "response has been recorded" in expr:
+            # On final verification after submit, return ok
+            if any("sub.click()" in c for c in calls):
+                return {"result": {"result": {"value": '{"ok": true, "snippet": "Спасибо! Ваша анкета успешно принята"}'}}}
+            return {"result": {"result": {"value": '{"ok": false, "snippet": ""}'}}}
+
+        # 2. Block check
+        if "hasCaptcha" in expr:
+            return {"result": {"result": {"value": '{"hasCaptcha": false, "hasRequiredFile": false, "isClosed": false, "hasMediaRecording": false}'}}}
+
+        # 3. Extract inputs
+        if "const allInputs" in expr:
+            # Step 1: name field
+            if not any("nxt.click()" in c for c in calls):
+                return {"result": {"result": {"value": '{"fields": [{"index": 0, "id": "f_name", "name": "name", "tag": "input", "type": "text", "label": "Ваше имя", "options": []}]}'}}}
+            # Step 2: salary field
+            return {"result": {"result": {"value": '{"fields": [{"index": 0, "id": "f_salary", "name": "salary", "tag": "input", "type": "text", "label": "Ожидания по зарплате (руб)", "options": []}]}'}}}
+
+        # 4. Button check
+        if "hasStepNext" in expr:
+            if not any("nxt.click()" in c for c in calls):
+                return {"result": {"result": {"value": '{"hasSubmit": false, "hasStepNext": true}'}}}
+            return {"result": {"result": {"value": '{"hasSubmit": true, "hasStepNext": false}'}}}
+
+        # 5. Clicks
+        if "nxt.click()" in expr or "sub.click()" in expr:
+            return {"result": {"result": {"value": True}}}
+
+        return {"result": {"result": {"value": "{}"}}}
+
+    with patch("ai_assistant.external_form_filler._ws_call", side_effect=mock_evaluate):
+        res = _fill_universal_html_form(
+            ws_url="ws://127.0.0.1:9111/page",
+            company="MultiStep Tech",
+            vacancy="Senior Python Engineer",
+            max_steps=5,
+        )
+
+        assert res.ok
+        assert not res.blocked
+        assert res.fields_count >= 2
+        assert "Спасибо" in res.submission_proof
+        assert "Михаил Колесников" in res.chat_confirmation_text
+
+
+def test_anti_stuck_guard_on_repeated_validation_error():
+    """Test that anti-stuck loop guard triggers when identical fields repeat consecutively after clicking Next."""
+    from ai_assistant.external_form_filler import _fill_universal_html_form
+
+    def mock_evaluate(ws_url, method, params):
+        expr = params.get("expression", "")
+
+        if "/response has been recorded" in expr:
+            return {"result": {"result": {"value": '{"ok": false, "snippet": ""}'}}}
+        if "hasCaptcha" in expr:
+            return {"result": {"result": {"value": '{"hasCaptcha": false, "hasRequiredFile": false, "isClosed": false, "hasMediaRecording": false}'}}}
+        if "const allInputs" in expr:
+            # Always return identical fields fingerprint
+            return {"result": {"result": {"value": '{"fields": [{"index": 0, "id": "req_field", "name": "req_name", "tag": "input", "type": "text", "label": "Обязательное поле", "options": []}]}'}}}
+        if "hasStepNext" in expr:
+            return {"result": {"result": {"value": '{"hasSubmit": false, "hasStepNext": true}'}}}
+        if "click_nxt" in expr:
+            return {"result": {"result": {"value": True}}}
+
+        return {"result": {"result": {"value": "{}"}}}
+
+    with patch("ai_assistant.external_form_filler._ws_call", side_effect=mock_evaluate):
+        res = _fill_universal_html_form(
+            ws_url="ws://127.0.0.1:9111/page",
+            company="Strict Corp",
+            vacancy="Backend Engineer",
+            max_steps=5,
+        )
+
+        assert not res.ok
+        assert res.blocked
+        assert "Anti-stuck" in res.blocked_reason
+
+
+def test_smart_fallback_for_non_standard_open_questions():
+    """Test Level 1 semantic KB matching and candidate fact grounding for various open-ended questions."""
+    # Troubleshooting
+    ans_trouble = generate_answer_for_question("Как вы будете искать ошибку в чужом сервисе если он упал?")
+    assert "journalctl" in ans_trouble or "docker logs" in ans_trouble
+
+    # AI-video / Content-factory
+    ans_video = generate_answer_for_question("Расскажите про ваш опыт генерации AI-видео и пайплайнов")
+    assert "Контент-Завод" in ans_video or "FFmpeg" in ans_video or "Stable Diffusion" in ans_video
+
+    # Motivation / About yourself
+    ans_motive = generate_answer_for_question("Почему вы хотите работать именно у нас и в чем ваша мотивация?")
+    assert "15 лет" in ans_motive or "автоматизации" in ans_motive
+
+    # Remote schedule
+    ans_sched = generate_answer_for_question("Какой у вас график и формат работы?")
+    assert "100% Remote" in ans_sched
+    assert "МСК" in ans_sched
+
+    # Legal contract
+    ans_legal = generate_answer_for_question("Какая форма оформления вам подходит (ТК РФ, ИП)?")
+    assert "ТК РФ" in ans_legal or "ИП" in ans_legal or "Самозанятость" in ans_legal
+
+    # Database / SQL
+    ans_db = generate_answer_for_question("Какой у вас опыт работы с базами данных SQL?")
+    assert "PostgreSQL" in ans_db
+
+    # Smart Choice Matcher on options
+    opt_exp = ["Менее года", "1-2 года", "3-5 лет", "Более 5 лет"]
+    chosen_exp = generate_answer_for_question("Опыт коммерческой разработки", "radio", opt_exp)
+    assert chosen_exp == "Более 5 лет"
+
+    opt_format = ["Работа в офисе", "Гибридный формат", "Полная удаленка"]
+    chosen_format = generate_answer_for_question("Желаемый формат занятости", "radio", opt_format)
+    assert chosen_format == "Полная удаленка"
+
+
+def test_llm_synthesis_fallback(monkeypatch):
+    """Test Level 2 LLM synthesis fallback when question is outside standard keywords."""
+    from unittest.mock import MagicMock
+    from ai_assistant.external_form_filler import _synthesize_open_answer_with_llm
+
+    mock_client = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.choices = [MagicMock(message=MagicMock(content="У меня 15+ лет опыта в IT, готов быстро включиться."))]
+    mock_client.chat.completions.create.return_value = mock_resp
+
+    with patch("openai.OpenAI", return_value=mock_client), patch("ai_assistant.config.LLM_API_KEY", "test-key"):
+        ans = _synthesize_open_answer_with_llm(
+            question_text="Как вы оцениваете важность корпоративной культуры?",
+            company="Dream Team",
+            vacancy="Tech Lead",
+        )
+        assert ans is not None
+        assert "15+ лет" in ans

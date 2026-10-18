@@ -292,3 +292,18 @@ Email: mikhailthaiban@gmail.com
 GitHub: https://github.com/mikheooo
 """
     return letter.strip()
+
+
+def strip_repeated_greeting(text: str) -> str:
+    """Strip leading greeting phrases if a conversation already has prior messages."""
+    if not text:
+        return ""
+    cleaned = re.sub(
+        r"^(?:здравствуйте[!,.]*|добрый (?:день|вечер|утр[оа])[!,.]*|приветствую[!,.]*|привет[!,.]*|hello[!,.]*|hi[!,.]*)\s*",
+        "",
+        text.strip(),
+        flags=re.IGNORECASE,
+    )
+    if cleaned and cleaned[0].islower():
+        cleaned = cleaned[0].upper() + cleaned[1:]
+    return cleaned

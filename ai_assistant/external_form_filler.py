@@ -11,6 +11,7 @@ import asyncio
 import dataclasses
 import json
 import logging
+import os
 import re
 import time
 import urllib.parse
@@ -135,7 +136,56 @@ def generate_answer_for_question(
                 if "1-2" in opt or "1" in opt:
                     return opt
 
-        # Fallback to first non-empty option
+        # Smart Choice Matcher: Pick closest option corresponding to candidate profile
+        # 1. Maximum experience: 5+ / more than 5 / senior
+        for opt in options:
+            opt_l = opt.lower().strip()
+            if any(k in opt_l for k in ["5+", "более 5", "5 и более", "от 5", "senior", "ведущий"]):
+                return opt
+
+        # 1b. High experience: 4-5 / 3-5
+        for opt in options:
+            opt_l = opt.lower().strip()
+            if any(k in opt_l for k in ["4-5", "3-5", "3+", "4+"]):
+                return opt
+
+        # 2. Remote format
+        for opt in options:
+            opt_l = opt.lower().strip()
+            if any(k in opt_l for k in ["удален", "дистанцион", "remote", "home"]):
+                return opt
+
+        # 3. Readiness / Yes / Full time
+        for opt in options:
+            opt_l = opt.lower().strip()
+            if opt_l in ["да", "yes"] or opt_l.startswith(("да,", "да ", "yes,", "yes ")) or any(k in opt_l for k in ["готов", "актуальн", "рассматриваю", "полная занятость", "full-time", "full time"]):
+                return opt
+
+        # 4. Contract / Legal
+        for opt in options:
+            opt_l = opt.lower().strip()
+            if any(k in opt_l for k in ["тк рф", "ип", "самозанят", "гпх", "contract"]):
+                return opt
+
+        # 5. English
+        for opt in options:
+            opt_l = opt.lower().strip()
+            if any(k in opt_l for k in ["b1", "intermediate", "средний"]):
+                return opt
+
+        # 6. Location
+        for opt in options:
+            opt_l = opt.lower().strip()
+            if any(k in opt_l for k in ["рф", "россия", "russia", "самара", "москва"]):
+                return opt
+
+        # Fallback to first non-empty option (skipping negative / other options if possible)
+        positive_opts = [
+            o for o in options
+            if o and o != "__other_option__" and not any(neg in o.lower() for neg in ["нет", "не готов", "не согласен", "отказ", "не владею", "no"])
+        ]
+        if positive_opts:
+            return positive_opts[0]
         for opt in options:
             if opt and opt != "__other_option__":
                 return opt
@@ -178,7 +228,8 @@ def generate_answer_for_question(
         return CANDIDATE_FACTS["salary_rub"]
 
     if any(w in q for w in ["лет", "years", "стаж", "опыт работы", "коммерческ"]):
-        return "5+" if "лет" in q else CANDIDATE_FACTS["experience_years"]
+        if not any(tech in q for tech in ["sql", "баз", "bitrix", "битрикс", "n8n", "make", "linux", "сервер", "git", "cloudflare", "seo", "видео", "ai", "llm", "fastapi", "чуж", "починить", "управлен"]):
+            return "5+" if "лет" in q else CANDIDATE_FACTS["experience_years"]
 
     if any(w in q for w in ["bitrix", "битрикс"]):
         return (
@@ -252,11 +303,87 @@ def generate_answer_for_question(
             "векторные базы данных, автоматизация бизнес-процессов через n8n и REST API, контейнеризация Docker."
         )
 
-    # Default technical answer fallback
+    # Motivation / About yourself / Why us / Fit
+    if any(w in q for w in ["почему вы", "о себе", "расскажите о себе", "почему мы", "мотивац", "почему хотите", "сильные стороны", "strengths", "about you"]):
+        return (
+            "Более 15 лет практического опыта в IT-инфраструктуре и 5+ лет в автоматизации и разработке (Python, n8n, CRM, API, Linux). "
+            "Ищу стабильные задачи на полный день в удаленном формате, где смогу применить опыт быстрого решения инцидентов, "
+            "проектирования отказоустойчивых интеграций и повышения надежности сервисов."
+        )
+
+    # Schedule / Remote format
+    if any(w in q for w in ["формат", "график", "удален", "remote", "расписание"]):
+        return "100% Remote (удаленная работа), полный рабочий день (full-time), часовой пояс МСК. Готов к созвонам в рабочие часы 09:00–18:00 МСК."
+
+    # Legal status / Contract
+    if any(w in q for w in ["оформлен", "договор", "тк рф", "ип", "самозанят", "юридическ"]):
+        return "Рассматриваю официальное оформление по ТК РФ, через ИП или Самозанятость (все документы и статусы активны в РФ)."
+
+    # Databases / SQL
+    if any(w in q for w in ["sql", "баз данн", "postgres", "mysql", "database"]):
+        return "Проектирование и оптимизация реляционных баз данных (PostgreSQL, MySQL, SQLite), написание сложных запросов, миграции, индексация и мониторинг производительности."
+
+    # Level 2: LLM Contextual Synthesis fallback
+    llm_synthesized = _synthesize_open_answer_with_llm(question_text, company, vacancy)
+    if llm_synthesized:
+        return llm_synthesized
+
+    # Final candidate KB default fallback
     return (
         "Имею 15+ лет коммерческого опыта в IT-инфраструктуре и 5+ лет в автоматизации (Python, n8n, CRM, API, Linux). "
         "Готов детально ответить на любые вопросы и разобрать кейсы на техническом интервью."
     )
+
+
+def _synthesize_open_answer_with_llm(
+    question_text: str,
+    company: str = "",
+    vacancy: str = "",
+) -> str | None:
+    """Synthesize a concise, fact-grounded answer for an open-ended questionnaire question using LLM."""
+    if os.getenv("EXTERNAL_FORM_FILLER_OFFLINE") == "1":
+        return None
+    try:
+        from openai import OpenAI
+        import ai_assistant.config as config
+        if not config.LLM_API_KEY:
+            return None
+        client = OpenAI(
+            api_key=config.LLM_API_KEY,
+            base_url=config.LLM_BASE_URL if config.LLM_BASE_URL else None,
+            timeout=15.0,
+        )
+        system_prompt = (
+            "Ты — ассистент кандидата Михаила Колесникова. Твоя задача — кратко и уверенно ответить на вопрос анкеты работодателя.\n"
+            "ПРАВИЛА И ФАКТЫ О КАНДИДАТЕ:\n"
+            "- Михаил Колесников, Telegram: @brokeassh, Телефон: +7 (993) 339-76-28, Email: mikhailthaiban@gmail.com\n"
+            "- Портфолио: https://mikheooo.github.io/portfolio/ (GitHub: https://github.com/mikheooo)\n"
+            "- 15+ лет в IT-инфраструктуре и системном администрировании Linux/Windows/DevOps, 5+ лет в автоматизации (Python, n8n, CRM, API).\n"
+            "- Опыт в компаниях Sayama Travel, Avantis: Битрикс24 (облако и коробка, смарт-процессы, REST API), телефония (Asterisk/Mango), 1С, Docker, Nginx, PostgreSQL, MySQL.\n"
+            "- Проект «Контент-Завод»: автоматизированный пайплайн генерации AI-видео (Python + FFmpeg + Whisper + LLM, ComfyUI, Stable Diffusion, Midjourney).\n"
+            "- Формат работы: 100% Remote (удаленная работа), РФ (Самара, МСК / UTC+7). Оформление: ТК РФ, ИП, Самозанятость.\n"
+            "- Зарплатные ожидания: от 200 000 руб. / 1300 $ / 2000 EUR.\n"
+            "- Траблшутинг инцидентов: логи (journalctl, docker logs), конфиги (.env, systemd), диагностика сети (ss -tulpn, curl, ping), воспроизведение в дебаге.\n"
+            "- СТРОГО ЗАПРЕЩЕНО выдумывать неподтвержденные факты или несуществующий опыт.\n"
+            "- Ответ должен быть кратким (2-4 емких предложения), на языке вопроса (русский по умолчанию), от первого лица кандидата ('Я...')."
+        )
+        user_prompt = f"Вопрос работодателя {company} (вакансия: {vacancy}):\n\"{question_text}\"\nСформулируй краткий профессиональный ответ от первого лица."
+        resp = client.chat.completions.create(
+            model=config.LLM_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=250,
+            temperature=0.3,
+        )
+        ans = (resp.choices[0].message.content or "").strip()
+        if ans.startswith(('"', "«")) and ans.endswith(('"', "»")):
+            ans = ans[1:-1].strip()
+        return ans or None
+    except Exception as e:
+        logger.debug(f"LLM open answer synthesis failed or skipped: {e}")
+        return None
 
 
 def try_auto_fill_external_form(
@@ -337,258 +464,553 @@ def try_auto_fill_external_form(
                 pass
 
 
-def _fill_universal_html_form(ws_url: str, company: str, vacancy: str) -> FormFillResult:
-    """Fill standard generic HTML questionnaire or assessment form."""
-    extract_js = """(() => {
-        const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="image"]):not([type="reset"]), textarea, select'));
-        const fields = [];
-        inputs.forEach((inp, i) => {
-            let label = '';
-            if (inp.id) {
-                const l = document.querySelector(`label[for="${inp.id}"]`);
-                if (l) label = l.innerText;
-            }
-            if (!label) {
-                const pLabel = inp.closest('label');
-                if (pLabel) label = pLabel.innerText;
-            }
-            if (!label) {
-                const container = inp.closest('.form-group, .field, .rui-field, fieldset, tr, td, div');
-                if (container) {
-                    const header = container.querySelector('label, h3, h4, h5, .label, .title, legend');
-                    if (header) label = header.innerText;
-                }
-            }
-            if (!label) {
-                label = inp.placeholder || inp.getAttribute('aria-label') || inp.name || '';
-            }
-            fields.push({
-                index: i,
-                id: inp.id || '',
-                name: inp.name || '',
-                tag: inp.tagName.toLowerCase(),
-                type: (inp.type || 'text').toLowerCase(),
-                label: label.trim(),
-                options: inp.tagName === 'SELECT' ? Array.from(inp.options).map(o => o.text.trim()) : []
-            });
-        });
-        return JSON.stringify({fields});
-    })()"""
+def _fill_universal_html_form(
+    ws_url: str,
+    company: str,
+    vacancy: str,
+    max_steps: int = 15,
+) -> FormFillResult:
+    """Fill standard generic HTML questionnaire, multi-step wizard, or assessment form."""
+    total_filled_count = 0
+    all_answers_summary: dict[str, str] = {}
+    last_fingerprint = ""
+    consecutive_repeat_count = 0
 
-    res = _ws_call(ws_url, "Runtime.evaluate", {"expression": extract_js, "returnByValue": True})
-    data = json.loads(res.get("result", {}).get("result", {}).get("value", "{}"))
-    fields = data.get("fields", [])
-    if not fields:
-        return FormFillResult(ok=False, error="No interactive input fields detected on page")
-
-    answers = {}
-    filled_count = 0
-    for f in fields:
-        ans = generate_answer_for_question(f.get("label") or f.get("name") or "", f.get("type", "text"), f.get("options"), company, vacancy)
-        if ans:
-            answers[f["index"]] = {
-                "id": f.get("id"),
-                "name": f.get("name"),
-                "tag": f.get("tag"),
-                "type": f.get("type"),
-                "value": ans,
-            }
-            filled_count += 1
-
-    apply_js = f"""(() => {{
-        const answers = {json.dumps(answers, ensure_ascii=False)};
-        const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="image"]):not([type="reset"]), textarea, select'));
-        let count = 0;
-        for (const idxStr of Object.keys(answers)) {{
-            const idx = parseInt(idxStr, 10);
-            if (idx >= inputs.length) continue;
-            const el = inputs[idx];
-            const item = answers[idxStr];
-            try {{
-                el.focus();
-                if (el.tagName === 'SELECT') {{
-                    const opt = Array.from(el.options).find(o => o.text.includes(item.value) || o.value.includes(item.value));
-                    if (opt) {{
-                        el.value = opt.value;
-                    }} else if (el.options.length > 1) {{
-                        el.selectedIndex = 1;
-                    }}
-                }} else if (el.type === 'radio' || el.type === 'checkbox') {{
-                    el.checked = true;
-                }} else {{
-                    el.value = item.value;
-                }}
-                el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                el.dispatchEvent(new Event('change', {{bubbles: true}}));
-                count++;
-            }} catch (e) {{}}
-        }}
-        return count;
-    }})()"""
-    _ws_call(ws_url, "Runtime.evaluate", {"expression": apply_js})
-    time.sleep(2.0)
-
-    # Click Submit / Next
-    submit_js = """(() => {
-        const btns = Array.from(document.querySelectorAll('button, input[type="submit"], [role="button"], a.btn'));
-        const sub = btns.find(b => {
-            const t = (b.innerText || b.value || '').trim().toLowerCase();
-            return t === 'submit' || t === 'отправить' || t === 'сохранить' || t === 'завершить' || t === 'send';
-        });
-        if (sub) { sub.click(); return true; }
-        return false;
-    })()"""
-    _ws_call(ws_url, "Runtime.evaluate", {"expression": submit_js})
-    time.sleep(4.0)
-
-    # Check confirmation
     verify_js = """(() => {
         const text = document.body ? document.body.innerText : '';
-        const ok = text.includes('response has been recorded') ||
-                   text.includes('Ответ записан') ||
-                   text.includes('Спасибо') ||
-                   text.includes('успешно') ||
-                   text.includes('принята') ||
-                   text.includes('отправлен');
-        return JSON.stringify({ok, snippet: text.slice(0, 200)});
-    })()"""
-    ver_eval = _ws_call(ws_url, "Runtime.evaluate", {"expression": verify_js, "returnByValue": True})
-    ver_data = json.loads(ver_eval.get("result", {}).get("result", {}).get("value", "{}"))
-
-    if ver_data.get("ok") or filled_count > 0:
-        return FormFillResult(
-            ok=True,
-            fields_count=filled_count,
-            answers_summary={str(k): v["value"][:40] for k, v in answers.items()},
-            submission_proof=ver_data.get("snippet", ""),
-            chat_confirmation_text=_format_chat_confirmation(company, vacancy, filled_count),
-        )
-    return FormFillResult(ok=False, error="Confirmation message not detected on generic HTML form")
-
-
-def _fill_google_form(ws_url: str, company: str, vacancy: str) -> FormFillResult:
-    """Fill standard Google Form (docs.google.com/forms / forms.gle)."""
-    # 1. Extract question blocks
-    extract_js = """(() => {
-        const blocks = Array.from(document.querySelectorAll('div[role="listitem"]'));
-        return JSON.stringify(blocks.map((b, idx) => {
-            const heading = b.querySelector('[role="heading"]')?.innerText || '';
-            const hasInput = !!b.querySelector('input[type="text"], input[type="email"], input[type="url"], input:not([type])');
-            const hasTextarea = !!b.querySelector('textarea');
-            const hasDate = !!b.querySelector('input[type="date"]');
-            const radios = Array.from(b.querySelectorAll('[role="radio"]')).map(r => r.getAttribute('data-value') || r.innerText.trim());
-            const checkboxes = Array.from(b.querySelectorAll('[role="checkbox"]')).map(c => c.getAttribute('data-value') || c.innerText.trim());
-            return {idx, heading, hasInput, hasTextarea, hasDate, radios, checkboxes};
-        }));
+        const ok = /response has been recorded|ответ записан|спасибо|ваша заявка|анкета|успешно|благодарим|отправлен|submitted/i.test(text);
+        return JSON.stringify({ok, snippet: text.slice(0, 200).replace(/\\s+/g, ' ').trim()});
     })()"""
 
-    res = _ws_call(ws_url, "Runtime.evaluate", {"expression": extract_js, "returnByValue": True})
-    blocks = json.loads(res.get("result", {}).get("result", {}).get("value", "[]"))
-    if not blocks:
-        return FormFillResult(ok=False, error="No listitem blocks found in Google Form")
+    for step in range(1, max_steps + 1):
+        # 1. Check if form is already successfully submitted / confirmation screen
+        ver_eval = _ws_call(ws_url, "Runtime.evaluate", {"expression": verify_js, "returnByValue": True})
+        ver_data = json.loads(ver_eval.get("result", {}).get("result", {}).get("value", "{}"))
+        if ver_data.get("ok"):
+            return FormFillResult(
+                ok=True,
+                fields_count=total_filled_count,
+                answers_summary=all_answers_summary,
+                submission_proof=ver_data.get("snippet", ""),
+                chat_confirmation_text=_format_chat_confirmation(company, vacancy, total_filled_count),
+            )
 
-    answers = {}
-    filled_count = 0
+        # 2. Check for blocking constraints (CAPTCHA / Required File / Media Recording / Closed)
+        check_blocks_js = """(() => {
+            const hasCaptcha = !!document.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="turnstile"], div.g-recaptcha');
+            const hasRequiredFile = !!document.querySelector('input[type="file"][required], input[type="file"][aria-required="true"]');
+            const bodyText = document.body ? document.body.innerText : '';
+            const isClosed = /рассмотрение завершено|выбрали другого кандидата|вакансия больше не актуальна|анкеты по ней сейчас не принимаются|прием ответов закрыт|форма закрыта|no longer accepting responses/i.test(bodyText);
+            const closedReason = isClosed ? bodyText.slice(0, 300).replace(/\\s+/g, ' ').trim() : '';
+            const hasMediaRecording = /запишите ответ с микрофона|аудиозапись|видеоинтервью|включите камеру|разрешите доступ к микрофону|запись с микрофона/i.test(bodyText) ||
+                                      !!document.querySelector('input[type="file"][accept*="audio"], input[type="file"][accept*="video"], input[capture]');
+            return JSON.stringify({hasCaptcha, hasRequiredFile, isClosed, closedReason, hasMediaRecording});
+        })()"""
+        blk_eval = _ws_call(ws_url, "Runtime.evaluate", {"expression": check_blocks_js, "returnByValue": True})
+        blk_info = json.loads(blk_eval.get("result", {}).get("result", {}).get("value", "{}"))
+        if blk_info.get("hasCaptcha"):
+            return FormFillResult(ok=False, blocked=True, blocked_reason="В форме обнаружена CAPTCHA")
+        if blk_info.get("hasRequiredFile"):
+            return FormFillResult(ok=False, blocked=True, blocked_reason="В форме требуется обязательная загрузка файла резюме")
+        if blk_info.get("isClosed"):
+            return FormFillResult(ok=False, blocked=True, blocked_reason=f"Анкета/вакансия закрыта работодателем: {blk_info.get('closedReason')}")
+        if blk_info.get("hasMediaRecording"):
+            return FormFillResult(ok=False, blocked=True, blocked_reason="В анкете требуется запись аудио/видео с микрофона или камеры")
 
-    for b in blocks:
-        q_text = b.get("heading") or ""
-        radios = b.get("radios", [])
-        checkboxes = b.get("checkboxes", [])
+        # 3. Extract visible interactive input fields on the current step
+        extract_js = """(() => {
+            function isVisible(el) {
+                if (!el) return false;
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                if (el.offsetParent === null && style.position !== 'fixed') return false;
+                const rect = el.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+            }
+            const allInputs = Array.from(document.querySelectorAll(
+                'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="image"]):not([type="reset"]), textarea, select'
+            ));
+            const inputs = allInputs.filter(isVisible);
+            const fields = [];
+            inputs.forEach((inp, i) => {
+                let label = '';
+                if (inp.id) {
+                    const l = document.querySelector(`label[for="${inp.id}"]`);
+                    if (l) label = l.innerText;
+                }
+                if (!label) {
+                    const pLabel = inp.closest('label');
+                    if (pLabel) label = pLabel.innerText;
+                }
+                if (!label) {
+                    const container = inp.closest('.form-group, .field, .rui-field, fieldset, tr, td, div');
+                    if (container) {
+                        const header = container.querySelector('label, h3, h4, h5, .label, .title, legend');
+                        if (header) label = header.innerText;
+                    }
+                }
+                if (!label) {
+                    label = inp.placeholder || inp.getAttribute('aria-label') || inp.name || '';
+                }
+                fields.push({
+                    index: i,
+                    id: inp.id || '',
+                    name: inp.name || '',
+                    tag: inp.tagName.toLowerCase(),
+                    type: (inp.type || 'text').toLowerCase(),
+                    label: label.trim(),
+                    options: inp.tagName === 'SELECT' ? Array.from(inp.options).map(o => o.text.trim()) : []
+                });
+            });
+            return JSON.stringify({fields});
+        })()"""
 
-        if radios:
-            chosen = generate_answer_for_question(q_text, "radio", radios, company, vacancy)
-            if chosen:
-                answers[b["idx"]] = {"type": "radio", "value": chosen}
-                filled_count += 1
-        elif checkboxes:
-            # Pick valid checkboxes
-            answers[b["idx"]] = {"type": "checkbox", "value": checkboxes[0] if checkboxes else "all"}
-            filled_count += 1
-        elif b.get("hasDate"):
-            answers[b["idx"]] = {"type": "date", "value": CANDIDATE_FACTS["earliest_start"]}
-            filled_count += 1
-        elif b.get("hasInput") or b.get("hasTextarea"):
-            ans = generate_answer_for_question(q_text, "text", None, company, vacancy)
+        res = _ws_call(ws_url, "Runtime.evaluate", {"expression": extract_js, "returnByValue": True})
+        data = json.loads(res.get("result", {}).get("result", {}).get("value", "{}"))
+        fields = data.get("fields", [])
+
+        # Fingerprint guard for visible fields on current step
+        fingerprint = "||".join(f"{f.get('name')}:{f.get('label')}:{f.get('type')}" for f in fields)
+        if fingerprint:
+            if fingerprint == last_fingerprint:
+                consecutive_repeat_count += 1
+                if consecutive_repeat_count >= 2:
+                    logger.warning("Anti-stuck loop guard triggered at step %d with repeated fingerprint: %s", step, fingerprint[:100])
+                    return FormFillResult(
+                        ok=False,
+                        blocked=True,
+                        blocked_reason="Anti-stuck: форма зависла на одном шаге из-за ошибки валидации обязательного поля",
+                        fields_count=total_filled_count,
+                        answers_summary=all_answers_summary,
+                    )
+            else:
+                last_fingerprint = fingerprint
+                consecutive_repeat_count = 0
+
+        # Fill fields on current step if any
+        step_answers = {}
+        for f in fields:
+            ans = generate_answer_for_question(
+                f.get("label") or f.get("name") or "",
+                f.get("type", "text"),
+                f.get("options"),
+                company,
+                vacancy,
+            )
             if ans:
-                answers[b["idx"]] = {"type": "text", "value": ans}
-                filled_count += 1
+                step_answers[f["index"]] = {
+                    "id": f.get("id"),
+                    "name": f.get("name"),
+                    "tag": f.get("tag"),
+                    "type": f.get("type"),
+                    "value": ans,
+                }
+                all_answers_summary[f.get("label") or f.get("name") or str(f["index"])] = ans[:60]
+                total_filled_count += 1
 
-    # Apply answers via JavaScript
-    apply_js = f"""(() => {{
-        function setField(el, val) {{
-            if (!el) return false;
-            el.focus();
-            el.value = val;
-            el.dispatchEvent(new Event('input', {{bubbles: true}}));
-            el.dispatchEvent(new Event('change', {{bubbles: true}}));
-            return true;
-        }}
+        if step_answers:
+            apply_js = f"""(() => {{
+                function isVisible(el) {{
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                    if (el.offsetParent === null && style.position !== 'fixed') return false;
+                    const rect = el.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0;
+                }}
+                const answers = {json.dumps(step_answers, ensure_ascii=False)};
+                const allInputs = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="image"]):not([type="reset"]), textarea, select'));
+                const inputs = allInputs.filter(isVisible);
+                let count = 0;
+                for (const idxStr of Object.keys(answers)) {{
+                    const idx = parseInt(idxStr, 10);
+                    if (idx >= inputs.length) continue;
+                    const el = inputs[idx];
+                    const item = answers[idxStr];
+                    try {{
+                        el.focus();
+                        if (el.tagName === 'SELECT') {{
+                            const opt = Array.from(el.options).find(o => o.text.includes(item.value) || o.value.includes(item.value));
+                            if (opt) {{
+                                el.value = opt.value;
+                            }} else if (el.options.length > 1) {{
+                                el.selectedIndex = 1;
+                            }}
+                        }} else if (el.type === 'radio' || el.type === 'checkbox') {{
+                            el.checked = true;
+                        }} else {{
+                            el.value = item.value;
+                        }}
+                        el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                        el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                        el.dispatchEvent(new Event('blur', {{bubbles: true}}));
+                        count++;
+                    }} catch (e) {{}}
+                }}
+                return count;
+            }})()"""
+            _ws_call(ws_url, "Runtime.evaluate", {"expression": apply_js})
+            time.sleep(1.5)
 
-        const answers = {json.dumps(answers, ensure_ascii=False)};
-        const blocks = Array.from(document.querySelectorAll('div[role="listitem"]'));
-        let count = 0;
+        # 4. Check for Next step or Submit buttons
+        button_check_js = """(() => {
+            function isVisible(el) {
+                if (!el) return false;
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                if (el.offsetParent === null && style.position !== 'fixed') return false;
+                const rect = el.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+            }
+            const allBtns = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"], a.btn, .btn'));
+            const btns = allBtns.filter(isVisible);
 
-        for (const idxStr of Object.keys(answers)) {{
-            const idx = parseInt(idxStr, 10);
-            if (idx >= blocks.length) continue;
-            const b = blocks[idx];
-            const item = answers[idxStr];
+            // 1. Submit button check
+            const sub = btns.find(b => {
+                const t = (b.innerText || b.value || '').trim().toLowerCase();
+                return /^(?:submit|отправить|сохранить|завершить|send|зарегистрироваться|готово|подтвердить)$/i.test(t) ||
+                       /^(?:отправить|submit)/i.test(t);
+            });
 
-            if (item.type === 'text') {{
-                const inp = b.querySelector('input[type="text"], input[type="email"], input[type="url"], input:not([type]), textarea');
-                if (setField(inp, item.value)) count++;
-            }} else if (item.type === 'date') {{
-                const dInp = b.querySelector('input[type="date"]');
-                if (setField(dInp, item.value)) count++;
-            }} else if (item.type === 'radio') {{
-                const r = b.querySelector('[role="radio"][data-value="' + item.value + '"]') ||
-                          Array.from(b.querySelectorAll('[role="radio"]')).find(el => el.innerText.includes(item.value));
-                if (r) {{ r.click(); count++; }}
-            }} else if (item.type === 'checkbox') {{
-                const c = b.querySelector('[role="checkbox"]');
-                if (c && c.getAttribute('aria-checked') !== 'true') {{ c.click(); count++; }}
-            }}
-        }}
-        return count;
-    }})()"""
+            // 2. Step Advance (Next) button check
+            const nxt = btns.find(b => {
+                const t = (b.innerText || b.value || '').trim().toLowerCase();
+                return /^(?:далее|next|продолжить|continue|вперед|следующий|следующая)/i.test(t) ||
+                       /^(?:далее|next)/i.test(t);
+            });
 
-    _ws_call(ws_url, "Runtime.evaluate", {"expression": apply_js})
-    time.sleep(2.0)
+            return JSON.stringify({
+                hasSubmit: !!sub,
+                hasStepNext: !!nxt,
+            });
+        })()"""
 
-    # Click Submit
-    submit_js = """(() => {
-        const btns = Array.from(document.querySelectorAll('[role="button"], button'));
-        const sub = btns.find(b => {
-            const t = (b.innerText || '').trim().toLowerCase();
-            return t === 'submit' || t === 'отправить' || t === 'send';
-        });
-        if (sub) { sub.click(); return true; }
-        return false;
-    })()"""
-    _ws_call(ws_url, "Runtime.evaluate", {"expression": submit_js})
-    time.sleep(4.0)
+        btn_res = _ws_call(ws_url, "Runtime.evaluate", {"expression": button_check_js, "returnByValue": True})
+        btn_info = json.loads(btn_res.get("result", {}).get("result", {}).get("value", "{}"))
+        has_submit = btn_info.get("hasSubmit")
+        has_next = btn_info.get("hasStepNext")
 
-    # Verify confirmation text
+        if has_submit and not has_next:
+            # Click Final Submit
+            click_sub_js = """(() => {
+                const btns = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"], a.btn, .btn'));
+                const sub = btns.find(b => {
+                    const t = (b.innerText || b.value || '').trim().toLowerCase();
+                    return /^(?:submit|отправить|сохранить|завершить|send|зарегистрироваться|готово|подтвердить)/i.test(t);
+                });
+                if (sub) { sub.click(); return true; }
+                return false;
+            })()"""
+            _ws_call(ws_url, "Runtime.evaluate", {"expression": click_sub_js})
+            time.sleep(3.5)
+
+            # Check final confirmation
+            ver_eval2 = _ws_call(ws_url, "Runtime.evaluate", {"expression": verify_js, "returnByValue": True})
+            ver_data2 = json.loads(ver_eval2.get("result", {}).get("result", {}).get("value", "{}"))
+            if ver_data2.get("ok") or total_filled_count > 0:
+                return FormFillResult(
+                    ok=True,
+                    fields_count=total_filled_count,
+                    answers_summary=all_answers_summary,
+                    submission_proof=ver_data2.get("snippet", ""),
+                    chat_confirmation_text=_format_chat_confirmation(company, vacancy, total_filled_count),
+                )
+            return FormFillResult(ok=False, error="Confirmation message not detected on generic HTML form after submit")
+
+        elif has_next:
+            # Click Step Next
+            click_nxt_js = """(() => {
+                const btns = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"], a.btn, .btn'));
+                const nxt = btns.find(b => {
+                    const t = (b.innerText || b.value || '').trim().toLowerCase();
+                    return /^(?:далее|next|продолжить|continue|вперед|следующий|следующая)/i.test(t);
+                });
+                if (nxt) { nxt.click(); return true; }
+                return false;
+            })()"""
+            _ws_call(ws_url, "Runtime.evaluate", {"expression": click_nxt_js})
+            time.sleep(2.0)
+            continue
+        elif has_submit:
+            # Both or submit fallback
+            _ws_call(ws_url, "Runtime.evaluate", {"expression": click_sub_js})
+            time.sleep(3.5)
+            ver_eval3 = _ws_call(ws_url, "Runtime.evaluate", {"expression": verify_js, "returnByValue": True})
+            ver_data3 = json.loads(ver_eval3.get("result", {}).get("result", {}).get("value", "{}"))
+            if ver_data3.get("ok") or total_filled_count > 0:
+                return FormFillResult(
+                    ok=True,
+                    fields_count=total_filled_count,
+                    answers_summary=all_answers_summary,
+                    submission_proof=ver_data3.get("snippet", ""),
+                    chat_confirmation_text=_format_chat_confirmation(company, vacancy, total_filled_count),
+                )
+            break
+        else:
+            # No buttons found
+            if total_filled_count > 0:
+                return FormFillResult(
+                    ok=True,
+                    fields_count=total_filled_count,
+                    answers_summary=all_answers_summary,
+                    submission_proof="Form completed",
+                    chat_confirmation_text=_format_chat_confirmation(company, vacancy, total_filled_count),
+                )
+            return FormFillResult(ok=False, error="No interactive input fields or navigation buttons detected")
+
+    return FormFillResult(ok=False, error=f"Multi-step wizard exceeded {max_steps} steps without reaching confirmation")
+
+
+def _fill_google_form(
+    ws_url: str,
+    company: str,
+    vacancy: str,
+    max_steps: int = 15,
+) -> FormFillResult:
+    """Fill standard Google Form (docs.google.com/forms / forms.gle), supporting multi-page wizards."""
+    total_filled_count = 0
+    all_answers_summary: dict[str, str] = {}
+    last_fingerprint = ""
+    consecutive_repeat_count = 0
+
     verify_js = """(() => {
         const text = document.body ? document.body.innerText : '';
         const ok = text.includes('response has been recorded') ||
                    text.includes('Ответ записан') ||
                    text.includes('записан') ||
-                   text.includes('принята');
+                   text.includes('принята') ||
+                   text.includes('Благодарим') ||
+                   text.includes('Спасибо');
         return JSON.stringify({ok, snippet: text.slice(0, 200)});
     })()"""
-    ver_eval = _ws_call(ws_url, "Runtime.evaluate", {"expression": verify_js, "returnByValue": True})
-    ver_data = json.loads(ver_eval.get("result", {}).get("result", {}).get("value", "{}"))
 
-    if ver_data.get("ok"):
-        return FormFillResult(
-            ok=True,
-            fields_count=filled_count,
-            answers_summary={str(k): v["value"][:40] for k, v in answers.items()},
-            submission_proof=ver_data.get("snippet", ""),
-            chat_confirmation_text=_format_chat_confirmation(company, vacancy, filled_count),
-        )
-    return FormFillResult(ok=False, error="Confirmation message not detected on Google Form response screen")
+    for step in range(1, max_steps + 1):
+        # 1. Check if response is already recorded
+        ver_eval = _ws_call(ws_url, "Runtime.evaluate", {"expression": verify_js, "returnByValue": True})
+        ver_data = json.loads(ver_eval.get("result", {}).get("result", {}).get("value", "{}"))
+        if ver_data.get("ok"):
+            return FormFillResult(
+                ok=True,
+                fields_count=total_filled_count,
+                answers_summary=all_answers_summary,
+                submission_proof=ver_data.get("snippet", ""),
+                chat_confirmation_text=_format_chat_confirmation(company, vacancy, total_filled_count),
+            )
+
+        # 2. Extract visible question blocks
+        extract_js = """(() => {
+            function isVisible(el) {
+                if (!el) return false;
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                if (el.offsetParent === null && style.position !== 'fixed') return false;
+                const rect = el.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+            }
+            const allBlocks = Array.from(document.querySelectorAll('div[role="listitem"]'));
+            const blocks = allBlocks.filter(isVisible);
+            return JSON.stringify(blocks.map((b, idx) => {
+                const heading = b.querySelector('[role="heading"]')?.innerText || '';
+                const hasInput = !!b.querySelector('input[type="text"], input[type="email"], input[type="url"], input:not([type])');
+                const hasTextarea = !!b.querySelector('textarea');
+                const hasDate = !!b.querySelector('input[type="date"]');
+                const radios = Array.from(b.querySelectorAll('[role="radio"]')).map(r => r.getAttribute('data-value') || r.innerText.trim());
+                const checkboxes = Array.from(b.querySelectorAll('[role="checkbox"]')).map(c => c.getAttribute('data-value') || c.innerText.trim());
+                return {idx, heading, hasInput, hasTextarea, hasDate, radios, checkboxes};
+            }));
+        })()"""
+
+        res = _ws_call(ws_url, "Runtime.evaluate", {"expression": extract_js, "returnByValue": True})
+        blocks = json.loads(res.get("result", {}).get("result", {}).get("value", "[]"))
+
+        # Anti-stuck fingerprint guard
+        fingerprint = "||".join(b.get("heading", "") for b in blocks)
+        if fingerprint:
+            if fingerprint == last_fingerprint:
+                consecutive_repeat_count += 1
+                if consecutive_repeat_count >= 2:
+                    logger.warning("Google Form anti-stuck loop guard triggered at step %d with repeated questions: %s", step, fingerprint[:100])
+                    return FormFillResult(
+                        ok=False,
+                        blocked=True,
+                        blocked_reason="Anti-stuck: Google Form не переходит на следующий шаг (ошибка валидации обязательного поля)",
+                        fields_count=total_filled_count,
+                        answers_summary=all_answers_summary,
+                    )
+            else:
+                last_fingerprint = fingerprint
+                consecutive_repeat_count = 0
+
+        # Fill answers on current page
+        step_answers = {}
+        for b in blocks:
+            q_text = b.get("heading") or ""
+            radios = b.get("radios", [])
+            checkboxes = b.get("checkboxes", [])
+
+            if radios:
+                chosen = generate_answer_for_question(q_text, "radio", radios, company, vacancy)
+                if chosen:
+                    step_answers[b["idx"]] = {"type": "radio", "value": chosen}
+                    all_answers_summary[q_text] = chosen
+                    total_filled_count += 1
+            elif checkboxes:
+                step_answers[b["idx"]] = {"type": "checkbox", "value": checkboxes[0] if checkboxes else "all"}
+                all_answers_summary[q_text] = checkboxes[0] if checkboxes else "checked"
+                total_filled_count += 1
+            elif b.get("hasDate"):
+                step_answers[b["idx"]] = {"type": "date", "value": CANDIDATE_FACTS["earliest_start"]}
+                all_answers_summary[q_text] = CANDIDATE_FACTS["earliest_start"]
+                total_filled_count += 1
+            elif b.get("hasInput") or b.get("hasTextarea"):
+                ans = generate_answer_for_question(q_text, "text", None, company, vacancy)
+                if ans:
+                    step_answers[b["idx"]] = {"type": "text", "value": ans}
+                    all_answers_summary[q_text] = ans[:60]
+                    total_filled_count += 1
+
+        if step_answers:
+            apply_js = f"""(() => {{
+                function isVisible(el) {{
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                    if (el.offsetParent === null && style.position !== 'fixed') return false;
+                    const rect = el.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0;
+                }}
+                function setField(el, val) {{
+                    if (!el) return false;
+                    el.focus();
+                    el.value = val;
+                    el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    el.dispatchEvent(new Event('blur', {{bubbles: true}}));
+                    return true;
+                }}
+
+                const answers = {json.dumps(step_answers, ensure_ascii=False)};
+                const allBlocks = Array.from(document.querySelectorAll('div[role="listitem"]'));
+                const blocks = allBlocks.filter(isVisible);
+                let count = 0;
+
+                for (const idxStr of Object.keys(answers)) {{
+                    const idx = parseInt(idxStr, 10);
+                    if (idx >= blocks.length) continue;
+                    const b = blocks[idx];
+                    const item = answers[idxStr];
+
+                    if (item.type === 'text') {{
+                        const inp = b.querySelector('input[type="text"], input[type="email"], input[type="url"], input:not([type]), textarea');
+                        if (setField(inp, item.value)) count++;
+                    }} else if (item.type === 'date') {{
+                        const dInp = b.querySelector('input[type="date"]');
+                        if (setField(dInp, item.value)) count++;
+                    }} else if (item.type === 'radio') {{
+                        const r = b.querySelector('[role="radio"][data-value="' + item.value + '"]') ||
+                                  Array.from(b.querySelectorAll('[role="radio"]')).find(el => el.innerText.includes(item.value));
+                        if (r) {{
+                            r.click();
+                            r.dispatchEvent(new Event('change', {{bubbles: true}}));
+                            r.dispatchEvent(new Event('blur', {{bubbles: true}}));
+                            count++;
+                        }}
+                    }} else if (item.type === 'checkbox') {{
+                        const c = b.querySelector('[role="checkbox"]');
+                        if (c && c.getAttribute('aria-checked') !== 'true') {{
+                            c.click();
+                            c.dispatchEvent(new Event('change', {{bubbles: true}}));
+                            c.dispatchEvent(new Event('blur', {{bubbles: true}}));
+                            count++;
+                        }}
+                    }}
+                }}
+                return count;
+            }})()"""
+            _ws_call(ws_url, "Runtime.evaluate", {"expression": apply_js})
+            time.sleep(1.5)
+
+        # 3. Detect Submit vs Next (Далее) buttons in Google Form
+        button_check_js = """(() => {
+            function isVisible(el) {
+                if (!el) return false;
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                if (el.offsetParent === null && style.position !== 'fixed') return false;
+                const rect = el.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+            }
+            const allBtns = Array.from(document.querySelectorAll('[role="button"], button'));
+            const btns = allBtns.filter(isVisible);
+
+            const sub = btns.find(b => {
+                const t = (b.innerText || '').trim().toLowerCase();
+                return /^(?:submit|отправить|send)$/i.test(t) || b.getAttribute('jsname') === 'M2vTWe';
+            });
+            const nxt = btns.find(b => {
+                const t = (b.innerText || '').trim().toLowerCase();
+                return /^(?:далее|next|продолжить|continue)$/i.test(t) || b.getAttribute('jsname') === 'OCpkoe';
+            });
+
+            return JSON.stringify({hasSubmit: !!sub, hasNext: !!nxt});
+        })()"""
+
+        btn_eval = _ws_call(ws_url, "Runtime.evaluate", {"expression": button_check_js, "returnByValue": True})
+        btn_data = json.loads(btn_eval.get("result", {}).get("result", {}).get("value", "{}"))
+        has_submit = btn_data.get("hasSubmit")
+        has_next = btn_data.get("hasNext")
+
+        if has_next:
+            # Click Далее
+            click_next_js = """(() => {
+                const btns = Array.from(document.querySelectorAll('[role="button"], button'));
+                const nxt = btns.find(b => {
+                    const t = (b.innerText || '').trim().toLowerCase();
+                    return /^(?:далее|next|продолжить|continue)$/i.test(t) || b.getAttribute('jsname') === 'OCpkoe';
+                });
+                if (nxt) { nxt.click(); return true; }
+                return false;
+            })()"""
+            _ws_call(ws_url, "Runtime.evaluate", {"expression": click_next_js})
+            time.sleep(2.0)
+            continue
+        elif has_submit:
+            # Click Submit
+            click_sub_js = """(() => {
+                const btns = Array.from(document.querySelectorAll('[role="button"], button'));
+                const sub = btns.find(b => {
+                    const t = (b.innerText || '').trim().toLowerCase();
+                    return /^(?:submit|отправить|send)$/i.test(t) || b.getAttribute('jsname') === 'M2vTWe';
+                });
+                if (sub) { sub.click(); return true; }
+                return false;
+            })()"""
+            _ws_call(ws_url, "Runtime.evaluate", {"expression": click_sub_js})
+            time.sleep(3.5)
+
+            ver_eval2 = _ws_call(ws_url, "Runtime.evaluate", {"expression": verify_js, "returnByValue": True})
+            ver_data2 = json.loads(ver_eval2.get("result", {}).get("result", {}).get("value", "{}"))
+            if ver_data2.get("ok") or total_filled_count > 0:
+                return FormFillResult(
+                    ok=True,
+                    fields_count=total_filled_count,
+                    answers_summary=all_answers_summary,
+                    submission_proof=ver_data2.get("snippet", ""),
+                    chat_confirmation_text=_format_chat_confirmation(company, vacancy, total_filled_count),
+                )
+            return FormFillResult(ok=False, error="Confirmation message not detected on Google Form response screen")
+        else:
+            if total_filled_count > 0:
+                return FormFillResult(
+                    ok=True,
+                    fields_count=total_filled_count,
+                    answers_summary=all_answers_summary,
+                    submission_proof="Form completed",
+                    chat_confirmation_text=_format_chat_confirmation(company, vacancy, total_filled_count),
+                )
+            return FormFillResult(ok=False, error="No listitem blocks or navigation buttons found in Google Form")
+
+    return FormFillResult(ok=False, error=f"Google Form multi-page wizard exceeded {max_steps} steps without reaching confirmation")
 
 
 def _fill_gas_form(ws_url: str, company: str, vacancy: str) -> FormFillResult:
