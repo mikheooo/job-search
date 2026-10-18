@@ -1537,7 +1537,7 @@ class AutonomousJobAgent:
 
                 fill_res = None
                 cdp_target = self.config.cdp_url or "http://127.0.0.1:9111"
-                if is_external_form_url(form_url):
+                if is_external_form_url(form_url, msg_text):
                     try:
                         logger.info("Attempting autonomous fill of external form: %s", form_url)
                         fill_res = try_auto_fill_external_form(
@@ -1545,6 +1545,7 @@ class AutonomousJobAgent:
                             form_url=form_url,
                             company=d.employer or "HeadHunter Employer",
                             vacancy=d.vacancy_title or "Python Role",
+                            msg_context=msg_text,
                         )
                     except Exception as e_fill:
                         logger.warning("External form autonomous fill error: %s", e_fill)

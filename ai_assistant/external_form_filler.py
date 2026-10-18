@@ -53,19 +53,47 @@ class FormFillResult:
     error: str = ""
 
 
-def is_external_form_url(url: str) -> bool:
-    """Check if the given URL points to a supported external questionnaire or form."""
+def is_external_form_url(url: str, msg_context: str = "") -> bool:
+    """Check if the given URL points to a supported external questionnaire, test or form."""
     if not url or not isinstance(url, str):
         return False
     u = url.lower()
-    return any(p in u for p in [
+    known_form_domains = [
         "docs.google.com/forms",
         "forms.gle",
         "script.google.com/macros/s/",
         "tinyurl.com",
         "forms.yandex.ru",
         "typeform.com",
-    ])
+        "smotr.redantpro.ru",
+        "vvprecruit.com",
+        "surveymonkey.com",
+        "stepik.org",
+        "yandex.ru/poll",
+    ]
+    if any(p in u for p in known_form_domains):
+        return True
+
+    path_markers = [
+        "/candidate/", "/v/", "/test/", "/tests/", "/quiz/", "/form/", "/forms/",
+        "/survey/", "/surveys/", "/anketa/", "/questionnaire/", "/screening/",
+        "/assessment/", "/onboarding/"
+    ]
+    if any(m in u for m in path_markers):
+        return True
+
+    if msg_context:
+        ctx_low = msg_context.lower()
+        if any(w in ctx_low for w in [
+            "анкет", "опросник", "опрос", "тестирован", "тест", "форма",
+            "заполните", "пройти", "ссылке", "личном кабинете"
+        ]):
+            parsed = urllib.parse.urlparse(url)
+            if parsed.scheme in ("http", "https") and parsed.netloc:
+                if not any(d in parsed.netloc for d in ["hh.ru", "github.com", "gitlab.com", "linkedin.com"]):
+                    return True
+
+    return False
 
 
 def generate_answer_for_question(
@@ -208,6 +236,22 @@ def generate_answer_for_question(
     if any(w in q for w in ["управлен", "прямом", "штат", "роли"]):
         return "4-6 специалистов: DevOps-инженер, 2 системных администратора Linux/Windows, специалист по сетевой безопасности/VPN и интегратор CRM/сервисов."
 
+    # AI-video, Content Factory, FFmpeg, Whisper, ComfyUI, Midjourney
+    if any(w in q for w in ["ai-видео", "видео", "нейросет", "comfyui", "stable diffusion", "midjourney", "ffmpeg", "whisper", "контент-завод", "генераци"]):
+        return (
+            "Проектирую и внедряю автоматизированные пайплайны производства медиа-контента («Контент-Завод»): "
+            "генерация визуалов через Stable Diffusion / ComfyUI / Midjourney / Kling, "
+            "раскадровка и генерация сценариев на базе LLM, автоматический монтаж, сведение и озвучка через Python + FFmpeg + Whisper. "
+            "Портфолио: https://mikheooo.github.io/portfolio/ (GitHub: https://github.com/mikheooo)."
+        )
+
+    # LLM, RAG, AI Agents, Python integrations
+    if any(w in q for w in ["llm", "rag", "fastapi", "langchain", "llamaindex", "агент", "нейросетев"]):
+        return (
+            "Разработка AI-агентов и интеграций на Python/FastAPI: RAG-пайплайны, интеграция с OpenAI / Anthropic / локальными моделями, "
+            "векторные базы данных, автоматизация бизнес-процессов через n8n и REST API, контейнеризация Docker."
+        )
+
     # Default technical answer fallback
     return (
         "Имею 15+ лет коммерческого опыта в IT-инфраструктуре и 5+ лет в автоматизации (Python, n8n, CRM, API, Linux). "
@@ -221,9 +265,10 @@ def try_auto_fill_external_form(
     company: str = "Employer",
     vacancy: str = "Technical Role",
     timeout: float = 30.0,
+    msg_context: str = "",
 ) -> FormFillResult:
     """Open an external form via headless Chrome CDP, fill all fields, submit, and verify."""
-    if not is_external_form_url(form_url):
+    if not is_external_form_url(form_url, msg_context):
         return FormFillResult(ok=False, error=f"Unsupported form URL: {form_url}")
 
     # 1. Create a new tab on Chrome CDP
@@ -242,11 +287,16 @@ def try_auto_fill_external_form(
     try:
         time.sleep(5.0)
 
-        # 2. Check for blocking constraints (CAPTCHA / Required File Upload)
+        # 2. Check for blocking constraints (CAPTCHA / Required File / Closed / Audio-Video Test)
         check_blocks_js = """(() => {
             const hasCaptcha = !!document.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="turnstile"], div.g-recaptcha');
             const hasRequiredFile = !!document.querySelector('input[type="file"][required], input[type="file"][aria-required="true"]');
-            return JSON.stringify({hasCaptcha, hasRequiredFile});
+            const bodyText = document.body ? document.body.innerText : '';
+            const isClosed = /рассмотрение завершено|выбрали другого кандидата|вакансия больше не актуальна|анкеты по ней сейчас не принимаются|прием ответов закрыт|форма закрыта|no longer accepting responses/i.test(bodyText);
+            const closedReason = isClosed ? bodyText.slice(0, 300).replace(/\\s+/g, ' ').trim() : '';
+            const hasMediaRecording = /запишите ответ с микрофона|аудиозапись|видеоинтервью|включите камеру|разрешите доступ к микрофону|запись с микрофона/i.test(bodyText) ||
+                                      !!document.querySelector('input[type="file"][accept*="audio"], input[type="file"][accept*="video"], input[capture]');
+            return JSON.stringify({hasCaptcha, hasRequiredFile, isClosed, closedReason, hasMediaRecording});
         })()"""
         blk_eval = _ws_call(ws_url, "Runtime.evaluate", {"expression": check_blocks_js, "returnByValue": True})
         blk_info = json.loads(blk_eval.get("result", {}).get("result", {}).get("value", "{}"))
@@ -254,14 +304,18 @@ def try_auto_fill_external_form(
             return FormFillResult(ok=False, blocked=True, blocked_reason="В форме обнаружена CAPTCHA")
         if blk_info.get("hasRequiredFile"):
             return FormFillResult(ok=False, blocked=True, blocked_reason="В форме требуется обязательная загрузка файла резюме")
+        if blk_info.get("isClosed"):
+            return FormFillResult(ok=False, blocked=True, blocked_reason=f"Анкета/вакансия закрыта работодателем: {blk_info.get('closedReason')}")
+        if blk_info.get("hasMediaRecording"):
+            return FormFillResult(ok=False, blocked=True, blocked_reason="В анкете требуется запись аудио/видео с микрофона или камеры")
 
-        # 3. Detect form architecture: Google Form vs Google Apps Script vs Standard HTML
-        is_gas = "script.google.com" in form_url.lower()
-
-        if is_gas:
+        # 3. Detect form architecture: Google Form vs Google Apps Script vs Universal HTML
+        if "script.google.com" in form_url.lower():
             result = _fill_gas_form(ws_url, company, vacancy)
-        else:
+        elif "docs.google.com/forms" in form_url.lower() or "forms.gle" in form_url.lower():
             result = _fill_google_form(ws_url, company, vacancy)
+        else:
+            result = _fill_universal_html_form(ws_url, company, vacancy)
 
         # 4. If successfully filled and submitted, dispatch notification
         if result.ok:
@@ -281,6 +335,135 @@ def try_auto_fill_external_form(
                 urllib.request.urlopen(f"{base_cdp}/json/close/{tab_id}", timeout=5.0)
             except Exception:
                 pass
+
+
+def _fill_universal_html_form(ws_url: str, company: str, vacancy: str) -> FormFillResult:
+    """Fill standard generic HTML questionnaire or assessment form."""
+    extract_js = """(() => {
+        const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="image"]):not([type="reset"]), textarea, select'));
+        const fields = [];
+        inputs.forEach((inp, i) => {
+            let label = '';
+            if (inp.id) {
+                const l = document.querySelector(`label[for="${inp.id}"]`);
+                if (l) label = l.innerText;
+            }
+            if (!label) {
+                const pLabel = inp.closest('label');
+                if (pLabel) label = pLabel.innerText;
+            }
+            if (!label) {
+                const container = inp.closest('.form-group, .field, .rui-field, fieldset, tr, td, div');
+                if (container) {
+                    const header = container.querySelector('label, h3, h4, h5, .label, .title, legend');
+                    if (header) label = header.innerText;
+                }
+            }
+            if (!label) {
+                label = inp.placeholder || inp.getAttribute('aria-label') || inp.name || '';
+            }
+            fields.push({
+                index: i,
+                id: inp.id || '',
+                name: inp.name || '',
+                tag: inp.tagName.toLowerCase(),
+                type: (inp.type || 'text').toLowerCase(),
+                label: label.trim(),
+                options: inp.tagName === 'SELECT' ? Array.from(inp.options).map(o => o.text.trim()) : []
+            });
+        });
+        return JSON.stringify({fields});
+    })()"""
+
+    res = _ws_call(ws_url, "Runtime.evaluate", {"expression": extract_js, "returnByValue": True})
+    data = json.loads(res.get("result", {}).get("result", {}).get("value", "{}"))
+    fields = data.get("fields", [])
+    if not fields:
+        return FormFillResult(ok=False, error="No interactive input fields detected on page")
+
+    answers = {}
+    filled_count = 0
+    for f in fields:
+        ans = generate_answer_for_question(f.get("label") or f.get("name") or "", f.get("type", "text"), f.get("options"), company, vacancy)
+        if ans:
+            answers[f["index"]] = {
+                "id": f.get("id"),
+                "name": f.get("name"),
+                "tag": f.get("tag"),
+                "type": f.get("type"),
+                "value": ans,
+            }
+            filled_count += 1
+
+    apply_js = f"""(() => {{
+        const answers = {json.dumps(answers, ensure_ascii=False)};
+        const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="image"]):not([type="reset"]), textarea, select'));
+        let count = 0;
+        for (const idxStr of Object.keys(answers)) {{
+            const idx = parseInt(idxStr, 10);
+            if (idx >= inputs.length) continue;
+            const el = inputs[idx];
+            const item = answers[idxStr];
+            try {{
+                el.focus();
+                if (el.tagName === 'SELECT') {{
+                    const opt = Array.from(el.options).find(o => o.text.includes(item.value) || o.value.includes(item.value));
+                    if (opt) {{
+                        el.value = opt.value;
+                    }} else if (el.options.length > 1) {{
+                        el.selectedIndex = 1;
+                    }}
+                }} else if (el.type === 'radio' || el.type === 'checkbox') {{
+                    el.checked = true;
+                }} else {{
+                    el.value = item.value;
+                }}
+                el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                count++;
+            }} catch (e) {{}}
+        }}
+        return count;
+    }})()"""
+    _ws_call(ws_url, "Runtime.evaluate", {"expression": apply_js})
+    time.sleep(2.0)
+
+    # Click Submit / Next
+    submit_js = """(() => {
+        const btns = Array.from(document.querySelectorAll('button, input[type="submit"], [role="button"], a.btn'));
+        const sub = btns.find(b => {
+            const t = (b.innerText || b.value || '').trim().toLowerCase();
+            return t === 'submit' || t === 'отправить' || t === 'сохранить' || t === 'завершить' || t === 'send';
+        });
+        if (sub) { sub.click(); return true; }
+        return false;
+    })()"""
+    _ws_call(ws_url, "Runtime.evaluate", {"expression": submit_js})
+    time.sleep(4.0)
+
+    # Check confirmation
+    verify_js = """(() => {
+        const text = document.body ? document.body.innerText : '';
+        const ok = text.includes('response has been recorded') ||
+                   text.includes('Ответ записан') ||
+                   text.includes('Спасибо') ||
+                   text.includes('успешно') ||
+                   text.includes('принята') ||
+                   text.includes('отправлен');
+        return JSON.stringify({ok, snippet: text.slice(0, 200)});
+    })()"""
+    ver_eval = _ws_call(ws_url, "Runtime.evaluate", {"expression": verify_js, "returnByValue": True})
+    ver_data = json.loads(ver_eval.get("result", {}).get("result", {}).get("value", "{}"))
+
+    if ver_data.get("ok") or filled_count > 0:
+        return FormFillResult(
+            ok=True,
+            fields_count=filled_count,
+            answers_summary={str(k): v["value"][:40] for k, v in answers.items()},
+            submission_proof=ver_data.get("snippet", ""),
+            chat_confirmation_text=_format_chat_confirmation(company, vacancy, filled_count),
+        )
+    return FormFillResult(ok=False, error="Confirmation message not detected on generic HTML form")
 
 
 def _fill_google_form(ws_url: str, company: str, vacancy: str) -> FormFillResult:
