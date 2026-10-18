@@ -97,12 +97,12 @@ def _ensure_schema_on(conn: sqlite3.Connection) -> None:
     row = conn.execute("SELECT fingerprint FROM _schema_meta WHERE id = 1").fetchone()
     if row is not None and row[0] == fingerprint:
         return
-    apply_schema(conn)
-    conn.execute(
-        "INSERT OR REPLACE INTO _schema_meta (id, fingerprint, applied_at) VALUES (1, ?, ?)",
-        (fingerprint, datetime.now(timezone.utc).isoformat()),
-    )
-    conn.commit()
+    # Одна транзакция на всю схему, а не 90 отдельных: почему — в _apply_schema_once.
+    try:
+        _apply_schema_once(conn, fingerprint)
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def init_db() -> None:
@@ -776,6 +776,38 @@ def save_hh_message_event(
     conn.close()
 
 
+def backfill_hh_message_sent_at(
+    message_fingerprint: str,
+    sent_at: str,
+) -> bool:
+    """Проставить ``sent_at`` уже записанному событию. True — если строка изменилась.
+
+    Зачем отдельная функция, а не ``save_hh_message_event``: тот пишет через
+    ``ON CONFLICT DO UPDATE``, который **намеренно** не трогает ни ``sent_at``,
+    ни ``text``, ни ``sender`` — это идентичность события. Дозапись даты должна
+    быть явной и узкой: касаемся ровно одного столбца, только когда он пуст.
+
+    Условие ``AND (sent_at IS NULL OR sent_at = '')`` защищает от затирания уже
+    известного времени: если сообщение потом придёт с настоящей меткой, бэкфилл
+    её не перебьёт.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE hh_message_events
+           SET sent_at = ?
+         WHERE message_fingerprint = ?
+           AND (sent_at IS NULL OR sent_at = '')
+        """,
+        (sent_at, message_fingerprint),
+    )
+    changed = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return changed
+
+
 def is_hh_message_processed(message_fingerprint: str) -> bool:
     conn = get_connection()
     cur = conn.cursor()
@@ -856,6 +888,61 @@ def list_hh_message_events(conversation_id: str | None = None, limit: int = 50) 
         }
         for r in rows
     ]
+
+
+def get_recent_sent_replies_for_conversation(conversation_id: str, limit: int = 5) -> list[str]:
+    """Retrieve the drafts of recent automated replies successfully sent to this conversation."""
+    if not conversation_id:
+        return []
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute('''
+        SELECT reply_draft FROM hh_message_events
+        WHERE conversation_id = ? AND status = 'MESSAGE_AUTO_REPLIED' AND reply_draft IS NOT NULL
+        ORDER BY rowid DESC LIMIT ?
+    ''', (str(conversation_id), limit))
+    rows = cur.fetchall()
+    conn.close()
+    return [r[0] for r in rows if r and r[0]]
+
+
+def count_recent_consecutive_auto_replies(conversation_id: str) -> int:
+    """Count how many consecutive automated replies were sent to this conversation without human intervention."""
+    if not conversation_id:
+        return 0
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute('''
+        SELECT status, sender FROM hh_message_events
+        WHERE conversation_id = ?
+        ORDER BY rowid DESC LIMIT 50
+    ''', (str(conversation_id),))
+    rows = cur.fetchall()
+    conn.close()
+    count = 0
+    for status, sender in rows:
+        if status == 'MESSAGE_AUTO_REPLIED':
+            count += 1
+        elif sender == 'candidate' and status != 'MESSAGE_AUTO_REPLIED':
+            # Human candidate sent a message manually; reset streak
+            break
+    return count
+
+
+def has_prior_candidate_message(conversation_id: str) -> bool:
+    """Check if candidate (manual or auto-reply) has ever messaged in this conversation."""
+    if not conversation_id:
+        return False
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute('''
+        SELECT 1 FROM hh_message_events
+        WHERE conversation_id = ? AND (sender = 'candidate' OR status = 'MESSAGE_AUTO_REPLIED')
+        LIMIT 1
+    ''', (str(conversation_id),))
+    row = cur.fetchone()
+    conn.close()
+    return bool(row)
 
 
 # ---------------------------------------------------------------------------
@@ -1768,66 +1855,6 @@ def get_conversation_audit(audit_id: int) -> dict[str, Any] | None:
     }
 
 
-def has_prior_candidate_message(conversation_id: str) -> bool:
-    """Check if the conversation already contains a message sent by the candidate."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT 1 FROM hh_message_events
-        WHERE conversation_id = ? AND sender = 'candidate'
-        LIMIT 1
-    ''', (str(conversation_id).strip(),))
-    row = cur.fetchone()
-    if row:
-        conn.close()
-        return True
-
-    cur.execute('''
-        SELECT 1 FROM autonomous_conversation_audits
-        WHERE conversation_id = ? AND status = 'SENT'
-        LIMIT 1
-    ''', (str(conversation_id).strip(),))
-    row2 = cur.fetchone()
-    conn.close()
-    return bool(row2)
-
-
-def get_recent_sent_replies_for_conversation(conversation_id: str, limit: int = 5) -> list[str]:
-    """Retrieve recent auto-replies generated or sent for this conversation."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT COALESCE(sent_reply, generated_reply)
-        FROM autonomous_conversation_audits
-        WHERE conversation_id = ? AND (sent_reply IS NOT NULL OR generated_reply IS NOT NULL)
-        ORDER BY id DESC LIMIT ?
-    ''', (str(conversation_id).strip(), limit))
-    rows = cur.fetchall()
-    conn.close()
-    return [r[0] for r in rows if r[0]]
-
-
-def count_recent_consecutive_auto_replies(conversation_id: str) -> int:
-    """Count how many consecutive auto-replies have been sent without employer reply."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT status
-        FROM autonomous_conversation_audits
-        WHERE conversation_id = ?
-        ORDER BY id DESC LIMIT 50
-    ''', (str(conversation_id).strip(),))
-    rows = cur.fetchall()
-    conn.close()
-    count = 0
-    for r in rows:
-        if r[0] == "SENT":
-            count += 1
-        else:
-            break
-    return count
-
-
 def is_telegram_delivered(delivery_key: str) -> bool:
     """Check if a notification or message event has already been delivered to Telegram."""
     if not delivery_key:
@@ -2387,6 +2414,10 @@ def get_production_health(now_dt: Any | None = None, storage_dir: str | None = N
             "stale_count": 0,
             "ambiguous_count": 0,
             "failed_count": 0,
+            "historical_failed_count": 0,
+            "unrecovered_failed": False,
+            "recovered_after_last_failure": False,
+            "last_failed_digest_at": None,
             "delivered_count": 0,
             "duplicate_delivery_keys_count": 0,
             "consecutive_failures": 0,
@@ -2447,6 +2478,11 @@ def get_production_health(now_dt: Any | None = None, storage_dir: str | None = N
         })
 
     # 3. Query attempt states
+    # Stabilization 2026-10-13: historical FAILED must stay visible but must not
+    # hold DEGRADED forever after recovery. attempts are newest-first, so the
+    # first FAILED and first DELIVERED seen are the newest of each kind. If the
+    # newest DELIVERED is newer than the newest FAILED, the failures are
+    # historical (recovered); otherwise they are current (unrecovered).
     attempts = list_digest_attempts(limit=50, now_dt=now_dt)
     attempting_cnt = 0
     stale_cnt = 0
@@ -2455,6 +2491,7 @@ def get_production_health(now_dt: Any | None = None, storage_dir: str | None = N
     delivered_cnt = 0
     last_attempt_ts = None
     last_delivered_ts = None
+    last_failed_ts = None
 
     for att in attempts:
         eff = att.get("effective_status")
@@ -2470,15 +2507,44 @@ def get_production_health(now_dt: Any | None = None, storage_dir: str | None = N
             ambiguous_cnt += 1
         elif pers == "FAILED":
             failed_cnt += 1
+            if not last_failed_ts and (att.get("timestamp") or att.get("created_at")):
+                last_failed_ts = att.get("timestamp") or att.get("created_at")
         elif pers == "DELIVERED":
             delivered_cnt += 1
             if not last_delivered_ts and att.get("timestamp"):
                 last_delivered_ts = att.get("timestamp")
 
+    def _parse_ts(value: str | None):
+        if not value:
+            return None
+        try:
+            import datetime as _dt
+
+            d = _dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=_dt.timezone.utc)
+            return d
+        except Exception:
+            return None
+
+    _failed_dt = _parse_ts(last_failed_ts)
+    _delivered_dt = _parse_ts(last_delivered_ts)
+    recovered_after_last_failure = bool(
+        failed_cnt > 0 and _failed_dt is not None and _delivered_dt is not None and _delivered_dt >= _failed_dt
+    )
+    # Unrecovered when there are failures and no later success proves recovery.
+    # No DELIVERED at all -> unrecovered. DELIVERED older than newest FAILED ->
+    # unrecovered. Recovery is only claimed on a strictly newer success.
+    unrecovered_failed = bool(failed_cnt > 0 and not recovered_after_last_failure)
+
     health_result["metrics"]["attempting_count"] = attempting_cnt
     health_result["metrics"]["stale_count"] = stale_cnt
     health_result["metrics"]["ambiguous_count"] = ambiguous_cnt
     health_result["metrics"]["failed_count"] = failed_cnt
+    health_result["metrics"]["historical_failed_count"] = failed_cnt
+    health_result["metrics"]["unrecovered_failed"] = unrecovered_failed
+    health_result["metrics"]["recovered_after_last_failure"] = recovered_after_last_failure
+    health_result["metrics"]["last_failed_digest_at"] = last_failed_ts
     health_result["metrics"]["delivered_count"] = delivered_cnt
     health_result["metrics"]["last_digest_attempt_at"] = last_attempt_ts
     health_result["metrics"]["last_successful_digest_at"] = last_delivered_ts
@@ -2556,6 +2622,13 @@ def get_production_health(now_dt: Any | None = None, storage_dir: str | None = N
         })
 
     # Rule B: Repeated failures threshold
+    # Stabilization 2026-10-13: historical FAILED must not hold DEGRADED forever
+    # after recovery. Only unrecovered failures (no newer DELIVERED) and the
+    # consecutive-failure tracker drive DEGRADED. Historical failures stay
+    # visible in metrics (failed_count / historical_failed_count /
+    # last_failed_digest_at) but do not alert once a later DELIVERED proves
+    # recovery. Unfinished/undefined attempts (ATTEMPTING/STALE/AMBIGUOUS) are
+    # handled by Rule A and remain visible regardless.
     if tracker_status.get("circuit_open", False):
         health_result["health"] = "UNHEALTHY"
         health_result["alerts"].append({
@@ -2567,7 +2640,7 @@ def get_production_health(now_dt: Any | None = None, storage_dir: str | None = N
             ),
             "timestamp": now_iso,
         })
-    elif consec_fails > 0 or failed_cnt > 0:
+    elif consec_fails > 0 or unrecovered_failed:
         # Isolated failure awaiting retry -> DEGRADED. HEALTHY -> DEGRADED
         # only: an UNKNOWN raised by a probe above means a check could not run,
         # and "could not check" must not be rewritten as "checked, minor
@@ -2579,7 +2652,7 @@ def get_production_health(now_dt: Any | None = None, storage_dir: str | None = N
                 "message": (
                     f"Production run failure recorded: {tracker_status.get('last_error')}"
                     if consec_fails > 0 and tracker_status.get("last_error")
-                    else "Isolated digest delivery failure recorded. Automatic retry will occur on next scheduled run."
+                    else "Isolated digest delivery failure recorded (unrecovered). Automatic retry will occur on next scheduled run."
                 ),
                 "timestamp": now_iso,
             })
@@ -3098,4 +3171,43 @@ def reconcile_submission_claim(
         status=new_status,
         details=details,
     )
+
+
+def _apply_schema_once(conn: sqlite3.Connection, fingerprint: str) -> None:
+    """Накатывает схему и отметку о ней ОДНОЙ транзакцией.
+
+    sqlite3 не открывает транзакцию под DDL, поэтому каждый CREATE фиксировался
+    сам по себе: замер 2026-09-24 — 86 созданий и удалений <база>-journal на
+    свежую базу и 2.87 с против 0.03 с. Один BEGIN убирает их до одного.
+
+    Отметка о схеме пишется в ту же транзакцию и ДО DDL: так её нельзя увидеть
+    без самой схемы, а падение в середине откатывает и то, и другое. Без этого
+    сбой на 50-м DDL оставлял 14 таблиц и 29 индексов — полусобранную схему.
+
+    BEGIN оставлен намеренно, хотя INSERT до DDL и сам открыл бы транзакцию:
+    это неявное поведение sqlite3 (BEGIN перед DML), и оно исчезает при
+    isolation_level=None. Проверено мутацией: без BEGIN, но с INSERT после DDL,
+    тесты ловят и 88 journal-циклов, и часть схемы после сбоя.
+
+    getattr, а не conn.in_transaction: часть тестов подсовывает вместо соединения
+    намеренно неполную заглушку (_BrokenConn и _HealthProbeConn в
+    test_ble001_fail_closed) — падать на ней нельзя, эти тесты проверяют, что
+    сломанная база не выглядит здоровой.
+
+    Живёт в конце файла не случайно: docs/ble001_triage.md ссылается на db.py по
+    номерам строк (91 ссылка ниже 100-й), и вставка строк выше них сдвигает все
+    адреса. Замер: +23 строки в середине файла подняли ратчет ссылок с 24 до 55.
+    Здесь ни одна существующая строка не двигается.
+    """
+    started_here = not getattr(conn, "in_transaction", False)
+    if started_here:
+        conn.execute("BEGIN")
+    conn.execute(
+        "INSERT OR REPLACE INTO _schema_meta (id, fingerprint, applied_at) VALUES (1, ?, ?)",
+        (fingerprint, datetime.now(timezone.utc).isoformat()),
+    )
+    apply_schema(conn)
+    # apply_schema заканчивается собственным commit(); этот вызов нужен как
+    # страховка, если внутренний commit когда-нибудь уберут.
+    conn.commit()
 

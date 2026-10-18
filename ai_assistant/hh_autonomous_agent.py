@@ -1697,7 +1697,7 @@ class AutonomousJobAgent:
 
             is_sendable = bool(reply_text and classification in (
                 "NEEDS_REPLY", "RECRUITER_QUESTION",
-                "TEST_TASK", "EXTERNAL_QUESTIONNAIRE", "EXTERNAL_QUESTIONNAIRE_SUBMITTED"
+                "TEST_TASK", "EXTERNAL_QUESTIONNAIRE_SUBMITTED"
             ))
 
             if is_sendable:
@@ -1773,21 +1773,35 @@ class AutonomousJobAgent:
                         }})()""")
                         send_res = json.loads(raw_send) if isinstance(raw_send, str) else raw_send
                         if bool(send_res.get("ok")):
-                            time.sleep(2)
-                            verify_js = f"""(() => {{
-                                const ta = document.querySelector('textarea[data-qa="text-input"], textarea');
-                                const bubbles = Array.from(document.querySelectorAll('div[class*="message--"], [class*="chat-bubble"]'));
-                                const snippet = {json.dumps(reply_snippet)};
-                                const foundInDom = bubbles.some(b => (b.innerText || '').includes(snippet));
-                                const inputCleared = !ta || !ta.value || !ta.value.includes(snippet);
-                                return JSON.stringify({{ verified: foundInDom || inputCleared }});
-                            }})()"""
-                            try:
-                                raw_v = eval_fn(verify_js)
-                                verify_res = json.loads(raw_v) if isinstance(raw_v, str) else raw_v
-                                is_dom_confirmed = bool(verify_res.get("verified", True))
-                            except Exception:
-                                is_dom_confirmed = True
+                            # A transport that reports the DOM verdict itself is
+                            # believed: re-reading the page could only overwrite a
+                            # measurement with a guess.
+                            explicit_verdict = send_res.get("verified_in_hh")
+                            if explicit_verdict is not None:
+                                is_dom_confirmed = bool(explicit_verdict)
+                            else:
+                                time.sleep(2)
+                                verify_js = f"""(() => {{
+                                    const ta = document.querySelector('textarea[data-qa="text-input"], textarea');
+                                    const bubbles = Array.from(document.querySelectorAll('div[class*="message--"], [class*="chat-bubble"]'));
+                                    const snippet = {json.dumps(reply_snippet)};
+                                    const foundInDom = bubbles.some(b => (b.innerText || '').includes(snippet));
+                                    const inputCleared = !ta || !ta.value || !ta.value.includes(snippet);
+                                    return JSON.stringify({{ verified: foundInDom || inputCleared }});
+                                }})()"""
+                                try:
+                                    raw_v = eval_fn(verify_js)
+                                    verify_res = json.loads(raw_v) if isinstance(raw_v, str) else raw_v
+                                    is_dom_confirmed = bool(verify_res.get("verified", True))
+                                except Exception as e_verify:
+                                    # The probe itself failed. The send already said
+                                    # ok, so this stays permissive - the verdict the
+                                    # transport reports is the one that counts.
+                                    is_dom_confirmed = True
+                                    logger.debug(
+                                        "DOM verification unreadable for conv %s: %s",
+                                        d.conversation_id, e_verify,
+                                    )
 
                             if is_dom_confirmed:
                                 send_status = "SENT"
