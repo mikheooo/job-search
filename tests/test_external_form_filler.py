@@ -308,6 +308,8 @@ def test_smart_fallback_for_non_standard_open_questions():
     ans_sched = generate_answer_for_question("Какой у вас график и формат работы?")
     assert "100% Remote" in ans_sched
     assert "МСК" in ans_sched
+    assert "разница в 4 часа мне абсолютно комфортна" in ans_sched
+    assert "Самара" not in ans_sched
 
     # Legal contract
     ans_legal = generate_answer_for_question("Какая форма оформления вам подходит (ТК РФ, ИП)?")
@@ -325,6 +327,43 @@ def test_smart_fallback_for_non_standard_open_questions():
     opt_format = ["Работа в офисе", "Гибридный формат", "Полная удаленка"]
     chosen_format = generate_answer_for_question("Желаемый формат занятости", "radio", opt_format)
     assert chosen_format == "Полная удаленка"
+
+
+def test_timezone_location_and_schedule_standardization():
+    """Verify standardized responses for timezone, location, schedule, and interview window."""
+    # 1. Timezone question
+    ans_tz = generate_answer_for_question("В каком часовом поясе вы находитесь?")
+    assert ans_tz == "UTC+7 (МСК+4, часовой пояс Новосибирска / Красноярска)"
+
+    # 2. Location (Russian questionnaire)
+    ans_loc_ru = generate_answer_for_question("Где вы сейчас находитесь и ваш город проживания?")
+    assert ans_loc_ru == "Удаленно (РФ, часовой пояс МСК+4 / Новосибирск, гражданство РФ)"
+    assert "Самара" not in ans_loc_ru
+
+    # 3. Location (English questionnaire)
+    ans_loc_en = generate_answer_for_question("Your current city and country / location:")
+    assert ans_loc_en == "Remote (UTC+7, Thailand / Ready to work in your timezone)"
+
+    # 4. Schedule question
+    ans_sched_only = generate_answer_for_question("Ваш рабочий график?")
+    assert "Полностью готов работать по московскому времени (09:00–18:00 или 10:00–19:00 МСК)" in ans_sched_only
+
+    # 5. Interview window question
+    ans_slots = generate_answer_for_question("Укажите удобное время для созвона / интервью:")
+    assert "09:00 до 17:00 МСК (13:00–21:00 по моему местному времени UTC+7)" in ans_slots
+
+    # 6. Dropdown priority: Удаленно -> UTC+7 / МСК+4 (Новосибирск / Красноярск) -> Москва
+    # Case A: Has Remote
+    opts_with_remote = ["Москва", "Красноярск (UTC+7)", "Удаленно"]
+    assert generate_answer_for_question("Локация", "select", opts_with_remote) == "Удаленно"
+
+    # Case B: No Remote, has UTC+7
+    opts_no_remote = ["Москва", "Красноярск (UTC+7)", "Санкт-Петербург"]
+    assert generate_answer_for_question("Город", "select", opts_no_remote) == "Красноярск (UTC+7)"
+
+    # Case C: No Remote or UTC+7, has Moscow
+    opts_moscow_only = ["Екатеринбург", "Москва", "Казань"]
+    assert generate_answer_for_question("Город", "select", opts_moscow_only) == "Москва"
 
 
 def test_llm_synthesis_fallback(monkeypatch):

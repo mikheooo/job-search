@@ -8,7 +8,7 @@ amoCRM, SQL, Helpdesk, Network, AI/ML, etc.).
 
 Candidate Core Anchors:
 - Name: Михаил (Mikhail)
-- Location (RU jobs): Россия / РФ (удаленная работа, часовой пояс МСК, без релокации)
+- Location (RU jobs): Россия / РФ (удаленная работа, часовой пояс UTC+7 / МСК+4, готов к графику по МСК)
 - Location (Bangkok / Int jobs): Bangkok, Thailand (already on the ground — NO relocation or flights needed)
 - Employment: ТК РФ, ИП, Самозанятость / Thai Work Permit
 - Telegram: @brokeassh
@@ -141,7 +141,7 @@ def generate_tailored_cover_letter(role: str, company: str, description: str = "
 • наличие реальных практических проектов в публичном портфолио на GitHub: https://github.com/mikheooo.
 
 Готовность и условия:
-• Формат: 100% удаленная работа (нахожусь в РФ, готов оформиться по ТК РФ, ИП или Самозанятости, часовой пояс МСК).
+• Формат: 100% удаленная работа (РФ, часовой пояс UTC+7 / МСК+4, полностью готов к графику по Москве: 09:00–18:00 МСК, оформление по ТК РФ, ИП или Самозанятости).
 • Готов приступить к задачам в кратчайшие сроки и выполнить оплачиваемое тестовое задание или пройти техническое интервью.
 
 Буду рад подробно обсудить проект и задачи на встрече!
@@ -151,45 +151,264 @@ def generate_tailored_cover_letter(role: str, company: str, description: str = "
     return letter.strip()
 
 
+def strip_repeated_greeting(text: str) -> str:
+    """Strip repeated greeting (Здравствуйте/Добрый день/Hello) from subsequent chat replies."""
+    return re.sub(r"^(Здравствуйте!?|Добрый день!?|Приветствую!?|Hello!?|Hi!?)\s*", "", text, flags=re.IGNORECASE).strip()
+
+
 def generate_employer_chat_reply(
     employer_message: str,
     vacancy_title: str = "",
     company_name: str = "",
-    conversation_context: list[str] | None = None
+    conversation_context: list[str] | None = None,
+    has_prior_interaction: bool = False,
 ) -> dict[str, Any]:
-    """Generate a sharp, persuasive, professional reply to an employer's message/question in chat."""
+    result = _generate_employer_chat_reply_raw(
+        employer_message=employer_message,
+        vacancy_title=vacancy_title,
+        company_name=company_name,
+        conversation_context=conversation_context,
+        has_prior_interaction=has_prior_interaction,
+    )
+    if has_prior_interaction or (conversation_context and len(conversation_context) > 0):
+        result["reply_text"] = strip_repeated_greeting(result.get("reply_text", ""))
+    return result
+
+
+def _generate_employer_chat_reply_raw(
+    employer_message: str,
+    vacancy_title: str = "",
+    company_name: str = "",
+    conversation_context: list[str] | None = None,
+    has_prior_interaction: bool = False,
+) -> dict[str, Any]:
+    """Generate a sharp, persuasive, professional reply grounded in candidate_kb.json."""
     msg_low = employer_message.lower()
     detected_techs = extract_key_technologies(employer_message)
 
-    # 1. Location / Russia confirmation
-    if any(w in msg_low for w in ["рф", "росси", "локаци", "город", "где находит", "прожива"]):
+    # 0. Portfolio / Website cases / Work samples
+    if any(w in msg_low for w in ["портфолио", "portfolio", "кейсы", "кейс", "сайты", "сайтов", "примеры работ", "показать работы", "пример работ"]):
         reply_text = (
-            "Здравствуйте! Да, территориально нахожусь в РФ. "
-            "Работаю полностью удаленно в часовом поясе МСК. "
-            "Рабочее место полностью оборудовано: высокоскоростной стабильный интернет, резервный канал, "
-            "необходимое железо. Готов к оформлению по ТК РФ, ИП или Самозанятости."
+            "Ознакомиться с моим портфолио, кейсами и реализованными проектами можно по ссылкам:\n"
+            "• Портфолио с кейсами: https://mikheooo.github.io/portfolio/\n"
+            "• GitHub с кодом и архитектурными решениями: https://github.com/mikheooo\n\n"
+            "Буду рад подробнее обсудить любой из проектов, логику архитектурных решений и ответить на технические вопросы!"
         )
+        if not has_prior_interaction:
+            reply_text = "Здравствуйте! " + reply_text
+        return {
+            "reply_text": reply_text.strip(),
+            "intent": "PORTFOLIO_INQUIRY",
+            "confidence": 0.98,
+        }
+
+    # 1. Call / Interview invitation (MSK 09:00 - 17:00 window, UTC+7 accounted for)
+    if any(w in msg_low for w in ["созвон", "интервью", "встреч", "пообщаться", "позвонить", "удобно", "время", "скайп", "зум", "zoom", "telemost", "google meet", "телемост", "когда вы", "когда смож"]):
+        reply_text = (
+            f"Здравствуйте! С удовольствием пообщаюсь подробнее по вакансии {vacancy_title or company_name or 'в вашей компании'}.\n\n"
+            "Мне удобно созвониться в будни в любое рабочее время по Москве — с 09:00 до 17:00 МСК (13:00–21:00 по моему местному времени UTC+7). "
+            "Формат любой удобный для вас: Google Meet, Zoom, Telemost или Telegram.\n\n"
+            "Можете назначить встречу в этом окне или написать мне напрямую для согласования слота:\n"
+            "• Telegram: @brokeassh\n"
+            "• Телефон / WhatsApp: +7 (993) 339-76-28\n"
+            "• Email: mikhailthaiban@gmail.com"
+        ).strip()
+        return {
+            "reply_text": reply_text,
+            "intent": "INTERVIEW_COORDINATION",
+            "confidence": 0.98,
+        }
+
+    # 2. Test Task / Take-home assignment
+    if any(w in msg_low for w in ["тестов", "задани", "кейсы", "проверить навыки", "код", "тз"]):
+        has_task_payload = any(w in msg_low for w in ["ссылк", "github", "drive", "диск", "notion", "http", "ознаком", "выполн", "дедлайн"])
+        if has_task_payload:
+            reply_text = (
+                "Здравствуйте! Тестовое задание получил, ознакомился с требованиями. Беру в работу, в ближайшее время вернусь с готовым решением и ссылкой на репозиторий на GitHub (https://github.com/mikheooo). "
+                "Если возникнут уточняющие вопросы по ТЗ, оперативно свяжусь с вами в Telegram: @brokeassh. Спасибо!"
+            )
+            intent = "TEST_TASK_ACKNOWLEDGED"
+        else:
+            reply_text = (
+                "Здравствуйте! Да, готов выполнить профильное тестовое задание, чтобы подтвердить практические навыки в реальных условиях. "
+                "Также можете ознакомиться с примерами моего рабочего кода, скриптов автоматизации и архитектурных решений в открытом репозитории на GitHub: "
+                "https://github.com/mikheooo.\n\n"
+                "Присылайте условия и ТЗ сюда или в Telegram: @brokeassh — оперативно приступлю к реализации!"
+            )
+            intent = "TEST_TASK_ACCEPTED"
+        return {
+            "reply_text": reply_text,
+            "intent": intent,
+            "confidence": 0.95,
+        }
+
+    # 3. Grounded Company Experience: Sayama Travel, Avantis Med, Freelance, Early IT
+    if any(w in msg_low for w in ["sayama", "саяма", "таиланд", "тайланд", "париж"]):
+        reply_text = (
+            "Здравствуйте! В Sayama Travel Group (Таиланд, ноябрь 2022 — апрель 2026) работал системным администратором и AI Automation Engineer. "
+            "Занимался администрированием серверной инфраструктуры на Linux и в Docker-контейнерах (systemd, VPN-туннели WireGuard/OpenVPN, мониторинг, безопасность и бэкапы). "
+            "Автоматизировал бизнес-процессы в Битрикс24 (роботы, триггеры, телефония, аналитика, лидогенерация). "
+            "Разработал голосовой пайплайн на базе Whisper для транскрибации звонков с AI-суммаризацией в сделки CRM, "
+            "внедрил модели OpenAI и Gemini для мультиязычной классификации обращений, а также построил интеграционные воркфлоу на n8n и Telegram-ботов на Python (aiogram, Telethon)."
+        )
+        return {
+            "reply_text": reply_text,
+            "intent": "EXPERIENCE_SAYAMA",
+            "confidence": 0.98,
+        }
+
+    if any(w in msg_low for w in ["avantis", "авантис", "3d", "мед"]):
+        reply_text = (
+            "Здравствуйте! В компании Авантис Мед (Avantis 3D, апрель 2021 — август 2022) работал системным администратором и специалистом по сопровождению Битрикс24. "
+            "Отвечал за администрирование коробочной версии Битрикс24 (self-hosted), настройку сложных бизнес-процессов, автоматических роботов, "
+            "триггеров и интеграций со сторонними сервисами. Обеспечивал техническую поддержку L2/L3 пользователей, траблшутинг серверов и сетевой инфраструктуры."
+        )
+        return {
+            "reply_text": reply_text,
+            "intent": "EXPERIENCE_AVANTIS",
+            "confidence": 0.98,
+        }
+
+    if any(w in msg_low for w in ["фриланс", "индивидуальн", "свои проект", "собственн"]):
+        reply_text = (
+            "Здравствуйте! В индивидуальной практике и на фрилансе (май 2026 — настоящее время) специализируюсь на AI-автоматизации и разработке на Python: "
+            "проектирование сложных n8n-воркфлоу (интеграция баз данных, AI-агентов, Google Workspace API, CRM-систем), "
+            "разработка асинхронных Telegram-ботов на aiogram 3 с FSM и очередями задач, построение ETL-пайплайнов на asyncio для парсинга и обработки данных, "
+            "а также внедрение RAG-архитектур и LLM-агентов под ключ."
+        )
+        return {
+            "reply_text": reply_text,
+            "intent": "EXPERIENCE_FREELANCE",
+            "confidence": 0.98,
+        }
+
+    if any(w in msg_low for w in ["где вы работали", "где работал", "места работы", "компании", "предыдущ", "расскажите о себе", "расскажите про опыт", "опыт работы"]):
+        reply_text = (
+            "Здравствуйте! Мой основной практический опыт включает:\n"
+            "1. Sayama Travel Group (2022–2026) — системный администратор и AI Automation Engineer: Linux/Docker инфраструктура, автоматизация Битрикс24, Whisper + LLM суммаризация звонков, n8n-воркфлоу, Telegram-боты на Python.\n"
+            "2. Авантис Мед / Avantis 3D (2021–2022) — системный администратор, специалист по сопровождению коробочного Битрикс24 (self-hosted), техподдержка L2/L3.\n"
+            "3. Индивидуальная практика / фриланс (2026 – н.в.) — автоматизация на Python/n8n, интеграция AI/LLM, ETL-пайплайны, Telegram-боты.\n"
+            "4. Ранее (2009–2018) — администрирование Windows Server (AD, GPO, Exchange), Linux, Hyper-V, сети, телефония и Bash/PowerShell автоматизация.\n\n"
+            "С удовольствием расскажу о реализованных кейсах подробнее на интервью!"
+        )
+        return {
+            "reply_text": reply_text,
+            "intent": "EXPERIENCE_OVERVIEW",
+            "confidence": 0.98,
+        }
+
+    # 3.4. Years of experience in Design / Art Direction
+    if any(w in msg_low for w in ["стаж", "лет", "сколько лет", "превышает", "опыт в сфере дизайна", "стаж в сфере дизайна"]) and any(w in msg_low for w in ["дизайн", "design", "арт"]):
+        reply_text = (
+            "Здравствуйте! Мой общий коммерческий стаж в IT и цифровых продуктах — более 15 лет (системная инженерия, архитектура, автоматизация). "
+            "В сфере дизайна и визуального контента работаю около 4 лет: специализируюсь на стыке дизайна и AI-технологий — генерация контента (Midjourney, Stable Diffusion, ComfyUI), "
+            "построение пайплайнов обработки медиа, интеграция LLM/нейросетей в креативные процессы и разработка интерфейсов. "
+            "В роли арт-директора мой главный фокус — системная организация работы, внедрение AI-инструментов и кратное ускорение производства контента команды без потери качества."
+        )
+        return {
+            "reply_text": reply_text,
+            "intent": "EXPERIENCE_DESIGN_YEARS",
+            "confidence": 0.98,
+        }
+
+    # 3.5. Digital agency / Design studio question
+    if any(w in msg_low for w in ["агентств", "студи", "digital-агентств", "дизайн-студи"]) and not any(w in msg_low for w in ["стаж", "сколько лет", "превышает"]):
+        reply_text = (
+            "Здравствуйте! В постоянном штате классических digital-агентств не состоял, однако в рамках проектной практики и фриланса (2026–н.в.) "
+            "регулярно сотрудничал с агентствами и дизайн-командами: настраивал AI-генерацию контента, автоматизировал рабочие процессы, "
+            "интегрировал LLM-инструменты и CRM. Мой основной многолетний бэкграунд — продуктовые и сервисные компании (Sayama Travel Group, Avantis Med), "
+            "поэтому отлично понимаю проектные дедлайны, высокие требования к визуалу и специфику работы в креативных командах. "
+            "Готов подробнее обсудить задачи на интервью!"
+        )
+        return {
+            "reply_text": reply_text,
+            "intent": "EXPERIENCE_AGENCY",
+            "confidence": 0.98,
+        }
+
+    # 3.6. Work Schedule / Working Hours / Timezone confirmation
+    if any(w in msg_low for w in [
+        "понедельник", "пятниц", "пн-пт", "пн по пт", "часов в день", "началом работы",
+        "начало работы", "время оаэ", "время мск", "часовой пояс", "таймзон", "смены",
+        "8 часов", "рабочий график"
+    ]) or (any(w in msg_low for w in ["готовы ли", "готов ли"]) and any(w in msg_low for w in ["график", "часов", "время"])):
+        reply_text = (
+            "Здравствуйте! Да, готов. Полностью готов работать по московскому времени (09:00–18:00 или 10:00–19:00 МСК) — "
+            "разница в 4 часа мне абсолютно комфортна и проверена годами удаленной работы."
+        )
+        if has_prior_interaction:
+            reply_text = strip_repeated_greeting(reply_text)
+        return {
+            "reply_text": reply_text,
+            "intent": "SCHEDULE_CONFIRMATION",
+            "confidence": 0.98,
+        }
+
+    # 4. Location / Remote confirmation
+    if any(w in msg_low for w in ["рф", "росси", "локаци", "город", "где находит", "прожива", "удален", "remote", "формат работ"]):
+        reply_text = (
+            "Здравствуйте! Удаленно (РФ, часовой пояс МСК+4 / Новосибирск, гражданство РФ). "
+            "Полностью готов работать по московскому времени (09:00–18:00 или 10:00–19:00 МСК) — разница в 4 часа мне абсолютно комфортна и проверена годами удаленной работы. "
+            "Рабочее место профессионально оборудовано: высокоскоростной стабильный интернет, резервный канал, "
+            "производительная рабочая станция, бесперебойное питание. Готов к оформлению по ТК РФ, ИП или Самозанятости."
+        )
+        if has_prior_interaction:
+            reply_text = strip_repeated_greeting(reply_text)
         return {
             "reply_text": reply_text,
             "intent": "LOCATION_CONFIRMATION",
             "confidence": 0.98,
         }
 
-    # 2. Call / Interview invitation
-    if any(w in msg_low for w in ["созвон", "интервью", "встреч", "пообщаться", "позвонить", "удобно", "время", "скайп", "зум", "zoom", "telemost", "google meet", "телемост"]):
+    # 5. Tech Stack grounding (Bitrix24, n8n, Python, AI/LLM, Linux/Docker, etc.)
+    if any(w in msg_low for w in ["битрикс", "bitrix", "amocrm", "crm"]):
         reply_text = (
-            f"Здравствуйте! С удовольствием пообщаюсь подробнее по вакансии {vacancy_title or ''}. "
-            "Мне удобно созвониться сегодня или завтра в интервале с 10:00 до 19:00 по МСК. "
-            "Можете назначить встречу на удобный для вас слот или написать мне напрямую в Telegram: @brokeassh. "
-            "Также доступен по телефону: +7 (993) 339-76-28."
-        ).strip()
+            "Здравствуйте! По Битрикс24 имею глубокий практический опыт администрирования как облачных, так и коробочных (self-hosted) порталов "
+            "(в компаниях Sayama Travel и Avantis 3D): глубокая кастомизация, настройка CRM-воронок, автоматических роботов, триггеров и смарт-процессов, "
+            "интеграция по REST API и Webhooks с телефонией, базами данных и внешними сервисами, а также автоматизация обработки лидов и документов. "
+            "Готов обсудить задачи вашего портала!"
+        )
         return {
             "reply_text": reply_text,
-            "intent": "INTERVIEW_COORDINATION",
+            "intent": "TECH_BITRIX",
             "confidence": 0.95,
         }
 
-    # 3. Specific technology/tool experience question
+    if any(w in msg_low for w in ["n8n", "make.com", "zapier", "автоматизац"]):
+        reply_text = (
+            "Здравствуйте! Активно использую n8n для построения enterprise-интеграций: объединение баз данных, CRM-систем (Битрикс24, amoCRM), "
+            "Google Workspace API, Telegram-ботов и AI-агентов. Опыт проектирования отказоустойчивых пайплайнов с обработкой ошибок и вебхуков."
+        )
+        return {
+            "reply_text": reply_text,
+            "intent": "TECH_N8N",
+            "confidence": 0.95,
+        }
+
+    if any(w in msg_low for w in ["python", "fastapi", "asyncio", "парс", "scraping", "aiogram"]):
+        reply_text = (
+            "Здравствуйте! Опыт коммерческой разработки на Python (FastAPI, asyncio, aiogram 3, Telethon). "
+            "Разрабатывал асинхронные ETL-пайплайны, Telegram-ботов с FSM и интеграцией API, внедрял LLM-модели (OpenAI, Gemini) и Whisper для анализа звонков и суммаризации текста в CRM, "
+            "проектировал RAG-архитектуры и парсеры данных (Playwright, BeautifulSoup)."
+        )
+        return {
+            "reply_text": reply_text,
+            "intent": "TECH_PYTHON",
+            "confidence": 0.95,
+        }
+
+    if any(w in msg_low for w in ["linux", "docker", "devops", "k8s", "vpn", "сервер"]):
+        reply_text = (
+            "Здравствуйте! Более 10 лет опыта системного администрирования: парк серверов Linux (Ubuntu, Debian) и Windows Server (Active Directory, Group Policy, DNS, DHCP, Exchange), "
+            "контейнеризация в Docker/Docker-Compose, настройка systemd-сервисов, Nginx, VPN-туннелей (WireGuard, OpenVPN), мониторинг инфраструктуры и обеспечение высокой доступности."
+        )
+        return {
+            "reply_text": reply_text,
+            "intent": "TECH_DEVOPS",
+            "confidence": 0.95,
+        }
+
+    # 6. Specific technology/tool experience question (generic match)
     if detected_techs or any(w in msg_low for w in ["опыт с", "работали ли", "сталкивались", "знаком ли", "стек", "уровень"]):
         tech_str = ", ".join(detected_techs) if detected_techs else "данным направлением"
         reply_text = (
@@ -205,7 +424,7 @@ def generate_employer_chat_reply(
             "confidence": 0.92,
         }
 
-    # 4. Salary / Financial expectations question
+    # 7. Salary / Financial expectations question
     if any(w in msg_low for w in ["зарплат", "ожидани", "вилка", "ставк", "оплат"]):
         reply_text = (
             "Здравствуйте! Мои финансовые ожидания по данной позиции находятся в диапазоне 130 000 – 180 000 руб. на руки "
@@ -222,7 +441,7 @@ def generate_employer_chat_reply(
     return {
         "reply_text": (
             "Здравствуйте! Спасибо за обратную связь. "
-            "Готов подробнее ответить на любые вопросы по опыту и проектам, а также подключиться к созвону в удобное время. "
+            "Готов подробнее ответить на любые вопросы по опыту и проектам, а также подключиться к онлайн-созвону в будни с 09:00 до 17:00 по МСК (13:00–21:00 по моему местному времени UTC+7). "
             "Для оперативной связи: Telegram @brokeassh, тел. +7 (993) 339-76-28."
         ),
         "intent": "GENERAL_INQUIRY",

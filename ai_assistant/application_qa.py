@@ -163,8 +163,16 @@ class QuestionAnswerGenerator:
         if "удален" in label or "формат" in label or "remote" in label:
             return "Удаленно"
 
+        # Timezone / Часовой пояс
+        if "часовой пояс" in label or "timezone" in label or "таймзон" in label:
+            return "UTC+7 (МСК+4, часовой пояс Новосибирска / Красноярска)"
+
         # Location / City / Where are you located
         if "город" in label or "location" in label or "где вы находитесь" in label or "место работы" in label or "проживан" in label or "страна" in label:
+            if not question.options:
+                if any(w in label for w in ("country", "city", "where are you", "location")):
+                    return "Remote (UTC+7, Thailand / Ready to work in your timezone)"
+                return "Удаленно (РФ, часовой пояс МСК+4 / Новосибирск, гражданство РФ)"
             if self.profile.allowed_locations:
                 return self.profile.allowed_locations[0]
             if self.profile.remote_required:
@@ -196,7 +204,9 @@ class QuestionAnswerGenerator:
             return "Самозанятость"
 
         # Employment schedule
-        if "график" in label or "занятость" in label or "employment" in label:
+        if "график" in label or "занятость" in label or "employment" in label or "режим работы" in label:
+            if not question.options:
+                return "Полностью готов работать по московскому времени (09:00–18:00 или 10:00–19:00 МСК) — разница в 4 часа мне абсолютно комфортна и проверена годами удаленной работы"
             if self.profile.employment_types:
                 return self.profile.employment_types[0]
             return "Полная занятость"
@@ -276,10 +286,17 @@ class QuestionAnswerGenerator:
                     return opt
 
         # D. Work format / Remote
-        if cand_l in ("удаленно", "remote", "удаленная работа"):
+        if cand_l in ("удаленно", "remote", "удаленная работа") or "удален" in cand_l:
             for opt in question.options:
                 opt_l = opt.lower()
                 if "удален" in opt_l or "remote" in opt_l:
+                    return opt
+
+        # Timezone options
+        if "utc+7" in cand_l or "мск+4" in cand_l or "новосибирск" in cand_l:
+            for opt in question.options:
+                opt_l = opt.lower()
+                if any(k in opt_l for k in ("utc+7", "мск+4", "новосибирск", "красноярск")):
                     return opt
 
         # E. Boolean YES / NO

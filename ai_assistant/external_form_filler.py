@@ -28,7 +28,11 @@ CANDIDATE_FACTS = {
     "email": "mikhailthaiban@gmail.com",
     "telegram": "@brokeassh",
     "phone": "+7 (993) 339-76-28",
-    "location": "Самара, РФ (100% Remote, часовой пояс МСК / UTC+7)",
+    "location": "Удаленно (РФ, часовой пояс МСК+4 / Новосибирск, гражданство РФ)",
+    "location_en": "Remote (UTC+7, Thailand / Ready to work in your timezone)",
+    "timezone": "UTC+7 (МСК+4, часовой пояс Новосибирска / Красноярска)",
+    "schedule": "Полностью готов работать по московскому времени (09:00–18:00 или 10:00–19:00 МСК) — разница в 4 часа мне абсолютно комфортна и проверена годами удаленной работы",
+    "interview_slots": "В будни в любое рабочее время по Москве — с 09:00 до 17:00 МСК (13:00–21:00 по моему местному времени UTC+7)",
     "portfolio": "https://mikheooo.github.io/portfolio/",
     "github": "https://github.com/mikheooo",
     "age": "41",
@@ -173,11 +177,20 @@ def generate_answer_for_question(
             if any(k in opt_l for k in ["b1", "intermediate", "средний"]):
                 return opt
 
-        # 6. Location
-        for opt in options:
-            opt_l = opt.lower().strip()
-            if any(k in opt_l for k in ["рф", "россия", "russia", "самара", "москва"]):
-                return opt
+        # 6. Location / Timezone hierarchy:
+        # Priority: Удаленно -> UTC+7 / МСК+4 (Новосибирск / Красноярск) -> Москва / РФ
+        for kw in ["удален", "remote"]:
+            for opt in options:
+                if kw in opt.lower():
+                    return opt
+        for kw in ["utc+7", "мск+4", "новосибирск", "красноярск"]:
+            for opt in options:
+                if kw in opt.lower():
+                    return opt
+        for kw in ["москва", "moscow", "рф", "россия", "russia"]:
+            for opt in options:
+                if kw in opt.lower():
+                    return opt
 
         # Fallback to first non-empty option (skipping negative / other options if possible)
         positive_opts = [
@@ -203,13 +216,19 @@ def generate_answer_for_question(
     if any(w in q for w in ["cv", "резюме", "portfolio", "портфолио", "github", "gitlab", "ссылк"]):
         return CANDIDATE_FACTS["portfolio"]
 
-    is_eng = any(w in q for w in ["name", "email", "cv", "portfolio", "compensation", "tasks", "english", "date"])
+    is_eng = any(w in q for w in ["name", "email", "cv", "portfolio", "compensation", "tasks", "english", "date", "city", "country", "location", "timezone", "where"])
 
     if any(w in q for w in ["фио", "имя", "name", "full name", "фамили"]):
         return CANDIDATE_FACTS["name_en"] if is_eng else CANDIDATE_FACTS["name_ru"]
 
-    if any(w in q for w in ["город", "city", "часовой пояс", "timezone", "location", "где вы"]):
-        return CANDIDATE_FACTS["location"]
+    if ("пояс" in q and "час" in q) or any(w in q for w in ["timezone", "таймзон", "time zone", "utc"]):
+        return CANDIDATE_FACTS["timezone"]
+
+    if any(w in q for w in ["город", "city", "location", "где вы", "страна", "где находитесь", "проживан", "место жительств"]):
+        return CANDIDATE_FACTS["location_en"] if is_eng else CANDIDATE_FACTS["location"]
+
+    if any(w in q for w in ["созвон", "интервью", "слот", "удобное время для звонка", "время для связи", "interview"]):
+        return CANDIDATE_FACTS["interview_slots"]
 
     if any(w in q for w in ["возраст", "age"]):
         return CANDIDATE_FACTS["age"]
@@ -313,7 +332,7 @@ def generate_answer_for_question(
 
     # Schedule / Remote format
     if any(w in q for w in ["формат", "график", "удален", "remote", "расписание"]):
-        return "100% Remote (удаленная работа), полный рабочий день (full-time), часовой пояс МСК. Готов к созвонам в рабочие часы 09:00–18:00 МСК."
+        return f"100% Remote (удаленная работа). {CANDIDATE_FACTS['schedule']}"
 
     # Legal status / Contract
     if any(w in q for w in ["оформлен", "договор", "тк рф", "ип", "самозанят", "юридическ"]):
@@ -361,7 +380,8 @@ def _synthesize_open_answer_with_llm(
             "- 15+ лет в IT-инфраструктуре и системном администрировании Linux/Windows/DevOps, 5+ лет в автоматизации (Python, n8n, CRM, API).\n"
             "- Опыт в компаниях Sayama Travel, Avantis: Битрикс24 (облако и коробка, смарт-процессы, REST API), телефония (Asterisk/Mango), 1С, Docker, Nginx, PostgreSQL, MySQL.\n"
             "- Проект «Контент-Завод»: автоматизированный пайплайн генерации AI-видео (Python + FFmpeg + Whisper + LLM, ComfyUI, Stable Diffusion, Midjourney).\n"
-            "- Формат работы: 100% Remote (удаленная работа), РФ (Самара, МСК / UTC+7). Оформление: ТК РФ, ИП, Самозанятость.\n"
+            "- Формат работы: 100% Remote (удаленная работа), РФ (часовой пояс UTC+7 / МСК+4, Новосибирск / Красноярск). Готов к работе по московскому времени (09:00–18:00 или 10:00–19:00 МСК). Оформление: ТК РФ, ИП, Самозанятость.\n"
+            "- Окно для интервью / созвонов: в будни с 09:00 до 17:00 МСК (13:00–21:00 по местному времени UTC+7).\n"
             "- Зарплатные ожидания: от 200 000 руб. / 1300 $ / 2000 EUR.\n"
             "- Траблшутинг инцидентов: логи (journalctl, docker logs), конфиги (.env, systemd), диагностика сети (ss -tulpn, curl, ping), воспроизведение в дебаге.\n"
             "- СТРОГО ЗАПРЕЩЕНО выдумывать неподтвержденные факты или несуществующий опыт.\n"
@@ -1088,7 +1108,7 @@ async def _fill_gas_async(ws_url: str, company: str, vacancy: str) -> FormFillRe
             let c = 0;
             if (setVal('name', 'Михаил Колесников')) c++;
             if (setVal('telegram', '@brokeassh')) c++;
-            if (setVal('city_tz', 'Самара / Бангкок (МСК / UTC+7)')) c++;
+            if (setVal('city_tz', 'Удаленно (РФ, UTC+7 / МСК+4, Новосибирск / Бангкок)')) c++;
             if (clickRadio('igaming', 'Да')) c++;
             if (setVal('salary', '1300 $')) c++;
             if (setVal('years', '5+')) c++;
@@ -1175,7 +1195,7 @@ def _format_chat_confirmation(company: str, vacancy: str, fields_count: int) -> 
         "• Кандидат: Михаил Колесников, Telegram @brokeassh\n"
         "• Портфолио и резюме: https://mikheooo.github.io/portfolio/ (GitHub: https://github.com/mikheooo)\n"
         "• Опыт и стек: 15+ лет в IT-инфраструктуре, 5+ лет в автоматизации, Python и CRM\n"
-        "• Готовность к работе: 100% Remote, удобные слоты для интервью в будни 09:00–16:00 МСК\n\n"
+        "• Готовность к работе: 100% Remote, созвоны в будни 09:00–17:00 МСК (13:00–21:00 UTC+7)\n\n"
         "Буду рад обсудить проект и задачи на собеседовании!"
     )
 

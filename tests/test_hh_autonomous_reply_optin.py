@@ -262,14 +262,15 @@ def test_schedule_confirmation_intent_and_greeting_stripping():
     # 1. Schedule question without prior candidate interaction (includes greeting)
     q = "Готовы ли вы работать с понедельника по пятницу, 8 часов в день, с обязательным началом работы в 8:00 по времени ОАЭ?"
     res1 = generate_employer_chat_reply(q, has_prior_interaction=False)
+    expected_stripped = "Да, готов. Полностью готов работать по московскому времени (09:00–18:00 или 10:00–19:00 МСК) — разница в 4 часа мне абсолютно комфортна и проверена годами удаленной работы."
     assert res1["intent"] == "SCHEDULE_CONFIRMATION"
-    assert "Да, готов. График работы мне полностью подходит." in res1["reply_text"]
+    assert expected_stripped in res1["reply_text"]
     assert res1["reply_text"].startswith("Здравствуйте!")
 
     # 2. Schedule question with prior candidate interaction (greeting stripped)
     res2 = generate_employer_chat_reply(q, has_prior_interaction=True)
     assert res2["intent"] == "SCHEDULE_CONFIRMATION"
-    assert res2["reply_text"] == "Да, готов. График работы мне полностью подходит."
+    assert res2["reply_text"] == expected_stripped
     assert not res2["reply_text"].startswith("Здравствуйте")
 
 
