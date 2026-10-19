@@ -7,7 +7,10 @@ RootDir = fso.GetParentFolderName(ScriptDir)
 ' never flashes a cmd/conhost window. Logging moved into the script itself
 ' (FileHandler in run_multi_source_discovery.py), replacing the old
 ' `cmd /S /c ... >> log 2>&1` wrapper that created the window.
-pythonwPath = RootDir & "\.venv\Scripts\pythonw.exe"
+Set WshEnv = WshShell.Environment("PROCESS")
+WshEnv("PYTHONPATH") = RootDir & "\.venv\Lib\site-packages;" & RootDir
+
+pythonwPath = "C:\Users\Misha\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\pythonw.exe"
 scriptPath = RootDir & "\scripts\run_multi_source_discovery.py"
 
 WshShell.CurrentDirectory = RootDir

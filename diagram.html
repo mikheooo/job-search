@@ -297,7 +297,7 @@
     <div class="flow-head">
       <div>
         <div class="t">B · HH Autopilot: поиск, скрининг, отклик</div>
-        <div class="d">Подъём резюме → поиск через CDP → бриф формы → гейты → клик → сверка</div>
+        <div class="d">Подъём резюме → поиск через CDP → бриф формы → автономное решение тестов/анкет → клик → сверка</div>
       </div>
       <div class="controls">
         <button data-act="out" title="Уменьшить">−</button>
@@ -313,7 +313,7 @@
     <div class="flow-head">
       <div>
         <div class="t">C · Realtime-демон сообщений HH</div>
-        <div class="d">Цикл 30 секунд: диалоги → классификация → truth-only черновик → отправка по флагу</div>
+        <div class="d">Цикл 30 секунд: диалоги → автозаполнение внешних форм/тестов → truth-only черновик → отправка по флагу</div>
       </div>
       <div class="controls">
         <button data-act="out" title="Уменьшить">−</button>
@@ -580,21 +580,16 @@ b: `sequenceDiagram
         AP->>AP: check_salary_floor, минимум 100 000 RUB
         AP->>T7: brief_vacancy(vid), чтение формы
         T7->>HH: открыть страницу вакансии
-        HH-->>T7: DOM формы и applicant state
-        alt обнаружен тест работодателя
-            AP->>TG: алерт «требуется тест», вакансия пропущена
-        else обнаружена скрининг-анкета
+        HH-->>T7: DOM формы, applicant state, vacancy_tests
+        alt обнаружен тест работодателя или скрининг-анкета (vacancy_tests / controls)
             AP->>CL: generate_tailored_letter
-            AP->>QA: build_questions_from_controls
-            QA->>QA: QuestionAnswerGenerator по профилю и candidate_kb
-            alt все ответы подтверждены фактами
-                QA-->>AP: prefill_plan со статусом VALID
-            else есть неподтверждённые вопросы
-                QA-->>AP: REQUIRES_REVIEW
-                AP->>TG: алерт «анкета требует внимания»
-            end
+            AP->>QA: resolve_and_plan_screening(vid, form, autonomous_mode=True)
+            QA->>QA: QuestionAnswerGenerator(autonomous_mode=True)
+            Note over QA: Решение тестов и вопросов по candidate_kb + LLM-синтез
+            QA-->>AP: prefill_plan со статусом VALID (questions_prefilled=True)
+            Note over AP,T7: Тест/опросник решён автономно, отклик разрешён без ревью
         end
-        AP->>AP: is_vacancy_eligible_for_auto_apply, проверка 8 условий
+        AP->>AP: is_vacancy_eligible_for_auto_apply, проверка условий
     end
     end
 
@@ -624,6 +619,7 @@ c: `sequenceDiagram
     participant BR as HeadlessBrowserSession<br/>require_auth=true
     participant HH as hh.ru/chat
     participant AG as hh_autonomous_agent<br/>AutonomousJobAgent
+    participant EF as external_form_filler<br/>try_auto_fill_external_form
     participant MR as hh_message_reply<br/>read-only
     participant KB as candidate_kb.json
     participant DB as state.db
@@ -644,7 +640,19 @@ c: `sequenceDiagram
             HH-->>MR: диалоги и последние сообщения
             MR-->>AG: HHDialog и HHMessage
             AG->>AG: classify_hh_conversation_detailed
-            alt NEEDS_REPLY и факт подтверждён
+            alt EXTERNAL_QUESTIONNAIRE / TEST_TASK с внешней ссылкой
+                AG->>EF: try_auto_fill_external_form(cdp_url, target_url)
+                alt форма/тест успешно заполнены и отправлены
+                    EF-->>AG: AutoFillResult(ok=True, fields_count)
+                    AG->>DB: pending_test_tasks (статус "✅ Сдано")
+                    AG->>HH: автоответ рекрутеру в чат об успешном заполнении
+                else физический блокер (веб-камера, микрофон, сложная капча)
+                    EF-->>AG: AutoFillResult(blocked=True, reason)
+                    AG->>DB: pending_test_tasks (статус "⚠️ Требуется ручное заполнение")
+                    AG->>TG: алерт владельцу (ТОЛЬКО при физическом блокере)
+                    AG->>HH: подтверждение получения задачи
+                end
+            else NEEDS_REPLY и факт подтверждён
                 AG->>KB: поиск подтверждённых фактов
                 AG->>AG: генерация черновика без выдумывания
                 alt HH_AUTONOMOUS_REPLY_ENABLED=true

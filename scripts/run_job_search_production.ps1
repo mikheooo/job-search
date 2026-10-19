@@ -5,7 +5,14 @@ param (
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = (Resolve-Path "$PSScriptRoot\..").Path
-$PythonExe = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+$env:PYTHONPATH = "$ProjectRoot\.venv\Lib\site-packages;$ProjectRoot"
+
+$UvPython = "C:\Users\Misha\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\python.exe"
+if (Test-Path $UvPython) {
+    $PythonExe = $UvPython
+} else {
+    $PythonExe = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+}
 Set-Location $ProjectRoot
 
 # Keep lock handling, logging, exit-code propagation, and health tracking in

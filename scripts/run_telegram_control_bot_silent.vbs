@@ -8,7 +8,10 @@ RootDir = fso.GetParentFolderName(ScriptDir)
 ' the script itself (FileHandler in telegram_control_bot.py), so the old
 ' `cmd /S /c ... >> log 2>&1` wrapper, which spawned the visible window, is
 ' gone for good.
-pythonwPath = RootDir & "\.venv\Scripts\pythonw.exe"
+Set WshEnv = WshShell.Environment("PROCESS")
+WshEnv("PYTHONPATH") = RootDir & "\.venv\Lib\site-packages;" & RootDir
+
+pythonwPath = "C:\Users\Misha\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\pythonw.exe"
 scriptPath = RootDir & "\ai_assistant\telegram_control_bot.py"
 
 WshShell.CurrentDirectory = RootDir
