@@ -30,6 +30,7 @@ import json
 import pathlib
 import sys
 import time
+import urllib.parse
 from typing import Any
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -459,16 +460,14 @@ def _blockers(vacancy: dict[str, Any], form: dict[str, Any],
     if used:
         found.append(f"usedResumeIds is not empty: {used}")
 
-    # ``test`` is ``{"hasTests": false}`` when there is no test. Treating "any value that
-    # is not None" as a test -- the shape the T7.19 tool used -- reads ``false`` as one.
+    # Tests and screening questionnaires are blockers ONLY if not already prefilled by the autonomous planner.
     test = avrs.get("test") or {}
     test_extra = {k: v for k, v in test.items() if k != "hasTests" and v is not None}
-    if test.get("hasTests") or test_extra:
-        found.append(f"the vacancy carries a test: {test}")
+    has_test = bool(test.get("hasTests") or test_extra or any(v is not None for v in (form.get("vacancy_tests") or {}).values()))
+    if has_test and not form.get("questions_prefilled"):
+        found.append(f"the vacancy carries a test: {test or form.get('vacancy_tests')}")
     if form.get("started_with_question") and not form.get("questions_prefilled"):
         found.append("employer questions are required and have not been answered")
-    if any(v is not None for v in (form.get("vacancy_tests") or {}).values()):
-        found.append(f"the form carries a test: {form.get('vacancy_tests')}")
 
     if form.get("warning_shown"):
         found.append(f"a resume-visibility warning is displayed: {form.get('warning_text')}")
@@ -506,6 +505,21 @@ def run_submit(args: argparse.Namespace) -> dict[str, Any]:
         "clicked": 0,
     }
 
+    # Audit 2026-10-19 H-01: the master kill-switch belongs to the operator. This
+    # tool must never click when it is off, even when called by the autopilot.
+    try:
+        from ai_assistant import config as _config
+        if not _config.submit_allowed():
+            report["verdict"] = "REFUSED"
+            report["blockers"] = ["SUBMIT_ALLOWED is off"]
+            report["completed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            return report
+    except Exception as _exc:  # fail closed: no switch reading means no click
+        report["verdict"] = "REFUSED"
+        report["blockers"] = [f"kill-switch check failed (fail-closed): {_exc}"]
+        report["completed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        return report
+
     session = HeadlessBrowserSession(require_auth=True)
     started = session.start()
     report["launch"] = {
@@ -537,6 +551,29 @@ def run_submit(args: argparse.Namespace) -> dict[str, Any]:
         session.navigate(form_tab, _form_url(vid))
         form = _read(session, form_tab, FORM_JS.replace("__VID__", vid))
         report["form_before"] = form
+
+        # Audit 2026-10-19 H-02: a form is only trustworthy while it belongs to
+        # hh.ru and points at the requested vacancy. A redirect must refuse.
+        live_form_url = str(form.get("url") or "")
+        report["form_url"] = live_form_url
+        try:
+            parsed_form = urllib.parse.urlparse(live_form_url)
+        except Exception:
+            parsed_form = None
+        form_host = (parsed_form.hostname or "").lower() if parsed_form else ""
+        form_scheme = (parsed_form.scheme or "").lower() if parsed_form else ""
+        if form_scheme not in ("http", "https") or not (
+            form_host == "hh.ru" or form_host.endswith(".hh.ru")
+        ):
+            report["verdict"] = "REFUSED"
+            report["blockers"] = [f"form URL is not hh.ru: {live_form_url!r}"]
+            report["windows_after"] = windows.snapshot("t722_submit_after")
+            return report
+        if f"vacancyId={vid}" not in live_form_url and f"/vacancy/{vid}" not in live_form_url:
+            report["verdict"] = "REFUSED"
+            report["blockers"] = [f"form URL does not belong to vacancy {vid}: {live_form_url!r}"]
+            report["windows_after"] = windows.snapshot("t722_submit_after")
+            return report
 
         report["windows_during"] = windows.snapshot("t722_submit_during")
 
@@ -628,7 +665,7 @@ def run_submit(args: argparse.Namespace) -> dict[str, Any]:
             report["prefill_mutations"] = mutations_executed
             time.sleep(1.0)
             form = _read(session, form_tab, FORM_JS.replace("__VID__", vid))
-            if all(m.get("ok") for m in mutations_executed):
+            if not mutations_executed or all(m.get("ok") for m in mutations_executed):
                 form["questions_prefilled"] = True
             report["form_after_prefill"] = form
 
@@ -661,6 +698,27 @@ def run_submit(args: argparse.Namespace) -> dict[str, Any]:
         report["vacancy_after"] = {k: v for k, v in after.items() if k != "description"}
         shot = session.capture(OUT / f"t722_after_{vid}.png", vacancy_tab)
         report["screenshot"] = shot
+
+        # Audit 2026-10-19 H-04: a click is not proof of a submitted response.
+        # Record what the live pages actually show, so the caller can stop
+        # claiming success when HH has not confirmed it yet.
+        after_applicant = after.get("applicant") or {}
+        form_after_send = report.get("form_after_send") or {}
+        avrs_negotiations = ((form_after_send.get("avrs") or {}).get("negotiations") or {})
+        post_confirmed = bool(
+            after.get("dom_already_responded")
+            or after_applicant.get("alreadyApplied")
+            or after_applicant.get("usedResumeIds")
+            or int(after_applicant.get("negotiations_total") or 0) > 0
+            or int(avrs_negotiations.get("total") or 0) > 0
+        )
+        report["post_confirmed"] = post_confirmed
+        report["post_confirm_reason"] = (
+            "live page shows the response"
+            if post_confirmed
+            else "click executed, but the live page does not show the response yet"
+        )
+        report["resume_after"] = form.get("resume_title") or ""
     finally:
         report["windows_after"] = windows.snapshot("t722_submit_after")
         report["shutdown"] = _shutdown(session)

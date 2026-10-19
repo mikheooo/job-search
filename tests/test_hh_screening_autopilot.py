@@ -103,9 +103,9 @@ def test_blockers_behavior_on_tests_and_questions():
     blockers = mod._blockers(vacancy_base, form_prefilled, expect_resume="Специалист по внедрению и сопровождению CRM")
     assert blockers == []
 
-    # 5. Exam test + questionnaire prefilled -> still blocked (tests must never auto-submit)
+    # 5. Exam test + questions prefilled -> passes autonomously (agent solves test questions)
     blockers = mod._blockers(vac_with_test, form_prefilled, expect_resume="Специалист по внедрению и сопровождению CRM")
-    assert any("carries a test" in b for b in blockers)
+    assert blockers == []
 
 
 def test_resolve_screening_questionnaire_success(sample_profile, sample_kb):

@@ -1564,17 +1564,17 @@ class AutonomousJobAgent:
             facts_used = None
             decision_reason = ""
 
-            if is_ext_form and form_url:
+            if (is_ext_form and form_url) or (is_test_task and url_matches):
                 from ai_assistant.test_task_manager import record_pending_test_task, generate_questionnaire_acknowledgement
-
+                target_url = form_url or (url_matches[0] if url_matches else "")
                 fill_res = None
                 cdp_target = self.config.cdp_url or "http://127.0.0.1:9111"
-                if is_external_form_url(form_url, msg_text):
+                if is_external_form_url(target_url, msg_text):
                     try:
-                        logger.info("Attempting autonomous fill of external form: %s", form_url)
+                        logger.info("Attempting autonomous fill of external form/test: %s", target_url)
                         fill_res = try_auto_fill_external_form(
                             cdp_url=cdp_target,
-                            form_url=form_url,
+                            form_url=target_url,
                             company=d.employer or "HeadHunter Employer",
                             vacancy=d.vacancy_title or "Python Role",
                             msg_context=msg_text,
@@ -1587,35 +1587,38 @@ class AutonomousJobAgent:
                         company=d.employer or "HeadHunter Employer",
                         vacancy=d.vacancy_title or "Python Role",
                         message_text=msg_text,
-                        url=form_url,
+                        url=target_url,
                         conversation_id=d.conversation_id,
                         status="✅ **Сдано**",
                     )
                     classification = "EXTERNAL_QUESTIONNAIRE_SUBMITTED"
                     reply_text = fill_res.chat_confirmation_text
                     facts_used = ["external_form_filler.py: auto_filled_and_verified", "contacts: @brokeassh"]
-                    decision_reason = f"External form {form_url} autonomously filled ({fill_res.fields_count} fields) and verified; confirmation queued for HH chat."
+                    decision_reason = f"External form {target_url} autonomously filled ({fill_res.fields_count} fields) and verified; confirmation queued for HH chat."
                 else:
-                    task_status = "⚠️ **Требуется ручное заполнение**" if (fill_res and fill_res.blocked) else "⏳ **В работе**"
+                    is_physically_blocked = bool(fill_res and fill_res.blocked)
+                    task_status = "⚠️ **Требуется ручное заполнение**" if is_physically_blocked else "⏳ **В работе**"
                     record_pending_test_task(
                         company=d.employer or "HeadHunter Employer",
                         vacancy=d.vacancy_title or "Python Role",
                         message_text=msg_text,
-                        url=form_url,
+                        url=target_url,
                         conversation_id=d.conversation_id,
                         status=task_status,
                     )
-                    notif = NotificationDispatcher.notify_external_questionnaire(
-                        company=d.employer or "HeadHunter Employer",
-                        vacancy_title=d.vacancy_title or "Python Role",
-                        what_they_want=msg_text,
-                        url=form_url,
-                        questions="Требуется заполнение внешней формы / анкеты" + (f" ({fill_res.blocked_reason})" if (fill_res and fill_res.blocked) else ""),
-                        action="REQUIRES REVIEW",
-                        conversation_id=d.conversation_id,
-                        application_id=app_id,
-                    )
-                    out["notifications_sent"].append(notif)
+                    # ONLY notify owner if physically blocked (camera, mic, hard captcha, closed)
+                    if is_physically_blocked:
+                        notif = NotificationDispatcher.notify_external_questionnaire(
+                            company=d.employer or "HeadHunter Employer",
+                            vacancy_title=d.vacancy_title or "Python Role",
+                            what_they_want=msg_text,
+                            url=target_url,
+                            questions=f"Форма физически заблокирована: {fill_res.blocked_reason}",
+                            action="REQUIRES REVIEW",
+                            conversation_id=d.conversation_id,
+                            application_id=app_id,
+                        )
+                        out["notifications_sent"].append(notif)
                     classification = "EXTERNAL_QUESTIONNAIRE"
                     reply_text = generate_questionnaire_acknowledgement(
                         company=d.employer or "HeadHunter Employer",
@@ -1623,9 +1626,10 @@ class AutonomousJobAgent:
                         task_text=msg_text,
                     )
                     facts_used = ["candidate_kb.json: questionnaire_acknowledgement", "contacts: @brokeassh"]
-                    decision_reason = f"External questionnaire/form link detected ({form_url}); recorded in pending_test_tasks.md and sent acknowledgement."
+                    decision_reason = f"External form link detected ({target_url}); recorded in pending_test_tasks.md; acknowledgement prepared."
 
             elif is_test_task:
+                # Test task without an online form URL (e.g. offline coding assignment / repo task)
                 from ai_assistant.test_task_manager import record_pending_test_task, generate_test_task_acknowledgement
                 record_pending_test_task(
                     company=d.employer or "HeadHunter Employer",
@@ -1650,7 +1654,7 @@ class AutonomousJobAgent:
                     task_text=msg_text,
                 )
                 facts_used = ["candidate_kb.json: test_task_acknowledgement", "contacts: @brokeassh"]
-                decision_reason = "Technical test task detected; logged to artifacts/pending_test_tasks.md and sent acknowledgement."
+                decision_reason = "Offline technical test task detected; logged to artifacts/pending_test_tasks.md and sent acknowledgement."
 
             elif is_interview:
                 from ai_assistant.interview_auto_responder import generate_interview_response

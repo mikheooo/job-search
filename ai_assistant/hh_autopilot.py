@@ -28,6 +28,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from ai_assistant import config, db
 from ai_assistant.candidate_profile import load_candidate_profile
+from ai_assistant.matcher import classify_role_family
+from ai_assistant.schema import Vacancy
 from ai_assistant.smart_experience_generator import generate_tailored_cover_letter
 
 logger = logging.getLogger("hh_autopilot")
@@ -44,6 +46,191 @@ VALID_RESUMES = {
     "Инженер технической поддержки",
     "Ai engineer",
 }
+
+# Audit 2026-10-19 H-03: the autopilot used to send applications without any
+# fit check. On 2026-10-19 that produced responses to a 3D artist, a 3D
+# generalist and an ML researcher. The gate below is deliberately narrow:
+# a vacancy must look like one of the candidate's target role families, and
+# must not look like an explicitly excluded craft.
+AUTOPILOT_DAILY_CAP = int(os.getenv("HH_AUTOPILOT_DAILY_CAP", "12"))
+_ROLE_GATE_BLOCK_RE = re.compile(
+    r"(?i)(\b3\s*d\b|\b3д\b|3d-|game\s*dev|гейм\w*|художник|дизайнер|моушен|"
+    r"анимат\w*|frontend|фронтенд|верстк\w*|mobile|мобильн\w*|ios|android|"
+    r"machine\s+learning|ml\s+engineer|data\s+scientist|исследовател\w*|"
+    r"blockchain|blockчейн|sales|продаж\w*|маркетолог|seo\b|smm\b)"
+)
+_ROLE_GATE_POSITIVE_RE = re.compile(
+    r"(?i)(поддержк\w*|администратор|администрир\w*|system\s+admin|sysadmin|"
+    r"devops|sre\b|python|automation|автоматизац\w*|integration|интеграц\w*|"
+    r"\bai\b|ai[- ]engineer|llm|bitrix|битрикс|crm|service\s*desk|help\s*desk|"
+    r"техническ\w*\s+поддержк\w*|инфраструктур\w*|сопровожд\w*|etl|data\s+engineer)"
+)
+
+
+def _allowed_role_priorities(profile: Any) -> dict[str, str]:
+    """Role-family priority map from the candidate profile (P1/P2/P3 only)."""
+    priorities = getattr(profile, "role_priorities", None)
+    if not isinstance(priorities, dict):
+        priorities = {}
+    return {
+        str(family): str(priority)
+        for family, priority in priorities.items()
+        if str(priority) in ("P1", "P2", "P3")
+    }
+
+
+def role_gate(role: str, description: str, profile: Any) -> tuple[bool, str]:
+    """Audit 2026-10-19 H-03: reject vacancies that are not a target role.
+
+    Returns ``(allowed, reason)``. Fails closed on unknown/other role families.
+    """
+    title = (role or "").strip()
+    if not title:
+        return False, "empty title"
+
+    blocked = _ROLE_GATE_BLOCK_RE.search(title)
+    if blocked:
+        return False, f"excluded craft keyword: {blocked.group(0)!r}"
+
+    allowed_priorities = _allowed_role_priorities(profile)
+    target_roles = [
+        str(r).strip().lower()
+        for r in (getattr(profile, "target_roles", None) or [])
+        if str(r).strip()
+    ]
+    alternative_roles = [
+        str(r).strip().lower()
+        for r in (getattr(profile, "alternative_roles", None) or [])
+        if str(r).strip()
+    ]
+    title_lower = title.lower()
+    for target in target_roles + alternative_roles:
+        if len(target) >= 3 and target in title_lower:
+            return True, f"target role match: {target!r}"
+
+    family = classify_role_family(title, description or "").value
+    priority = allowed_priorities.get(family)
+    if not priority:
+        return False, f"role family {family} is not a target family"
+    if not _ROLE_GATE_POSITIVE_RE.search(title):
+        return False, f"role family {family} but no positive role keyword in title"
+    return True, f"role family {family} ({priority})"
+
+
+def _prior_submission_exists(vid: str) -> str | None:
+    """Audit 2026-10-19 H-12: refuse to submit twice to the same vacancy."""
+    sid = f"hh:{vid}"
+    try:
+        conn = db.get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT submission_id FROM application_submissions "
+                "WHERE vacancy_stable_id = ? AND lower(ifnull(status,'')) "
+                "IN ('submitted','confirmed','verified','ambiguous_post_submit','ambiguous') "
+                "LIMIT 1",
+                (sid,),
+            )
+            row = cur.fetchone()
+            if row:
+                return f"submission already recorded: {row[0]}"
+            cur.execute(
+                "SELECT status FROM application_tracking "
+                "WHERE vacancy_stable_id = ? AND status IN "
+                "('SUBMITTED','APPLIED','INTERVIEW','REJECTED','WITHDRAWN') LIMIT 1",
+                (sid,),
+            )
+            row = cur.fetchone()
+            if row:
+                return f"tracking already at {row[0]}"
+        finally:
+            conn.close()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"Prior-submission check failed for {vid}: {exc}")
+        return "prior-submission check failed (fail-closed)"
+    return None
+
+
+def submissions_today() -> int:
+    """Count real SUBMITTED rows for the local date (anti-spam daily cap)."""
+    try:
+        conn = db.get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM application_submissions "
+                "WHERE lower(ifnull(status,'')) = 'submitted' "
+                "AND substr(ifnull(submitted_at,''), 1, 10) = ?",
+                (time.strftime("%Y-%m-%d"),),
+            )
+            return int(cur.fetchone()[0] or 0)
+        finally:
+            conn.close()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"Daily submission count failed: {exc}")
+        return AUTOPILOT_DAILY_CAP  # fail closed: no new submissions today
+
+
+def _persist_vacancy_snapshot(
+    vid: str,
+    role: str,
+    company: str,
+    description: str,
+    salary: str | None,
+    brief: dict[str, Any] | None = None,
+) -> bool:
+    """Audit 2026-10-19 H-11: keep the vacancy row the tracking row points at."""
+    try:
+        vacancy = brief.get("vacancy") if brief else {}
+        vacancy = vacancy or {}
+        location = vacancy.get("area")
+        if isinstance(location, dict):
+            location = location.get("name")
+        salary_min = salary_max = None
+        salary_currency = None
+        comp = vacancy.get("compensation") or {}
+        if isinstance(comp, dict):
+            salary_min = comp.get("from")
+            salary_max = comp.get("to")
+            salary_currency = comp.get("currencyCode")
+        model = Vacancy(
+            source="hh",
+            source_job_id=str(vid),
+            title=role or vacancy.get("name") or "hh vacancy",
+            company=company or str(vacancy.get("employer") or ""),
+            description=description or "",
+            job_url=f"https://hh.ru/vacancy/{vid}",
+            location=str(location or ""),
+            salary_min=float(salary_min) if isinstance(salary_min, (int, float)) else None,
+            salary_max=float(salary_max) if isinstance(salary_max, (int, float)) else None,
+            salary_currency=salary_currency,
+        )
+        db.save_vacancy(model)
+        return True
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"Could not persist vacancy {vid} before submit: {exc}")
+        return False
+
+
+def _post_submit_confirmed(submit_data: dict[str, Any]) -> tuple[bool, str]:
+    """Audit 2026-10-19 H-04: a click is not a submitted application."""
+    after = submit_data.get("vacancy_after") or {}
+    applicant = after.get("applicant") or {}
+    if after.get("dom_already_responded"):
+        return True, "vacancy page shows a response link"
+    if applicant.get("alreadyApplied"):
+        return True, "applicant.alreadyApplied is true"
+    if applicant.get("usedResumeIds"):
+        return True, f"usedResumeIds={applicant.get('usedResumeIds')}"
+    if int(applicant.get("negotiations_total") or 0) > 0:
+        return True, f"negotiations_total={applicant.get('negotiations_total')}"
+    form_after = submit_data.get("form_after_send") or {}
+    avrs = form_after.get("avrs") or {}
+    negotiations = avrs.get("negotiations") or {}
+    if int(negotiations.get("total") or 0) > 0:
+        return True, "form shows a negotiation"
+    return False, "post-click page does not confirm the response yet"
+
 
 DEFAULT_AUTOPILOT_QUERIES = [
     "AI Engineer",
@@ -298,6 +485,7 @@ def resolve_and_plan_screening(
     kb_data: dict[str, Any] | None = None,
     cover_letter: str | None = None,
     vacancy_info: dict[str, Any] | None = None,
+    autonomous_mode: bool = False,
 ) -> tuple[bool, str, Any | None, list[str]]:
     """Resolve screening questionnaire answers and construct deterministic prefill plan.
 
@@ -305,7 +493,28 @@ def resolve_and_plan_screening(
         (success, verdict, prefill_plan, reasons)
     """
     raw_controls = form_data.get("controls") or []
-    question_groups = form_data.get("question_groups") or []
+    question_groups = list(form_data.get("question_groups") or [])
+
+    # Enrich question_groups with tasks from vacancy_tests if present
+    vacancy_tests = form_data.get("vacancy_tests") or {}
+    for test_obj in vacancy_tests.values():
+        if isinstance(test_obj, dict):
+            for task in test_obj.get("tasks", []):
+                t_id = str(task.get("id"))
+                t_desc = task.get("description") or ""
+                import re
+                clean_desc = re.sub(r"<[^>]+>", " ", t_desc).strip()
+                t_opts = [s.get("text") for s in task.get("candidateSolutions", []) if s.get("text")]
+                question_groups.append({
+                    "name": f"task_{t_id}",
+                    "stem": clean_desc or t_desc,
+                    "options": t_opts,
+                })
+                question_groups.append({
+                    "name": f"task_{t_id}_text",
+                    "stem": clean_desc or t_desc,
+                    "options": [],
+                })
 
     from ai_assistant.hh_extractor import (
         ApplicationForm,
@@ -334,13 +543,33 @@ def resolve_and_plan_screening(
         if role:
             cover_letter = generate_tailored_letter(role=role, company=company, description=desc)
 
+    v_obj = None
+    if vacancy_info:
+        from ai_assistant.schema import Vacancy
+        v_obj = Vacancy(
+            source="hh",
+            source_job_id=vid,
+            job_url=f"https://hh.ru/vacancy/{vid}",
+            title=vacancy_info.get("role", ""),
+            company=vacancy_info.get("company", ""),
+            description=vacancy_info.get("description", ""),
+            location="Remote",
+            country_restrictions=[],
+            timezone_restrictions=[],
+            salary_min=None,
+            salary_max=None,
+            salary_currency="RUR",
+            employment_type="Full Time",
+        )
+
     gen = QuestionAnswerGenerator(
         profile=profile,
         resume_text=resume_text,
         deep=None,
-        vacancy=None,
+        vacancy=v_obj,
         kb=kb_data,
         cover_letter=cover_letter,
+        autonomous_mode=autonomous_mode,
     )
 
     answers = []
@@ -389,7 +618,7 @@ def is_vacancy_eligible_for_auto_apply(
 
     test = app_state.get("test") or {}
     test_extra = {k: v for k, v in test.items() if k != "hasTests" and v is not None}
-    if test.get("hasTests") or test_extra:
+    if (test.get("hasTests") or test_extra) and not has_resolved_screening:
         return False, f"has tests: {test}"
 
     if form.get("started_with_question") and not has_resolved_screening:
@@ -425,8 +654,20 @@ def submit_vacancy(
     description: str = "",
     resume_title: str | None = None,
     prefill_plan: Any | None = None,
+    outcome: dict[str, Any] | None = None,
 ) -> bool:
-    """Submit application autonomously, reconcile to state.db, and notify Telegram."""
+    """Submit application autonomously, reconcile to state.db, and notify Telegram.
+
+    ``outcome`` is filled in place for callers that need the full story (clicked
+    vs confirmed vs reconciled vs notified). The bool return stays "was a click
+    attempted and executed", i.e. the application must not be retried.
+    """
+    if outcome is None:
+        outcome = {}
+    outcome.update(
+        {"clicked": False, "confirmed": False, "reconciled": False,
+         "notified": False, "status": "NOT_ATTEMPTED", "reason": ""}
+    )
     app_dir = PROJECT_ROOT / "artifacts" / "applications" / f"hh-{vid}"
     app_dir.mkdir(parents=True, exist_ok=True)
 
@@ -439,6 +680,7 @@ def submit_vacancy(
     letter_path.write_text(letter_text, encoding="utf-8")
 
     # 1b. Auto-resolve screening prefill plan if not provided
+    brief_data = None
     if prefill_plan is None:
         brief_file = PROJECT_ROOT / "tools" / ".t722" / f"brief_{vid}.json"
         brief_data = None
@@ -491,8 +733,23 @@ def submit_vacancy(
     }
     (app_dir / "preflight.json").write_text(json.dumps(preflight, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # 3. Execute CDP submit in-process
-    os.environ["SUBMIT_ALLOWED"] = "true"
+    # 3. Execute CDP submit in-process.
+    # Audit 2026-10-19 H-01: never re-arm the master kill-switch from inside the
+    # robot. The operator's SUBMIT_ALLOWED is the authority; if it says off, the
+    # autopilot does not click.
+    if not config.submit_allowed():
+        logger.error(
+            "Autopilot submit refused for %s: SUBMIT_ALLOWED is off "
+            "(operator kill-switch)", vid,
+        )
+        outcome.update({"status": "REFUSED_KILL_SWITCH", "reason": "SUBMIT_ALLOWED off"})
+        return False
+
+    # Audit 2026-10-19 H-11: keep vacancies in step with tracking rows.
+    _persist_vacancy_snapshot(
+        vid, role, company, description, salary,
+        brief_data if prefill_plan is None else None,
+    )
     try:
         t722 = _get_t722_send_module()
         args = argparse.Namespace(
@@ -508,23 +765,48 @@ def submit_vacancy(
         submit_file.write_text(json.dumps(submit_data, ensure_ascii=False, indent=1), encoding="utf-8")
     except Exception as e:
         logger.error(f"CDP submit failed for {vid}: {e}", exc_info=True)
+        outcome.update({"status": "SUBMIT_ERROR", "reason": str(e)})
         return False
-    finally:
-        os.environ["SUBMIT_ALLOWED"] = "false"
 
     if submit_data.get("verdict") != "CLICKED" or submit_data.get("clicked") != 1:
         logger.error(f"Submit not clicked for {vid}: {submit_data.get('verdict')} blockers={submit_data.get('blockers')}")
+        outcome.update({
+            "status": "NOT_CLICKED",
+            "reason": f"{submit_data.get('verdict')} blockers={submit_data.get('blockers')}",
+        })
         return False
 
+    outcome["clicked"] = True
+    confirmed, confirm_reason = _post_submit_confirmed(submit_data)
+    outcome["confirmed"] = confirmed
+    outcome["reason"] = confirm_reason
+    if not confirmed:
+        logger.error(
+            "Click executed for %s but HH did not confirm the response yet (%s). "
+            "Recording it as UNVERIFIED, not as success.", vid, confirm_reason,
+        )
+
     # 4. Reconcile into state.db
+    reconciled = False
+    reconcile_error = ""
     try:
         rec_spec = importlib.util.spec_from_file_location("rec_sub", PROJECT_ROOT / "tools" / "reconcile_submission.py")
         if rec_spec and rec_spec.loader:
             rec_mod = importlib.util.module_from_spec(rec_spec)
             rec_spec.loader.exec_module(rec_mod)
-            rec_mod.reconcile(vid)
+            reconcile_result = rec_mod.reconcile(
+                vid,
+                resume_title=resume_to_use,
+                confirmed=confirmed,
+                post_reason=confirm_reason,
+            )
+            reconciled = bool(reconcile_result.get("ok"))
+            if not reconciled:
+                reconcile_error = str(reconcile_result.get("error") or "reconcile returned not-ok")
     except Exception as e:
+        reconcile_error = str(e)
         logger.error(f"Reconcile failed for {vid}: {e}", exc_info=True)
+    outcome["reconciled"] = reconciled
 
     # 5. Ensure company and title recorded in application_tracking
     try:
@@ -552,8 +834,31 @@ def submit_vacancy(
         f"_{first_lines}..._\n\n"
         f"✅ _Отклик подтвержден через DOM & state.db_"
     )
-    send_telegram_alert(alert_msg)
-    logger.info(f"Successfully submitted and notified for {vid}: {role} at {company}")
+    if confirmed:
+        status_line = "\n\n✅ _HH подтвердил отклик; запись в state.db выполнена._"
+    else:
+        status_line = (
+            "\n\n⚠️ _Клик выполнен, но HH пока НЕ подтвердил отклик. "
+            "Проверь вакансию вручную — возможен неподтверждённый отклик._"
+        )
+    alert_msg = alert_msg + status_line
+    notified = bool(send_telegram_alert(alert_msg))
+    outcome["notified"] = notified
+    if confirmed and reconciled and notified:
+        outcome["status"] = "SUBMITTED_CONFIRMED"
+        logger.info(f"Successfully submitted and notified for {vid}: {role} at {company}")
+    else:
+        outcome["status"] = "SUBMITTED_UNVERIFIED"
+        outcome["reason"] = (
+            f"confirmed={confirmed} ({confirm_reason}); reconciled={reconciled}"
+            + (f" ({reconcile_error})" if reconcile_error else "")
+            + f"; notified={notified}"
+        )
+        logger.error(
+            "Submission NOT fully confirmed for %s: confirmed=%s reconciled=%s notified=%s. "
+            "Recorded as UNVERIFIED; do not retry automatically.",
+            vid, confirmed, reconciled, notified,
+        )
     return True
 
 
@@ -580,7 +885,6 @@ def run_autopilot_cycle(
 
     # 1. Discover candidates via in-process search_operation_report
     logger.info(f"Running in-process discovery across {len(target_queries)} queries (read_limit={read_limit})")
-    os.environ["SUBMIT_ALLOWED"] = "false"
     os.environ["HH_BROWSER_MODE"] = "headless"
 
     try:
@@ -610,8 +914,21 @@ def run_autopilot_cycle(
     submitted_count = 0
     results: list[dict[str, Any]] = []
 
+    # Audit 2026-10-19 H-01/H-03: the operator's kill-switch is authoritative, and
+    # the daily cap stops a 4-hourly cycle from becoming an application flood.
+    submit_enabled = bool(config.submit_allowed())
+    if not submit_enabled:
+        logger.error("Autopilot submissions disabled: SUBMIT_ALLOWED is off")
+    remaining_today = max(0, AUTOPILOT_DAILY_CAP - submissions_today()) if submit_enabled else 0
+    effective_max = min(max_submits, remaining_today)
+    if submit_enabled and effective_max == 0:
+        logger.warning(
+            "Autopilot daily cap reached: %s/%s submissions today; "
+            "no applications this cycle", submissions_today(), AUTOPILOT_DAILY_CAP,
+        )
+
     for entry in discovered:
-        if submitted_count >= max_submits:
+        if submitted_count >= effective_max:
             break
 
         vid = str(entry.get("vacancy_id") or "")
@@ -645,27 +962,40 @@ def run_autopilot_cycle(
         form = brief.get("form") or {}
         app_state = vacancy.get("applicant") or {}
 
-        # Separation 1: Exam tests with timer (hasTests: True / testId / vacancy_tests)
+        # Check for tests or questionnaire forms
         test = app_state.get("test") or {}
         test_extra = {k: v for k, v in test.items() if k != "hasTests" and v is not None}
         has_exam_test = bool(test.get("hasTests") or test_extra or any(v is not None for v in (form.get("vacancy_tests") or {}).values()))
-        if has_exam_test:
-            logger.info(f"Skipping {vid} ({role} at {company}): requires manual exam test {test or form.get('vacancy_tests')}")
-            send_owner_test_alert(vid, role, company, test_info=test or form.get("vacancy_tests"))
+
+        desc = (
+            brief.get("description")
+            or brief.get("vacancy", {}).get("description")
+            or card.get("snippet")
+            or ""
+        )
+
+        # Audit 2026-10-19 H-03/H-12: fit gate and duplicate guard before the
+        # expensive screening work and before any click.
+        role_ok, role_reason = role_gate(role, desc, profile)
+        if not role_ok:
+            logger.info(f"Skipping {vid} ({role} at {company}): role gate: {role_reason}")
+            continue
+        prior = _prior_submission_exists(vid)
+        if prior:
+            logger.info(f"Skipping {vid} ({role} at {company}): {prior}")
             continue
 
-        desc = brief.get("vacancy", {}).get("description") or card.get("snippet") or ""
-
-        # Separation 2: Screening questionnaire (started_with_question / controls)
+        # Screening questionnaire & Exam test autonomous solving
         prefill_plan = None
-        if form.get("started_with_question") or form.get("controls"):
+        if form.get("started_with_question") or form.get("controls") or has_exam_test:
             letter_text = generate_tailored_letter(role=role, company=company, description=desc)
             q_ok, q_verdict, plan, q_reasons = resolve_and_plan_screening(
                 vid, form, profile, kb_data, cover_letter=letter_text,
-                vacancy_info={"role": role, "company": company, "description": desc}
+                vacancy_info={"role": role, "company": company, "description": desc},
+                autonomous_mode=True,
             )
             if not q_ok:
-                logger.info(f"Skipping {vid} ({role} at {company}): questionnaire requires review: {q_reasons}")
+                logger.info(f"Skipping {vid} ({role} at {company}): test/questionnaire requires review: {q_reasons}")
                 send_owner_questionnaire_alert(vid, role, company, reasons=q_reasons)
                 continue
             prefill_plan = plan
@@ -679,6 +1009,7 @@ def run_autopilot_cycle(
         logger.info(f"Submitting {vid}: {role} at {company} (screening_prefilled={bool(prefill_plan)})...")
         target_resume = select_best_resume_for_vacancy(role, desc)
         logger.info(f"Smart resume selected for {vid} ({role}): {target_resume!r}")
+        submission_outcome: dict[str, Any] = {}
         ok = submit_vacancy(
             vid=vid,
             role=role,
@@ -687,6 +1018,7 @@ def run_autopilot_cycle(
             description=desc,
             resume_title=target_resume,
             prefill_plan=prefill_plan,
+            outcome=submission_outcome,
         )
         if ok:
             submitted_count += 1
@@ -696,9 +1028,15 @@ def run_autopilot_cycle(
                 "role": role,
                 "company": company,
                 "salary": salary_str,
-                "status": "SUBMITTED",
+                "status": submission_outcome.get("status", "SUBMITTED"),
+                "reason": submission_outcome.get("reason", ""),
             })
             time.sleep(5)  # Safe spacing between submissions
+        else:
+            logger.info(
+                "Submission not executed for %s: %s (%s)",
+                vid, submission_outcome.get("status"), submission_outcome.get("reason"),
+            )
 
     # Step 5: Rapid check of HH negotiations / employer chats
     try:
