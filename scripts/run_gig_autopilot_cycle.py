@@ -244,12 +244,75 @@ def format_gig_card(gig: Gig, pitch: str, fm_score: float | None = None) -> tupl
     return text, reply_markup
 
 
+def deliver_gigs_with_policy(
+    conn: Any,
+    candidates: list[tuple[float, Gig, str]],
+    owner_chat_id: int | str,
+    *,
+    bot_token: str | None = None,
+    send_card_fn: Any = None,
+) -> tuple[int, list[Any]]:
+    """Phase 2: deliver gigs through the shared notification policy.
+
+    Only high-relevance gigs are pushed now (rate-limited to a per-hour budget);
+    everything else is left in the DB for the daily digest — never dropped.
+    Uses the unified ``gigact:`` action card. Returns (delivered, results).
+    ``send_card_fn`` is injectable for tests (defaults to ``send_telegram_card``).
+    """
+    from ai_assistant.gig.actions import build_action_card
+    from ai_assistant.gig.order_language import resolve_order_language
+    from ai_assistant.notification_gateway import (
+        ItemState,
+        NotificationGateway,
+        Outbound,
+        sqlite_gateway_store,
+    )
+
+    sender = send_card_fn or send_telegram_card
+    delivered = 0
+    results: list[Any] = []
+
+    def _send(outbound: Any) -> None:
+        card = outbound.payload["card"]
+        ok = sender(owner_chat_id, card["text"], card.get("reply_markup"), bot_token)
+        if not ok:
+            raise RuntimeError("telegram send failed")
+
+    gateway = NotificationGateway(
+        sqlite_gateway_store(conn),
+        send_fn=_send,
+        send_now_hourly_limit=getattr(config, "TELEGRAM_SEND_NOW_HOURLY_LIMIT", 6),
+        high_relevance_floor=getattr(config, "TELEGRAM_HIGH_RELEVANCE_FLOOR", 75.0),
+        digest_floor=getattr(config, "TELEGRAM_DIGEST_FLOOR", 55.0),
+    )
+
+    for score, gig, pitch in candidates:
+        language = resolve_order_language(gig.title, gig.description, gig.source)
+        card = build_action_card(
+            {"id": gig.id, "title": gig.title, "url": gig.url,
+             "budget_text": gig.budget_text},
+            pitch,
+            language=language,
+        )
+        outbound = Outbound("gig", gig.id, owner_chat_id, score=score,
+                            payload={"card": card, "gig_id": gig.id})
+        state = ItemState(already_delivered=is_gig_already_delivered(conn, gig.id))
+        result = gateway.dispatch(outbound, state)
+        results.append(result)
+        if result.action == "sent":
+            record_gig_delivery(conn, gig, chat_id=owner_chat_id)
+            delivered += 1
+    return delivered, results
+
+
 def run_gig_cycle(
     max_deliveries: int = 3,
     min_score: float = 48.0,
     kwork_limit: int = 12,
     freelancer_limit: int = 30,
     telegram_limit: int = 25,
+    enable_freelancer: bool = False,
+    enable_contra: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Execute one autonomous gig discovery & delivery cycle."""
@@ -276,28 +339,44 @@ def run_gig_cycle(
     except Exception as exc:
         logger.warning("Failed to initialize KworkGigSource: %s", exc)
 
-    # 3. Freelancer.com public feed
-    try:
-        fl_policy = {
-            "automated_access_allowed": True,
-            "express_written_permission_reference": "public listing read-only policy",
-            "website_scraping_allowed": True,
-            "expires_at": "2099-01-01T00:00:00+00:00",
-        }
-        fl_src = FreelancerGigSource(
-            target_skills=["python", "web-scraping", "automation", "telegram", "n8n", "excel", "api"],
-            include_general_listing=False,
-            listing_pages=0,
-            skill_pages=1,
-            delay_seconds=0.5,
-            max_requests=max(freelancer_limit * 2, 60),
-            timeout_seconds=8,
-            access_policy=fl_policy,
-        )
-        sources.append(fl_src)
-        logger.info("Initialized FreelancerGigSource")
-    except Exception as exc:
-        logger.warning("Failed to initialize FreelancerGigSource: %s", exc)
+    # 3. Freelancer.com public feed (disabled by default: payout blocked for RF citizens)
+    env_enable_fl = os.environ.get("GIG_ENABLE_FREELANCER", "").strip().lower() in ("1", "true", "yes")
+    if enable_freelancer or env_enable_fl:
+        try:
+            fl_policy = {
+                "automated_access_allowed": True,
+                "express_written_permission_reference": "public listing read-only policy",
+                "website_scraping_allowed": True,
+                "expires_at": "2099-01-01T00:00:00+00:00",
+            }
+            fl_src = FreelancerGigSource(
+                target_skills=["python", "web-scraping", "automation", "telegram", "n8n", "excel", "api"],
+                include_general_listing=False,
+                listing_pages=0,
+                skill_pages=1,
+                delay_seconds=0.5,
+                max_requests=max(freelancer_limit * 2, 60),
+                timeout_seconds=8,
+                access_policy=fl_policy,
+            )
+            sources.append(fl_src)
+            logger.info("Initialized FreelancerGigSource")
+        except Exception as exc:
+            logger.warning("Failed to initialize FreelancerGigSource: %s", exc)
+    else:
+        logger.info("FreelancerGigSource is disabled by default (RF payouts blocked)")
+
+    # 4. Contra (disabled by default: payout blocked for RF citizens)
+    env_enable_contra = os.environ.get("GIG_ENABLE_CONTRA", "").strip().lower() in ("1", "true", "yes")
+    if enable_contra or env_enable_contra:
+        try:
+            from ai_assistant.gig.sources import ContraGigSource
+            sources.append(ContraGigSource())
+            logger.info("Initialized ContraGigSource")
+        except Exception as exc:
+            logger.warning("Failed to initialize ContraGigSource: %s", exc)
+    else:
+        logger.info("ContraGigSource is disabled by default (RF payouts blocked)")
 
     # Ingestion & scoring via GigPipeline
     pipeline = GigPipeline(persist=True)
@@ -371,8 +450,14 @@ def run_gig_cycle(
         if is_gig_already_delivered(conn, gig.id):
             continue
 
-        # Generate pitch using confirmed KB facts
-        pitch = generate_gig_pitch(title=gig.title, description=gig.description, budget=gig.budget_text or "")
+        # Generate pitch using confirmed KB facts, in the ORDER's language
+        # (English marketplaces like Freelancer/Contra get an English reply).
+        pitch = generate_gig_pitch(
+            title=gig.title,
+            description=gig.description,
+            budget=gig.budget_text or "",
+            source=gig.source,
+        )
         candidate_gigs.append((best_score, gig, pitch))
 
     candidate_gigs.sort(key=lambda item: -item[0])
@@ -383,6 +468,25 @@ def run_gig_cycle(
     delivered_count = 0
 
     owner_chat_id = config.TELEGRAM_OWNER_ID or config.TELEGRAM_CHAT_ID or "392046103"
+
+    # Phase 2: when the notification policy is ON, delivery goes through the
+    # shared gateway (global dedup + rate limit + high-relevance-only-to-now).
+    # Default OFF keeps the legacy per-card path below, byte-for-byte.
+    if getattr(config, "TELEGRAM_NOTIFY_POLICY_ENABLED", False) and not dry_run:
+        delivered_count, _ = deliver_gigs_with_policy(
+            conn, top_candidates, owner_chat_id
+        )
+        conn.close()
+        summary = {
+            "raw_collected": len(all_raw),
+            "processed": len(processed_gigs),
+            "candidates": len(candidate_gigs),
+            "delivered": delivered_count,
+            "dry_run": dry_run,
+            "mode": "policy",
+        }
+        logger.info("Cycle finished (policy mode): %s", summary)
+        return summary
 
     for score, gig, pitch in top_candidates:
         fm_val = (gig.source_facts or {}).get("first_money_score")
@@ -430,6 +534,8 @@ def main() -> int:
     parser.add_argument("--kwork-limit", type=int, default=12, help="Max Kwork projects to read (default 12)")
     parser.add_argument("--freelancer-limit", type=int, default=30, help="Max Freelancer requests (default 30)")
     parser.add_argument("--telegram-limit", type=int, default=25, help="Max TG channel posts to read (default 25)")
+    parser.add_argument("--enable-freelancer", action="store_true", help="Enable Freelancer.com source (disabled by default)")
+    parser.add_argument("--enable-contra", action="store_true", help="Enable Contra source (disabled by default)")
     parser.add_argument("--dry-run", action="store_true", help="Simulate run without delivering to Telegram")
     args = parser.parse_args()
 
@@ -444,6 +550,8 @@ def main() -> int:
             kwork_limit=args.kwork_limit,
             freelancer_limit=args.freelancer_limit,
             telegram_limit=args.telegram_limit,
+            enable_freelancer=args.enable_freelancer,
+            enable_contra=args.enable_contra,
             dry_run=args.dry_run,
         )
         return 0
