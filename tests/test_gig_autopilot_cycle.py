@@ -268,3 +268,35 @@ def test_telegram_routing_owner_only(monkeypatch):
     # MUST NOT be public channel ID
     assert sent_chat_ids[0] != channel_id
 
+
+
+def test_kwork_stopped_and_oversubscribed_filtering():
+    """Verify that stopped projects and projects with >50 offers are marked CLOSED and rejected."""
+    from ai_assistant.gig.sources.kwork import KworkGigSource
+
+    # 1. Stopped project
+    html_stop = ('<html><body>{"wantData":{"id":12345,"status":"user_stop",'
+                 '"name":"Scrape data Python","description":"Python scraping task.",'
+                 '"kwork_count":10,"isWantActive":false}}</body></html>')
+    rec_stop = KworkGigSource.record_from_html(html_stop, page_url="https://kwork.ru/projects/12345", fetched_at="now")
+    assert rec_stop is not None
+    assert rec_stop["source_status"] == "CLOSED"
+    assert "user_stop" in rec_stop["source_facts"]["kwork_closed_reason"]
+
+    # 2. Oversubscribed project (>50 offers)
+    html_over = ('<html><body>{"wantData":{"id":54321,"status":"active",'
+                 '"name":"Build Telegram bot","description":"Python bot task.",'
+                 '"kwork_count":65,"isWantActive":true}}</body></html>')
+    rec_over = KworkGigSource.record_from_html(html_over, page_url="https://kwork.ru/projects/54321", fetched_at="now")
+    assert rec_over is not None
+    assert rec_over["source_status"] == "CLOSED"
+    assert ">50" in rec_over["source_facts"]["kwork_closed_reason"]
+
+    # 3. Active open project (<50 offers)
+    html_open = ('<html><body>{"wantData":{"id":77777,"status":"active",'
+                 '"name":"Bitrix24 integration","description":"Python bitrix task.",'
+                 '"kwork_count":15,"isWantActive":true}}</body></html>')
+    rec_open = KworkGigSource.record_from_html(html_open, page_url="https://kwork.ru/projects/77777", fetched_at="now")
+    assert rec_open is not None
+    assert rec_open["source_status"] == "OPEN"
+    assert rec_open["source_facts"]["kwork_closed_reason"] is None

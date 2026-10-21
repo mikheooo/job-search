@@ -197,19 +197,71 @@ def _extract_kwork_skills(title: str, description: str) -> list[str]:
 
 
 
+DEFAULT_KWORK_CATEGORIES = [11, 41, 38, 80, 113]
+
+
 def discover_kwork_project_urls(
     categories: list[int] | None = None,
-    max_urls: int = 25,
+    max_urls: int = 35,
 ) -> list[str]:
-    """Discover fresh project URLs from Kwork exchange categories using Headless Chrome.
+    """Discover fresh project URLs from Kwork exchange categories.
 
-    Default categories: [11] (Разработка и IT).
-    Safe read-only operation: opens categories in Headless Chrome, extracts links matching /projects/<id>.
+    Target categories include:
+    - 11: Разработка и IT
+    - 41: Скрипты, боты и mini apps
+    - 38: Доработка и настройка сайта (Битрикс24, CRM, виджеты)
+    - 80: Десктоп программирование (парсеры, автоматизация)
+    - 113: Базы данных и клиентов (сбор данных, выгрузки)
+
+    Uses fast HTTP retrieval with embedded stateData extraction,
+    with graceful fallback to HeadlessBrowserSession if needed.
     """
-    cats = categories or [11]
+    cats = list(categories) if categories else list(DEFAULT_KWORK_CATEGORIES)
     discovered: list[str] = []
     seen: set[str] = set()
 
+    # 1. Fast HTTP discovery via public category listing & embedded stateData
+    headers = {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    for cat_id in cats:
+        if len(discovered) >= max_urls:
+            break
+        url = f"{KWORK_HOST}/projects?c={cat_id}"
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10.0) as resp:
+                html = resp.read().decode("utf-8", "replace")
+                m = re.search(r'window\.stateData\s*=\s*(\{.*?\});', html, re.DOTALL)
+                if m:
+                    data = json.loads(m.group(1))
+                    wants = data.get("wants", [])
+                    for w in wants:
+                        pid = w.get("id")
+                        w_status = str(w.get("status") or "").lower()
+                        w_offers = w.get("kwork_count")
+                        try:
+                            offers_cnt = int(w_offers) if w_offers is not None else 0
+                        except (ValueError, TypeError):
+                            offers_cnt = 0
+                        # Skip stopped/closed and over-subscribed projects (> 50 bids)
+                        if w_status in ("stop", "user_stop", "archived", "closed", "expired") or offers_cnt > 50:
+                            continue
+                        if pid:
+                            canon = canonical_url(pid)
+                            if canon not in seen:
+                                seen.add(canon)
+                                discovered.append(canon)
+                                if len(discovered) >= max_urls:
+                                    break
+        except Exception as exc:
+            logger.debug("Fast HTTP discovery error for category %s: %s", cat_id, exc)
+
+    if discovered:
+        return discovered
+
+    # 2. Fallback to Headless Browser if HTTP yielded no links
     try:
         from ...hh_browser_provider import HeadlessBrowserSession
 
@@ -278,7 +330,7 @@ class KworkGigSource:
         categories: list[int] | None = None,
     ) -> None:
         self.auto_discover = auto_discover
-        self.categories = list(categories) if categories else [11]
+        self.categories = list(categories) if categories else list(DEFAULT_KWORK_CATEGORIES)
         self.urls: list[str] = []
         for u in list(urls or []):
             pid = extract_project_id(u)
@@ -358,16 +410,45 @@ class KworkGigSource:
             project_id = int(data.get("id"))
         except (TypeError, ValueError):
             return None
-        title = _untext(data.get("name"))
+        title = _untext(data.get("name") or data.get("title"))
         if not title:
             return None
         url = canonical_url(project_id)
-        source_status = normalize_source_status(data.get("status"))
+        raw_status = data.get("status") or data.get("want_status")
+        source_status = normalize_source_status(raw_status)
         desired = _to_float(data.get("priceLimit"))
         ceiling = _to_float(data.get("possiblePriceLimit"))
         budget_type = "fixed" if (desired is not None or ceiling is not None) else None
-        offers_match = _OFFERS_RE.search(html)
-        offers = int(offers_match.group(1)) if offers_match else None
+
+        # Extract offers count
+        offers = None
+        if data.get("kwork_count") is not None:
+            try:
+                offers = int(data.get("kwork_count"))
+            except (ValueError, TypeError):
+                offers = None
+        if offers is None:
+            offers_match = _OFFERS_RE.search(html)
+            offers = int(offers_match.group(1)) if offers_match else None
+
+        # Filter closed, stopped, or over-subscribed projects (> 50 offers)
+        is_active = data.get("isWantActive")
+        is_archive = data.get("isWantArchive")
+        reasons = []
+        if is_active is False:
+            reasons.append("isWantActive=False")
+        if is_archive is True:
+            reasons.append("isWantArchive=True")
+        if raw_status and str(raw_status).lower() in ("stop", "user_stop", "stopped", "user_stopped", "archived", "closed", "expired"):
+            reasons.append(f"status={raw_status}")
+        if offers is not None and offers > 50:
+            reasons.append(f"kwork_count={offers}>50")
+
+        closed_reason = None
+        if reasons:
+            source_status = "CLOSED"
+            closed_reason = "; ".join(reasons)
+
         user = data.get("user") if isinstance(data.get("user"), dict) else {}
         return {
             "source": "kwork",
@@ -398,7 +479,9 @@ class KworkGigSource:
             "platform_payment_options": [],
             "source_facts": {
                 "kwork_project_id": project_id,
-                "kwork_status": data.get("status"),
+                "kwork_status": raw_status,
+                "kwork_offers_count": offers,
+                "kwork_closed_reason": closed_reason,
                 "kwork_category_id": data.get("category_id"),
                 "kwork_price_limit": data.get("priceLimit"),
                 "kwork_possible_price_limit": data.get("possiblePriceLimit"),

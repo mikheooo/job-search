@@ -333,7 +333,7 @@ def run_gig_cycle(
 
     # 2. Kwork IT projects
     try:
-        kw_src = KworkGigSource(auto_discover=True, categories=[11])
+        kw_src = KworkGigSource(auto_discover=True, categories=[11, 41, 38, 80, 113])
         sources.append(kw_src)
         logger.info("Initialized KworkGigSource(auto_discover=True)")
     except Exception as exc:
@@ -417,6 +417,18 @@ def run_gig_cycle(
             continue
         if gig.can_deliver not in (CanDeliver.HIGH, CanDeliver.MEDIUM):
             continue
+
+        # Filter out stopped, closed, or oversubscribed gigs (> 50 offers)
+        raw_status = (gig.source_facts or {}).get("kwork_status") or gig.source_status
+        if raw_status and str(raw_status).lower() in ("stop", "user_stop", "stopped", "user_stopped", "closed", "archived", "expired"):
+            continue
+        comp = (gig.source_facts or {}).get("kwork_count_raw") or gig.competition
+        if comp is not None:
+            try:
+                if int(comp) > 50:
+                    continue
+            except (ValueError, TypeError):
+                pass
 
         # Filter out non-IT / content / design / sales jobs
         text_low = f"{gig.title} {gig.description}".lower()
