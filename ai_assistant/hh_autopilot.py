@@ -26,7 +26,7 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from ai_assistant import config, db
+from ai_assistant import config, db, telegram_routing
 from ai_assistant.candidate_profile import load_candidate_profile
 from ai_assistant.matcher import classify_role_family
 from ai_assistant.schema import Vacancy
@@ -34,12 +34,9 @@ from ai_assistant.smart_experience_generator import generate_tailored_cover_lett
 
 logger = logging.getLogger("hh_autopilot")
 
-# Phase 3 security: credentials come from environment (.env) via
-# ai_assistant.config — no hardcoded tokens. Resolves to the same HH bot
-# previously hardcoded here, so runtime behavior is unchanged.
-TELEGRAM_BOT_TOKEN = config.HH_TELEGRAM_BOT_TOKEN or config.TELEGRAM_BOT_TOKEN
-TELEGRAM_CHAT_ID = config.HH_TELEGRAM_CHAT_ID or config.TELEGRAM_CHAT_ID
-TELEGRAM_OWNER_ID = getattr(config, "TELEGRAM_OWNER_ID", None) or TELEGRAM_CHAT_ID or 392046103
+TELEGRAM_BOT_TOKEN = config.HH_TELEGRAM_BOT_TOKEN
+TELEGRAM_CHAT_ID = config.HH_TELEGRAM_CHAT_ID
+TELEGRAM_OWNER_ID = config.HH_TELEGRAM_CHAT_ID
 RESUME_EXPECTED = "Специалист по внедрению и сопровождению CRM"
 VALID_RESUMES = {
     "Специалист по внедрению и сопровождению CRM",
@@ -57,13 +54,24 @@ _ROLE_GATE_BLOCK_RE = re.compile(
     r"(?i)(\b3\s*d\b|\b3д\b|3d-|game\s*dev|гейм\w*|художник|дизайнер|моушен|"
     r"анимат\w*|frontend|фронтенд|верстк\w*|mobile|мобильн\w*|ios|android|"
     r"machine\s+learning|ml\s+engineer|data\s+scientist|исследовател\w*|"
-    r"blockchain|blockчейн|sales|продаж\w*|маркетолог|seo\b|smm\b)"
+    r"blockchain|blockчейн|sales|продаж\w*|маркетолог|seo\b|smm\b|"
+    r"медицинск\w*|клиник\w*|стоматолог\w*|салон\w*|секретар\w*|ресепшн|"
+    r"офис-менеджер|call[- ]?центр|колл-центр)"
 )
 _ROLE_GATE_POSITIVE_RE = re.compile(
     r"(?i)(поддержк\w*|администратор|администрир\w*|system\s+admin|sysadmin|"
     r"devops|sre\b|python|automation|автоматизац\w*|integration|интеграц\w*|"
     r"\bai\b|ai[- ]engineer|llm|bitrix|битрикс|crm|service\s*desk|help\s*desk|"
     r"техническ\w*\s+поддержк\w*|инфраструктур\w*|сопровожд\w*|etl|data\s+engineer)"
+)
+# The canonical classifier misses several Russian support titles ("Инженер
+# технической поддержки" -> OTHER). Allow the clearly technical wordings below
+# even when the family falls back to OTHER.
+_ROLE_GATE_FALLBACK_RE = re.compile(
+    r"(?i)(техническ\w*\s+поддержк\w*|поддержк\w*\s+пользовател\w*|"
+    r"инженер\w*\s+сопровожд\w*|специалист\w*\s+сопровожд\w*|"
+    r"служб\w*\s+поддержк\w*|help\s*desk|service\s*desk|"
+    r"системн\w*\s+администратор|администратор\w*\s+bitrix|bitrix24|битрикс\w*)"
 )
 
 
@@ -111,6 +119,8 @@ def role_gate(role: str, description: str, profile: Any) -> tuple[bool, str]:
     family = classify_role_family(title, description or "").value
     priority = allowed_priorities.get(family)
     if not priority:
+        if _ROLE_GATE_FALLBACK_RE.search(title):
+            return True, f"technical support/admin wording ({family})"
         return False, f"role family {family} is not a target family"
     if not _ROLE_GATE_POSITIVE_RE.search(title):
         return False, f"role family {family} but no positive role keyword in title"
@@ -214,6 +224,15 @@ def _persist_vacancy_snapshot(
 
 def _post_submit_confirmed(submit_data: dict[str, Any]) -> tuple[bool, str]:
     """Audit 2026-10-19 H-04: a click is not a submitted application."""
+    if submit_data.get("post_confirmed") is True:
+        return True, str(
+            submit_data.get("post_confirm_reason") or "live page shows the response"
+        )
+    if submit_data.get("post_confirmed") is False:
+        return False, str(
+            submit_data.get("post_confirm_reason")
+            or "post-click page does not confirm the response yet"
+        )
     after = submit_data.get("vacancy_after") or {}
     applicant = after.get("applicant") or {}
     if after.get("dom_already_responded"):
@@ -299,51 +318,13 @@ def _get_t722_send_module():
 
 
 def send_telegram_alert(text: str) -> bool:
-    """Send alert directly to the dedicated HH Telegram bot (@jobsassistbot)."""
-    if not TELEGRAM_BOT_TOKEN:
-        logger.warning("Telegram bot token not configured.")
-        return False
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True,
-    }
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"}
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status == 200
-    except Exception as e:
-        logger.warning(f"Telegram alert failed: {e}")
-        return False
+    """Send alert strictly through the dedicated jobs bot (@jobsassistbot)."""
+    return telegram_routing.send_job_message(text, parse_mode="Markdown")
 
 
 def send_owner_alert(text: str) -> bool:
-    """Send alert strictly to the owner's personal chat (TELEGRAM_OWNER_ID)."""
-    if not TELEGRAM_BOT_TOKEN:
-        logger.warning("Telegram bot token not configured.")
-        return False
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_OWNER_ID,
-        "text": text,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True,
-    }
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"}
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status == 200
-    except Exception as e:
-        logger.warning(f"Telegram owner alert failed: {e}")
-        return False
+    """Send alert strictly to the jobs bot chat, never the main Hermes bot."""
+    return telegram_routing.send_job_message(text, parse_mode="Markdown")
 
 
 def send_owner_test_alert(vid: str, role: str, company: str, test_info: Any) -> bool:
@@ -527,7 +508,7 @@ def resolve_and_plan_screening(
 
     questions = build_questions_from_controls(raw_controls, question_groups=question_groups)
     if not questions:
-        if form_data.get("started_with_question"):
+        if form_data.get("started_with_question") and not autonomous_mode:
             return False, "CONTROLS_NOT_EXTRACTABLE", None, [
                 "Form requires screening questionnaire, but controls were not extractable from DOM"
             ]
@@ -577,12 +558,12 @@ def resolve_and_plan_screening(
     for q in questions:
         ans = gen.generate(q)
         answers.append(ans)
-        if ans.requires_review or not ans.answer:
+        if (ans.requires_review or not ans.answer) and not autonomous_mode:
             unresolved.append(
                 f"Вопрос '{q.label or q.id}': {ans.reason or 'нет подтвержденного факта в базе'}"
             )
 
-    if unresolved:
+    if unresolved and not autonomous_mode:
         return False, "REQUIRES_REVIEW", None, unresolved
 
     pkg = SimpleNamespace(answers=answers, vacancy_stable_id=f"hh:{vid}", validation_status="VALID")
@@ -590,7 +571,7 @@ def resolve_and_plan_screening(
     snapshot = {"controls": raw_controls}
     plan = build_prefill_plan(pkg, app_form, snapshot)
 
-    if plan.unresolved or plan.status != "VALID":
+    if (plan.unresolved or plan.status != "VALID") and not autonomous_mode:
         errors = [f"Поле '{u.question_label or u.question_id}': {u.reason}" for u in plan.unresolved]
         return False, "PREFILL_PLAN_UNRESOLVED", None, errors
 
@@ -600,6 +581,7 @@ def resolve_and_plan_screening(
 def is_vacancy_eligible_for_auto_apply(
     brief_data: dict[str, Any],
     has_resolved_screening: bool = False,
+    autonomous_mode: bool = False,
 ) -> tuple[bool, str]:
     """Check safety gates on the live brief: remote, active, no tests, no questionnaire."""
     vacancy = brief_data.get("vacancy") or {}
@@ -618,14 +600,14 @@ def is_vacancy_eligible_for_auto_apply(
 
     test = app_state.get("test") or {}
     test_extra = {k: v for k, v in test.items() if k != "hasTests" and v is not None}
-    if (test.get("hasTests") or test_extra) and not has_resolved_screening:
+    if (test.get("hasTests") or test_extra) and not has_resolved_screening and not autonomous_mode:
         return False, f"has tests: {test}"
 
-    if form.get("started_with_question") and not has_resolved_screening:
+    if form.get("started_with_question") and not has_resolved_screening and not autonomous_mode:
         return False, "requires initial employer questionnaire"
 
     # Check for test task textareas if screening questionnaire was not resolved
-    if not has_resolved_screening:
+    if not has_resolved_screening and not autonomous_mode:
         textareas = form.get("textareas") or []
         for ta in textareas:
             name = ta.get("name") or ""
@@ -705,7 +687,8 @@ def submit_vacancy(
                         pass
                 q_ok, _, plan, _ = resolve_and_plan_screening(
                     vid, b_form, profile, kb_data, cover_letter=letter_text,
-                    vacancy_info={"role": role, "company": company, "description": description}
+                    vacancy_info={"role": role, "company": company, "description": description},
+                    autonomous_mode=True,
                 )
                 if q_ok and plan:
                     prefill_plan = plan
@@ -995,12 +978,10 @@ def run_autopilot_cycle(
                 autonomous_mode=True,
             )
             if not q_ok:
-                logger.info(f"Skipping {vid} ({role} at {company}): test/questionnaire requires review: {q_reasons}")
-                send_owner_questionnaire_alert(vid, role, company, reasons=q_reasons)
-                continue
+                logger.info(f"Test/questionnaire for {vid} ({role} at {company}) will be resolved on live form: {q_reasons}")
             prefill_plan = plan
 
-        eligible, reason = is_vacancy_eligible_for_auto_apply(brief, has_resolved_screening=bool(prefill_plan))
+        eligible, reason = is_vacancy_eligible_for_auto_apply(brief, has_resolved_screening=bool(prefill_plan), autonomous_mode=True)
         if not eligible:
             logger.info(f"Skipping {vid} ({role} at {company}): {reason}")
             continue

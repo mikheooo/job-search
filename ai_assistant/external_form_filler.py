@@ -1108,7 +1108,7 @@ async def _fill_gas_async(ws_url: str, company: str, vacancy: str) -> FormFillRe
             let c = 0;
             if (setVal('name', 'Михаил Колесников')) c++;
             if (setVal('telegram', '@brokeassh')) c++;
-            if (setVal('city_tz', 'Удаленно (РФ, UTC+7 / МСК+4, Новосибирск / Бангкок)')) c++;
+            if (setVal('city_tz', 'Удаленно (РФ, часовой пояс МСК+4 / Новосибирск, гражданство РФ)')) c++;
             if (clickRadio('igaming', 'Да')) c++;
             if (setVal('salary', '1300 $')) c++;
             if (setVal('years', '5+')) c++;

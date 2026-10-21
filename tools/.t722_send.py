@@ -650,6 +650,24 @@ def run_submit(args: argparse.Namespace) -> dict[str, Any]:
             except Exception as e:
                 _log(f"failed to load prefill_json: {e}")
 
+        # If prefill_plan is still missing but form has controls or requires questions,
+        # resolve questions on the fly from the live form_tab DOM!
+        if not prefill_plan and (form.get("controls") or form.get("started_with_question")):
+            try:
+                from ai_assistant.hh_autopilot import resolve_and_plan_screening
+                from ai_assistant.candidate_profile import load_candidate_profile
+                profile = load_candidate_profile()
+                q_ok, _, plan, _ = resolve_and_plan_screening(
+                    vid, form, profile, cover_letter=letter,
+                    vacancy_info={"role": getattr(args, "expect_resume", ""), "company": ""},
+                    autonomous_mode=True,
+                )
+                if q_ok and plan:
+                    prefill_plan = plan
+                    _log(f"Resolved live prefill plan on form_tab: {len(getattr(plan, 'operations', []))} operations")
+            except Exception as e:
+                _log(f"Live form prefill planning error: {e}")
+
         if prefill_plan:
             from ai_assistant.prefill_execute import _mutation_js
             ops = prefill_plan.operations if hasattr(prefill_plan, "operations") else prefill_plan.get("operations", [])
@@ -702,16 +720,34 @@ def run_submit(args: argparse.Namespace) -> dict[str, Any]:
         # Audit 2026-10-19 H-04: a click is not proof of a submitted response.
         # Record what the live pages actually show, so the caller can stop
         # claiming success when HH has not confirmed it yet.
-        after_applicant = after.get("applicant") or {}
+        def _shows_response(page: dict, form_after: dict) -> bool:
+            applicant_ = (page or {}).get("applicant") or {}
+            negotiations_ = (((form_after or {}).get("avrs") or {}).get("negotiations") or {})
+            return bool(
+                (page or {}).get("dom_already_responded")
+                or applicant_.get("alreadyApplied")
+                or applicant_.get("usedResumeIds")
+                or int(applicant_.get("negotiations_total") or 0) > 0
+                or int(negotiations_.get("total") or 0) > 0
+            )
+
         form_after_send = report.get("form_after_send") or {}
-        avrs_negotiations = ((form_after_send.get("avrs") or {}).get("negotiations") or {})
-        post_confirmed = bool(
-            after.get("dom_already_responded")
-            or after_applicant.get("alreadyApplied")
-            or after_applicant.get("usedResumeIds")
-            or int(after_applicant.get("negotiations_total") or 0) > 0
-            or int(avrs_negotiations.get("total") or 0) > 0
-        )
+        post_confirmed = _shows_response(after, form_after_send)
+        if not post_confirmed:
+            # HH often updates the vacancy page a few seconds later. One re-read
+            # is cheap and prevents a false "unverified" alarm for a real send.
+            _log("response not visible after 6 s; re-reading the vacancy page once")
+            time.sleep(8.0)
+            session.navigate(vacancy_tab, _vacancy_url(vid))
+            after_retry = _read(session, vacancy_tab, scan._BRIEF_JS.replace("__VID__", vid))
+            if _shows_response(after_retry, form_after_send):
+                post_confirmed = True
+                after = after_retry
+                report["vacancy_after_retry"] = {
+                    k: v for k, v in after_retry.items() if k != "description"
+                }
+                report["post_confirm_retry"] = True
+        report["vacancy_after"] = {k: v for k, v in after.items() if k != "description"}
         report["post_confirmed"] = post_confirmed
         report["post_confirm_reason"] = (
             "live page shows the response"

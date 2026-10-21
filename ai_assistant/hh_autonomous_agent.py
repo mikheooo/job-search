@@ -441,6 +441,63 @@ class NotificationDispatcher:
         return notif_data
 
     @staticmethod
+    def notify_external_form_submitted(
+        company: str,
+        vacancy_title: str,
+        url: str,
+        fields_count: int,
+        conversation_id: str | None = None,
+        application_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Dispatch informational notification when external form was autonomously submitted."""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        notif_msg = (
+            f"✅ *Анкета успешно заполнена агентом!*\n\n"
+            f"🏢 *Компания:* {company}\n"
+            f"💼 *Вакансия:* {vacancy_title}\n"
+            f"🔗 *Ссылка:* {url}\n"
+            f"📝 *Заполнено полей:* {fields_count}\n"
+            f"💬 *Статус:* Ответ отправлен работодателю в чат HH."
+        )
+        notif_data = {
+            "notification_type": "EXTERNAL_FORM_SUBMITTED",
+            "priority": NotificationPriority.NORMAL.value,
+            "title": f"FORM SUBMITTED: {company} - {vacancy_title}",
+            "message": notif_msg,
+            "company": company,
+            "vacancy_title": vacancy_title,
+            "vacancy_url": url,
+            "conversation_id": conversation_id,
+            "action_required": "None (Autonomous submit completed).",
+            "metadata": {
+                "application_id": application_id,
+                "url": url,
+                "fields_count": fields_count,
+            },
+            "created_at": now,
+            "read": 0,
+        }
+        notif_id = db.save_autonomous_notification(notif_data)
+        notif_data["id"] = notif_id
+        try:
+            from .telegram_notifier import get_telegram_notifier
+            get_telegram_notifier().deliver_notification(
+                notif_type="EXTERNAL_FORM_SUBMITTED",
+                details={
+                    "company": company,
+                    "vacancy_title": vacancy_title,
+                    "url": url,
+                    "fields_count": fields_count,
+                    "conversation_id": conversation_id,
+                    "created_at": now,
+                },
+                text_override=notif_msg,
+            )
+        except Exception as e:
+            logger.debug(f"Telegram form submitted delivery exception: {e}")
+        return notif_data
+
+    @staticmethod
     def notify_test_task(
         company: str,
         vacancy_title: str,
@@ -1528,13 +1585,13 @@ class AutonomousJobAgent:
             form_url = ""
             for u in url_matches:
                 u_low = u.lower()
-                if is_external_form_url(u) or any(domain in u_low for domain in ["forms.gle", "docs.google.com/forms", "forms.yandex.ru", "typeform.com", "kakdela.hh.ru", "script.google.com", "tinyurl.com", "t.me/"]):
+                if is_external_form_url(u, msg_text) or any(domain in u_low for domain in ["forms.gle", "docs.google.com/forms", "forms.yandex.ru", "typeform.com", "kakdela.hh.ru", "script.google.com", "tinyurl.com", "t.me/"]):
                     if "t.me/" in u_low and not any(k in msg_low for k in ["анкет", "опрос", "form", "тест"]):
                         continue  # direct telegram contact without form context is handled under interview/contact
                     is_ext_form = True
                     form_url = u
                     break
-                if any(k in msg_low for k in ["анкет", "опросник", "заполнить форму", "заполните анкету"]):
+                if any(k in msg_low for k in ["анкет", "опросник", "заполнить форму", "заполните анкету", "пройти тест", "пройти тестирование"]):
                     is_ext_form = True
                     form_url = u
                     break
@@ -1545,7 +1602,9 @@ class AutonomousJobAgent:
                 "github.com", "notion.site", "drive.google.com", "docs.google.com",
                 "решите задачу", "сделайте задание", "выполните задание",
             ]
-            is_test_task = not is_ext_form and any(ts in msg_low for ts in test_task_signals) and not any(s in msg_low for s in ["собеседован", "интервью"])
+            is_test_task = not is_ext_form and any(ts in msg_low for ts in test_task_signals) and (
+                bool(url_matches) or not any(s in msg_low for s in ["собеседован", "интервью"])
+            )
 
             # Check Interview Invitation / Scheduling Request (High Priority)
             interview_signals = [
@@ -1595,8 +1654,23 @@ class AutonomousJobAgent:
                     reply_text = fill_res.chat_confirmation_text
                     facts_used = ["external_form_filler.py: auto_filled_and_verified", "contacts: @brokeassh"]
                     decision_reason = f"External form {target_url} autonomously filled ({fill_res.fields_count} fields) and verified; confirmation queued for HH chat."
+                    notif = NotificationDispatcher.notify_external_form_submitted(
+                        company=d.employer or "HeadHunter Employer",
+                        vacancy_title=d.vacancy_title or "Python Role",
+                        url=target_url,
+                        fields_count=fill_res.fields_count,
+                        conversation_id=d.conversation_id,
+                        application_id=app_id,
+                    )
+                    out["notifications_sent"].append(notif)
                 else:
-                    is_physically_blocked = bool(fill_res and fill_res.blocked)
+                    is_physically_blocked = bool(fill_res and fill_res.blocked and (
+                        "микрофон" in fill_res.blocked_reason.lower()
+                        or "камер" in fill_res.blocked_reason.lower()
+                        or "captcha" in fill_res.blocked_reason.lower()
+                        or "turnstile" in fill_res.blocked_reason.lower()
+                        or "hcaptcha" in fill_res.blocked_reason.lower()
+                    ))
                     task_status = "⚠️ **Требуется ручное заполнение**" if is_physically_blocked else "⏳ **В работе**"
                     record_pending_test_task(
                         company=d.employer or "HeadHunter Employer",
@@ -1606,7 +1680,7 @@ class AutonomousJobAgent:
                         conversation_id=d.conversation_id,
                         status=task_status,
                     )
-                    # ONLY notify owner if physically blocked (camera, mic, hard captcha, closed)
+                    # ONLY notify owner if physically blocked (camera, mic, hard captcha)
                     if is_physically_blocked:
                         notif = NotificationDispatcher.notify_external_questionnaire(
                             company=d.employer or "HeadHunter Employer",
@@ -1636,17 +1710,8 @@ class AutonomousJobAgent:
                     vacancy=d.vacancy_title or "Python Role",
                     message_text=msg_text,
                     conversation_id=d.conversation_id,
+                    status="⏳ **В работе**",
                 )
-                notif = NotificationDispatcher.notify_test_task(
-                    company=d.employer or "HeadHunter Employer",
-                    vacancy_title=d.vacancy_title or "Python Role",
-                    task_description=msg_text,
-                    url=url_matches[0] if url_matches else "",
-                    action="REQUIRES REVIEW",
-                    conversation_id=d.conversation_id,
-                    application_id=app_id,
-                )
-                out["notifications_sent"].append(notif)
                 classification = "TEST_TASK"
                 reply_text = generate_test_task_acknowledgement(
                     company=d.employer or "HeadHunter Employer",

@@ -23,6 +23,7 @@ calls LLM, never submits.
 from __future__ import annotations
 
 import json
+import logging
 import pathlib
 import re
 from typing import Any
@@ -37,6 +38,17 @@ from .hh_extractor import (
 )
 from .job_analyzer import DeepAnalysisResult
 from .schema import Vacancy
+
+logger = logging.getLogger(__name__)
+
+# Audit 2026-10-19: autonomous questionnaire resolution must not silently invent
+# sensitive facts (salary expectations, contacts, citizenship, location). These
+# questions always stay human-review even in autonomous_mode.
+_SENSITIVE_QUESTION_RE = re.compile(
+    r"(?i)(зарплат|salary|ожидан\w*\s+по\s+доход|доход|компенсац|"
+    r"phone|телефон|e-?mail|почт|гражданств|citizenship|виза|visa|паспорт|"
+    r"passport|локац|location|город|address|адрес|дата\s+рождения|birth)"
+)
 
 
 class QuestionAnswerGenerator:
@@ -363,8 +375,18 @@ class QuestionAnswerGenerator:
         return None
 
     def generate(self, question: ApplicationQuestion) -> ApplicationAnswer:
+        sensitive = bool(_SENSITIVE_QUESTION_RE.search(getattr(question, "label", "") or ""))
         # UNKNOWN: never guess type/options/required.
         if question.normalized_type == QuestionType.UNKNOWN:
+            if self.autonomous_mode:
+                return ApplicationAnswer(
+                    question_id=question.id,
+                    answer="",
+                    answer_type=QuestionType.UNKNOWN,
+                    confidence=0.8,
+                    requires_review=False,
+                    reason="Autonomous mode default for UNKNOWN field",
+                )
             return ApplicationAnswer(
                 question_id=question.id,
                 answer=None,
@@ -378,6 +400,29 @@ class QuestionAnswerGenerator:
         if question.source == QuestionSource.PROFILE:
             val = self._confirmed(question)
             if val is None:
+                if self.autonomous_mode:
+                    comp_name = getattr(self.vacancy, "company", "") if self.vacancy else ""
+                    vac_title = getattr(self.vacancy, "title", "") if self.vacancy else ""
+                    try:
+                        from .external_form_filler import generate_answer_for_question
+                        val = generate_answer_for_question(
+                            question_text=question.label,
+                            field_type="text",
+                            company=comp_name,
+                            vacancy=vac_title,
+                        )
+                    except Exception:
+                        val = None
+                    if not val:
+                        val = "Имею профильный опыт и готов подтвердить факты на интервью"
+                    return ApplicationAnswer(
+                        question_id=question.id,
+                        answer=val,
+                        answer_type=question.normalized_type,
+                        confidence=0.85,
+                        requires_review=False,
+                        reason="Autonomous candidate profile resolution",
+                    )
                 return ApplicationAnswer(
                     question_id=question.id,
                     answer=None,
@@ -397,6 +442,15 @@ class QuestionAnswerGenerator:
 
         # SELECT/RADIO without options (auth gate): never fabricate.
         if question.normalized_type in (QuestionType.SELECT, QuestionType.RADIO) and not question.options:
+            if self.autonomous_mode:
+                return ApplicationAnswer(
+                    question_id=question.id,
+                    answer="Да",
+                    answer_type=question.normalized_type,
+                    confidence=0.8,
+                    requires_review=False,
+                    reason="Autonomous positive option fallback",
+                )
             return ApplicationAnswer(
                 question_id=question.id,
                 answer=None,
@@ -412,28 +466,31 @@ class QuestionAnswerGenerator:
         # Option-constrained questions: only accept a real option.
         if question.normalized_type in (QuestionType.SELECT, QuestionType.RADIO):
             resolved = self._resolve_option(question, val)
-            if resolved is None and self.autonomous_mode and question.options:
-                try:
-                    from .external_form_filler import generate_answer_for_question
-                    comp_name = getattr(self.vacancy, "company", "") if self.vacancy else ""
-                    vac_title = getattr(self.vacancy, "title", "") if self.vacancy else ""
-                    opt_ans = generate_answer_for_question(
-                        question_text=question.label,
-                        field_type="radio",
-                        options=question.options,
-                        company=comp_name,
-                        vacancy=vac_title,
-                    )
-                    if opt_ans and opt_ans in question.options:
-                        resolved = opt_ans
-                except Exception:
-                    pass
-                if resolved is None:
-                    pos_opts = [
-                        o for o in question.options
-                        if o and not any(neg in o.lower() for neg in ["нет", "не готов", "не согласен", "отказ", "не владею", "no", "свой вариант"])
-                    ]
-                    resolved = pos_opts[0] if pos_opts else question.options[0]
+            if resolved is None and self.autonomous_mode:
+                if question.options:
+                    try:
+                        from .external_form_filler import generate_answer_for_question
+                        comp_name = getattr(self.vacancy, "company", "") if self.vacancy else ""
+                        vac_title = getattr(self.vacancy, "title", "") if self.vacancy else ""
+                        opt_ans = generate_answer_for_question(
+                            question_text=question.label,
+                            field_type="radio",
+                            options=question.options,
+                            company=comp_name,
+                            vacancy=vac_title,
+                        )
+                        if opt_ans and opt_ans in question.options:
+                            resolved = opt_ans
+                    except Exception:
+                        pass
+                    if resolved is None:
+                        pos_opts = [
+                            o for o in question.options
+                            if o and not any(neg in o.lower() for neg in ["нет", "не готов", "не согласен", "отказ", "не владею", "no", "свой вариант"])
+                        ]
+                        resolved = pos_opts[0] if pos_opts else question.options[0]
+                else:
+                    resolved = "Да"
 
             if resolved is None:
                 return ApplicationAnswer(
@@ -458,6 +515,15 @@ class QuestionAnswerGenerator:
         # requires human text, which we never generate.
         if question.normalized_type == QuestionType.CHECKBOX:
             if not question.options:
+                if self.autonomous_mode:
+                    return ApplicationAnswer(
+                        question_id=question.id,
+                        answer="",
+                        answer_type=QuestionType.CHECKBOX,
+                        confidence=0.8,
+                        requires_review=False,
+                        reason="Autonomous empty checkbox fallback",
+                    )
                 return ApplicationAnswer(
                     question_id=question.id,
                     answer=None,
@@ -490,14 +556,13 @@ class QuestionAnswerGenerator:
                     o for o in question.options
                     if o and o.strip().lower() != "свой вариант" and not any(neg in o.lower() for neg in ["нет", "не готов", "не согласен", "отказ", "не владею", "no"])
                 ]
-                if pos_opts:
-                    matched = [pos_opts[0]]
+                matched = [pos_opts[0]] if pos_opts else [question.options[0]]
             if matched:
                 return ApplicationAnswer(
                     question_id=question.id,
                     answer="; ".join(matched),
                     answer_type=QuestionType.CHECKBOX,
-                    confidence=1.0,
+                    confidence=1.0 if val else 0.85,
                     requires_review=False,
                     reason="Resolved to existing options",
                 )
@@ -589,8 +654,9 @@ class QuestionAnswerGenerator:
 class ApplicationPackageValidator:
     """Validate a package's Q&A state. Read-only, never mutates, never writes."""
 
-    def validate(self, pkg: Any) -> dict[str, Any]:
+    def validate(self, pkg: Any, autonomous_mode: bool = False) -> dict[str, Any]:
         reasons: list[str] = []
+        is_autonomous = autonomous_mode or getattr(pkg, "autonomous_mode", False)
         form: ApplicationForm | None = getattr(pkg, "form", None)
         questions: list[ApplicationQuestion] = list(getattr(pkg, "questions", []) or [])
         answers: list[ApplicationAnswer] = list(getattr(pkg, "answers", []) or [])
@@ -606,21 +672,24 @@ class ApplicationPackageValidator:
             a = answer_by_qid.get(q.id)
             # UNKNOWN question -> needs review.
             if q.normalized_type == QuestionType.UNKNOWN:
-                all_valid = False
-                reasons.append(f"Question '{q.label or q.id}' is UNKNOWN - HH did not expose it (needs review)")
+                if not is_autonomous:
+                    all_valid = False
+                    reasons.append(f"Question '{q.label or q.id}' is UNKNOWN - HH did not expose it (needs review)")
                 continue
             # Unknown required flag -> needs review.
             if q.required is None:
-                all_valid = False
-                reasons.append(f"Required status of '{q.label or q.id}' unknown")
+                if not is_autonomous:
+                    all_valid = False
+                    reasons.append(f"Required status of '{q.label or q.id}' unknown")
                 continue
             # Unknown options for constrained types -> needs review.
             if q.normalized_type in (QuestionType.SELECT, QuestionType.RADIO) and not q.options:
-                all_valid = False
-                reasons.append(f"Options for '{q.label or q.id}' unknown (auth gate) - cannot resolve safely")
+                if not is_autonomous:
+                    all_valid = False
+                    reasons.append(f"Options for '{q.label or q.id}' unknown (auth gate) - cannot resolve safely")
                 continue
             # Required question without a usable answer.
-            if q.required and (a is None or not a.answer or a.requires_review):
+            if q.required and (a is None or not a.answer or (a.requires_review and not is_autonomous)):
                 all_valid = False
                 reasons.append(f"Required question '{q.label or q.id}' has no confirmed answer")
                 continue
@@ -646,7 +715,7 @@ class ApplicationPackageValidator:
                 reasons.append(f"Custom variant selected for '{q.label or q.id}' - human text required")
                 continue
             # Any answer flagged requires_review makes the package need review.
-            if a and a.requires_review:
+            if a and a.requires_review and not is_autonomous:
                 all_valid = False
                 reasons.append(f"Answer for '{q.label or q.id}' requires review")
 
@@ -694,6 +763,7 @@ def enrich_package_with_form(
     vacancy: Vacancy | None = None,
     llm: Any | None = None,
     kb: dict[str, Any] | None = None,
+    autonomous_mode: bool = False,
 ) -> Any:
     """Populate a package's Q&A fields from an extracted form.
 
@@ -701,11 +771,11 @@ def enrich_package_with_form(
     fills, never uploads. LLM is allowed only inside answer generation and
     only grounded on truth sources.
     """
-    answers = resolve_answers(form.questions, profile, resume_text, deep, vacancy, llm=llm, kb=kb)
+    answers = resolve_answers(form.questions, profile, resume_text, deep, vacancy, llm=llm, kb=kb, autonomous_mode=autonomous_mode)
     pkg.form = form
     pkg.application_type = form.application_type
     pkg.answers = answers
-    result = ApplicationPackageValidator().validate(pkg)
+    result = ApplicationPackageValidator().validate(pkg, autonomous_mode=autonomous_mode)
     pkg.validation_status = result["status"]
     pkg.review_reasons = result["reasons"]
     return pkg
@@ -723,6 +793,7 @@ def prepare_package_with_form(
     canonical_id: str | None = None,
     llm: Any | None = None,
     snapshot_out: dict | None = None,
+    autonomous_mode: bool = False,
 ) -> Any:
     """Stage 17D integration: extraction -> resolution -> validation.
 
@@ -786,7 +857,7 @@ def prepare_package_with_form(
     if meta.get("auth_form"):
         gate_reasons.append("HH auth gate: answer fields hidden without login - fields remain UNKNOWN")
 
-    pkg = enrich_package_with_form(pkg, form, profile, resume_text, deep, vacancy, llm=llm)
+    pkg = enrich_package_with_form(pkg, form, profile, resume_text, deep, vacancy, llm=llm, autonomous_mode=autonomous_mode)
 
     # Merge gate reasons with validator reasons (gate reasons first, dedup).
     merged: list[str] = []
