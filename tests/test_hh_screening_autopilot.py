@@ -272,3 +272,55 @@ def test_is_vacancy_eligible_gate_with_resolved_screening():
     ok_after, reason_after = is_vacancy_eligible_for_auto_apply(brief, has_resolved_screening=True)
     assert ok_after is True
     assert reason_after == "ELIGIBLE"
+
+
+def test_is_vacancy_eligible_strict_remote_gate():
+    """Verify is_vacancy_eligible_for_auto_apply rejects hybrid, relocation, and on-site."""
+    base_brief = {
+        "vacancy": {
+            "ok": True,
+            "archived": False,
+            "closedForApplicants": False,
+            "dom_title": "Сетевой инженер (сетевой администратор)",
+            "address": "Москва, Москва-Сити",
+            "applicant": {"responseAllowed": True, "alreadyApplied": False, "test": {"hasTests": False}},
+        },
+        "form": {
+            "resume_title": "Специалист по внедрению и сопровождению CRM",
+            "submit": {"disabled": False},
+        },
+    }
+
+    # 1. Nornickel real case: "Возможен гибридный и удаленный формат работы."
+    nornickel_brief = json.loads(json.dumps(base_brief))
+    nornickel_brief["description"] = "<p>Обязанности: настройка сетей. Условия: Возможен гибридный и удаленный формат работы.</p>"
+    ok, reason = is_vacancy_eligible_for_auto_apply(nornickel_brief, autonomous_mode=True)
+    assert ok is False
+    assert "strict remote gate" in reason
+    assert "гибрид" in reason
+
+    # 2. Relocation case: "Готовность к переезду в г. Чита"
+    reloc_brief = json.loads(json.dumps(base_brief))
+    reloc_brief["description"] = "<p>Удаленная работа. Готовность к переезду в г. Чита приветствуется.</p>"
+    ok, reason = is_vacancy_eligible_for_auto_apply(reloc_brief, autonomous_mode=True)
+    assert ok is False
+    assert "strict remote gate" in reason
+    assert "переезд" in reason
+
+    # 3. Structured HH workFormats with ON_SITE and HYBRID
+    structured_brief = json.loads(json.dumps(base_brief))
+    structured_brief["description"] = "<p>Полностью удаленная работа.</p>"
+    structured_brief["vacancy"]["workFormats"] = [{"workFormatsElement": ["ON_SITE", "REMOTE", "HYBRID"]}]
+    ok, reason = is_vacancy_eligible_for_auto_apply(structured_brief, autonomous_mode=True)
+    assert ok is False
+    assert "strict remote gate" in reason
+    assert "structured non-remote" in reason
+
+    # 4. Pure confirmed remote -> PASS
+    pure_remote_brief = json.loads(json.dumps(base_brief))
+    pure_remote_brief["description"] = "<p>Формат: строго дистанционная работа. 100% удаленка из любого города РФ.</p>"
+    pure_remote_brief["vacancy"]["workFormats"] = [{"id": "REMOTE", "name": "Удалённо"}]
+    ok, reason = is_vacancy_eligible_for_auto_apply(pure_remote_brief, autonomous_mode=True)
+    assert ok is True
+    assert reason == "ELIGIBLE"
+

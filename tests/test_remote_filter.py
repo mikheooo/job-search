@@ -206,3 +206,111 @@ def test_matcher_hard_rejects_non_strictly_remote():
     assert res_cond.decision == "SKIP"
     assert res_cond.score == 0
     assert any("Remote required" in r for r in res_cond.reasons)
+
+
+# --- 6. Disjunction: a hybrid/office word must not veto an allowed full-remote option ---
+
+def test_pass_disjunctive_hybrid_or_fully_remote():
+    """T7.18 defect #3: an explicitly allowed fully-remote option wins.
+
+    Confirmed false negative before the fix: the first two were rejected on the
+    word "Гибридный"/"гибрид" although the sentence offers full remote.
+    """
+    vacs = [
+        _make_vac(title="AI Engineer", description="Гибридный или полностью удалённый формат работы."),
+        _make_vac(title="Backend Developer", description="офис, гибрид или удаленный формат"),
+        _make_vac(title="Data Engineer", description="можно работать из офиса или полностью удаленно"),
+    ]
+    for v in vacs:
+        ok, reason = is_strictly_remote(v)
+        assert ok is True, f"Expected PASS for {v.description}, got REJECT: {reason}"
+
+
+def test_reject_hybrid_when_remote_is_denied_or_conditional():
+    """The allowance must not swallow a denial, a conditional, or a bare comma."""
+    vacs = [
+        # a comma is not a disjunction
+        _make_vac(title="QA Engineer", description="гибридный формат, удалённая работа не предусмотрена"),
+        # conditional on probation -> _REJECT_CONDITIONAL_PATTERNS, never overruled
+        _make_vac(title="Python Dev", description="после испытательного срока возможны отдельные удалённые дни"),
+        # exceptional cases only
+        _make_vac(title="ML Engineer", description="remote только в исключительных случаях"),
+        # "или" present, but the remote branch is itself denied
+        _make_vac(title="DevOps", description="Гибридный формат или удалённая работа не предусмотрена"),
+        # negotiable -> conditional
+        _make_vac(title="Fullstack Dev", description="гибридный формат, удалённая работа по договорённости"),
+    ]
+    for v in vacs:
+        ok, reason = is_strictly_remote(v)
+        assert ok is False, f"Expected REJECT for {v.description}, got PASS: {reason}"
+
+
+# --- 7. Relocation, On-Site Phrasings & Structured Formats ---
+
+def test_reject_relocation_requirements():
+    vacs = [
+        _make_vac(title="Network Engineer", description="Удаленная работа. Готовность к переезду в г. Чита приветствуется."),
+        _make_vac(title="DevOps", description="Удаленка на старте, затем релокация в Белград."),
+        _make_vac(title="Solutions Architect", description="Fully remote position. Relocation to London required after 6 months."),
+        _make_vac(title="System Administrator", description="Формат: удаленно или переезд в офис компании."),
+        _make_vac(title="AI Lead", description="Willing to relocate candidates preferred."),
+    ]
+    for v in vacs:
+        ok, reason = is_strictly_remote(v)
+        assert ok is False, f"Expected REJECT for relocation {v.description}, got PASS: {reason}"
+        assert "non-remote" in reason or "Rejected" in reason
+
+
+def test_pass_negated_relocation_phrasing():
+    vacs = [
+        _make_vac(title="Backend Dev", description="Полностью удаленная работа, переезд не требуется."),
+        _make_vac(title="Data Engineer", description="Удаленный формат, без переезда. Работа из любого города РФ."),
+        _make_vac(title="Python Developer", description="Строго дистанционная работа, релокация не нужна."),
+        _make_vac(title="DevOps", description="100% remote, no relocation required."),
+    ]
+    for v in vacs:
+        ok, reason = is_strictly_remote(v)
+        assert ok is True, f"Expected PASS for negated relocation {v.description}, got REJECT: {reason}"
+
+
+def test_reject_hh_on_site_phrasings():
+    vacs = [
+        _make_vac(title="Сетевой инженер", description="Работа на месте работодателя, м. Деловой центр."),
+        _make_vac(title="Инженер сопровождения", description="Формат работы: на месте работодателя или гибрид."),
+        _make_vac(title="Системный администратор", description="Выполнение обязанностей на месте работы."),
+    ]
+    for v in vacs:
+        ok, reason = is_strictly_remote(v)
+        assert ok is False, f"Expected REJECT for on-site phrasing {v.description}, got PASS: {reason}"
+
+
+def test_reject_structured_hh_work_formats():
+    # 1. On-site in structured workFormats
+    vac_onsite = _make_vac(
+        title="Network Engineer",
+        description="Полностью удаленная работа.",
+        raw_data={"workFormats": [{"id": "ON_SITE", "name": "На месте работодателя"}]},
+    )
+    ok, reason = is_strictly_remote(vac_onsite)
+    assert ok is False
+    assert "structured non-remote" in reason
+
+    # 2. Hybrid and On-site in BFF workFormatsElement
+    vac_multi = _make_vac(
+        title="Network Engineer",
+        description="Полностью удаленная работа.",
+        raw_data={"vacancy": {"workFormats": [{"workFormatsElement": ["ON_SITE", "REMOTE", "HYBRID"]}]}},
+    )
+    ok, reason = is_strictly_remote(vac_multi)
+    assert ok is False
+    assert "structured non-remote" in reason
+
+    # 3. Exclusively REMOTE in structured workFormats -> PASS
+    vac_pure_remote = _make_vac(
+        title="Network Engineer",
+        description="Полностью удаленная работа.",
+        raw_data={"workFormats": [{"id": "REMOTE", "name": "Удалённо"}]},
+    )
+    ok, reason = is_strictly_remote(vac_pure_remote)
+    assert ok is True
+

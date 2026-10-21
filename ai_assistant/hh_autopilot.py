@@ -625,6 +625,29 @@ def is_vacancy_eligible_for_auto_apply(
     if resume_title and resume_title not in VALID_RESUMES and resume_title != RESUME_EXPECTED:
         return False, f"unexpected resume: {resume_title}"
 
+    # Strict Remote-Only gate: zero-tolerance for hybrid, office, relocation, or conditional formats
+    desc = brief_data.get("description") or vacancy.get("description") or ""
+    loc = (
+        vacancy.get("address")
+        or (vacancy.get("area", {}).get("name") if isinstance(vacancy.get("area"), dict) else vacancy.get("area"))
+        or ""
+    )
+    if desc or loc or vacancy.get("workFormats") or vacancy.get("shortVacancy_workSchedule"):
+        from ai_assistant.remote_filter import classify_work_format
+        import html
+
+        title = vacancy.get("name") or vacancy.get("dom_title") or brief_data.get("title") or ""
+        clean_desc = html.unescape(desc) if desc else ""
+        remote_ok, remote_reason = classify_work_format(
+            title=title,
+            description=clean_desc,
+            location=str(loc),
+            source="hh",
+            raw_data=vacancy,
+        )
+        if not remote_ok:
+            return False, f"strict remote gate: {remote_reason}"
+
     return True, "ELIGIBLE"
 
 
@@ -966,6 +989,28 @@ def run_autopilot_cycle(
         prior = _prior_submission_exists(vid)
         if prior:
             logger.info(f"Skipping {vid} ({role} at {company}): {prior}")
+            continue
+
+        # Step 3b: Strict Remote Gate (zero-tolerance for hybrid, office, relocation, or conditional formats)
+        from ai_assistant.remote_filter import classify_work_format
+        import html
+
+        clean_desc = html.unescape(desc) if desc else ""
+        loc = (
+            vacancy.get("address")
+            or (vacancy.get("area", {}).get("name") if isinstance(vacancy.get("area"), dict) else vacancy.get("area"))
+            or card.get("area")
+            or ""
+        )
+        remote_ok, remote_reason = classify_work_format(
+            title=role,
+            description=clean_desc,
+            location=str(loc),
+            source="hh",
+            raw_data=vacancy,
+        )
+        if not remote_ok:
+            logger.info(f"Skipping {vid} ({role} at {company}): strict remote gate: {remote_reason}")
             continue
 
         # Screening questionnaire & Exam test autonomous solving

@@ -40,6 +40,8 @@ _REJECT_OFFICE_PATTERNS = [
     r"\boffice\s+only\b",
     r"\b(?:work|working)\s+(?:from|in|at)\s+(?:\w+\s+){0,3}office\b",  # work from our Berlin office, work in office
     r"\bна\s+территории\s+работодателя\b",
+    r"\bна\s+месте\s+работодателя\b",
+    r"\bна\s+месте\s+работы\b",
     r"\bработ\w*\s+в\s+офис\w*",  # работа в офисе
     r"\bтолько\s+(?:в\s+)?офис\w*",  # только офис / только в офисе
     r"\bв\s+(?:наш|нашем|московском|питерском|спб|берлинском|лондонском)\s+офис\w*",
@@ -80,6 +82,85 @@ _REJECT_CONDITIONAL_PATTERNS = [
     r"remote\s+after\s+trial\b",
 ]
 
+_REJECT_RELOCATION_PATTERNS = [
+    r"\bпереезд\w*",  # переезд, переезда, переезду, переездом
+    r"\bперееха\w*",  # переехать, переехав, переедет
+    r"\bрелокаци\w*",  # релокация, релокации, релокацию, релокацией
+    r"\bрелокационн\w*",  # релокационный пакет
+    r"\bготовност\w*\s+(?:к\s+)?переезд\w*",
+    r"\bготовност\w*\s+(?:к\s+)?релокаци\w*",
+    r"\bпомощь\s+(?:с\s+|в\s+)?переезд\w*",
+    r"\bпомощь\s+(?:с\s+|в\s+)?релокаци\w*",
+    r"\brelocat\w*",  # relocation, relocate, relocating
+    r"\bwilling\s+to\s+relocate\b",
+]
+
+_COMPILED_REJECT_RELOCATION = [
+    re.compile(p, re.IGNORECASE) for p in _REJECT_RELOCATION_PATTERNS
+]
+_RELOCATION_PATTERN_SET = set(_COMPILED_REJECT_RELOCATION)
+
+_NEGATED_RELOCATION_PREFIX = re.compile(
+    r"(?:без|не\s+требует|не\s+требуется|не\s+нужен|не\s+нужна|не\s+предполагает|не\s+предполагается|no\s+need\s+for|no|without)\s+$",
+    re.IGNORECASE,
+)
+_NEGATED_RELOCATION_SUFFIX = re.compile(
+    r"^\s*(?:не\s+требуется|не\s+нужна|не\s+нужен|не\s+нужно|не\s+предполагается|not\s+required|not\s+needed)",
+    re.IGNORECASE,
+)
+
+
+def _is_negated_relocation(text: str, match: re.Match) -> bool:
+    """True when the relocation match is negated (e.g. 'без переезда', 'переезд не требуется')."""
+    prefix = text[:match.start()]
+    if _NEGATED_RELOCATION_PREFIX.search(prefix):
+        return True
+    suffix = text[match.end():]
+    if _NEGATED_RELOCATION_SUFFIX.search(suffix):
+        return True
+    return False
+
+
+def _extract_structured_non_remote_formats(raw_data: dict[str, Any] | None) -> list[str]:
+    """Inspect raw_data for structured non-remote work format flags (e.g. HH workFormats)."""
+    if not raw_data or not isinstance(raw_data, dict):
+        return []
+
+    non_remote: list[str] = []
+    containers = [raw_data]
+    if isinstance(raw_data.get("shortVacancy"), dict):
+        containers.append(raw_data["shortVacancy"])
+    if isinstance(raw_data.get("vacancy"), dict):
+        containers.append(raw_data["vacancy"])
+    if isinstance(raw_data.get("applicant"), dict):
+        containers.append(raw_data["applicant"])
+
+    for c in containers:
+        wf = c.get("workFormats") or c.get("work_formats") or c.get("working_format")
+        if not wf:
+            continue
+        items: list[str] = []
+        if isinstance(wf, list):
+            for elem in wf:
+                if isinstance(elem, str):
+                    items.append(elem)
+                elif isinstance(elem, dict):
+                    if "id" in elem:
+                        items.append(str(elem["id"]))
+                    if "workFormatsElement" in elem and isinstance(elem["workFormatsElement"], list):
+                        items.extend(str(x) for x in elem["workFormatsElement"])
+        elif isinstance(wf, dict):
+            if "workFormatsElement" in wf and isinstance(wf["workFormatsElement"], list):
+                items.extend(str(x) for x in wf["workFormatsElement"])
+
+        for item in items:
+            normalized = item.strip().upper()
+            if normalized in {"ON_SITE", "ONSITE", "HYBRID", "FIELD_WORK"}:
+                non_remote.append(normalized)
+
+    return sorted(set(non_remote))
+
+
 _COMPILED_REJECT = [
     re.compile(p, re.IGNORECASE)
     for p in (
@@ -87,8 +168,132 @@ _COMPILED_REJECT = [
         + _REJECT_OFFICE_PATTERNS
         + _REJECT_OFFICE_VISITS_PATTERNS
         + _REJECT_CONDITIONAL_PATTERNS
+        + _REJECT_RELOCATION_PATTERNS
     )
 ]
+
+# The same patterns, split by family, for the disjunction exemption below. Only
+# the format families can be overruled by "hybrid OR fully remote": a
+# conditional phrase is never overruled, so "можно удалённо", "после
+# испытательного срока" and "remote optional" stay rejections.
+_COMPILED_REJECT_FORMAT = [
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        _REJECT_HYBRID_PATTERNS
+        + _REJECT_OFFICE_PATTERNS
+        + _REJECT_OFFICE_VISITS_PATTERNS
+    )
+]
+
+_COMPILED_REJECT_CONDITIONAL = [
+    re.compile(p, re.IGNORECASE) for p in _REJECT_CONDITIONAL_PATTERNS
+]
+
+_CONDITIONAL_PATTERN_SET = set(_COMPILED_REJECT_CONDITIONAL)
+
+
+# --- DISJUNCTION ALLOWANCE (T7.18 defect #3) ---
+# "Гибридный или полностью удалённый формат работы" was rejected on the word
+# "Гибридный" although the sentence explicitly offers full remote. A hybrid or
+# office word must not veto a sentence that also offers an allowed fully-remote
+# alternative. The allowance is deliberately narrow -- it needs ALL THREE of:
+#
+#   * a hybrid/office/office-visit match (never a conditional one);
+#   * an explicit disjunction marker AFTER that match -- "или" / "либо" / "or".
+#     A comma alone is NOT a disjunction, so "гибридный формат, удалённая работа
+#     не предусмотрена" stays rejected;
+#   * a positive remote phrase after the marker, and that phrase must not itself
+#     be negated ("... или удалённая работа не предусмотрена").
+#
+# It answers the FORMAT question only. It says nothing about geography: a
+# vacancy confirmed remote this way still has to pass
+# eligibility.classify_geo_band, where Thailand is normally not allowed.
+_DISJUNCTION_MARKER = re.compile(r"\b(?:или|либо|or)\b", re.IGNORECASE)
+
+# "не предусмотрена", "не предполагается", "недоступна" right after the remote
+# phrase turn the alternative into a denial, not an offer.
+_NEGATED_REMOTE = re.compile(
+    r"^\W{0,4}\s*(?:не\b|\bnot\b)\s*(?:\w+\s+){0,2}"
+    r"(?:предусмотрен|предполага|доступн|возможн|allowed|available|possible|offered|an?\s+option)",
+    re.IGNORECASE,
+)
+
+
+def _is_disjunctive_full_remote(text: str, match: re.Match) -> bool:
+    """True when the hybrid/office match sits in "X или <remote>" form.
+
+    ``text`` is the sanitized text and ``match`` a hybrid/office/office-visit
+    reject match in it. Only the text AFTER the match is inspected, which is
+    what makes the rule mean "hybrid OR remote" rather than "the sentence
+    mentions both somewhere".
+    """
+    tail = text[match.end():]
+    marker = _DISJUNCTION_MARKER.search(tail)
+    if not marker:
+        return False
+    after = tail[marker.end():]
+    for pattern in _COMPILED_PASS:
+        remote = pattern.search(after)
+        if not remote:
+            continue
+        # "не предусмотрена" right after the remote phrase is a denial, not an offer
+        return not _NEGATED_REMOTE.match(after[remote.end():])
+    return False
+
+
+# --- STRUCTURAL WORK-FORMAT MARKERS (T7.4) ---
+# Some boards publish a machine-generated work-format sentence instead of the
+# employer's own prose. Habr Career's RSS summary is a fixed template:
+#
+#   Компания «X» ищет хорошего специалиста на вакансию «Y». Москва (Россия).
+#   Полный рабочий день. Можно удалённо. Требуемые навыки: #python, #docker.
+#
+# "Можно удалённо." there is the board's structured format field, not a
+# conditional offer in the employer's text. It confirms the REMOTE FORMAT only.
+# It says nothing about which countries the employer accepts, so it must never
+# be read as permission to work from Thailand -- that question is decided by
+# eligibility.classify_geo_band, and this marker deliberately provides no geo
+# evidence at all.
+#
+# The exemption is deliberately narrow: it needs (a) a known source, (b) the
+# template signature of that source, and (c) the phrase standing alone as a
+# sentence. A conditional phrase inside employer prose ("работать можно
+# удалённо после испытательного срока") is not a standalone sentence and is
+# still rejected by _REJECT_CONDITIONAL_PATTERNS.
+_STRUCTURAL_TEMPLATE_SIGNATURES: dict[str, tuple[str, ...]] = {
+    "habrcareer": (r"ищет\s+хорошего\s+специалиста\s+на\s+вакансию",),
+}
+
+_STRUCTURAL_REMOTE_SENTENCE = re.compile(
+    r"(?:^|(?<=\.\s)|(?<=\n))\s*можно\s+удален\w*\s*\.",
+    re.IGNORECASE,
+)
+
+
+def structural_remote_marker(text: str, source: str | None) -> bool:
+    """True when the text carries the board's structural 'remote allowed' marker.
+
+    Source-scoped and signature-scoped on purpose: a bare "можно удалённо" on an
+    unknown site is NOT a structural marker.
+    """
+    return _split_structural_remote_marker(text, source)[0]
+
+
+def _split_structural_remote_marker(text: str, source: str | None) -> tuple[bool, str]:
+    """Return (marker_found, text_with_the_marker_sentence_removed)."""
+    src = (source or "").strip().lower()
+    signatures = _STRUCTURAL_TEMPLATE_SIGNATURES.get(src)
+    if not signatures or not text:
+        return False, text
+
+    normalized = _sanitize_for_matching(text)
+    if not any(re.search(sig, normalized, re.IGNORECASE) for sig in signatures):
+        return False, text
+
+    stripped, count = _STRUCTURAL_REMOTE_SENTENCE.subn(" ", normalized)
+    if not count:
+        return False, text
+    return True, stripped
 
 
 # --- POSITIVE CONFIRMATION PATTERNS ---
@@ -181,6 +386,11 @@ def classify_work_format(
     Returns:
         (True, "Confirmed fully remote") if strictly remote.
         (False, "<Reason for rejection>") if hybrid, office, conditional, or unknown/insufficient data.
+
+    A True verdict answers ONE question: is the work format remote? It is not a
+    statement about geography. A vacancy confirmed remote here can still be
+    restricted to a country the candidate does not live in -- that call belongs
+    to eligibility.assess_vacancy_eligibility.
     """
     src = (source or "").strip().lower()
     loc_raw = (location or "").strip()
@@ -196,15 +406,47 @@ def classify_work_format(
     combined_text = f"{title} {description} {loc_raw} {employment_type or ''} {raw_tags}"
     sanitized = _sanitize_for_matching(combined_text)
 
+    # -1. Check raw_data for structured non-remote formats (e.g. HH workFormats)
+    structured_non_remote = _extract_structured_non_remote_formats(raw_data)
+    if structured_non_remote:
+        return False, f"Rejected structured non-remote format in raw_data: {structured_non_remote}"
+
+    # 0. Separate the board's structural format field from the employer's prose.
+    #    The marker is removed BEFORE the reject scan, otherwise the platform's
+    #    own "Можно удалённо." is mistaken for a conditional offer and every
+    #    vacancy from that board is rejected.
+    structural_remote, sanitized = _split_structural_remote_marker(sanitized, src)
+
     # 1. REJECT CHECK: If ANY reject pattern matches -> REJECT immediately (Zero Tolerance)
+    #
+    #    One narrow exemption (T7.18 defect #3): a hybrid/office word does not
+    #    veto a sentence that offers an explicitly fully-remote alternative
+    #    ("Гибридный или полностью удалённый формат работы"). The exemption
+    #    never applies to the conditional family, so "можно удалённо",
+    #    "после испытательного срока" and "remote optional" stay rejections
+    #    even when the same text names an office.
     for pattern in _COMPILED_REJECT:
         match = pattern.search(sanitized)
         if match:
+            if pattern in _RELOCATION_PATTERN_SET and _is_negated_relocation(sanitized, match):
+                continue
+            if (
+                pattern not in _CONDITIONAL_PATTERN_SET
+                and pattern not in _RELOCATION_PATTERN_SET
+                and _is_disjunctive_full_remote(sanitized, match)
+            ):
+                continue
             return False, f"Rejected non-remote pattern: '{match.group(0)}'"
 
     # 2. Check Exclusively Remote Job Boards (RemoteOK, WeWorkRemotely, Himalayas)
     if src in _EXCLUSIVELY_REMOTE_SOURCES:
         return True, f"Confirmed remote from {src} job board"
+
+    # 2b. Structural format marker of the board -> the remote FORMAT is confirmed
+    #     by the platform. Deliberately not geographic evidence: it does not say
+    #     the employer accepts candidates in Thailand.
+    if structural_remote:
+        return True, f"Confirmed remote by {src} structural format marker 'Можно удалённо'"
 
     # 3. Check Location field explicit remote
     if loc_norm in _EXPLICIT_REMOTE_LOCATIONS:
