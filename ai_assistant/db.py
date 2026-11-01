@@ -941,6 +941,19 @@ def has_prior_candidate_message(conversation_id: str) -> bool:
         LIMIT 1
     ''', (str(conversation_id),))
     row = cur.fetchone()
+    if not row:
+        # Fallback: a reply already sent to this dialog stays in the audit log
+        # even if message-event rows were pruned or reset.
+        try:
+            cur.execute('''
+                SELECT 1 FROM autonomous_conversation_audits
+                WHERE conversation_id = ?
+                  AND (status = 'SENT' OR (sent_reply IS NOT NULL AND sent_reply != ''))
+                LIMIT 1
+            ''', (str(conversation_id),))
+            row = cur.fetchone()
+        except sqlite3.Error:
+            row = None
     conn.close()
     return bool(row)
 
