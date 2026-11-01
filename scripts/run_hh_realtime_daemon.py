@@ -88,6 +88,8 @@ HEARTBEAT_INTERVAL_SECONDS = float(_env_int("HH_REALTIME_HEARTBEAT_INTERVAL", 60
 HEARTBEAT_INTERVAL_SECONDS = max(1.0, HEARTBEAT_INTERVAL_SECONDS)
 PAUSE_ALERT_SECONDS = _env_int("HH_REALTIME_PAUSE_ALERT_SECONDS", 1800)
 PAUSE_ALERT_COOLDOWN_SECONDS = _env_int("HH_REALTIME_PAUSE_ALERT_COOLDOWN_SECONDS", 3600)
+AUTH_OUTAGE_RETRY_SECONDS = _env_int("HH_REALTIME_AUTH_RETRY_SECONDS", 300)
+AUTH_ALERT_SUPPRESS_SECONDS = 12 * 3600
 
 
 class FlushingFileHandler(logging.FileHandler):
@@ -109,13 +111,13 @@ def _configure_logging() -> None:
         return
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
+    except OSError as e_mkdir:
+        logger.debug("Could not create log directory %s: %s", LOG_DIR, e_mkdir)
     handlers: list[logging.Handler] = []
     try:
         handlers.append(FlushingFileHandler(LOG_FILE, encoding="utf-8"))
-    except Exception:
-        pass
+    except OSError as e_handler:
+        logger.debug("Could not open daemon log file %s: %s", LOG_FILE, e_handler)
     if sys.stdout is not None:
         handlers.append(logging.StreamHandler(sys.stdout))
     logging.basicConfig(
@@ -204,6 +206,9 @@ _pause_lock_pid: int | None = None
 _pause_lock_ts = ""
 _last_pause_alert_at: float | None = None
 _last_stall_alert_at: float | None = None
+# Paused time since the last successful check is excluded from the stall clock,
+# while _last_success_at continues to describe the actual check history.
+_stall_paused_seconds = 0.0
 
 
 def _now() -> float:
@@ -214,6 +219,7 @@ def _init_observability() -> None:
     global _state, _heartbeat_seq, _last_heartbeat_at, _last_success_at
     global _checked_last, _last_status, _pause_started_at, _pause_lock_pid
     global _pause_lock_ts, _last_pause_alert_at, _last_stall_alert_at
+    global _stall_paused_seconds
     _state = "RUNNING"
     _heartbeat_seq = 0
     _last_heartbeat_at = 0.0
@@ -225,6 +231,7 @@ def _init_observability() -> None:
     _pause_lock_ts = ""
     _last_pause_alert_at = None
     _last_stall_alert_at = None
+    _stall_paused_seconds = 0.0
     _heartbeat("RUNNING", "daemon started", 0, force=True)
 
 
@@ -253,16 +260,16 @@ def _write_heartbeat_file(payload: dict[str, Any]) -> bool:
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, HEARTBEAT_FILE)
         return True
-    except Exception as e_replace:
+    except OSError as e_replace:
         logger.debug("Could not atomically update heartbeat file: %s", e_replace)
         try:
             tmp.unlink(missing_ok=True)
-        except Exception:
-            pass
+        except OSError as e_cleanup:
+            logger.debug("Could not remove stale heartbeat tmp file %s: %s", tmp, e_cleanup)
     try:
         HEARTBEAT_FILE.write_text(text, encoding="utf-8")
         return True
-    except Exception as e_write:
+    except OSError as e_write:
         logger.debug("Could not write heartbeat file %s: %s", HEARTBEAT_FILE, e_write)
         return False
 
@@ -315,15 +322,21 @@ def _enter_pause(pid: int | None, lock_ts: str) -> bool:
 
 def _leave_pause() -> bool:
     """Log the PAUSED->RUNNING transition exactly once. Returns True on transition."""
-    global _state, _pause_started_at, _pause_lock_pid, _pause_lock_ts
+    global _state, _pause_started_at, _pause_lock_pid, _pause_lock_ts, _last_pause_alert_at
+    global _stall_paused_seconds
     if _state != "PAUSED":
         return False
     duration = _now() - (_pause_started_at if _pause_started_at is not None else _now())
+    _stall_paused_seconds += max(0.0, duration)
     pid = _pause_lock_pid
+    lock_ts = _pause_lock_ts or "unknown"
     _state = "RUNNING"
     _pause_started_at = None
     _pause_lock_pid = None
     _pause_lock_ts = ""
+    # A new pause occurrence gets its own threshold alert (the cooldown only
+    # throttles repeats of the same occurrence, not distinct pauses).
+    _last_pause_alert_at = None
     _heartbeat(
         "RUNNING",
         "resumed after pause",
@@ -333,9 +346,10 @@ def _leave_pause() -> bool:
     )
     logger.info(
         "RESUMED: autopilot cycle finished; realtime chat checks are back after %.0fs "
-        "(was waiting for autopilot PID %s)",
+        "(was waiting for autopilot PID %s, lock ts %s)",
         duration,
         pid if pid is not None else "?",
+        lock_ts,
     )
     return True
 
@@ -388,8 +402,12 @@ def _heartbeat_tick(tick_count: int) -> int:
 
 
 def _mark_check_success(chat_res: dict[str, Any] | None) -> None:
-    global _last_success_at, _checked_last, _last_status
+    global _last_success_at, _checked_last, _last_status, _last_stall_alert_at
+    global _stall_paused_seconds
     _last_success_at = _now()
+    # Checks are flowing again: a future stall streak may alert on its own.
+    _last_stall_alert_at = None
+    _stall_paused_seconds = 0.0
     chat_res = chat_res or {}
     try:
         _checked_last = int(chat_res.get("messages_checked", 0) or 0)
@@ -408,6 +426,46 @@ def _send_owner_alert(text: str) -> bool:
     except Exception as e:
         logger.warning("Watchdog could not deliver owner alert: %s", e)
         return False
+
+
+def _notify_auth_outage_once(error_text: str) -> bool:
+    """Send a single Telegram alert when HH_AUTH_REQUIRED is detected (12h suppression)."""
+    marker = LOG_DIR / "hh_auth_alert.sent"
+    try:
+        if marker.exists():
+            age = _now() - marker.stat().st_mtime
+            if age < AUTH_ALERT_SUPPRESS_SECONDS:
+                return False
+    except Exception:
+        pass
+    try:
+        from ai_assistant.auth_notifications import AUTH_FAILURE_MESSAGE
+
+        msg = AUTH_FAILURE_MESSAGE
+    except Exception:
+        msg = (
+            "⚠️ HH Autopilot: подтверждена потеря авторизации (HH_AUTH_REQUIRED).\n"
+            "Запустите: python scripts/hh_open_login_window.py"
+        )
+    if not _send_owner_alert(msg):
+        return False
+    try:
+        marker.write_text(
+            f"{datetime.datetime.now().isoformat()}\n{(error_text or '')[:300]}",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+    return True
+
+
+def _interruptible_sleep(total_seconds: float) -> None:
+    """Sleep in 1s increments, waking early on shutdown or autopilot lock."""
+    remaining = float(total_seconds)
+    while remaining > 0 and _running and not _is_autopilot_active():
+        step = min(1.0, remaining)
+        time.sleep(step)
+        remaining -= step
 
 
 def _watchdog_alert_text(condition: str, reason: str, duration: float) -> str:
@@ -451,15 +509,16 @@ def _watchdog_check() -> None:
 
     if not _last_success_at:
         return
-    gap = now - _last_success_at
+    gap = max(0.0, now - _last_success_at - _stall_paused_seconds)
     if gap < PAUSE_ALERT_SECONDS:
         return
     if _last_stall_alert_at is not None and now - _last_stall_alert_at < PAUSE_ALERT_COOLDOWN_SECONDS:
         return
     _last_stall_alert_at = now
-    reason = "ни одной успешной проверки чата за порог (браузер/сессия не отвечает)"
+    reason = "нет успешных проверок в активном режиме (паузы автопилота исключены)"
     logger.warning(
-        "Watchdog: no successful chat check for %.0fs (threshold %ds); alerting owner",
+        "Watchdog: no successful chat check for %.0fs of active monitoring "
+        "(threshold %ds); alerting owner",
         gap,
         PAUSE_ALERT_SECONDS,
     )
@@ -530,7 +589,31 @@ def run_daemon_loop() -> None:
                     session = HeadlessBrowserSession(require_auth=True)
                     info = session.start()
                     if not info.get("ok"):
-                        logger.warning("Could not start headless session: %s. Retrying in 15s...", info.get("error"))
+                        err_detail = (
+                            info.get("error")
+                            or info.get("message")
+                            or info.get("status")
+                            or "unknown error"
+                        )
+                        if info.get("status") == "HH_AUTH_REQUIRED":
+                            _last_status = "HH_AUTH_REQUIRED"
+                            logger.warning(
+                                "Could not start headless session: HH_AUTH_REQUIRED (%s). Backing off for %ds...",
+                                err_detail,
+                                AUTH_OUTAGE_RETRY_SECONDS,
+                            )
+                            _heartbeat(
+                                "RUNNING",
+                                "HH_AUTH_REQUIRED: manual login needed",
+                                _checked_last,
+                                force=True,
+                                extra={"status": "HH_AUTH_REQUIRED"},
+                            )
+                            _notify_auth_outage_once(str(err_detail))
+                            session = None
+                            _interruptible_sleep(AUTH_OUTAGE_RETRY_SECONDS)
+                            continue
+                        logger.warning("Could not start headless session: %s. Retrying in 15s...", err_detail)
                         session = None
                         time.sleep(15)
                         continue

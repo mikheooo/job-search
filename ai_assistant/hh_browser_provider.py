@@ -85,6 +85,7 @@ CDP_SHUTDOWN_TIMEOUT = 20.0
 HH_AUTH_REQUIRED = "HH_AUTH_REQUIRED"
 HH_AUTH_REQUIRED_MESSAGE = "Нужен ручной вход в профиль JobSearchHeadless."
 HH_AUTH_OK = "OK"
+HH_PAGE_NOT_READY = "PAGE_NOT_READY"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 STATE_DIR = REPO_ROOT / "artifacts" / "headless-poc"
@@ -814,6 +815,13 @@ def auth_gate(auth: dict[str, Any]) -> dict[str, Any]:
     """Wrap a decision into OK / ``HH_AUTH_REQUIRED`` with an actionable message."""
     if auth.get("authenticated"):
         return {"status": HH_AUTH_OK, "message": "", "auth": auth}
+    if not auth.get("verified"):
+        reason = auth.get("reason") or "page unverified or unrendered"
+        return {
+            "status": HH_PAGE_NOT_READY,
+            "message": f"HH applicant page unverified: {reason}",
+            "auth": auth,
+        }
     return {
         "status": HH_AUTH_REQUIRED,
         "message": HH_AUTH_REQUIRED_MESSAGE,
@@ -874,6 +882,7 @@ def settle_hh_page(
 
     needs_change = before != url
     deadline = time.time() + ready_timeout
+    loaded = False
     while time.time() < deadline:
         try:
             state = json.loads(evaluate_fn(_READY_JS))
@@ -881,12 +890,20 @@ def settle_hh_page(
             state = None
         if (
             isinstance(state, dict)
-            and state.get("ready") == "complete"
+            and state.get("ready") in ("complete", "interactive")
             and state.get("href") not in ("", "about:blank")
             and (not needs_change or state.get("href") != before)
         ):
-            break
+            if state.get("ready") == "complete" or (deadline - time.time()) < 8.0:
+                loaded = True
+                break
         time.sleep(delay)
+
+    # Do not classify the previous tab after navigation failed or timed out.
+    # Its login card (or applicant UI) describes the old document, not the
+    # requested authentication check.
+    if not loaded:
+        return None
 
     last: dict[str, Any] | None = None
     for _ in range(max(1, attempts)):
@@ -1082,6 +1099,13 @@ class HeadlessBrowserSession:
                 self.status = HH_AUTH_REQUIRED
                 self.message = gate["message"]
                 return {"ok": False, "status": HH_AUTH_REQUIRED,
+                        "message": gate["message"], "auth": gate["auth"],
+                        "launch": launch}
+            elif gate["status"] != HH_AUTH_OK:
+                self.stop()
+                self.status = gate["status"]
+                self.message = gate["message"]
+                return {"ok": False, "status": gate["status"],
                         "message": gate["message"], "auth": gate["auth"],
                         "launch": launch}
             return {"ok": True, "status": "RUNNING", "auth": gate["auth"],
@@ -1558,6 +1582,7 @@ def chrome_processes_with_command_lines() -> list[dict[str, Any]]:
         raw = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True, text=True, timeout=60, check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         ).stdout.strip()
     except Exception:  # noqa: BLE001 - a probe that cannot run is not a finding
         return []

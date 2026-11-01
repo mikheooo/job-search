@@ -305,12 +305,26 @@ def test_reject_structured_hh_work_formats():
     assert ok is False
     assert "structured non-remote" in reason
 
-    # 3. Exclusively REMOTE in structured workFormats -> PASS
+    # 3. Exclusively REMOTE in structured workFormats -> PASS even when city is Москва and prose omits 'удаленно'
     vac_pure_remote = _make_vac(
         title="Network Engineer",
-        description="Полностью удаленная работа.",
+        location="Москва",
+        description="Поддержка сетевой инфраструктуры и серверов Linux.",
         raw_data={"workFormats": [{"id": "REMOTE", "name": "Удалённо"}]},
     )
     ok, reason = is_strictly_remote(vac_pure_remote)
     assert ok is True
+    assert "workFormats" in reason
+
+    # 4. Exclusively REMOTE in structured workFormats, but prose demands office -> REJECT
+    vac_remote_but_office_prose = _make_vac(
+        title="Network Engineer",
+        location="Москва",
+        description="Работа в офисе компании на полный день.",
+        raw_data={"workFormats": ["REMOTE"]},
+    )
+    ok, reason = is_strictly_remote(vac_remote_but_office_prose)
+    assert ok is False
+    assert "Rejected non-remote pattern" in reason
+
 

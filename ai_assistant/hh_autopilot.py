@@ -965,6 +965,9 @@ def run_autopilot_cycle(
             continue
 
         vacancy = brief.get("vacancy") or {}
+        read_data = entry.get("read") or {}
+        if not vacancy.get("workFormats") and read_data.get("work_formats"):
+            vacancy["workFormats"] = read_data.get("work_formats")
         form = brief.get("form") or {}
         app_state = vacancy.get("applicant") or {}
 

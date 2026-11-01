@@ -161,6 +161,43 @@ def _extract_structured_non_remote_formats(raw_data: dict[str, Any] | None) -> l
     return sorted(set(non_remote))
 
 
+def _has_structured_exclusive_remote_format(raw_data: dict[str, Any] | None) -> bool:
+    """True when structured workFormats explicitly lists REMOTE and no non-remote format."""
+    if not raw_data or not isinstance(raw_data, dict):
+        return False
+    if _extract_structured_non_remote_formats(raw_data):
+        return False
+
+    containers = [raw_data]
+    if isinstance(raw_data.get("shortVacancy"), dict):
+        containers.append(raw_data["shortVacancy"])
+    if isinstance(raw_data.get("vacancy"), dict):
+        containers.append(raw_data["vacancy"])
+    if isinstance(raw_data.get("applicant"), dict):
+        containers.append(raw_data["applicant"])
+
+    for c in containers:
+        wf = c.get("workFormats") or c.get("work_formats") or c.get("working_format")
+        if not wf:
+            continue
+        items: list[str] = []
+        if isinstance(wf, list):
+            for elem in wf:
+                if isinstance(elem, str):
+                    items.append(elem)
+                elif isinstance(elem, dict):
+                    if "id" in elem:
+                        items.append(str(elem["id"]))
+                    if "workFormatsElement" in elem and isinstance(elem["workFormatsElement"], list):
+                        items.extend(str(x) for x in elem["workFormatsElement"])
+        elif isinstance(wf, dict):
+            if "workFormatsElement" in wf and isinstance(wf["workFormatsElement"], list):
+                items.extend(str(x) for x in wf["workFormatsElement"])
+        if any(item.strip().upper() == "REMOTE" for item in items):
+            return True
+    return False
+
+
 _COMPILED_REJECT = [
     re.compile(p, re.IGNORECASE)
     for p in (
@@ -447,6 +484,10 @@ def classify_work_format(
     #     the employer accepts candidates in Thailand.
     if structural_remote:
         return True, f"Confirmed remote by {src} structural format marker 'Можно удалённо'"
+
+    # 2c. Structured exclusive REMOTE workFormat (e.g. HH workFormats=['REMOTE'] with no hybrid/on-site)
+    if _has_structured_exclusive_remote_format(raw_data):
+        return True, "Confirmed remote by structured workFormats=['REMOTE']"
 
     # 3. Check Location field explicit remote
     if loc_norm in _EXPLICIT_REMOTE_LOCATIONS:

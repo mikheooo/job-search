@@ -1441,6 +1441,25 @@ class AutonomousJobAgent:
         out["messages_checked_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         for d in dialogs:
+            # Skip already-processed snippets before triggering expensive DOM navigation
+            only_snippet = len(d.messages) == 1 and d.messages[0].message_id == "m_snippet"
+            if only_snippet and d.conversation_id:
+                snip_norm = normalize_incoming_message_text(d.messages[0].text or "").rstrip(".… ").strip()
+                try:
+                    prior_events = db.list_hh_message_events(conversation_id=d.conversation_id, limit=1)
+                except Exception:
+                    prior_events = []
+                if prior_events and prior_events[0].get("processed"):
+                    latest_ev = prior_events[0]
+                    prev_norm = normalize_incoming_message_text(str(latest_ev.get("text") or "")).strip()
+                    snip_head = snip_norm[:40].lower()
+                    if latest_ev.get("status") == "REJECTED" and (
+                        not snip_head or snip_head in prev_norm.lower() or "отказ" in snip_head
+                    ):
+                        continue
+                    if snip_head and len(snip_head) >= 15 and snip_head in prev_norm.lower():
+                        continue
+
             # For active employer dialogs (or dialogs without loaded messages), load full conversation
             is_full_loaded = False
             if not d.messages or (d.last_message() and d.last_message().sender != "candidate"):
@@ -1458,6 +1477,9 @@ class AutonomousJobAgent:
                         time.sleep(2.0)
                         from .hh_message_reply import fetch_hh_conversation_readonly
                         conv_data = fetch_hh_conversation_readonly(eval_fn)
+                        if not (conv_data and conv_data.get("messages")):
+                            time.sleep(2.0)
+                            conv_data = fetch_hh_conversation_readonly(eval_fn)
                         if conv_data and conv_data.get("messages"):
                             real_msgs = []
                             for rm in conv_data.get("messages", []):
@@ -1598,12 +1620,21 @@ class AutonomousJobAgent:
 
             # Check Test Task / Assignment
             test_task_signals = [
-                "тестов", "задани", "испытан", "test task", "тест", "хакатон",
+                "тестовое", "тестовым", "тестового", "тестовому",
+                "задание", "задания", "заданием", "испытание",
+                "test task", "хакатон",
                 "github.com", "notion.site", "drive.google.com", "docs.google.com",
                 "решите задачу", "сделайте задание", "выполните задание",
             ]
-            is_test_task = not is_ext_form and any(ts in msg_low for ts in test_task_signals) and (
-                bool(url_matches) or not any(s in msg_low for s in ["собеседован", "интервью"])
+            question_signals = [
+                "расскажите, пожалуйста", "подскажите, пожалуйста", "у вас есть опыт",
+                "есть ли у вас опыт", "какой у вас опыт", "сколько лет опыта",
+            ]
+            is_test_task = (
+                not is_ext_form
+                and any(ts in msg_low for ts in test_task_signals)
+                and (bool(url_matches) or not any(q in msg_low for q in question_signals))
+                and (bool(url_matches) or not any(s in msg_low for s in ["собеседован", "интервью"]))
             )
 
             # Check Interview Invitation / Scheduling Request (High Priority)
