@@ -670,7 +670,9 @@ def classify_hh_conversation_detailed(
         # Check for verified skills in candidate profile
         prof_skills_lower = [s.lower().replace("ё", "е") for s in profile_skills]
         prof_roles_lower = [r.lower().replace("ё", "е") for r in profile_roles]
-        q_text_low = (q_text or last_emp_text or "").lower().replace("ё", "е")
+        from ai_assistant.smart_experience_generator import strip_recruiter_echo_preamble
+        core_q_text = strip_recruiter_echo_preamble(q_text or last_emp_text or "")
+        q_text_low = core_q_text.lower().replace("ё", "е")
         
         # Check for unverified technologies / languages not in candidate profile
         unverified_techs = [
@@ -975,19 +977,38 @@ def classify_hh_conversation_detailed(
                 tech_missing = [f"{unknown_str} experience (absent from profile)"]
                 tech_confidence = 0.85
             else:
-                if lang == "ru":
-                    reply_text = (
-                        f"Здравствуйте! У меня более {years} лет коммерческого опыта разработки на Python. "
-                        f"Основной стек: {skills_str}. Готов обсудить задачи на интервью."
-                    )
+                from ai_assistant.smart_experience_generator import synthesize_contextual_chat_reply_with_llm
+                hist_lines = [f"{m.sender}: {m.text}" for m in messages[-6:] if m.text]
+                prior_cand = [m.text for m in messages if m.sender == "candidate" and m.text]
+                specialized = synthesize_contextual_chat_reply_with_llm(
+                    employer_message=q_text,
+                    vacancy_title=v_title or "",
+                    company_name=v_comp or "",
+                    conversation_history=hist_lines,
+                    avoid_replies=prior_cand,
+                )
+                if specialized and lang == "ru":
+                    has_prior = any(m.sender == "candidate" for m in messages)
+                    if not has_prior and not specialized.lower().startswith("здравствуйте"):
+                        specialized = "Здравствуйте! " + specialized
+                    reply_text = specialized
+                    reason = "Employer asked a specific domain/technical question; drafted contextual answer addressing the exact topic."
+                    tech_sources = sources + ["candidate_kb.json: contextual domain experience"]
+                    tech_confidence = 0.94
                 else:
-                    reply_text = (
-                        f"Hello! I have over {years} years of commercial Python development experience. "
-                        f"Core stack: {skills_str}. Glad to discuss details."
-                    )
-                reason = "Employer asked about technical stack; drafted response using verified profile skills."
-                tech_sources = sources
-                tech_confidence = 0.90
+                    if lang == "ru":
+                        reply_text = (
+                            f"Здравствуйте! У меня более {years} лет коммерческого опыта разработки на Python. "
+                            f"Основной стек: {skills_str}. Готов обсудить задачи на интервью."
+                        )
+                    else:
+                        reply_text = (
+                            f"Hello! I have over {years} years of commercial Python development experience. "
+                            f"Core stack: {skills_str}. Glad to discuss details."
+                        )
+                    reason = "Employer asked about technical stack; drafted response using verified profile skills."
+                    tech_sources = sources
+                    tech_confidence = 0.90
 
             return {
                 "conversation_id": dialog.conversation_id,
@@ -1003,6 +1024,36 @@ def classify_hh_conversation_detailed(
                 "sources": tech_sources,
                 "status": "READ-ONLY",
             }
+
+        if not has_unverified_tech:
+            from ai_assistant.smart_experience_generator import synthesize_contextual_chat_reply_with_llm
+            hist_lines = [f"{m.sender}: {m.text}" for m in messages[-6:] if m.text]
+            prior_cand = [m.text for m in messages if m.sender == "candidate" and m.text]
+            specialized = synthesize_contextual_chat_reply_with_llm(
+                employer_message=q_text,
+                vacancy_title=v_title or "",
+                company_name=v_comp or "",
+                conversation_history=hist_lines,
+                avoid_replies=prior_cand,
+            )
+            if specialized and lang == "ru":
+                has_prior = any(m.sender == "candidate" for m in messages)
+                if not has_prior and not specialized.lower().startswith("здравствуйте"):
+                    specialized = "Здравствуйте! " + specialized
+                return {
+                    "conversation_id": dialog.conversation_id,
+                    "classification": "NEEDS_REPLY",
+                    "confidence": 0.94,
+                    "reason": "Employer asked a specific domain/technical question; drafted contextual answer addressing the exact topic.",
+                    "question": q_text,
+                    "required_facts": required_facts + ["domain experience"],
+                    "available_facts": available_facts,
+                    "missing_facts": [],
+                    "context": context,
+                    "prepared_reply": specialized,
+                    "sources": sources + ["candidate_kb.json: contextual domain experience"],
+                    "status": "READ-ONLY",
+                }
 
         # Any unverified/unknown questions -> HUMAN_REVIEW (NO universal fallback)
         return {

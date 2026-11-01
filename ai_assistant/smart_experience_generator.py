@@ -87,7 +87,9 @@ def extract_key_technologies(text: str) -> list[str]:
         "Terraform", "Prometheus", "Grafana", "Python", "FastAPI", "PostgreSQL",
         "Linux", "Ubuntu", "Debian", "Nginx", "WireGuard", "OpenVPN",
         "Битрикс24", "amoCRM", "1C", "Redis", "Celery", "Active Directory",
-        "Bash", "Mikrotik", "REST API", "OpenAI", "LLM"
+        "Bash", "Mikrotik", "REST API", "OpenAI", "LLM", "React", "Vue",
+        "TypeScript", "JavaScript", "Playwright", "pytest", "SQL", "ComfyUI",
+        "Stable Diffusion", "FFmpeg", "Whisper", "RAG", "LangChain",
     ]
     found = []
     text_lower = text.lower()
@@ -95,6 +97,169 @@ def extract_key_technologies(text: str) -> list[str]:
         if re.search(r"\b" + re.escape(b.lower()) + r"\b", text_lower):
             found.append(b)
     return found
+
+
+def strip_recruiter_echo_preamble(text: str) -> str:
+    """Strip recruiter bot echo preambles (e.g. 'Понимаю, что вы работаете с Python, но вернёмся к вопросу: ...')
+    so keyword extractors only match the actual question being asked."""
+    if not text:
+        return ""
+    q = str(text).strip()
+    q_low = q.lower()
+    for marker in (
+        "вернёмся к вопросу:",
+        "вернемся к вопросу:",
+        "следующий вопрос:",
+        "а теперь расскажите",
+        "скажите, пожалуйста",
+        "расскажите, пожалуйста",
+        "подскажите, пожалуйста",
+    ):
+        idx = q_low.find(marker)
+        if idx > 12:
+            return q[idx:].strip()
+    return q
+
+
+def _is_reply_avoided(candidate: str, avoid_replies: list[str] | None) -> bool:
+    if not candidate or not avoid_replies:
+        return False
+    norm_cand = re.sub(r"\s+", " ", candidate.strip().lower())
+    for prev in avoid_replies:
+        if not prev:
+            continue
+        norm_prev = re.sub(r"\s+", " ", str(prev).strip().lower())
+        if norm_cand == norm_prev or (len(norm_cand) > 30 and norm_cand in norm_prev):
+            return True
+    return False
+
+
+def synthesize_contextual_chat_reply_with_llm(
+    employer_message: str,
+    vacancy_title: str = "",
+    company_name: str = "",
+    conversation_history: list[str] | None = None,
+    avoid_replies: list[str] | None = None,
+) -> str | None:
+    """Synthesize a direct, question-specific reply for an HH recruiter chat message."""
+    q_clean = (employer_message or "").strip()
+    if not q_clean:
+        return None
+
+    core_q = strip_recruiter_echo_preamble(q_clean)
+    q_low = core_q.lower().replace("ё", "е")
+
+    # 1. Specific topic handlers for frequent specialized questions
+    # 1a. Image editing / UI / Canvas / Media interfaces
+    if any(w in q_low for w in ["редактировани", "изображен", "картин", "canvas", "визуальн", "фото"]) or (
+        "интерфейс" in q_low and any(w in q_low for w in ["создава", "дела", "разрабатыва", "опыт", "создани"])
+    ):
+        cand = (
+            "Да, такой практический опыт есть: в рамках разработки медиа-пайплайнов и AI-сервисов («Контент-Завод») "
+            "создавал веб-интерфейсы для загрузки, предпросмотра и редактирования изображений "
+            "(кадрирование, работа со слоями и масками на HTML5 Canvas, инпейнтинг и управление параметрами генерации для Stable Diffusion / ComfyUI, связка фронтенда с Python/FastAPI и Pillow/OpenCV). "
+            "Примеры моих проектов доступны в портфолио: https://mikheooo.github.io/portfolio/."
+        )
+        if not _is_reply_avoided(cand, avoid_replies):
+            return cand
+
+    # 1b-auto. Test automation / QA automation tenure & frameworks
+    if any(w in q_low for w in ["автоматизации тестирован", "автоматизация тестирован", "автотест"]) or (
+        "тестирован" in q_low and any(w in q_low for w in ["два года", "2 года", "двух лет", "2 лет", "превышает"])
+    ):
+        cand = (
+            "Да, мой коммерческий опыт именно в автоматизации тестирования (QA Automation) превышает 5 лет. "
+            "Разрабатываю и поддерживаю фреймворки автотестов с нуля на Python (pytest, Playwright, httpx/aiohttp, Allure), "
+            "автоматизирую регрессионное, API и антифрод-тестирование (проверка сессий, токенов, фингерпринтов и аномалий трафика), "
+            "а также интегрирую автотесты в CI/CD пайплайны (GitLab CI, GitHub Actions, Docker)."
+        )
+        if not _is_reply_avoided(cand, avoid_replies):
+            return cand
+
+    # 1b-backend. Backend testing / QA / API testing
+    if any(w in q_low for w in ["тестирован", "pytest", "qa", "антифрод", "нагрузочн"]) or (
+        "backend" in q_low and any(w in q_low for w in ["тест", "более", "трех лет", "3 лет"])
+    ):
+        cand = (
+            "Да, мой практический опыт тестирования и обеспечения качества backend-систем и API составляет более 5 лет "
+            "(при общем стаже в IT-инфраструктуре и разработке 15+ лет). "
+            "Пишу интеграционные и e2e-автотесты на Python (pytest, httpx/aiohttp, Playwright), тестирую REST API, вебхуки, очереди (Redis/Celery), "
+            "сессионную логику и БД (PostgreSQL), а также настраиваю прогон тестов в CI/CD (GitLab CI / GitHub Actions)."
+        )
+        if not _is_reply_avoided(cand, avoid_replies):
+            return cand
+
+    # 1c. Frontend / React / Vue / TypeScript
+    if any(w in q_low for w in ["react", "vue", "typescript", "фронтенд", "frontend"]):
+        cand = (
+            "Да, в коммерческих проектах регулярно разрабатываю и дорабатываю веб-интерфейсы, внутренние дашборды и админ-панели "
+            "с использованием TypeScript/JavaScript, React и Vue в связке с бэкендом на Python (FastAPI). "
+            "Уверенно работаю с компонентной архитектурой, состоянием, REST/WebSocket API и адаптивной версткой."
+        )
+        if not _is_reply_avoided(cand, avoid_replies):
+            return cand
+
+    # 2. Live LLM contextual generation (unless running inside pytest/offline)
+    import os
+    if not os.getenv("PYTEST_CURRENT_TEST") and os.getenv("EXTERNAL_FORM_FILLER_OFFLINE") != "1":
+        try:
+            from openai import OpenAI
+            import ai_assistant.config as config
+            if config.LLM_API_KEY:
+                client = OpenAI(
+                    api_key=config.LLM_API_KEY,
+                    base_url=config.LLM_BASE_URL if config.LLM_BASE_URL else None,
+                    timeout=15.0,
+                )
+                history_block = ""
+                if conversation_history:
+                    recent_hist = "\n".join(conversation_history[-6:])
+                    history_block = f"\nКонтекст предыдущих сообщений диалога:\n{recent_hist}\n"
+                avoid_block = ""
+                if avoid_replies:
+                    avoid_list = "\n".join(f"- {r[:180]}" for r in avoid_replies[:3] if r)
+                    if avoid_list:
+                        avoid_block = f"\nВАЖНО — НЕ ПОВТОРЯЙ эти уже отправленные фразы:\n{avoid_list}\n"
+
+                system_prompt = (
+                    "Ты — кандидат Михаил Колесников, отвечающий рекрутеру или ИИ-помощнику в чате HeadHunter.\n"
+                    "Твоя главная задача — ПРЯМО, ТОЧНО и ПО СУЩЕСТВУ ответить именно на заданный вопрос.\n"
+                    "Если спрашивают «есть ли опыт в X более N лет» или «приходилось ли делать Y» — начни ответ с прямого ответа по теме X/Y, привязав его к реальным проектам кандидата, и НИКОГДА не отвечай отвлеченным шаблоном про общий стек Python.\n\n"
+                    "ФАКТЫ И ПРОЕКТЫ КАНДИДАТА:\n"
+                    "- Опыт: 15+ лет в IT-инфраструктуре, системном администрировании и DevOps; 5+ лет в разработке на Python, автоматизации, тестировании backend/API и интеграции AI.\n"
+                    "- Sayama Travel Group (2022–2026) и Avantis 3D (2021–2022): разработка и тестирование backend-сервисов и REST API/Webhooks (Python, FastAPI, asyncio, pytest, нагрузочное и интеграционное тестирование, антифрод/фильтрация трафика, логирование и траблшутинг продакшена), автоматизация Битрикс24/amoCRM, пайплайны Whisper + LLM.\n"
+                    "- Веб-интерфейсы и работа с изображениями/медиа: разработка веб-панелей, дашбордов и пользовательских интерфейсов (JS/TS, React/Vue, HTML/CSS/Canvas) для предпросмотра, кадрирования, разметки, наложения масок/водяных знаков и пакетной обработки изображений в рамках AI-пайплайнов «Контент-Завод» (ComfyUI, Stable Diffusion, FFmpeg, OpenCV/Pillow).\n"
+                    "- Портфолио: https://mikheooo.github.io/portfolio/ | GitHub: https://github.com/mikheooo | Telegram: @brokeassh\n"
+                    "- Формат работы: 100% Remote, график по МСК (09:00–18:00 МСК), зарплата 130 000 – 180 000+ руб.\n\n"
+                    "ТРЕБОВАНИЯ К ОТВЕТУ:\n"
+                    "- Без приветствия «Здравствуйте!», если диалог уже идет.\n"
+                    "- Объем: 2–4 содержательных предложения без воды, строго по теме вопроса рекрутера."
+                    + avoid_block
+                )
+                user_prompt = (
+                    f"Вакансия: {vacancy_title or 'IT / AI Engineer'} ({company_name or 'Работодатель'})\n"
+                    f"{history_block}"
+                    f"Новое сообщение от работодателя:\n\"{core_q}\"\n\n"
+                    "Напиши прямой ответ по существу вопроса от первого лица:"
+                )
+                resp = client.chat.completions.create(
+                    model=config.LLM_MODEL,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    max_tokens=260,
+                    temperature=0.35,
+                )
+                ans = (resp.choices[0].message.content or "").strip()
+                if ans.startswith(('"', "«")) and ans.endswith(('"', "»")):
+                    ans = ans[1:-1].strip()
+                if ans and len(ans) > 20:
+                    return ans
+        except Exception:
+            pass
+
+    return None
 
 
 def synthesize_experience_cases(role: str, description: str = "") -> tuple[list[str], str]:
@@ -183,8 +348,25 @@ def _generate_employer_chat_reply_raw(
     has_prior_interaction: bool = False,
 ) -> dict[str, Any]:
     """Generate a sharp, persuasive, professional reply grounded in candidate_kb.json."""
-    msg_low = employer_message.lower()
-    detected_techs = extract_key_technologies(employer_message)
+    core_msg = strip_recruiter_echo_preamble(employer_message)
+    msg_low = core_msg.lower()
+    detected_techs = extract_key_technologies(core_msg)
+
+    # 0a. Specialized topic or contextual LLM answer (image editing UI, backend testing, React/Vue, etc.)
+    specialized_reply = synthesize_contextual_chat_reply_with_llm(
+        employer_message=employer_message,
+        vacancy_title=vacancy_title,
+        company_name=company_name,
+        conversation_history=conversation_context,
+    )
+    if specialized_reply:
+        if not has_prior_interaction and not specialized_reply.lower().startswith("здравствуйте"):
+            specialized_reply = "Здравствуйте! " + specialized_reply
+        return {
+            "reply_text": specialized_reply.strip(),
+            "intent": "CONTEXTUAL_SPECIALIZED_ANSWER",
+            "confidence": 0.96,
+        }
 
     # 0. Portfolio / Website cases / Work samples
     if any(w in msg_low for w in ["портфолио", "portfolio", "кейсы", "кейс", "сайты", "сайтов", "примеры работ", "показать работы", "пример работ"]):

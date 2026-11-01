@@ -1808,6 +1808,26 @@ class AutonomousJobAgent:
                 recent_sent = db.get_recent_sent_replies_for_conversation(d.conversation_id, limit=5)
                 norm_target = re.sub(r'[^\w\s]', '', (reply_text or '').lower()).strip()
                 is_duplicate = any(re.sub(r'[^\w\s]', '', (r or '').lower()).strip() == norm_target for r in recent_sent)
+                if is_duplicate:
+                    from ai_assistant.smart_experience_generator import (
+                        strip_repeated_greeting,
+                        synthesize_contextual_chat_reply_with_llm,
+                    )
+                    hist_lines = [f"{m.sender}: {m.text}" for m in d.messages[-6:] if m.text]
+                    alt_reply = synthesize_contextual_chat_reply_with_llm(
+                        employer_message=msg_text,
+                        vacancy_title=d.vacancy_title or "",
+                        company_name=d.employer or "",
+                        conversation_history=hist_lines,
+                        avoid_replies=recent_sent,
+                    )
+                    if alt_reply:
+                        alt_clean = strip_repeated_greeting(alt_reply)
+                        norm_alt = re.sub(r'[^\w\s]', '', alt_clean.lower()).strip()
+                        if norm_alt and not any(re.sub(r'[^\w\s]', '', (r or '').lower()).strip() == norm_alt for r in recent_sent):
+                            reply_text = alt_clean
+                            is_duplicate = False
+                            decision_reason = "Contextual answer synthesized for follow-up employer question."
                 consecutive_count = db.count_recent_consecutive_auto_replies(d.conversation_id)
 
                 if is_duplicate:
@@ -1926,7 +1946,7 @@ class AutonomousJobAgent:
                     "text": msg_text,
                     "sent_at": last_msg.sent_at,
                     "seen_at": now_iso,
-                    "processed": 1 if send_status == "SENT" else 0,
+                    "processed": 1 if send_status in ("SENT", "LOOP_PREVENTED", "HUMAN_REVIEW_REQUIRED") else 0,
                     "classification": classification,
                     "reply_draft": reply_text,
                     "status": {
