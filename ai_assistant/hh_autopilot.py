@@ -958,14 +958,48 @@ def run_autopilot_cycle(
             logger.info(f"Skipping {vid} ({role} at {company}): {sal_reason}")
             continue
 
-        # Step 3: Live Brief check
+        # Fast Gate 2a: Duplicate guard (before expensive CDP brief_vacancy navigation)
+        prior = _prior_submission_exists(vid)
+        if prior:
+            logger.info(f"Skipping {vid} ({role} at {company}): {prior}")
+            continue
+
+        # Fast Gate 2b: Role title & snippet fit gate
+        card_desc = card.get("snippet") or ""
+        role_ok, role_reason = role_gate(role, card_desc, profile)
+        if not role_ok:
+            logger.info(f"Skipping {vid} ({role} at {company}): role gate: {role_reason}")
+            continue
+
+        # Fast Gate 2c: Preliminary strict remote gate on card metadata (work_formats, area, snippet)
+        from ai_assistant.remote_filter import classify_work_format
+        import html
+        loc_card = card.get("area") or ""
+        read_data = entry.get("read") or {}
+        card_raw = {}
+        if read_data.get("work_formats"):
+            card_raw["workFormats"] = read_data.get("work_formats")
+        elif card.get("work_formats"):
+            card_raw["workFormats"] = card.get("work_formats")
+
+        pre_remote_ok, pre_remote_reason = classify_work_format(
+            title=role,
+            description=card_desc,
+            location=str(loc_card),
+            source="hh",
+            raw_data=card_raw,
+        )
+        if not pre_remote_ok:
+            logger.info(f"Skipping {vid} ({role} at {company}): strict remote gate: {pre_remote_reason}")
+            continue
+
+        # Step 3: Live Brief check (only executed for vacancies passing fast gates)
         brief = brief_vacancy(vid)
         if not brief:
             logger.info(f"Skipping {vid}: brief failed")
             continue
 
         vacancy = brief.get("vacancy") or {}
-        read_data = entry.get("read") or {}
         if not vacancy.get("workFormats") and read_data.get("work_formats"):
             vacancy["workFormats"] = read_data.get("work_formats")
         form = brief.get("form") or {}
@@ -979,31 +1013,22 @@ def run_autopilot_cycle(
         desc = (
             brief.get("description")
             or brief.get("vacancy", {}).get("description")
-            or card.get("snippet")
+            or card_desc
             or ""
         )
 
-        # Audit 2026-10-19 H-03/H-12: fit gate and duplicate guard before the
-        # expensive screening work and before any click.
+        # Confirm fit and remote gate against the full loaded description
         role_ok, role_reason = role_gate(role, desc, profile)
         if not role_ok:
             logger.info(f"Skipping {vid} ({role} at {company}): role gate: {role_reason}")
             continue
-        prior = _prior_submission_exists(vid)
-        if prior:
-            logger.info(f"Skipping {vid} ({role} at {company}): {prior}")
-            continue
 
-        # Step 3b: Strict Remote Gate (zero-tolerance for hybrid, office, relocation, or conditional formats)
-        from ai_assistant.remote_filter import classify_work_format
-        import html
-
+        # Step 3b: Strict Remote Gate on full description
         clean_desc = html.unescape(desc) if desc else ""
         loc = (
             vacancy.get("address")
             or (vacancy.get("area", {}).get("name") if isinstance(vacancy.get("area"), dict) else vacancy.get("area"))
-            or card.get("area")
-            or ""
+            or loc_card
         )
         remote_ok, remote_reason = classify_work_format(
             title=role,
