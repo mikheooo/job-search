@@ -10,17 +10,26 @@ Key features:
 4. Auto-reconciled with state.db and immediate push alerts to Telegram (@jobsassistbot).
 5. Autopilot lock yielding: cleanly pauses and yields browser access whenever
    'JobSearch_HH_Autopilot' (run_hh_autopilot_cycle.py) runs.
-6. Auto-recovery: restarts browser session if connection or page drops.
+6. Auto-recovery: restarts the browser session if the connection or page drops.
+   Restarts back off exponentially (HH_REALTIME_BROWSER_RECOVERY_BASE_SECONDS,
+   default 5s) up to a cap (HH_REALTIME_BROWSER_RECOVERY_MAX_SECONDS, default
+   300s) so a wedged CDP on port 9111 is not relaunched in a tight loop. A
+   successful chat check resets the streak. The watchdog stays armed.
 7. Periodic (10m) negotiation cards scan to capture interview invitations without chat.
 8. Observable autopilot pause: PAUSED/RESUMED transitions are logged once with the
    lock owner PID/timestamp, and a heartbeat (log line + logs/hh_realtime_daemon.heartbeat
    JSON) is refreshed at least every HH_REALTIME_HEARTBEAT_INTERVAL seconds (60s) in
    both RUNNING and PAUSED states, so a silent stall is visible from outside.
+   A failed dialog-list read updates that heartbeat immediately (status ERROR plus
+   the last error). It does not count as a successful check and does not clear
+   the stall clock.
 9. Watchdog: a pause (or a streak without any successful chat check) longer than
    HH_REALTIME_PAUSE_ALERT_SECONDS (default 1800s) raises one owner alert through the
    existing safe Telegram helper, repeating no more often than the cooldown
-   (HH_REALTIME_PAUSE_ALERT_COOLDOWN_SECONDS, default 3600s). The watchdog never
-   touches the browser, the session or the autopilot lock.
+   (HH_REALTIME_PAUSE_ALERT_COOLDOWN_SECONDS, default 3600s). The stall alert
+   includes the last dialog-list error and how old that error is. The watchdog
+   never touches the browser, the session or the autopilot lock, and it is not
+   disabled while the browser is backing off.
 """
 
 from __future__ import annotations
@@ -90,6 +99,34 @@ PAUSE_ALERT_SECONDS = _env_int("HH_REALTIME_PAUSE_ALERT_SECONDS", 1800)
 PAUSE_ALERT_COOLDOWN_SECONDS = _env_int("HH_REALTIME_PAUSE_ALERT_COOLDOWN_SECONDS", 3600)
 AUTH_OUTAGE_RETRY_SECONDS = _env_int("HH_REALTIME_AUTH_RETRY_SECONDS", 300)
 AUTH_ALERT_SUPPRESS_SECONDS = 12 * 3600
+# Browser recycle after a hung CDP / dialog-list timeout. failure 1 waits `base`,
+# then 2*base, 4*base, ... until `max`. The cap stops a dead port 9111 from being
+# restarted every few seconds; the watchdog is a separate clock and stays on.
+BROWSER_RECOVERY_BASE_SECONDS = float(_env_int("HH_REALTIME_BROWSER_RECOVERY_BASE_SECONDS", 5))
+BROWSER_RECOVERY_MAX_SECONDS = max(
+    BROWSER_RECOVERY_BASE_SECONDS,
+    float(_env_int("HH_REALTIME_BROWSER_RECOVERY_MAX_SECONDS", 300)),
+)
+
+# Substrings that mean the DevTools target is gone or hung, so recycling the
+# browser can help. Matched against the lowercased check reason.
+_BROWSER_RECYCLE_HINTS = (
+    "tab is gone",
+    "connection closed",
+    "connection refused",
+    "connection reset",
+    "connectionreset",
+    "connection failed",
+    "broken pipe",
+    "brokenpipe",
+    "target closed",
+    "target disconnected",
+    "10061",
+    "no browser transport",
+    "failed to fetch",
+    "timeout",
+    "timed out",
+)
 
 
 class FlushingFileHandler(logging.FileHandler):
@@ -201,6 +238,9 @@ _last_heartbeat_at = 0.0
 _last_success_at = 0.0
 _checked_last = 0
 _last_status: str | None = None
+_last_error: str | None = None
+_last_error_at: float | None = None
+_browser_recovery_failures = 0
 _pause_started_at: float | None = None
 _pause_lock_pid: int | None = None
 _pause_lock_ts = ""
@@ -217,7 +257,9 @@ def _now() -> float:
 
 def _init_observability() -> None:
     global _state, _heartbeat_seq, _last_heartbeat_at, _last_success_at
-    global _checked_last, _last_status, _pause_started_at, _pause_lock_pid
+    global _checked_last, _last_status, _last_error, _last_error_at
+    global _browser_recovery_failures
+    global _pause_started_at, _pause_lock_pid
     global _pause_lock_ts, _last_pause_alert_at, _last_stall_alert_at
     global _stall_paused_seconds
     _state = "RUNNING"
@@ -226,6 +268,9 @@ def _init_observability() -> None:
     _last_success_at = _now()
     _checked_last = 0
     _last_status = None
+    _last_error = None
+    _last_error_at = None
+    _browser_recovery_failures = 0
     _pause_started_at = None
     _pause_lock_pid = None
     _pause_lock_ts = ""
@@ -380,34 +425,65 @@ def _heartbeat_tick(tick_count: int) -> int:
         return hb
 
     success_age = _now() - _last_success_at if _last_success_at else 0.0
-    hb = _heartbeat(
-        "RUNNING",
-        "monitoring chat",
-        _checked_last,
-        extra={
-            "tick": tick_count,
-            "status": _last_status or "UNKNOWN",
-            "last_success_age_seconds": round(success_age, 1),
-        },
-    )
+    extra = _running_heartbeat_extra(tick_count, success_age)
+    hb = _heartbeat("RUNNING", _running_heartbeat_reason(), _checked_last, extra=extra)
     if hb:
         logger.info(
-            "💓 Heartbeat #%d: checked=%d chat(s), status=%s, state=RUNNING, last check %.0fs ago",
+            "💓 Heartbeat #%d: checked=%d chat(s), status=%s, state=RUNNING, last check %.0fs ago%s",
             hb,
             _checked_last,
             _last_status or "UNKNOWN",
             success_age,
+            _last_error_log_suffix(),
         )
     return hb
 
 
+def _running_heartbeat_reason() -> str:
+    if _last_error and (_last_status or "") not in {"CHECKED", ""}:
+        return f"chat check failed: {_last_error}"
+    return "monitoring chat"
+
+
+def _last_error_age_seconds() -> float:
+    if not _last_error_at:
+        return 0.0
+    return max(0.0, _now() - _last_error_at)
+
+
+def _last_error_log_suffix() -> str:
+    if not _last_error or (_last_status or "") in {"CHECKED", ""}:
+        return ""
+    return f", last error {_last_error_age_seconds():.0f}s ago: {_last_error}"
+
+
+def _running_heartbeat_extra(tick_count: int, success_age: float) -> dict[str, Any]:
+    extra: dict[str, Any] = {
+        "tick": tick_count,
+        "status": _last_status or "UNKNOWN",
+        "last_success_age_seconds": round(success_age, 1),
+    }
+    if _last_error:
+        extra["last_error"] = _last_error
+        extra["last_error_age_seconds"] = round(_last_error_age_seconds(), 1)
+    if _browser_recovery_failures:
+        extra["browser_recovery_failures"] = _browser_recovery_failures
+        extra["browser_recovery_delay_seconds"] = browser_recovery_delay_seconds(
+            _browser_recovery_failures
+        )
+    return extra
+
+
 def _mark_check_success(chat_res: dict[str, Any] | None) -> None:
     global _last_success_at, _checked_last, _last_status, _last_stall_alert_at
-    global _stall_paused_seconds
+    global _stall_paused_seconds, _last_error, _last_error_at, _browser_recovery_failures
     _last_success_at = _now()
     # Checks are flowing again: a future stall streak may alert on its own.
     _last_stall_alert_at = None
     _stall_paused_seconds = 0.0
+    _last_error = None
+    _last_error_at = None
+    _browser_recovery_failures = 0
     chat_res = chat_res or {}
     try:
         _checked_last = int(chat_res.get("messages_checked", 0) or 0)
@@ -415,6 +491,104 @@ def _mark_check_success(chat_res: dict[str, Any] | None) -> None:
         _checked_last = 0
     status = chat_res.get("messages_check_status")
     _last_status = str(status) if status else None
+
+
+def _mark_check_failure(status: str, reason: str) -> None:
+    """Record a failed chat check without moving the stall clock.
+
+    ``_last_success_at`` stays on the last check that actually read the dialog
+    list. Heartbeat status must not keep saying CHECKED while every read is
+    timing out — that is what hid the CDP 9111 outage from the heartbeat file.
+    """
+    global _last_status, _last_error, _last_error_at
+    cleaned = " ".join(str(reason or "").split())
+    if len(cleaned) > 500:
+        cleaned = cleaned[:497] + "..."
+    _last_status = str(status).strip() if str(status or "").strip() else "FAILED"
+    _last_error = cleaned or _last_status
+    _last_error_at = _now()
+    success_age = _now() - _last_success_at if _last_success_at else 0.0
+    _heartbeat(
+        "RUNNING",
+        f"chat check failed: {_last_error}",
+        _checked_last,
+        force=True,
+        extra={
+            "status": _last_status,
+            "last_error": _last_error,
+            "last_error_age_seconds": 0.0,
+            "last_success_age_seconds": round(success_age, 1),
+            "browser_recovery_failures": _browser_recovery_failures,
+        },
+    )
+    logger.warning(
+        "Chat check failed: status=%s error=%s (last success %.0fs ago; stall watchdog still armed)",
+        _last_status,
+        _last_error,
+        success_age,
+    )
+
+
+def browser_recovery_delay_seconds(
+    failure_count: int,
+    *,
+    base: float | None = None,
+    maximum: float | None = None,
+) -> float:
+    """Seconds to wait before the next CDP browser restart.
+
+    ``failure_count`` is 1-based. The delay doubles each consecutive failure and
+    never exceeds ``maximum`` (default HH_REALTIME_BROWSER_RECOVERY_MAX_SECONDS).
+    """
+    base_s = BROWSER_RECOVERY_BASE_SECONDS if base is None else float(base)
+    cap_s = BROWSER_RECOVERY_MAX_SECONDS if maximum is None else float(maximum)
+    cap_s = max(cap_s, base_s)
+    if failure_count <= 0 or base_s <= 0:
+        return 0.0
+    # 2**10 * base is already far past any reasonable cap; clamp the shift so a
+    # long outage cannot overflow the float math.
+    shift = min(int(failure_count) - 1, 10)
+    return float(min(cap_s, base_s * (2 ** shift)))
+
+
+def _note_browser_recovery_failure(cdp_url: str | None = None) -> float:
+    """Count one recycle and return how long to sleep before the next restart."""
+    global _browser_recovery_failures
+    _browser_recovery_failures += 1
+    delay = browser_recovery_delay_seconds(_browser_recovery_failures)
+    logger.warning(
+        "Browser recovery #%d on %s: backing off %.0fs before the next CDP restart "
+        "(cap %.0fs). Watchdog is unchanged.",
+        _browser_recovery_failures,
+        cdp_url or "CDP",
+        delay,
+        BROWSER_RECOVERY_MAX_SECONDS,
+    )
+    return delay
+
+
+def _reason_needs_browser_recycle(reason: str | None) -> bool:
+    text = str(reason or "").lower()
+    return any(hint in text for hint in _BROWSER_RECYCLE_HINTS)
+
+
+def _chat_failure_needs_browser_recycle(status: str | None, reason: str | None) -> bool:
+    # messages_check_status ERROR is the dialog-list failure contract: the
+    # browser target did not produce a list, so recycle it. A raised exception
+    # uses ``_reason_needs_browser_recycle`` instead, so a logic bug does not
+    # restart Chrome.
+    if str(status or "").strip().upper() == "ERROR":
+        return True
+    return _reason_needs_browser_recycle(reason)
+
+
+def _stop_browser_session(session: HeadlessBrowserSession | None) -> None:
+    if session is None:
+        return
+    try:
+        session.stop()
+    except Exception as exc:  # noqa: BLE001 - shutdown must not skip the backoff sleep
+        logger.debug("Error stopping browser session during recovery: %s", exc)
 
 
 def _send_owner_alert(text: str) -> bool:
@@ -470,16 +644,32 @@ def _interruptible_sleep(total_seconds: float) -> None:
 
 def _watchdog_alert_text(condition: str, reason: str, duration: float) -> str:
     last_success_age = _now() - _last_success_at if _last_success_at else 0.0
-    return (
-        f"⚠️ HH Realtime Daemon: {condition}\n\n"
-        f"Состояние: {_state}\n"
-        f"Причина: {reason}\n"
-        f"Длится: {duration / 60.0:.1f} мин ({duration:.0f} с)\n"
-        f"Последняя успешная проверка чата: {last_success_age:.0f} с назад\n"
-        f"Порог алерта: {PAUSE_ALERT_SECONDS} с, кулдаун {PAUSE_ALERT_COOLDOWN_SECONDS} с\n"
-        f"PID демона: {os.getpid()}\n"
+    lines = [
+        f"⚠️ HH Realtime Daemon: {condition}",
+        "",
+        f"Состояние: {_state}",
+        f"Причина: {reason}",
+        f"Длится: {duration / 60.0:.1f} мин ({duration:.0f} с)",
+        f"Последняя успешная проверка чата: {last_success_age:.0f} с назад",
+        f"Статус: {_last_status or 'UNKNOWN'}",
+    ]
+    if _last_error:
+        lines.append(f"Последняя ошибка: {_last_error}")
+        lines.append(f"Возраст последней ошибки: {_last_error_age_seconds():.0f} с")
+    if _browser_recovery_failures:
+        lines.append(
+            f"Перезапусков браузера подряд: {_browser_recovery_failures} "
+            f"(пауза {browser_recovery_delay_seconds(_browser_recovery_failures):.0f} с, "
+            f"потолок {BROWSER_RECOVERY_MAX_SECONDS:.0f} с)"
+        )
+    lines.append(
+        f"Порог алерта: {PAUSE_ALERT_SECONDS} с, кулдаун {PAUSE_ALERT_COOLDOWN_SECONDS} с"
+    )
+    lines.append(f"PID демона: {os.getpid()}")
+    lines.append(
         "Смотри: logs/hh_realtime_daemon.log, logs/hh_realtime_daemon.heartbeat, logs/autopilot.lock"
     )
+    return "\n".join(lines)
 
 
 def _watchdog_check() -> None:
@@ -518,9 +708,11 @@ def _watchdog_check() -> None:
     reason = "нет успешных проверок в активном режиме (паузы автопилота исключены)"
     logger.warning(
         "Watchdog: no successful chat check for %.0fs of active monitoring "
-        "(threshold %ds); alerting owner",
+        "(threshold %ds, status=%s, last error=%s); alerting owner",
         gap,
         PAUSE_ALERT_SECONDS,
+        _last_status or "UNKNOWN",
+        _last_error or "none",
     )
     sent = _send_owner_alert(_watchdog_alert_text("нет успешных проверок чата", reason, gap))
     logger.warning("Watchdog stall alert delivery: %s", "ok" if sent else "FAILED")
@@ -613,17 +805,23 @@ def run_daemon_loop() -> None:
                             session = None
                             _interruptible_sleep(AUTH_OUTAGE_RETRY_SECONDS)
                             continue
-                        logger.warning("Could not start headless session: %s. Retrying in 15s...", err_detail)
+                        logger.warning(
+                            "Could not start headless session: %s. Backing off before retry...",
+                            err_detail,
+                        )
                         session = None
-                        time.sleep(15)
+                        _interruptible_sleep(_note_browser_recovery_failure(None))
                         continue
                     session.open_hh_page("https://hh.ru/chat")
                     time.sleep(3)
                     logger.info("Browser session initialized on https://hh.ru/chat (CDP: %s)", session.cdp_url)
-                except Exception as e_init:
-                    logger.warning("Failed to initialize browser session: %s. Retrying in 15s...", e_init)
+                except Exception as e_init:  # noqa: BLE001 - a dead CDP must back off, not kill the daemon
+                    logger.warning(
+                        "Failed to initialize browser session: %s. Backing off before retry...",
+                        e_init,
+                    )
                     session = None
-                    time.sleep(15)
+                    _interruptible_sleep(_note_browser_recovery_failure(None))
                     continue
 
             # 3. Check live incoming chats
@@ -641,15 +839,21 @@ def run_daemon_loop() -> None:
                 replies_sent = chat_res.get("auto_replies_count", 0)
                 interviews = chat_res.get("interviews_detected", 0)
 
-                if status == "ERROR" or (chat_res.get("messages_check_reason") and any(k in str(chat_res.get("messages_check_reason")).lower() for k in ["tab is gone", "connection closed", "target closed", "10061", "no browser transport", "failed to fetch"])):
-                    logger.warning("Browser check error: %s (reason: %s); recycling session...", status, chat_res.get("messages_check_reason"))
-                    try:
-                        if session:
-                            session.stop()
-                    except Exception:
-                        pass
+                reason = str(chat_res.get("messages_check_reason") or "")
+                if _chat_failure_needs_browser_recycle(str(status or ""), reason):
+                    cdp_url = getattr(session, "cdp_url", None)
+                    logger.warning(
+                        "Browser check error: %s (reason: %s); recycling session...",
+                        status,
+                        reason,
+                    )
+                    # Count the recycle before the heartbeat write so the file
+                    # shows this attempt, not the previous one.
+                    delay = _note_browser_recovery_failure(cdp_url)
+                    _mark_check_failure(str(status or "ERROR"), reason or f"chat check status {status}")
+                    _stop_browser_session(session)
                     session = None
-                    time.sleep(5)
+                    _interruptible_sleep(delay)
                     continue
 
                 if replies_sent > 0 or interviews > 0:
@@ -665,19 +869,21 @@ def run_daemon_loop() -> None:
                 # Successful check: feed the unified heartbeat + stall watchdog.
                 _mark_check_success(chat_res)
 
-            except Exception as e_chat:
-                logger.warning("Error processing live chat messages: %s", e_chat)
-                err_str = str(e_chat).lower()
-                if any(k in err_str for k in ["tab is gone", "connection closed", "target closed", "10061"]):
-                    logger.info("Browser connection lost; recycling session...")
-                    try:
-                        if session:
-                            session.stop()
-                    except Exception:
-                        pass
+            except Exception as e_chat:  # noqa: BLE001 - one bad tick must not kill the daemon
+                reason = f"{type(e_chat).__name__}: {e_chat}"
+                logger.warning("Error processing live chat messages: %s", reason)
+                # Status ERROR is recorded either way. Only a hung or dropped
+                # target restarts Chrome; a logic error retries on the same session.
+                if _reason_needs_browser_recycle(reason):
+                    cdp_url = getattr(session, "cdp_url", None)
+                    logger.info("Browser connection lost; recycling session with backoff...")
+                    delay = _note_browser_recovery_failure(cdp_url)
+                    _mark_check_failure("ERROR", reason)
+                    _stop_browser_session(session)
                     session = None
-                    time.sleep(5)
+                    _interruptible_sleep(delay)
                     continue
+                _mark_check_failure("ERROR", reason)
 
             # 4. Periodic negotiation scan for interviews/updates without chat
             now = time.time()

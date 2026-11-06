@@ -262,6 +262,14 @@ def run_message_watcher_cycle(
     # 3. Discover conversations
     try:
         raw_list = fetch_hh_conversations_list_readonly(ev)
+        # An error payload with no cards is a failed read. Treating it as
+        # "zero conversations" used to look like a quiet, successful cycle.
+        if (
+            isinstance(raw_list, dict)
+            and raw_list.get("error")
+            and not (raw_list.get("conversations") or [])
+        ):
+            raise RuntimeError(str(raw_list.get("error")))
         raw_convs = raw_list.get("conversations") or []
     except Exception as e:
         err_msg = f"Failed to fetch HH conversations list: {e}"
