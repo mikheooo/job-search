@@ -72,7 +72,17 @@ HEADLESS_CDP_PORT = 9111
 HEADLESS_CDP_URL = f"http://127.0.0.1:{HEADLESS_CDP_PORT}"
 HEADLESS_CDP_ENV = "HH_HEADLESS_CDP_URL"
 HEADLESS_PROFILE_ENV = "HH_HEADLESS_PROFILE"
-HEADLESS_PROFILE_DIR = r"C:\Users\Misha\AppData\Local\JobSearchHeadless\User Data"
+def _default_headless_profile_dir() -> str:
+    env = os.environ.get(HEADLESS_PROFILE_ENV) or os.environ.get("HH_HEADLESS_PROFILE")
+    if env and env.strip():
+        return env
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        return str(Path(local) / "JobSearchHeadless" / "User Data")
+    return str(Path.home() / "AppData" / "Local" / "JobSearchHeadless" / "User Data")
+
+
+HEADLESS_PROFILE_DIR = _default_headless_profile_dir()
 HEADLESS_WINDOW_SIZE = "1440,900"
 
 # The UA says HeadlessChrome/<version>. Used only to tell *our* instance from a
@@ -1095,14 +1105,20 @@ class HeadlessBrowserSession:
         if self.require_auth:
             gate = self.check_auth()
             if gate["status"] == HH_AUTH_REQUIRED:
-                self.stop()
+                if self.reused:
+                    self.close_all_owned_tabs()
+                else:
+                    self.stop()
                 self.status = HH_AUTH_REQUIRED
                 self.message = gate["message"]
                 return {"ok": False, "status": HH_AUTH_REQUIRED,
                         "message": gate["message"], "auth": gate["auth"],
                         "launch": launch}
             elif gate["status"] != HH_AUTH_OK:
-                self.stop()
+                if self.reused:
+                    self.close_all_owned_tabs()
+                else:
+                    self.stop()
                 self.status = gate["status"]
                 self.message = gate["message"]
                 return {"ok": False, "status": gate["status"],

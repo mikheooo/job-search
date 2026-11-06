@@ -31,7 +31,10 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright"])
     from playwright.sync_api import sync_playwright
 
-VACANCIES_FILE = 'C:\\Users\\Misha\\Documents\\job-search\\vacancies.json'
+import os as _os
+from pathlib import Path as _Path
+_ROOT = _Path(_os.environ.get('JOB_SEARCH_ROOT') or _os.environ.get('PROJECT_ROOT') or _Path(__file__).resolve().parent)
+VACANCIES_FILE = str(_ROOT / 'vacancies.json')
 
 q1_answer = "Паттайя, Таиланд (работаю полностью удаленно, готов подстраиваться под нужный часовой пояс, например МСК)."
 q2_answer = "Прямого коммерческого опыта в финтехе/web3 нет, однако есть глубокий опыт построения отказоустойчивой IT-инфраструктуры, сложных API-интеграций (n8n, Python) и автоматизации процессов. Готов быстро погрузиться в специфику отрасли."
@@ -126,9 +129,10 @@ def main():
         vacancies = json.load(f)
         
     with sync_playwright() as p:
-        print("Connecting to Chrome CDP...")
+        cdp_url = os.getenv("HH_CDP_URL", "http://127.0.0.1:9110")
+        print(f"Connecting to Browser CDP ({cdp_url})...")
         try:
-            browser = p.chromium.connect_over_cdp("http://localhost:9222")
+            browser = p.chromium.connect_over_cdp(cdp_url)
             context = browser.contexts[0]
             # Open a new page for background processing so we don't disrupt the user's active tab too much
             page = context.new_page()

@@ -17,17 +17,41 @@ from integrations.hermes.telegram_adapter_hook import (
     HERMES_CALLBACK_HOOK_MARKER,
 )
 
-DEFAULT_HERMES_APP_DATA = Path(r"C:\Users\Misha\AppData\Local\hermes")
-CANONICAL_ROOT = Path(r"C:\Users\Misha\Documents\job-search")
+def _default_hermes_app_data() -> Path:
+    # Prefer LOCALAPPDATA (Windows) so we never hardcode a username path.
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        return Path(local) / "hermes"
+    return Path.home() / "AppData" / "Local" / "hermes"
+
+
+def _canonical_job_search_root() -> Path:
+    # JOB_SEARCH_ROOT / PROJECT_ROOT env, else this repo (ai_assistant/..).
+    for key in ("JOB_SEARCH_ROOT", "PROJECT_ROOT"):
+        val = os.environ.get(key)
+        if val and val.strip():
+            return Path(val)
+    return Path(__file__).resolve().parents[1]
+
+
+DEFAULT_HERMES_APP_DATA = _default_hermes_app_data()
+CANONICAL_ROOT = _canonical_job_search_root()
 
 
 def get_hermes_paths(base_dir: Path | None = None) -> dict[str, Path]:
     """Resolve active Hermes filesystem paths."""
-    base = base_dir or Path(os.environ.get("HERMES_ROOT", str(DEFAULT_HERMES_APP_DATA)))
+    env_root = os.environ.get("HERMES_ROOT")
+    if base_dir is not None:
+        base = Path(base_dir)
+    elif env_root and env_root.strip():
+        base = Path(env_root)
+    else:
+        base = _default_hermes_app_data()
+    canonical = _canonical_job_search_root()
     return {
         "base": base,
         "fetcher_deployed": base / "profiles" / "jobs" / "scripts" / "job_search_fetcher.py",
-        "fetcher_canonical": CANONICAL_ROOT / "integrations" / "hermes" / "job_search_fetcher.py",
+        "fetcher_canonical": canonical / "integrations" / "hermes" / "job_search_fetcher.py",
         "adapter_deployed": base / "hermes-agent" / "plugins" / "platforms" / "telegram" / "adapter.py",
     }
 

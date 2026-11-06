@@ -38,10 +38,15 @@ DEFAULT_HH_CDP_PORT = 9222
 DEFAULT_HH_CDP_URL = f"http://127.0.0.1:{DEFAULT_HH_CDP_PORT}"
 BROWSEROS_CDP_PORT = 9110
 BROWSEROS_CDP_URL = f"http://127.0.0.1:{BROWSEROS_CDP_PORT}"
-DEFAULT_HH_PROFILE_DIR = os.getenv(
-    "HH_CHROME_PROFILE",
-    r"C:\Users\Misha\chrome-cdp-profile",
-)
+def _default_hh_chrome_profile() -> str:
+    # Env first; else ~/chrome-cdp-profile (no hardcoded username).
+    env = os.getenv("HH_CHROME_PROFILE")
+    if env and env.strip():
+        return env
+    return str(Path.home() / "chrome-cdp-profile")
+
+
+DEFAULT_HH_PROFILE_DIR = _default_hh_chrome_profile()
 DEFAULT_HH_URL = os.getenv("HH_URL", "https://hh.ru/chat")
 
 # CDP is a localhost protocol. urllib honours http_proxy/HTTP_PROXY, so with a
