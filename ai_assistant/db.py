@@ -67,7 +67,34 @@ def is_dry_run() -> bool:
 
 
 def get_connection() -> sqlite3.Connection:
-    return sqlite3.connect(config.DB_FILE)
+    """Open SQLite with a writer-friendly concurrency setup.
+
+    Critical-2: daemon, telegram bot, and autopilot share one DB file. Without
+    a connect timeout and busy_timeout, concurrent writers raise immediately.
+    WAL lets readers proceed while a writer holds the lock.
+    """
+    conn = sqlite3.connect(config.DB_FILE, timeout=30.0)
+    try:
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.Error:
+        # If PRAGMA fails (e.g. read-only mount), still return the connection;
+        # callers keep working, just without the concurrency helpers.
+        pass
+    return conn
+
+
+def _configure_sqlite_temp_storage(conn: sqlite3.Connection) -> None:
+    """Keep SQLite temp b-trees in memory for this connection only.
+
+    ``%TEMP%`` on this host can be present but unusable for SQLite temp files
+    (2026-10-21: the digest failed with ``unable to open database file`` while
+    TEMP pointed at an existing directory). ``PRAGMA temp_store`` is
+    connection-local, so this does not change SQLite's process-wide temp
+    directory or the process environment. The measured peak for the production
+    backlog (4569 rows) was about 144 MB.
+    """
+    conn.execute("PRAGMA temp_store=MEMORY")
 
 
 def ensure_schema() -> None:
@@ -806,6 +833,39 @@ def backfill_hh_message_sent_at(
     conn.commit()
     conn.close()
     return changed
+
+
+def claim_hh_message_reply(message_fingerprint: str, conversation_id: str,
+                           sender: str, text: str, seen_at: str,
+                           reply_draft: str) -> bool:
+    """Durably reserve a single incoming message before any HH send attempt.
+
+    A crash leaves REPLY_SENDING processed and therefore blocked for manual
+    reconciliation. The database primary key serializes competing workers.
+    """
+    conn = get_connection()
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        cur = conn.execute('''
+            INSERT INTO hh_message_events
+                (message_fingerprint, conversation_id, sender, text, seen_at,
+                 processed, reply_draft, status)
+            VALUES (?, ?, ?, ?, ?, 1, ?, 'REPLY_SENDING')
+            ON CONFLICT(message_fingerprint) DO UPDATE SET
+                processed = 1, reply_draft = excluded.reply_draft, status = 'REPLY_SENDING'
+            WHERE (hh_message_events.processed = 0 OR
+                   hh_message_events.status = 'BLOCKED_AUTONOMOUS_REPLY_DISABLED')
+              AND COALESCE(hh_message_events.status, '') NOT IN
+                  ('REPLY_SENDING', 'REPLY_AMBIGUOUS', 'MESSAGE_AUTO_REPLIED')
+        ''', (message_fingerprint, conversation_id, sender, text, seen_at, reply_draft))
+        claimed = cur.rowcount == 1
+        conn.commit()
+        return claimed
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def is_hh_message_processed(message_fingerprint: str) -> bool:
@@ -2384,6 +2444,7 @@ def list_undigested_vacancies(limit: int = 5000) -> list[Any]:
     from .schema import is_genuine_production_vacancy
     init_db()
     conn = get_connection()
+    _configure_sqlite_temp_storage(conn)
     cur = conn.cursor()
     cur.execute('''
         SELECT v.* FROM vacancies v
