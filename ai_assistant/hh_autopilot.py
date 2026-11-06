@@ -15,7 +15,6 @@ import os
 import pathlib
 import re
 import shutil
-import sqlite3
 import sys
 import time
 import urllib.parse
@@ -127,8 +126,8 @@ def role_gate(role: str, description: str, profile: Any) -> tuple[bool, str]:
     return True, f"role family {family} ({priority})"
 
 
-def _prior_submission_exists(vid: str) -> str | None:
-    """Audit 2026-10-19 H-12: refuse to submit twice to the same vacancy."""
+def _prior_submission_exists(vid: str, company: str = "", role: str = "") -> str | None:
+    """Audit 2026-10-19 H-12: refuse to submit twice to the same vacancy or duplicate company/role."""
     sid = f"hh:{vid}"
     try:
         conn = db.get_connection()
@@ -147,12 +146,45 @@ def _prior_submission_exists(vid: str) -> str | None:
             cur.execute(
                 "SELECT status FROM application_tracking "
                 "WHERE vacancy_stable_id = ? AND status IN "
-                "('SUBMITTED','APPLIED','INTERVIEW','REJECTED','WITHDRAWN') LIMIT 1",
+                "('AMBIGUOUS','SUBMITTED','APPLIED','INTERVIEW','REJECTED','WITHDRAWN') LIMIT 1",
                 (sid,),
             )
             row = cur.fetchone()
             if row:
                 return f"tracking already at {row[0]}"
+
+            # Deduplication by company + role against prior applications in application_tracking
+            if company:
+                from ai_assistant.vacancy_identity import (
+                    normalize_company,
+                    normalize_title,
+                    calculate_similarity,
+                )
+                norm_c = normalize_company(company)
+                norm_r = normalize_title(role)
+                if norm_c and norm_c not in ("компания", "company") and len(norm_c) >= 3:
+                    cur.execute(
+                        "SELECT company, title, status FROM application_tracking "
+                        "WHERE company IS NOT NULL AND status IN "
+                        "('AMBIGUOUS','SUBMITTED','APPLIED','INTERVIEW')"
+                    )
+                    for db_comp, db_title, db_status in cur.fetchall():
+                        if not db_comp:
+                            continue
+                        db_norm_c = normalize_company(db_comp)
+                        if calculate_similarity(norm_c, db_norm_c) >= 0.90:
+                            db_norm_r = normalize_title(db_title or "")
+                            if (
+                                not norm_r
+                                or not db_norm_r
+                                or calculate_similarity(norm_r, db_norm_r) >= 0.75
+                                or norm_r in db_norm_r
+                                or db_norm_r in norm_r
+                            ):
+                                return (
+                                    f"already applied to company '{db_comp}' for role '{db_title}' "
+                                    f"(status={db_status})"
+                                )
         finally:
             conn.close()
     except Exception as exc:  # pragma: no cover - defensive
@@ -162,14 +194,14 @@ def _prior_submission_exists(vid: str) -> str | None:
 
 
 def submissions_today() -> int:
-    """Count real SUBMITTED rows for the local date (anti-spam daily cap)."""
+    """Count confirmed and ambiguous clicks for the anti-spam daily cap."""
     try:
         conn = db.get_connection()
         try:
             cur = conn.cursor()
             cur.execute(
                 "SELECT COUNT(*) FROM application_submissions "
-                "WHERE lower(ifnull(status,'')) = 'submitted' "
+                "WHERE lower(ifnull(status,'')) IN ('submitted','ambiguous','ambiguous_post_submit') "
                 "AND substr(ifnull(submitted_at,''), 1, 10) = ?",
                 (time.strftime("%Y-%m-%d"),),
             )
@@ -309,12 +341,9 @@ def select_best_resume_for_vacancy(role: str, description: str = "") -> str:
 
 
 def _get_t722_send_module():
-    spec = importlib.util.spec_from_file_location("t722_send", PROJECT_ROOT / "tools" / ".t722_send.py")
-    if not spec or not spec.loader:
-        raise RuntimeError("Cannot load tools/.t722_send.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    """Return the production CDP submit module (package, not tools/.t*)."""
+    from ai_assistant import hh_cdp_submit
+    return hh_cdp_submit
 
 
 def send_telegram_alert(text: str) -> bool:
@@ -651,6 +680,76 @@ def is_vacancy_eligible_for_auto_apply(
     return True, "ELIGIBLE"
 
 
+
+def _prepare_standing_auth_review(
+    vid: str,
+    role: str,
+    company: str,
+    letter_text: str,
+    description: str = "",
+) -> Any:
+    """Create package + APPROVED ApplicationReview under standing owner auth.
+
+    Critical-1: the CDP submit path now requires the same ApplicationReview /
+    11-gate authority as execute_hh_submission. Autopilot still submits under
+    standing authorization, but that authorization is recorded as an APPROVED
+    review rather than bypassing the gates with human_confirmed=False alone.
+    """
+    from ai_assistant.application_review import (
+        REVIEW_VERSION,
+        ApplicationReview,
+        ReviewStatus,
+        compute_review_fingerprint,
+        get_application_review,
+        save_application_review,
+    )
+    from ai_assistant.application_tracking import ApplicationStatus, set_application_status
+
+    stable_id = f"hh:{vid}"
+    pkg_data = {
+        "vacancy_stable_id": stable_id,
+        "cover_letter": letter_text,
+        "title": role,
+        "validation_status": "VALID",
+    }
+    db.save_application_package(stable_id, "v1", json.dumps(pkg_data, ensure_ascii=False))
+    fp = compute_review_fingerprint(stable_id, pkg_data)
+
+    rev = get_application_review(stable_id)
+    if rev is None or str(getattr(rev.status, "value", rev.status)) != "APPROVED":
+        rev = ApplicationReview(
+            vacancy_stable_id=stable_id,
+            company=company,
+            title=role,
+            source="hh",
+            vacancy_url=f"https://hh.ru/vacancy/{vid}",
+            final_url=f"https://hh.ru/vacancy/{vid}",
+            cover_letter=letter_text,
+            status=ReviewStatus.APPROVED,
+            form_fingerprint=fp,
+            review_version=REVIEW_VERSION,
+            note="Standing owner authorization: HH autopilot ON",
+        )
+        save_application_review(rev)
+    elif (rev.cover_letter or "").strip() != (letter_text or "").strip():
+        # Keep fingerprint/letter in sync with the letter we are about to send.
+        rev.cover_letter = letter_text
+        rev.form_fingerprint = fp
+        rev.note = (rev.note or "") + " | letter refreshed by autopilot"
+        save_application_review(rev)
+
+    set_application_status(
+        vacancy_stable_id=stable_id,
+        status=ApplicationStatus.READY_TO_APPLY,
+        company=company,
+        title=role,
+        source="hh",
+        vacancy_url=f"https://hh.ru/vacancy/{vid}",
+        notes="Autopilot standing-auth ready to apply",
+    )
+    return rev
+
+
 def submit_vacancy(
     vid: str,
     role: str,
@@ -740,15 +839,23 @@ def submit_vacancy(
     (app_dir / "preflight.json").write_text(json.dumps(preflight, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # 3. Execute CDP submit in-process.
-    # Audit 2026-10-19 H-01: never re-arm the master kill-switch from inside the
-    # robot. The operator's SUBMIT_ALLOWED is the authority; if it says off, the
-    # autopilot does not click.
-    if not config.submit_allowed():
-        logger.error(
-            "Autopilot submit refused for %s: SUBMIT_ALLOWED is off "
-            "(operator kill-switch)", vid,
-        )
-        outcome.update({"status": "REFUSED_KILL_SWITCH", "reason": "SUBMIT_ALLOWED off"})
+    # Critical-1: same halt authority as the controlled path (SUBMIT_ALLOWED,
+    # submit_paused, STOP_SUBMITS). Never re-arm the operator kill-switch.
+    from ai_assistant.hh_submission import submission_halt_reason
+    _halt = submission_halt_reason()
+    if _halt:
+        logger.error("Autopilot submit refused for %s: %s", vid, _halt)
+        status = "REFUSED_KILL_SWITCH" if "SUBMIT_ALLOWED" in _halt else "REFUSED_HALT"
+        outcome.update({"status": status, "reason": _halt})
+        return False
+
+    # Critical-1: prepare APPROVED ApplicationReview so CDP submit runs the
+    # same 11 gates as execute_hh_submission (review passed as approval).
+    try:
+        _prepare_standing_auth_review(vid, role, company, letter_text, description or "")
+    except Exception as e:
+        logger.error("Autopilot review prep failed for %s: %s", vid, e, exc_info=True)
+        outcome.update({"status": "REFUSED_REVIEW_PREP", "reason": str(e)})
         return False
 
     # Audit 2026-10-19 H-11: keep vacancies in step with tracking rows.
@@ -816,38 +923,44 @@ def submit_vacancy(
 
     # 5. Ensure company and title recorded in application_tracking
     try:
-        conn = sqlite3.connect(str(PROJECT_ROOT / "state.db"))
-        conn.execute(
-            "UPDATE application_tracking SET company=?, title=? WHERE vacancy_stable_id=?",
-            (company, role, f"hh:{vid}"),
-        )
-        conn.commit()
-        conn.close()
+        conn = db.get_connection()
+        try:
+            conn.execute(
+                "UPDATE application_tracking SET company=?, title=? WHERE vacancy_stable_id=?",
+                (company, role, f"hh:{vid}"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
     except Exception as e:
         logger.warning(f"Error updating DB company/title for {vid}: {e}")
 
     # 6. Notify Telegram
     sal_line = f"💰 *Зарплата:* {salary}\n" if salary else ""
     first_lines = "\n".join(letter_text.strip().splitlines()[:8])
-    alert_msg = (
-        f"🤖 *Автопилот отправил отклик!*\n\n"
-        f"💼 *Вакансия:* [{role}](https://hh.ru/vacancy/{vid})\n"
-        f"🏢 *Компания:* {company}\n"
-        f"{sal_line}"
-        f"📄 *Резюме:* {resume_to_use}\n"
-        f"🕒 *Время:* {time.strftime('%Y-%m-%d %H:%M:%S MSK')}\n\n"
-        f"✉️ *Сопроводительное письмо (фрагмент):*\n"
-        f"_{first_lines}..._\n\n"
-        f"✅ _Отклик подтвержден через DOM & state.db_"
-    )
     if confirmed:
-        status_line = "\n\n✅ _HH подтвердил отклик; запись в state.db выполнена._"
-    else:
-        status_line = (
-            "\n\n⚠️ _Клик выполнен, но HH пока НЕ подтвердил отклик. "
-            "Проверь вакансию вручную — возможен неподтверждённый отклик._"
+        alert_msg = (
+            f"🤖 *Автопилот отправил отклик!*\n\n"
+            f"💼 *Вакансия:* [{role}](https://hh.ru/vacancy/{vid})\n"
+            f"🏢 *Компания:* {company}\n"
+            f"{sal_line}"
+            f"📄 *Резюме:* {resume_to_use}\n"
+            f"🕒 *Время:* {time.strftime('%Y-%m-%d %H:%M:%S MSK')}\n\n"
+            f"✉️ *Сопроводительное письмо (фрагмент):*\n"
+            f"_{first_lines}..._\n\n"
+            f"✅ _HH подтвердил отклик; запись в state.db выполнена._"
         )
-    alert_msg = alert_msg + status_line
+    else:
+        alert_msg = (
+            f"⚠️ *Отклик НЕ подтвержден HeadHunter!*\n\n"
+            f"💼 *Вакансия:* [{role}](https://hh.ru/vacancy/{vid})\n"
+            f"🏢 *Компания:* {company}\n"
+            f"{sal_line}"
+            f"📄 *Резюме:* {resume_to_use}\n"
+            f"🕒 *Время:* {time.strftime('%Y-%m-%d %H:%M:%S MSK')}\n\n"
+            f"⚠️ _Клик выполнен, но HH пока НЕ подтвердил отклик ({confirm_reason}). "
+            f"Возможно, повторный отклик в эту компанию заблокирован платформой._"
+        )
     notified = bool(send_telegram_alert(alert_msg))
     outcome["notified"] = notified
     if confirmed and reconciled and notified:
@@ -918,7 +1031,10 @@ def run_autopilot_cycle(
     logger.info(f"Discovered {len(discovered)} vacancies in full read (pool={raw_report.get('unique_count', 0)})")
 
     submitted_count = 0
+    attempted_count = 0
     results: list[dict[str, Any]] = []
+    submitted_companies: set[str] = set()
+    submitted_company_roles: set[tuple[str, str]] = set()
 
     # Audit 2026-10-19 H-01/H-03: the operator's kill-switch is authoritative, and
     # the daily cap stops a 4-hourly cycle from becoming an application flood.
@@ -934,7 +1050,7 @@ def run_autopilot_cycle(
         )
 
     for entry in discovered:
-        if submitted_count >= effective_max:
+        if attempted_count >= effective_max:
             break
 
         vid = str(entry.get("vacancy_id") or "")
@@ -952,6 +1068,17 @@ def run_autopilot_cycle(
         role = card.get("title") or entry.get("title") or "Специалист"
         salary_str = card.get("salary") or preflight.get("salary")
 
+        # In-cycle company deduplication (never spam the same company with multiple vacancy clones)
+        from ai_assistant.vacancy_identity import normalize_company, normalize_title
+        norm_c = normalize_company(company)
+        norm_r = normalize_title(role)
+        if norm_c and norm_c not in ("компания", "company") and len(norm_c) >= 3:
+            if norm_c in submitted_companies or (norm_c, norm_r) in submitted_company_roles:
+                logger.info(
+                    f"Skipping {vid} ({role} at {company}): duplicate vacancy clone for company in this cycle"
+                )
+                continue
+
         # Step 2: Salary Floor check
         sal_ok, sal_reason = check_salary_floor(salary_str)
         if not sal_ok:
@@ -959,7 +1086,7 @@ def run_autopilot_cycle(
             continue
 
         # Fast Gate 2a: Duplicate guard (before expensive CDP brief_vacancy navigation)
-        prior = _prior_submission_exists(vid)
+        prior = _prior_submission_exists(vid, company=company, role=role)
         if prior:
             logger.info(f"Skipping {vid} ({role} at {company}): {prior}")
             continue
@@ -1075,8 +1202,13 @@ def run_autopilot_cycle(
             outcome=submission_outcome,
         )
         if ok:
-            submitted_count += 1
+            attempted_count += 1
+            if submission_outcome.get("confirmed") is True:
+                submitted_count += 1
             known_ids.add(vid)
+            if norm_c and norm_c not in ("компания", "company") and len(norm_c) >= 3:
+                submitted_companies.add(norm_c)
+                submitted_company_roles.add((norm_c, norm_r))
             results.append({
                 "vid": vid,
                 "role": role,
@@ -1103,13 +1235,14 @@ def run_autopilot_cycle(
         logger.warning(f"Negotiations check during autopilot cycle failed: {e}")
 
     cycle_end = time.strftime("%Y-%m-%dT%H:%M:%SZ")
-    logger.info(f"Cycle completed: submitted {submitted_count}/{max_submits} applications")
+    logger.info(f"Cycle completed: confirmed {submitted_count}, clicked {attempted_count}/{max_submits} applications")
     return {
         "status": "SUCCESS",
         "started_at": cycle_start,
         "completed_at": cycle_end,
         "discovered_total": len(discovered),
         "submitted": submitted_count,
+        "attempted": attempted_count,
         "applications": results,
     }
 

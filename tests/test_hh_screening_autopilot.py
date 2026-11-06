@@ -54,8 +54,8 @@ def sample_kb():
 
 
 def test_t722_send_source_invariants():
-    """Verify tools/.t722_send.py retains exactly one _click_at site and expected flags."""
-    src = (REPO / "tools" / ".t722_send.py").read_text(encoding="utf-8")
+    """Verify ai_assistant/hh_cdp_submit.py retains exactly one _click_at site and expected flags."""
+    src = (REPO / "ai_assistant" / "hh_cdp_submit.py").read_text(encoding="utf-8")
     assert src.count("_click_at(") == 1, "Must maintain exactly one _click_at call site"
     assert "--prefill-json" in src, "Must support --prefill-json argument"
     assert "questions_prefilled" in src, "Must check questions_prefilled in _blockers"
@@ -64,7 +64,7 @@ def test_t722_send_source_invariants():
 def test_blockers_behavior_on_tests_and_questions():
     """Verify _blockers behavior with tests, questions, and prefilled state."""
     import importlib.util
-    spec = importlib.util.spec_from_file_location("t722_send", REPO / "tools" / ".t722_send.py")
+    spec = importlib.util.spec_from_file_location("t722_send", REPO / "ai_assistant" / "hh_cdp_submit.py")
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
