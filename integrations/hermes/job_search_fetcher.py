@@ -75,9 +75,28 @@ if _PROJECT_PY.is_file() and _canonical_path(sys.executable) != _canonical_path(
 
 try:
     from ai_assistant import config
-    TARGET_CHANNEL = getattr(config, "TELEGRAM_CHANNEL_ID", None) or os.getenv("TELEGRAM_CHANNEL_ID", "-1004399255305")
-except Exception:
-    TARGET_CHANNEL = os.getenv("TELEGRAM_CHANNEL_ID", "-1004399255305")
+except ImportError as exc:
+    config = None
+    print(f"[WARN] ai_assistant.config unavailable: {exc}", file=sys.stderr)
+
+
+def target_channel() -> str:
+    """Public digest channel from the environment. Empty when unset.
+
+    Never falls back to a hardcoded chat id. Send paths must treat empty as
+    fail-closed (see require_telegram_channel_id).
+    """
+    env = (os.getenv("TELEGRAM_CHANNEL_ID") or "").strip()
+    if env:
+        return env
+    if config is not None:
+        return (getattr(config, "TELEGRAM_CHANNEL_ID", "") or "").strip()
+    return ""
+
+
+# Import-time snapshot for readers that expect the name. Live sends call
+# target_channel() so a later environment change is honored.
+TARGET_CHANNEL = target_channel()
 VACANCIES_FILE = JOB_SEARCH_ROOT / "vacancies.json"
 
 
@@ -283,12 +302,20 @@ def send_to_telegram(text: str, reply_markup: dict = None) -> bool:
         print("[ERROR] TELEGRAM_BOT_TOKEN не найден", file=sys.stderr)
         return False
 
+    channel = target_channel()
+    if not channel:
+        print(
+            "[ERROR] TELEGRAM_CHANNEL_ID is not set; refusing to send the digest",
+            file=sys.stderr,
+        )
+        return False
+
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     headers = {"Content-Type": "application/json"}
 
     # 1. Try Markdown once.
     payload = {
-        "chat_id": TARGET_CHANNEL,
+        "chat_id": channel,
         "text": text,
         "parse_mode": "Markdown"
     }
@@ -316,7 +343,7 @@ def send_to_telegram(text: str, reply_markup: dict = None) -> bool:
 
     # 2. Single plain-text retry after confirmed formatting error.
     plain_payload = {
-        "chat_id": TARGET_CHANNEL,
+        "chat_id": channel,
         "text": text[:4000]
     }
     if reply_markup:
@@ -559,8 +586,16 @@ def _run_discovery_and_deliver(dry_run: bool) -> None:
         print("Нет валидных vacancy IDs для отправки.")
         return
 
+    channel = target_channel()
+    if not channel:
+        print(
+            "[ERROR] TELEGRAM_CHANNEL_ID is not set; refusing to send the digest",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     # 1. Durably record delivery attempt BEFORE external Telegram API side-effect (with atomic concurrency lock)
-    batch_key = record_digest_attempt(vacancy_ids, chat_id=TARGET_CHANNEL)
+    batch_key = record_digest_attempt(vacancy_ids, chat_id=channel)
     if not batch_key:
         print("[STAGE 81] Concurrency lock: Batch is already being attempted or completed by another worker. Exiting safely.")
         return
@@ -578,7 +613,7 @@ def _run_discovery_and_deliver(dry_run: bool) -> None:
     except Exception as send_err:
         print(f"[ERROR] Telegram transmission exception (no retry): {send_err}", file=sys.stderr)
         try:
-            record_digest_ambiguous(vacancy_ids, batch_key=batch_key, chat_id=TARGET_CHANNEL, reason=str(send_err))
+            record_digest_ambiguous(vacancy_ids, batch_key=batch_key, chat_id=channel, reason=str(send_err))
         except Exception:
             pass
         sys.exit(1)
@@ -587,19 +622,19 @@ def _run_discovery_and_deliver(dry_run: bool) -> None:
     if send_success:
         print("[SUCCESS] Вакансии успешно отправлены в Telegram @remotejobd.")
         try:
-            delivered_count = mark_digest_delivered(vacancy_ids, batch_key=batch_key, chat_id=TARGET_CHANNEL)
+            delivered_count = mark_digest_delivered(vacancy_ids, batch_key=batch_key, chat_id=channel)
             print(f"[SUCCESS] Atomically marked {delivered_count} vacancies as DELIVERED in state.db.")
         except Exception as mark_err:
             print(f"[CRITICAL] Telegram send succeeded but DB marking failed: {mark_err}", file=sys.stderr)
             try:
-                record_digest_ambiguous(vacancy_ids, batch_key=batch_key, chat_id=TARGET_CHANNEL, reason=f"DB mark failed after send: {mark_err}")
+                record_digest_ambiguous(vacancy_ids, batch_key=batch_key, chat_id=channel, reason=f"DB mark failed after send: {mark_err}")
             except Exception:
                 pass
             sys.exit(2)
     else:
         print("[ERROR] Confirmed failure during Telegram transmission.", file=sys.stderr)
         try:
-            record_digest_failed(vacancy_ids, batch_key=batch_key, chat_id=TARGET_CHANNEL, error="Telegram send_to_telegram returned False")
+            record_digest_failed(vacancy_ids, batch_key=batch_key, chat_id=channel, error="Telegram send_to_telegram returned False")
         except Exception as fail_err:
             print(f"[WARNING] Failed to record failure state in DB: {fail_err}", file=sys.stderr)
         sys.exit(1)

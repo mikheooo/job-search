@@ -56,34 +56,77 @@ DEFAULT_HH_URL = os.getenv("HH_URL", "https://hh.ru/chat")
 # port directly.
 _NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-# Probing budget for resolve_cdp_url(). Short enough to stay off the hot path,
-# long enough that a busy Chrome is not mistaken for a dead one.
+# Probing budget for the opt-in non-production fallback. Short enough to stay
+# off the hot path, long enough that a busy Chrome is not mistaken for a dead one.
 _RESOLVE_PROBE_TIMEOUT = 0.5
 _RESOLVE_PROBE_RETRY_TIMEOUT = 2.0
+
+_CDP_FALLBACK_ENV = "HH_CDP_ALLOW_FALLBACK"
+_NONPROD_ENV_VALUES = frozenset({"dev", "development", "test", "testing", "local", "ci"})
+
+
+class CdpUrlRequired(RuntimeError):
+    """No explicit CDP endpoint, and port/profile hopping is not allowed."""
+
+
+def _env_flag(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes"}
+
+
+def _clearly_nonprod() -> bool:
+    """True only when this process is obviously not a production run.
+
+    Pytest, an explicit non-prod HH_CDP_NONPROD flag, or JOB_SEARCH_ENV / APP_ENV
+    / ENV set to dev/test/local/ci. Unset means production: do not hop.
+    """
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return True
+    if _env_flag("HH_CDP_NONPROD"):
+        return True
+    for key in ("JOB_SEARCH_ENV", "APP_ENV", "ENV"):
+        if (os.getenv(key) or "").strip().lower() in _NONPROD_ENV_VALUES:
+            return True
+    return False
+
+
+def _cdp_port_fallback_allowed(allow_browseros: bool) -> bool:
+    """Hop only when the caller asks, the operator opts in, and this is not prod."""
+    return bool(allow_browseros) and _env_flag(_CDP_FALLBACK_ENV) and _clearly_nonprod()
 
 
 def resolve_cdp_url(preferred: str | None = None, allow_browseros: bool = True) -> str:
     """Single source of truth for "which browser are we driving".
 
-    Deterministic part (no I/O): explicit argument -> CDP_URL -> HH_CDP_URL ->
-    DEFAULT_HH_CDP_URL. An argument or env var that merely repeats the default
-    is not treated as a decision (it is usually a default passed through), but
-    any *other* value is binding and stops the probing below.
+    Deterministic part (no I/O): explicit argument -> CDP_URL -> HH_CDP_URL.
+    An argument that merely repeats the default port is not a decision (callers
+    pass it through), but any *other* value is binding and stops the probing
+    below. A pinned env var is also binding, including when it names the default
+    port: that is the operator saying "use this endpoint", not silence.
 
-    The BrowserOS probe only runs when nothing was configured at all, and it is
-    always logged: swapping browsers means swapping profiles, and a profile
-    without an hh.ru session reads a completely different (logged-out) form.
+    When nothing is pinned, production does not guess a port and does not hop
+    to another profile. The BrowserOS probe runs only as an opt-in fallback
+    (HH_CDP_ALLOW_FALLBACK=1) and only when the process is clearly non-production.
+    Swapping browsers means swapping profiles.
     """
     explicit = preferred if preferred and preferred != DEFAULT_HH_CDP_URL else None
-    env_cdp = os.getenv("CDP_URL") or os.getenv("HH_CDP_URL")
+    env_cdp = (os.getenv("CDP_URL") or "").strip() or (os.getenv("HH_CDP_URL") or "").strip()
     if explicit or env_cdp:
         return explicit or env_cdp
-    if not allow_browseros:
+    # Caller named the historical default port in code. Stay there; do not hop.
+    if preferred == DEFAULT_HH_CDP_URL:
         return DEFAULT_HH_CDP_URL
-    # Finding #13: hop only when 9222 is *definitively* gone. A timeout just
-    # means Chrome is busy, and hopping swaps profiles - which usually costs us
-    # the hh.ru session. Give it a second, generous deadline before believing
-    # the browser is really not there.
+    if not _cdp_port_fallback_allowed(allow_browseros):
+        logger.error(
+            "HH_CDP_URL is not set; refusing to guess a CDP port or hop browser "
+            "profiles. Set HH_CDP_URL or CDP_URL. Port fallback requires "
+            "%s=1 and a non-production environment.",
+            _CDP_FALLBACK_ENV,
+        )
+        raise CdpUrlRequired(
+            "HH_CDP_URL (or CDP_URL) is required; refusing to auto-select a CDP port"
+        )
+    # Opt-in, non-prod only. Hop only when 9222 is *definitively* gone. A
+    # timeout means Chrome is busy, and hopping swaps profiles.
     state = probe_cdp(DEFAULT_HH_CDP_URL, timeout=_RESOLVE_PROBE_TIMEOUT)
     if state == CDP_TIMEOUT:
         state = probe_cdp(DEFAULT_HH_CDP_URL, timeout=_RESOLVE_PROBE_RETRY_TIMEOUT)
@@ -349,11 +392,10 @@ def ensure_hh_browser(
             check_session=check_session,
         )
 
-    cdp_url = cdp_url or DEFAULT_HH_CDP_URL
     resolved_profile = profile_dir or DEFAULT_HH_PROFILE_DIR
     result: dict[str, Any] = {
         "ok": False,
-        "cdp_url": cdp_url,
+        "cdp_url": cdp_url or "",
         "reused": False,
         "pid": None,
         "profile_dir": resolved_profile,
@@ -363,15 +405,16 @@ def ensure_hh_browser(
         "error": None,
     }
 
-    # The browser is already chosen by the branch above, so this is the
-    # historical resolver with its historical semantics: HH_CDP_URL / CDP_URL,
-    # else 9222, and the logged hop to BrowserOS when nothing is pinned. The
-    # mode-aware wrapper (resolve_browser_endpoint) is for callers that have not
-    # decided yet - here the decision has been made.
-    resolved = resolve_cdp_url(cdp_url, allow_browseros=True)
-    if resolved != cdp_url:
-        cdp_url = resolved
-        result["cdp_url"] = cdp_url
+    # BrowserOS / explicit-endpoint path. Do not invent 9222 when the caller
+    # passed nothing and HH_CDP_URL is unset. An explicit URL, including the
+    # historical 9222, stays put and does not hop.
+    try:
+        resolved = resolve_cdp_url(cdp_url, allow_browseros=True)
+    except CdpUrlRequired as exc:
+        result["error"] = str(exc)
+        return result
+    cdp_url = resolved
+    result["cdp_url"] = cdp_url
 
     # Step 1: Check if already reachable
     if is_cdp_reachable(cdp_url):

@@ -94,18 +94,23 @@ class TestProductionSources:
 
 
 class TestTelegramRoutingConfig:
-    def test_channel_id_configured(self):
-        assert getattr(config, "TELEGRAM_CHANNEL_ID", None) == "-1004399255305"
-        assert config.TELEGRAM_CHAT_ID == "392046103"
-        assert config.TELEGRAM_OWNER_ID == "392046103"
+    def test_channel_id_comes_from_env_only(self):
+        import os
+        expected = (os.getenv("TELEGRAM_CHANNEL_ID") or "").strip()
+        assert config.TELEGRAM_CHANNEL_ID == expected
+        # The historical public-channel id is not a default anymore.
+        if not expected:
+            assert config.TELEGRAM_CHANNEL_ID == ""
 
     def test_fetcher_targets_channel(self):
+        import os
         import integrations.hermes.job_search_fetcher as jsf
-        assert jsf.TARGET_CHANNEL == "-1004399255305"
+        assert jsf.target_channel() == (os.getenv("TELEGRAM_CHANNEL_ID") or "").strip()
 
     def test_discovery_targets_channel(self):
+        import os
         import scripts.run_multi_source_discovery as msd
-        assert msd.TELEGRAM_CHANNEL_ID == "-1004399255305"
+        assert msd.configured_channel_id() == (os.getenv("TELEGRAM_CHANNEL_ID") or "").strip()
 
 
 class TestAutoReplyFlagsAndGates:

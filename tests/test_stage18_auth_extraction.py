@@ -149,7 +149,7 @@ def test_storage_state_passed_to_context(monkeypatch):
     recorder = {}
     import playwright.sync_api as papi
     monkeypatch.setattr(papi, "sync_playwright", lambda: _FakePW(recorder))
-    adapter = be.PlaywrightBrowserAdapter(headless=True, storage_state="C:/tmp/ss.json")
+    adapter = be.PlaywrightBrowserAdapter(headless=True, storage_state="C:/tmp/ss.json", cdp_url="http://127.0.0.1:9222")
     adapter.open("https://hh.ru/vacancy/1")
     assert recorder["context_kwargs"].get("storage_state") == "C:/tmp/ss.json"
     adapter.close()
@@ -159,7 +159,7 @@ def test_no_storage_state_no_context_kwarg(monkeypatch):
     recorder = {}
     import playwright.sync_api as papi
     monkeypatch.setattr(papi, "sync_playwright", lambda: _FakePW(recorder))
-    adapter = be.PlaywrightBrowserAdapter(headless=True)
+    adapter = be.PlaywrightBrowserAdapter(headless=True, cdp_url="http://127.0.0.1:9222")
     adapter.open("https://hh.ru/vacancy/1")
     assert "storage_state" not in recorder["context_kwargs"]
     adapter.close()
@@ -205,7 +205,7 @@ def test_missing_storage_state_file_blocks_gracefully(monkeypatch):
     missing = os.path.join(tempfile.gettempdir(), "definitely_missing_hh_session.json")
     if os.path.exists(missing):
         os.remove(missing)
-    adapter = be.PlaywrightBrowserAdapter(headless=True, storage_state=missing)
+    adapter = be.PlaywrightBrowserAdapter(headless=True, storage_state=missing, cdp_url="http://127.0.0.1:9222")
     res = adapter.open("https://hh.ru/vacancy/1")
     assert res.get("blocked") is True
     assert "No such file or directory" in str(res.get("reason"))

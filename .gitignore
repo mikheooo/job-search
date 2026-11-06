@@ -198,3 +198,17 @@ portfolio_site/
 # The state.db backup is a local safety net, never a versioned artifact. It is
 # already matched by `*.bak*`; named explicitly so the intent is greppable.
 state.db.bak
+
+# job_search.db is not the canonical store. The live database is state.db
+# (or DB_FILE). A zero-byte job_search.db has shown up as scratch next to the
+# repo root; `*.db` already ignores it. Named here so it is not mistaken for
+# state and so a copy is quarantined under artifacts/tmp/ instead of being
+# opened or committed. Do not delete other tracked files to "clean" the root.
+job_search.db
+
+# Scratch moved off the repo root (probe dumps, quarantined zero-byte DBs).
+# The directory has to be re-included before the note, same as other artifact
+# exceptions above. Everything else in the directory stays ignored.
+!artifacts/tmp/
+artifacts/tmp/*
+!artifacts/tmp/README.md

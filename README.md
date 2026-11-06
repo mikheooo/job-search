@@ -61,7 +61,7 @@ collectors (adapters/*, linkedin, wellfound_scraper)
 
 | Stage | Focus | Key modules / outcome |
 |-------|-------|----------------------|
-| 1-3 | MVP pipeline (legacy) | collect -> prefilter -> LLM -> Telegram; `pipeline.py`/`core.py`/`bot.py` legacy, not in current flow |
+| 1-3 | MVP pipeline (legacy) | collect -> prefilter -> LLM -> Telegram; `pipeline.py`/`core.py`/`bot.py` legacy. Live poller is `telegram_control_bot.py`. |
 | 4-9 | Collectors & scoring | adapters, normalizer, prefilter, matcher, deep analysis |
 | 10-12 | Application lifecycle | queue, review, prep |
 | 13-14 | Browser + identity | browser_executor, canonical identity, submission verifier/recovery |
@@ -96,9 +96,33 @@ HH form submission is protected by 11 fail-closed gates (unified execution via `
 
 ```bash
 python -m venv .venv && .venv\Scripts\activate   # Windows
-pip install -r requirements.txt -r requirements-dev.txt
-playwright install chromium
+pip install -r requirements.txt                  # core, major versions pinned
+pip install -r requirements-dev.txt              # optional [browser] and [gmail]
+playwright install chromium                      # only if the browser extra is installed
 ```
+
+Core dependencies are pinned to a major line (`package>=N,<N+1`) in
+`requirements.txt`. Playwright is the `[browser]` extra
+(`requirements-browser.txt` or `pip install -e ".[browser]"`). Gmail read-only
+is the `[gmail]` extra (`google-auth` and `google-api-python-client`).
+
+### Telegram pollers
+
+One process should long-poll the jobs bot:
+
+```bash
+python -m ai_assistant.telegram_control_bot
+```
+
+That module is the live control room (`@jobsassistbot`) started by
+`scripts/run_telegram_control_bot_silent.vbs`. The other two surfaces are not
+pollers:
+
+| Module | Role |
+|--------|------|
+| `ai_assistant.telegram_control_bot` | Recommended poller. Do not replace it with another loop on the same token. |
+| `ai_assistant.telegram_bot.TelegramBot` | Read-only `/status` and feedback helper. Import it; do not run it as a poller. |
+| `ai_assistant.bot` | Legacy callback script. Disabled unless `LEGACY_BOT_OVERRIDE=1`. |
 
 Configuration lives in `ai_assistant/.env` (or environment):
 

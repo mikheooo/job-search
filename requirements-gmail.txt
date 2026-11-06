@@ -1,0 +1,4 @@
+# Optional extra [gmail]. Does not repeat the core set.
+#   pip install -r requirements.txt -r requirements-gmail.txt
+google-auth>=2,<3
+google-api-python-client>=2,<3

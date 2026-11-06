@@ -1,21 +1,24 @@
 # job-search — Python dependencies
-# Derived from actual imports (Stage 30A inventory). Versions intentionally
-# unpinned: any recent stable release works. Install: pip install -r requirements.txt
+# Major versions are pinned (lower bound of the current line, exclude the next
+# major). Install the core set with:
+#   pip install -r requirements.txt
+#
+# Optional extras, same pins as pyproject [project.optional-dependencies]:
+#   pip install -r requirements-browser.txt    # playwright
+#   pip install -r requirements-gmail.txt      # google-auth + gmail client
+#   pip install -e ".[browser,gmail]"          # once this repo is installed
+# Tests and both extras:
+#   pip install -r requirements.txt -r requirements-dev.txt
 
 # === CORE (required at runtime) ===
-pydantic>=2            # data models across all modules (schema, packages, gates, reports)
-requests               # collectors (himalayas, remoteok, linkedin, wellfound), core Telegram
-openai                 # LLM layer (job_analyzer, application_prep, outreach_note)
-websockets             # raw-CDP transport for prefill_execute (make_cdp_evaluate)
-python-dotenv          # config.py env loading
-feedparser             # RSS collectors (weworkremotely, habrcareer)
-fastapi                # web dashboard API
-uvicorn                # web server
+pydantic>=2,<3            # data models across all modules (schema, packages, gates, reports)
+requests>=2,<3            # collectors (himalayas, remoteok, linkedin, wellfound), core Telegram
+openai>=1,<4              # LLM client (OpenAI() chat completions; 1.x through current 3.x)
+websockets>=12,<18        # raw-CDP transport for prefill_execute (make_cdp_evaluate)
+python-dotenv>=1,<2       # config.py env loading
+feedparser>=6,<7          # RSS collectors (weworkremotely, habrcareer)
+fastapi>=0.110,<1         # web dashboard API (still 0.x; block a future 1.0 break)
+uvicorn>=0.30,<1          # web server
 
-# === OPTIONAL / INTEGRATIONS (feature-gated; uncomment when the feature is used) ===
-# playwright           # live browser automation (browser_executor, wellfound_scraper, tools/)
-# google-auth          # Gmail read-only connector (Stage 28/29), Application Default Credentials
-# google-api-python-client  # Gmail API client (Stage 28/29)
-
-# === DEV / TEST ===
-pytest                 # test suite
+# === DEV / TEST (also installed by requirements.txt so a single file still runs pytest) ===
+pytest>=8,<10

@@ -2,16 +2,37 @@ import argparse
 import hashlib
 import json
 import logging
+import os
+import sys
 
 from . import config, core, db, prefilter
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Legacy entry. The production path is `python -m ai_assistant.cli`. This module
+# still imports, but it will not scan, notify, or call the LLM unless
+# LEGACY_PIPELINE_OVERRIDE is explicitly set.
+def _legacy_pipeline_enabled() -> bool:
+    return os.environ.get("LEGACY_PIPELINE_OVERRIDE", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _refuse_legacy_pipeline() -> None:
+    print(
+        "[SAFETY LOCKOUT] 'ai_assistant.pipeline' is a legacy entry and is disabled.\n"
+        "It is not a production runner. Use:\n"
+        "  python -m ai_assistant.cli production-run\n"
+        "Set LEGACY_PIPELINE_OVERRIDE=1 only to inspect this old path deliberately.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 
 def get_content_hash(title: str, description: str, salary: str) -> str:
     content = f"{title}|{description}|{salary}".encode('utf-8')
     return hashlib.sha256(content).hexdigest()
 
 def run_pipeline(dry_run: bool = False):
+    if not _legacy_pipeline_enabled():
+        _refuse_legacy_pipeline()
     logging.info(f"Starting pipeline. Dry run: {dry_run}")
     db.init_db()
     
@@ -87,8 +108,10 @@ def run_pipeline(dry_run: bool = False):
     logging.info("=================================")
 
 if __name__ == "__main__":
+    if not _legacy_pipeline_enabled():
+        _refuse_legacy_pipeline()
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    
+
     run_pipeline(dry_run=args.dry_run)

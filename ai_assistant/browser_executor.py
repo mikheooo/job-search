@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import urllib.error
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -15,6 +16,11 @@ if TYPE_CHECKING:
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+
+
+def _note_failure(where: str, exc: BaseException, *, level: int = logging.DEBUG) -> None:
+    """Record a swallowed browser error. Silence on submit/prefill/close is not allowed."""
+    logger.log(level, "%s failed: %s: %s", where, type(exc).__name__, exc)
 
 from .candidate_profile import CandidateProfile, load_candidate_profile
 from .db import get_connection, init_db
@@ -1065,8 +1071,8 @@ class CDPBrowserAdapter(BrowserAdapter):
                 from .hh_browser_launcher import _NO_PROXY_OPENER
 
                 _NO_PROXY_OPENER.open(f"{self.cdp_url}/json/close/{self.tab_id}", timeout=5)
-            except Exception:
-                pass
+            except (OSError, TimeoutError, urllib.error.URLError) as exc:
+                _note_failure(f"CDP tab close {self.tab_id}", exc)
             self.tab_id = None
 
     def get_current_url(self) -> str:
@@ -1435,8 +1441,8 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
             if self.page:
                 self.page.fill(selector, value, timeout=5000)
                 return True
-        except Exception:
-            pass
+        except Exception as exc:
+            _note_failure(f"fill_field {selector}", exc, level=logging.WARNING)
         return False
 
     def upload_file(self, selector: str, path: str) -> bool:
@@ -1444,8 +1450,8 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
             if self.page:
                 self.page.set_input_files(selector, path, timeout=5000)
                 return True
-        except Exception:
-            pass
+        except Exception as exc:
+            _note_failure(f"upload_file {selector}", exc, level=logging.WARNING)
         return False
 
     def screenshot(self, path: str) -> str | None:
@@ -1454,32 +1460,32 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
                 Path(path).parent.mkdir(parents=True, exist_ok=True)
                 self.page.screenshot(path=path)
                 return path
-        except Exception:
-            pass
+        except Exception as exc:
+            _note_failure(f"screenshot {path}", exc)
         return None
 
     def close(self) -> None:
         try:
             if self.page:
                 self.page.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            _note_failure("playwright page close", exc)
         if not self._is_cdp:
             try:
                 if self.context:
                     self.context.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                _note_failure("playwright context close", exc)
             try:
                 if self.browser:
                     self.browser.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                _note_failure("playwright browser close", exc)
         try:
             if self.play:
                 self.play.stop()
-        except Exception:
-            pass
+        except Exception as exc:
+            _note_failure("playwright stop", exc)
 
     def get_current_url(self) -> str:
         return self._final_url or ""
@@ -1513,8 +1519,9 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
             # Wait for navigation or response
             try:
                 self.page.wait_for_load_state("networkidle", timeout=10000)
-            except Exception:
-                pass  # Some submissions don't navigate
+            except Exception as exc:
+                # Some submissions don't navigate. The miss is still recorded.
+                _note_failure("submit wait_for_load_state", exc)
             
             # Take after screenshot
             after_path = f"artifacts/browser/{self._final_url.replace('://', '_').replace('/', '_').replace(':', '_')}_after_submit.png"
@@ -1666,8 +1673,8 @@ def _get_profile_value_truth(field: str, profile: CandidateProfile, resume_text:
                     if parsed.netloc:
                         domain = parsed.netloc.lower()
                         break
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _note_failure("prefill phone url parse", exc)
 
         is_ru = (
             source in ("hh", "habrcareer")
@@ -1852,8 +1859,8 @@ def extract_form_for_vacancy(
     finally:
         try:
             use_adapter.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            _note_failure("close after form extraction", exc)
 
 def save_browser_session(session: BrowserApplicationSession) -> None:
     init_db()
@@ -2106,6 +2113,9 @@ def prepare_application_in_browser(
             try:
                 use_adapter = PlaywrightBrowserAdapter(headless=True)
             except Exception as e:
+                from .hh_browser_launcher import CdpUrlRequired
+                if isinstance(e, CdpUrlRequired):
+                    raise
                 logging.warning(f"Playwright not available, fallback to Mock: {e}")
                 use_adapter = MockBrowserAdapter()
         else:
@@ -2130,8 +2140,8 @@ def prepare_application_in_browser(
             _sp = use_adapter.screenshot(_tmp_path)
             if _sp:
                 screenshot_path = _sp
-        except Exception:
-            pass
+        except Exception as exc:
+            _note_failure("prefill diagnostic screenshot", exc)
         # Check blocked
         if open_res.get("blocked"):
             warnings.append(f"Blocked: {open_res.get('reason', 'login/captcha/cloudflare')}")
@@ -2189,8 +2199,8 @@ def prepare_application_in_browser(
                         try:
                             # Use generic selector; mock will succeed
                             use_adapter.fill_field(f"input[name='{f}']", val)
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            _note_failure(f"prefill {f}", exc, level=logging.WARNING)
                 # Resume upload
                 resume_path = _get_profile_value("resume", profile, resume_text, vac, pkg)
                 if resume_path and "resume" in fields_detected:
@@ -2206,8 +2216,8 @@ def prepare_application_in_browser(
                         use_adapter.fill_field("textarea[name='cover_letter']", pkg.cover_letter[:2000])
                         if "cover_letter" not in fields_filled:
                             fields_filled.append("cover_letter")
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _note_failure("prefill cover_letter", exc, level=logging.WARNING)
                 # Screenshot
                 try:
                     screenshot_path = f"artifacts/browser/{vacancy_stable_id.replace(':', '_')}.png"
@@ -2260,8 +2270,8 @@ def prepare_application_in_browser(
     finally:
         try:
             use_adapter.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            _note_failure("close after prefill", exc)
 
     # Flow classification
     flow_class = classify_apply_flow(
@@ -2537,12 +2547,22 @@ def submit_application_in_browser(
 
     # Path A: If HeadHunter, route strictly through unified execute_hh_submission (Stage 41 / Remediation Phase 1.5)
     if vacancy_stable_id.startswith("hh:"):
-        from .hh_browser_launcher import is_cdp_reachable, resolve_cdp_url
+        from .hh_browser_launcher import CdpUrlRequired, is_cdp_reachable, resolve_cdp_url
 
         if adapter is None:
-            # Resolve the same way the launcher does, otherwise a live BrowserOS
-            # on 9110 is invisible here and every submit blocks on a dead 9222.
-            resolved_cdp = resolve_cdp_url()
+            # Same resolver as the launcher. No port hop unless the operator
+            # opted in outside production; a missing HH_CDP_URL blocks the submit.
+            try:
+                resolved_cdp = resolve_cdp_url()
+            except CdpUrlRequired as exc:
+                return SubmitResult(
+                    vacancy_stable_id=vacancy_stable_id,
+                    submission_id=submission_id,
+                    status="BLOCKED",
+                    error=str(exc),
+                    executor_version="v1",
+                    submit_count=0,
+                )
             if not is_cdp_reachable(resolved_cdp):
                 return SubmitResult(
                     vacancy_stable_id=vacancy_stable_id,
@@ -2739,8 +2759,8 @@ def submit_application_in_browser(
     try:
         from .application_queue import get_queue_item
         q_item = get_queue_item(vacancy_stable_id)
-    except Exception:
-        pass
+    except Exception as exc:
+        _note_failure(f"queue lookup {vacancy_stable_id}", exc, level=logging.WARNING)
     if not q_item:
         return SubmitResult(
             vacancy_stable_id=vacancy_stable_id,
@@ -2794,6 +2814,9 @@ def submit_application_in_browser(
             try:
                 use_adapter = PlaywrightBrowserAdapter(headless=True)
             except Exception as e:
+                from .hh_browser_launcher import CdpUrlRequired
+                if isinstance(e, CdpUrlRequired):
+                    raise
                 logging.warning(f"Playwright not available, fallback to Mock: {e}")
                 use_adapter = MockBrowserAdapter()
         else:
@@ -2806,6 +2829,9 @@ def submit_application_in_browser(
             try:
                 use_adapter = PlaywrightBrowserAdapter(headless=True)
             except Exception as e:
+                from .hh_browser_launcher import CdpUrlRequired
+                if isinstance(e, CdpUrlRequired):
+                    raise
                 logging.warning(f"Playwright not available, fallback to Mock: {e}")
                 use_adapter = MockBrowserAdapter()
         else:
@@ -2819,8 +2845,8 @@ def submit_application_in_browser(
         sp = use_adapter.screenshot(before_path)
         if sp:
             before_screenshot = before_path
-    except Exception:
-        pass
+    except Exception as exc:
+        _note_failure("before-submit screenshot", exc)
 
     # Open the vacancy URL
     open_res = use_adapter.open(url)
@@ -2951,8 +2977,8 @@ def submit_application_in_browser(
         sp = use_adapter.screenshot(after_path)
         if sp:
             after_screenshot = after_path
-    except Exception:
-        pass
+    except Exception as exc:
+        _note_failure("pre-submit screenshot", exc)
 
     # Submit
     try:
@@ -2975,8 +3001,8 @@ def submit_application_in_browser(
         sp = use_adapter.screenshot(after_path)
         if sp:
             after_screenshot = after_path
-    except Exception:
-        pass
+    except Exception as exc:
+        _note_failure("after-submit screenshot", exc)
 
     # Check result
     if not submit_result.get("success"):
@@ -3031,8 +3057,12 @@ def submit_application_in_browser(
     try:
         from .application_tracking import ApplicationStatus, transition_application
         transition_application(vacancy_stable_id, ApplicationStatus.SUBMITTED, note="Submitted via browser executor")
-    except Exception:
-        pass
+    except Exception as exc:
+        _note_failure(
+            f"tracking transition SUBMITTED {vacancy_stable_id}",
+            exc,
+            level=logging.ERROR,
+        )
 
     # Update result with final status - DO NOT transition to APPLIED yet
     # APPLIED only after verification confirms success
@@ -3179,8 +3209,8 @@ def audit_apply_flow_for_vacancy(
     finally:
         try:
             use_adapter.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            _note_failure("close after apply-flow audit", exc)
 
     classification = classify_apply_flow(
         source_url=source_url,

@@ -208,16 +208,19 @@ def test_e_single_hh_reply_owner(monkeypatch):
 # Test F: Telegram Separation
 # ------------------------------------------------------------------------------
 def test_f_telegram_separation(monkeypatch):
-    """Personal alerts and public digest use strictly separate channels and formats."""
+    """Personal alerts and the public digest channel are different destinations."""
+    import importlib
+
     from ai_assistant.telegram_notifier import TelegramNotifier
-    
-    sys.path.insert(0, r"C:\Users\Misha\AppData\Local\hermes\profiles\jobs\scripts")
-    import job_search_fetcher as jsf
-    assert jsf.TARGET_CHANNEL == "-1004399255305", "Public digest target must be channel @remotejobd"
+    import integrations.hermes.job_search_fetcher as jsf
+
+    monkeypatch.setenv("TELEGRAM_CHANNEL_ID", "-100111222")
+    importlib.reload(jsf)
+    assert jsf.target_channel() == "-100111222"
 
     personal_notifier = TelegramNotifier(bot_token="test_token", chat_id="999888777")
     assert personal_notifier.chat_id == "999888777", "Personal alerts must target individual user chat ID"
-    assert personal_notifier.chat_id != jsf.TARGET_CHANNEL
+    assert personal_notifier.chat_id != jsf.target_channel()
 
 
 # ------------------------------------------------------------------------------

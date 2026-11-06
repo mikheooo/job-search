@@ -28,6 +28,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from ai_assistant.hh_browser_provider import HeadlessBrowserSession  # noqa: E402
+from ai_assistant.hh_cdp_submit import BRIEF_JS as _BRIEF_JS  # noqa: E402
 
 OUT = REPO / "artifacts" / "headless-poc"
 WORK = REPO / "tools" / ".t722"
@@ -84,63 +85,8 @@ _CARDS_JS = """(() => {
   });
 })()"""
 
-# Compact brief. The vacancy object lives at vacancyView.vacancyFull.vacancy;
+# Compact brief lives in ai_assistant.hh_cdp_submit.BRIEF_JS (imported above).
 # vacancyView.vacancy does not exist (measured 2026-09-28, T7.21).
-_BRIEF_JS = """(() => {
-  try {
-    const vid = '__VID__';
-    const t = document.getElementById('HH-Lux-InitialState');
-    let st = null, err = null;
-    if (t) { try { st = JSON.parse(t.innerHTML); } catch (e) { err = String(e); } }
-    const vf = (st && st.vacancyView && st.vacancyView.vacancyFull) || {};
-    const v = vf.vacancy || {};
-    const s = (st && st.applicantVacancyResponseStatuses || {})[vid] || {};
-    const sv = s.shortVacancy || {};
-    const txt = sel => { const e = document.querySelector(sel); return e ? e.innerText.trim() : ''; };
-    const again = document.querySelector('[data-qa="vacancy-response-link-top-again"]');
-    const viewTopic = document.querySelector('[data-qa="vacancy-response-link-view-topic"]');
-    return JSON.stringify({
-      ok: !!v.name,
-      state_error: err,
-      url: location.href,
-      name: v.name, id: v.id === undefined ? null : String(v.id),
-      employer: v.employer ? {id: v.employer.id, name: v.employer.name,
-        accredited: v.employer.accreditedItEmployer, trusted: v.employer.trusted} : null,
-      area: v.area ? {id: v.area.id, name: v.area.name, iso: v.area.countryIsoCode} : null,
-      address: v.address ? v.address.displayName : null,
-      compensation: v.compensation || null,
-      employment: v.employment, employmentForm: v.employmentForm,
-      workSchedule: v.workSchedule, workFormat: v.workFormat, workFormats: v.workFormats,
-      workingHours: v.workingHours,
-      experience: v.experience || null,
-      archived: v.archived, status: v.status, closedForApplicants: v.closedForApplicants,
-      validTo: v.validTo, creationTime: v.creationTime,
-      responseLetterRequired: v.responseLetterRequired,
-      hasTest: v.hasTest, test: v.test, questions: v.questions,
-      counters: v.counters, responseCounters: v.responseCounters,
-      dom_title: txt('[data-qa="vacancy-title"]'),
-      dom_company: txt('[data-qa="vacancy-company-name"]'),
-      dom_salary: txt('[data-qa="vacancy-salary"]'),
-      dom_already_responded: !!(again || viewTopic),
-      applicant: {
-        alreadyApplied: s.alreadyApplied,
-        responseAllowed: s.by_country_applicant_visibility
-          ? s.by_country_applicant_visibility.responseAllowed : null,
-        responseImpossible: s.responseImpossible,
-        usedResumeIds: s.usedResumeIds, unusedResumeIds: s.unusedResumeIds,
-        hiddenResumeIds: s.hiddenResumeIds,
-        letterMaxLength: s.letterMaxLength,
-        negotiations_total: (s.negotiations || {}).total,
-        test: s.test,
-        shortVacancy_workSchedule: sv['@workSchedule'],
-        shortVacancy_letterRequired: sv['@responseLetterRequired'],
-        shortVacancy_acceptLaborContract: sv.acceptLaborContract,
-        shortVacancy_acceptIncomplete: sv.acceptIncompleteResumes,
-      },
-      description: v.description || ''
-    });
-  } catch (e) { return JSON.stringify({ok: false, fatal: String(e && e.message || e)}); }
-})()"""
 
 # Mouse probe: the letter toggle only. Opens a textarea; reaches no submit button.
 _TOGGLE_JS = """(() => {
