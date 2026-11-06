@@ -1,0 +1,1004 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job Search Hub — вакансии и заказы</title>
+<style>
+:root { color-scheme: light dark; }
+body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  margin: 0; padding: 0 12px 40px; max-width: 1100px; margin-left: auto; margin-right: auto; }
+header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  padding: 12px 0; border-bottom: 1px solid #8884; }
+header h1 { font-size: 1.2rem; margin: 0 12px 0 0; }
+nav button { padding: 8px 12px; border: 1px solid #8886; border-radius: 8px;
+  background: transparent; cursor: pointer; font-size: 0.95rem; }
+nav button.active { background: #2f6fed; color: #fff; border-color: #2f6fed; }
+section.tab { display: none; padding-top: 12px; }
+section.tab.active { display: block; }
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #8883;
+  vertical-align: top; }
+tr:hover td { background: #8881; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 10px;
+  border: 1px solid #8886; font-size: 0.78rem; white-space: nowrap; }
+.btn { padding: 4px 10px; border-radius: 6px; border: 1px solid #8886;
+  background: transparent; cursor: pointer; font-size: 0.85rem; }
+.btn.primary { background: #2f6fed; color: #fff; border-color: #2f6fed; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.card { border: 1px solid #8884; border-radius: 10px; padding: 10px 12px; }
+.card b { font-size: 1.3rem; }
+.muted { opacity: 0.65; font-size: 0.85rem; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; align-items: center; }
+.toolbar select, .toolbar input { padding: 6px 8px; border-radius: 6px; border: 1px solid #8886; }
+#tokenbar { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+#tokenbar input { width: 130px; }
+.rec-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+  background: #d33; margin-right: 6px; vertical-align: baseline; }
+.rec-dot.on { animation: recpulse 1s infinite; }
+@keyframes recpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+.btn.armed { border-color: #d33; }
+.level { display: inline-block; width: 120px; height: 8px; background: #8883;
+  border-radius: 4px; overflow: hidden; vertical-align: middle; }
+.level > div { height: 100%; width: 0%; background: #2f6fed; }
+@media (max-width: 640px) { table, thead, tbody, th, td, tr { font-size: 0.82rem; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>🏠 Job Search Hub</h1>
+  <nav id="tabs">
+    <button data-tab="overview" class="active">Обзор</button>
+    <button data-tab="jobs">Вакансии</button>
+    <button data-tab="gigs">Заказы</button>
+    <button data-tab="apps">Отклики</button>
+    <button data-tab="interviews">Собеседования</button>
+    <button data-tab="coach">AI-Тренер</button>
+    <button data-tab="system">Статус</button>
+  </nav>
+  <span id="tokenbar"><input id="token" type="password" placeholder="токен" title="Токен дашборда (как на главной)">
+  <button class="btn" id="savetoken">OK</button></span>
+</header>
+
+<section class="tab active" id="tab-overview">
+  <div class="cards" id="ov-cards"></div>
+  <p class="muted" id="ov-note"></p>
+</section>
+
+<section class="tab" id="tab-jobs">
+  <p>Вакансии живут на <a href="/">главной странице</a> (источник, релевантность, статусы откликов).
+  Ниже — сводка актуальности и откликов из единого слоя.</p>
+  <div class="cards" id="job-cards"></div>
+  <table><thead><tr><th>Статус отклика</th><th>Количество</th></tr></thead>
+  <tbody id="job-rows"></tbody></table>
+</section>
+
+<section class="tab" id="tab-gigs">
+  <div class="toolbar">
+    <select id="g-source"><option value="">Все платформы</option>
+      <option value="kwork">Kwork</option><option value="freelancer">Freelancer</option>
+      <option value="contra">Contra</option></select>
+    <select id="g-status"><option value="">Любой статус</option>
+      <option>NEW</option><option>SHORTLISTED</option><option>SKIPPED</option></select>
+    <select id="g-fresh"><option value="">Любая актуальность</option>
+      <option>ACTIVE_SEEN</option><option>STALE_CANDIDATE</option>
+      <option>CLOSED_CONFIRMED</option><option>UNKNOWN</option>
+      <option>ARCHIVE_CANDIDATE</option></select>
+    <input id="g-kwork-url" placeholder="https://kwork.ru/projects/…" size="30">
+    <button class="btn" id="g-import">Импорт Kwork</button>
+    <button class="btn primary" id="g-reload">Обновить</button>
+    <label class="muted"><input type="checkbox" id="g-fixture"> синтетика</label>
+    <label class="muted"><input type="checkbox" id="g-test"> тестовые</label>
+  </div>
+  <div id="g-msg" class="muted"></div>
+  <table><thead><tr><th>Заказ</th><th>Бюджет</th><th>Score</th>
+  <th>Актуальн.</th><th>Статус</th><th>Предложение</th><th></th></tr></thead>
+  <tbody id="gig-rows"></tbody></table>
+</section>
+
+<section class="tab" id="tab-apps">
+  <div class="toolbar">
+    <button class="btn primary" data-kind="job">Вакансии</button>
+    <button class="btn" data-kind="gig">Фриланс</button>
+  </div>
+  <div id="apps-note" class="muted"></div>
+  <table><thead><tr><th>Что</th><th>Кто</th><th>Статус</th><th>Обновлено</th></tr></thead>
+  <tbody id="app-rows"></tbody></table>
+</section>
+
+<section class="tab" id="tab-interviews">
+  <p class="muted">Только зафиксированные приглашения. Даты — как сообщил работодатель.</p>
+  <table><thead><tr><th>Компания</th><th>Вакансия</th><th>Обнаружено</th><th>Действие</th></tr></thead>
+  <tbody id="int-rows"></tbody></table>
+</section>
+
+<section class="tab" id="tab-coach">
+  <div class="toolbar">
+    <input id="c-role" placeholder="Должность (если нет вакансии)" size="28">
+    <input id="c-vac" placeholder="stable_id вакансии (необязательно)" size="30">
+    <select id="c-lang"><option value="ru">Русский</option><option value="en">English</option></select>
+  </div>
+  <div class="toolbar">
+    <label><input type="radio" name="c-profile" value="off" checked> Без моего профиля</label>
+    <label><input type="radio" name="c-profile" value="on"> С моим контекстом</label>
+    <button class="btn" id="c-myexp">Мой опыт</button>
+  </div>
+  <div id="c-consent" class="muted">Будет отправлено: роль + вопрос (без профиля, резюме и вакансий).</div>
+  <div id="c-myexp-out"></div>
+  <h3>Голосовой ввод <span class="muted">— вопрос с микрофона</span></h3>
+  <div class="toolbar">
+    <label><input type="checkbox" id="c-voice-consent"> Разрешаю доступ к микрофону</label>
+    <select id="c-voice-engine" title="Источник распознавания">
+      <option value="browser">Браузер (Chrome/Edge, бесплатно)</option>
+      <option value="server">Сервер (локальный STT, если установлен)</option>
+    </select>
+    <button class="btn" id="c-mic" disabled>🎙 Записать</button>
+    <span id="c-rec" class="muted"></span>
+  </div>
+  <div class="toolbar">
+    <input id="c-voice-text" placeholder="Распознанный вопрос появится здесь — проверьте и исправьте…" size="60">
+    <button class="btn" id="c-voice-ok">Подтвердить → в вопрос</button>
+  </div>
+  <div id="c-voice-msg" class="muted"></div>
+  <h3>Собеседование Live <span class="muted">— прототип: разрешённый захват + вопросы</span></h3>
+  <p class="muted">ПРОТОТИП: захват вкладки — настоящий (только выбранный вами источник, аудио нигде не сохраняется); транскрипты ниже — тестовые (MOCK), кроме введённых вручную.</p>
+  <div class="toolbar">
+    <button class="btn" id="c-live-pick">🎧 Захватить вкладку (аудио)</button>
+    <button class="btn" id="c-live-stop">⏹ Остановить</button>
+    <span id="c-live-src" class="muted">Источник: нет</span>
+    <span class="level"><div id="c-live-level"></div></span>
+  </div>
+  <div id="c-live-msg" class="muted"></div>
+  <div class="toolbar">
+    <label><input type="checkbox" id="c-live-stt-on"> Отправлять фрагменты в локальный STT</label>
+    <label><input type="checkbox" id="c-live-auto"> Авто: уверенные вопросы → в Быстро</label>
+    <button class="btn" id="c-live-detail">Подробнее (последний вопрос)</button>
+    <button class="btn" id="c-live-warm">Подготовить STT</button>
+    <span id="c-live-warm-state" class="muted"></span>
+  </div>
+  <div class="toolbar">
+    <span id="c-live-stt" class="muted">STT: выкл</span>
+    <span id="c-live-last" class="muted"></span>
+  </div>
+  <div class="toolbar">
+    <input id="c-live-seg" placeholder="Реплика интервьюера (или MOCK-лента)…" size="60">
+    <button class="btn" id="c-live-add">Добавить реплику</button>
+    <button class="btn" id="c-live-mock-ru">MOCK-лента RU</button>
+    <button class="btn" id="c-live-mock-en">MOCK-лента EN</button>
+    <button class="btn" id="c-live-clear">Очистить</button>
+  </div>
+  <div id="c-live-cands"><span class="muted">Вопросов пока нет — добавьте реплики.</span></div>
+  <h3>Быстрая подсказка <span class="muted">— вопрос с собеседования</span></h3>
+  <div class="toolbar">
+    <input id="c-q" placeholder="Вопрос интервьюера…" size="60">
+    <button class="btn primary" id="c-fast">Быстро</button>
+    <button class="btn" id="c-ask">Подробно</button>
+    <span class="muted" id="c-timer"></span>
+    <button class="btn" id="c-copy">Копировать</button>
+  </div>
+  <div id="c-hint" class="muted">Короткая подсказка появится здесь.</div>
+  <div id="c-detail"></div>
+  <h3>Тренировка</h3>
+  <div class="toolbar">
+    <button class="btn" id="c-gen">Предложить вопросы</button>
+  </div>
+  <div id="c-qlist"></div>
+  <h4>Мой ответ (тренировка)</h4>
+  <div class="toolbar">
+    <input id="c-myq" placeholder="Вопрос…" size="40">
+    <input id="c-mya" placeholder="Мой ответ…" size="40">
+    <button class="btn" id="c-grade">Оценить</button>
+  </div>
+  <div id="c-grade-out"></div>
+  <h4>История</h4>
+  <div class="toolbar"><button class="btn" id="c-history">Показать сессии</button></div>
+  <div id="c-sessions"></div>
+</section>
+
+<section class="tab" id="tab-system">
+  <div class="cards" id="sys-cards"></div>
+  <table><thead><tr><th>Лог</th><th>Возраст</th></tr></thead>
+  <tbody id="sys-rows"></tbody></table>
+</section>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const tokenInput = $('token');
+tokenInput.value = localStorage.getItem('dashboard_token') || '';
+$('savetoken').onclick = () => {
+  localStorage.setItem('dashboard_token', tokenInput.value.trim());
+  alert('Токен сохранён');
+};
+function authHeaders(extra = {}) {
+  const t = localStorage.getItem('dashboard_token') || '';
+  const h = { ...extra };
+  if (t) h['Authorization'] = `Bearer ${t}`;
+  return h;
+}
+async function api(path, opts = {}) {
+  const res = await fetch(path, { headers: authHeaders(opts.headers || {}), ...opts });
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${path}`);
+  return res.json();
+}
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* tabs */
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#tabs button').forEach(x => x.classList.remove('active'));
+  b.classList.add('active');
+  document.querySelectorAll('section.tab').forEach(s => s.classList.remove('active'));
+  $('tab-' + b.dataset.tab).classList.add('active');
+  ({ overview: loadOverview, jobs: loadJobs, gigs: loadGigs, apps: loadApps,
+     interviews: loadInterviews, coach: loadCoach, system: loadSystem })[b.dataset.tab]();
+});
+
+/* overview */
+async function loadOverview() {
+  const o = await api('api/hub/overview');
+  const cards = [
+    ['Вакансий', o.vacancies_total],
+    ['Заказов', o.gigs_total],
+    ['Собеседований', o.interviews_total],
+    ['В очереди', o.queue_total],
+    ['Предложений', o.submissions_total],
+  ];
+  $('ov-cards').innerHTML = cards.map(([k, v]) =>
+    `<div class="card"><b>${v ?? '—'}</b><br><span class="muted">${k}</span></div>`).join('');
+  const tr = o.tracking_by_status || {};
+  $('ov-note').textContent =
+    `Отклики: APPLIED ${tr.APPLIED ?? 0}, INTERVIEW ${tr.INTERVIEW ?? 0}, ` +
+    `OFFER ${tr.OFFER ?? 0}, отклонено (в основном автофильтры, не работодатели): ${tr.REJECTED ?? 0}. ` +
+    (o.submissions_unavailable ? 'Подачи недоступны.' : '');
+}
+
+/* jobs summary */
+async function loadJobs() {
+  const o = await api('api/hub/overview');
+  const tr = o.tracking_by_status || {};
+  $('job-cards').innerHTML =
+    `<div class="card"><b>${o.vacancies_total}</b><br><span class="muted">Всего вакансий</span></div>`;
+  $('job-rows').innerHTML = Object.entries(tr).map(([k, v]) =>
+    `<tr><td><span class="badge">${esc(k)}</span></td><td>${v}</td></tr>`).join('');
+}
+
+/* gigs */
+let showFixture = false;
+let showTest = false;
+document.addEventListener('change', (e) => {
+  if (e.target && e.target.id === 'g-fixture') { showFixture = e.target.checked; loadGigs(); }
+  if (e.target && e.target.id === 'g-test') { showTest = e.target.checked; loadGigs(); }
+  if (e.target && ['g-source', 'g-status', 'g-fresh'].includes(e.target.id)) loadGigs();
+});
+async function loadGigs() {
+  const q = new URLSearchParams({ limit: 100 });
+  if ($('g-source').value) q.set('source', $('g-source').value);
+  if ($('g-status').value) q.set('status', $('g-status').value);
+  if ($('g-fresh').value) q.set('freshness', $('g-fresh').value);
+  // Synthetic fixture rows are hidden by default (they are test data).
+  if (!showFixture) q.set('exclude_scope', 'synthetic_fixture');
+  if (showTest) q.set('include_test', 'true');
+  let data;
+  try { data = await api('api/hub/gigs?' + q.toString()); }
+  catch (e) { $('g-msg').textContent = 'Ошибка: ' + e.message; return; }
+  $('g-msg').textContent = `Показано: ${data.count}`;
+  $('gig-rows').innerHTML = data.gigs.map(g => `<tr>
+    <td><b>${esc(g.title)}</b><br><span class="muted">${esc(g.source)} · ${esc(g.id)}</span></td>
+    <td>${esc(g.budget || '')}</td>
+    <td>${g.opportunity_score ?? '—'}</td>
+    <td><span class="badge">${esc(g.freshness || '?')}</span></td>
+    <td><span class="badge">${esc(g.status)}</span></td>
+    <td><span class="badge">${esc(g.interaction || '?')}</span></td>
+    <td><a class="btn" href="${esc(g.url || '#')}" target="_blank" rel="noopener">Открыть</a>
+      <button class="btn" onclick="gigStatus('${esc(g.id)}','SHORTLISTED')">👍</button>
+      <button class="btn" onclick="gigStatus('${esc(g.id)}','SKIPPED')">👎</button></td>
+  </tr>`).join('');
+}
+async function gigStatus(id, status) {
+  try {
+    await api(`api/hub/gigs/${encodeURIComponent(id)}/status`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, note: 'hub UI' }),
+    });
+  } catch (e) { alert('Ошибка: ' + e.message + ' (нужен токен)'); }
+  loadGigs();
+}
+$('g-reload').onclick = loadGigs;
+$('g-import').onclick = async () => {
+  const url = $('g-kwork-url').value.trim();
+  if (!url) { $('g-msg').textContent = 'Вставьте ссылку Kwork.'; return; }
+  try {
+    const r = await api('api/hub/kwork/import', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    $('g-msg').textContent =
+      `Импорт: новых ${r.imported.length}, дубли ${r.duplicates.length}, ` +
+      `закрытых ${r.closed.length}, отклонено ${r.refused.length}`;
+  } catch (e) { $('g-msg').textContent = 'Ошибка: ' + e.message + ' (нужен токен)'; }
+  loadGigs();
+};
+
+/* applications */
+let appsKind = 'job';
+document.querySelectorAll('#tab-apps .toolbar button').forEach(b => b.onclick = () => {
+  appsKind = b.dataset.kind; loadApps();
+});
+async function loadApps() {
+  const d = await api(`api/hub/applications?kind=${appsKind}&limit=200`);
+  if (appsKind === 'job') {
+    $('apps-note').textContent =
+      'REJECTED здесь — в основном отказы фильтров, не работодателей (см. воронку).';
+    $('app-rows').innerHTML = d.items.map(a => `<tr>
+      <td>${esc(a.title)}<br><span class="muted">${esc(a.vacancy_stable_id)}</span></td>
+      <td>${esc(a.company)}</td><td><span class="badge">${esc(a.status)}</span></td>
+      <td class="muted">${esc(a.updated_at || '')}</td></tr>`).join('');
+  } else {
+    $('apps-note').textContent =
+      'READY — только подготовка, не отправка. SUBMITTED — подтвержденная отправка.';
+    $('app-rows').innerHTML = d.items.map(a => `<tr>
+      <td>${esc(a.title)}<br><span class="muted">${esc(a.source)}:${esc(a.project_id)}</span></td>
+      <td>—</td><td><span class="badge">${esc(a.status)}</span></td>
+      <td class="muted">${esc(a.submitted_at || '')}</td></tr>`).join('');
+  }
+}
+
+/* interviews */
+async function loadInterviews() {
+  const d = await api('api/hub/interviews?limit=200');
+  $('int-rows').innerHTML = d.items.map(i => `<tr>
+    <td>${esc(i.company)}</td><td>${esc(i.vacancy_title)}</td>
+    <td class="muted">${esc(i.detected_at || '')}</td>
+    <td>${i.invitation_url ? `<a class="btn" href="${esc(i.invitation_url)}" target="_blank" rel="noopener">Переписка</a>` : ''}</td>
+  </tr>`).join('') || '<tr><td colspan="4" class="muted">Приглашений пока нет.</td></tr>';
+}
+
+/* system */
+async function loadSystem() {
+  const s = await api('api/hub/system');
+  const bot = s.telegram_bot || {};
+  $('sys-cards').innerHTML = [
+    ['Telegram-бот', bot.alive ? 'жив' : 'нет данных/мёртв'],
+    ['Токен дашборда', s.dashboard_token_configured ? 'настроен' : 'НЕ настроен'],
+    ['HH-режим', s.hh_browser_mode || '?'],
+  ].map(([k, v]) => `<div class="card"><b>${esc(v)}</b><br><span class="muted">${k}</span></div>`).join('');
+  const rows = Object.entries(s.logs || {}).map(([k, v]) =>
+    `<tr><td>${esc(k)}</td><td class="muted">${v.present ? Math.round(v.age_seconds ?? -1) + ' c назад' : 'нет файла'}</td></tr>`);
+  const db = s.db || {};
+  rows.push(`<tr><td>vacancies / gigs</td><td class="muted">${db.vacancies_total ?? '?'} / ${db.gigs_total ?? '?'}</td></tr>`);
+  $('sys-rows').innerHTML = rows.join('');
+}
+
+/* AI coach */
+let coachSession = null;
+function coachCtx() {
+  const useProfile = (document.querySelector('input[name="c-profile"]:checked') || {}).value === 'on';
+  return { vacancy_stable_id: $('c-vac').value.trim() || null,
+    role_title: $('c-role').value.trim() || null,
+    lang: $('c-lang').value, session_id: coachSession, use_profile: useProfile };
+}
+function coachConsentPreview(usage) {
+  // usage comes from the server AFTER a call; before that, describe the mode.
+  if (usage) {
+    const parts = [];
+    if (usage.profile) parts.push('профиль');
+    if (usage.kb_verified) parts.push(`подтверждено фактов: ${usage.kb_verified}`);
+    if (usage.kb_checkable) parts.push(`на проверку: ${usage.kb_checkable}`);
+    if (usage.vacancy) parts.push('вакансия');
+    $('c-consent').textContent = parts.length
+      ? 'Было отправлено: роль + вопрос + ' + parts.join(', ') + '.'
+      : 'Было отправлено: роль + вопрос (без профиля, резюме и вакансий).';
+  }
+}
+function coachModeText() {
+  const on = (document.querySelector('input[name="c-profile"]:checked') || {}).value === 'on';
+  $('c-consent').textContent = on
+    ? 'Будет отправлено: роль + вопрос + профиль, подтверждённые факты и вакансия (если выбрана).'
+    : 'Будет отправлено: роль + вопрос (без профиля, резюме и вакансий).';
+}
+document.querySelectorAll('input[name="c-profile"]').forEach(r =>
+  r.addEventListener('change', coachModeText));
+coachModeText();
+function coachState(el, state, text) {
+  const labels = { thinking: '⏳ AI думает…', ready: '✅ Ответ готов',
+    'need-info': '❓ Недостаточно информации', error: '⚠️ Ошибка подключения' };
+  $(el).innerHTML = `<b>${labels[state] || state}</b><br>${text || ''}`;
+}
+let lastHintText = '';
+async function coachCall(url, body, onOk) {
+  const t0 = performance.now();
+  const timer = setInterval(() => {
+    $('c-timer').textContent = ((performance.now() - t0) / 1000).toFixed(1) + ' c…';
+  }, 200);
+  try {
+    const r = await api(url, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body) });
+    $('c-timer').textContent = ((performance.now() - t0) / 1000).toFixed(1) + ' c';
+    return onOk(r);
+  } catch (e) {
+    $('c-timer').textContent = '';
+    coachState('c-hint', 'error', esc(e.message));
+  } finally {
+    clearInterval(timer);
+  }
+}
+/* Render epoch: bumped when the live pipeline stops/clears. A fast/hint answer
+   computed for an older epoch is stale (cancelled interview) and not rendered.
+   Manual clicks pass no epoch and render unconditionally (5A behaviour). */
+let liveEpoch = 0;
+async function coachRunFast(ep) {
+  const q = $('c-q').value.trim();
+  if (!q) { coachState('c-hint', 'need-info', 'Введите вопрос.'); return; }
+  coachState('c-hint', 'thinking', '');
+  await coachCall('api/hub/interview/fast', { question: q, ...coachCtx() }, (r) => {
+    if (ep !== undefined && ep !== liveEpoch) return;
+    if (!r.ok) { coachState('c-hint', r.state || 'error', esc(r.error || '')); return; }
+    coachSession = r.session_id;
+    coachConsentPreview(r.context_used);
+    const f = r.fast || {};
+    lastHintText = (f.short || '') + '\n' + (f.points || []).map(p => '• ' + p).join('\n');
+    coachState('c-hint', r.state,
+      `<b>Коротко:</b> ${esc(f.short || '')}<br><b>Главное:</b> ${(f.points || []).map(esc).join('; ')}`);
+  });
+}
+$('c-fast').onclick = () => coachRunFast();
+$('c-copy').onclick = async () => {
+  if (!lastHintText) return;
+  try { await navigator.clipboard.writeText(lastHintText); $('c-timer').textContent = 'скопировано'; }
+  catch (e) {
+    const ta = document.createElement('textarea');
+    ta.value = lastHintText; document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); $('c-timer').textContent = 'скопировано'; } catch (_) {}
+    ta.remove();
+  }
+};
+$('c-myexp').onclick = async () => {
+  try {
+    const d = await api('api/hub/interview/context');
+    const verified = (d.verified || []).map(c => `<li>✅ ${esc(c.text)}</li>`).join('');
+    const checkable = (d.checkable || []).map(c => `<li>⚠️ На проверку: ${esc(c.text)}</li>`).join('');
+    $('c-myexp-out').innerHTML =
+      `<p><b>Роли:</b> ${esc((d.profile.roles || []).join(', '))}</p>` +
+      `<p><b>Навыки:</b> ${esc((d.profile.core_skills || []).join(', '))}</p>` +
+      `<p><b>Подтверждено (${(d.verified || []).length}):</b></p><ul>${verified}</ul>` +
+      `<p><b>Нужно проверить (${(d.checkable || []).length}):</b></p><ul>${checkable}</ul>` +
+      `<p class="muted">Ничего не повышается в статус без вашего подтверждения. Учебные примеры в ответах помечаются отдельно.</p>`;
+  } catch (e) { $('c-myexp-out').textContent = 'Ошибка: ' + e.message; }
+};
+$('c-ask').onclick = async () => {
+  const q = $('c-q').value.trim();
+  if (!q) { coachState('c-hint', 'need-info', 'Введите вопрос.'); return; }
+  coachState('c-hint', 'thinking', '');
+  await coachCall('api/hub/interview/hint', { question: q, ...coachCtx() }, (r) => {
+    if (!r.ok) { coachState('c-hint', r.state || 'error', esc(r.error || '')); return; }
+    coachSession = r.session_id;
+    coachConsentPreview(r.context_used);
+    const h = r.hint || {};
+    lastHintText = (h.short || '') + '\n' + (h.points || []).map(p => '• ' + p).join('\n');
+    coachState('c-hint', r.state,
+      `<b>Коротко:</b> ${esc(h.short || '')}<br><b>Главное:</b> ${(h.points || []).map(esc).join('; ')}`);
+    const ex = h.example || {};
+    const badge = ex.label === 'VERIFIED' ? '✅ Подтверждено' :
+      ex.label === 'RECONSTRUCTED' ? '⚠️ Черновик — проверьте' :
+      ex.label === 'HYPOTHETICAL' ? '🎓 Учебный пример' : '';
+    $('c-detail').innerHTML =
+      `<p><b>Подробнее:</b> ${esc(h.detailed || '')}</p>` +
+      (ex.text ? `<p><b>Пример ${esc(badge)}:</b> ${esc(ex.text)}</p>` : '') +
+      `<p class="muted">Дальше могут спросить: ${esc((h.followups || []).join('; '))}</p>`;
+  });
+};
+/* ---- voice input (Phase 5B-1): mic -> editable transcript -> #c-q -> fast/hint ---- */
+const voiceConsent = $('c-voice-consent');
+voiceConsent.onchange = () => {
+  const on = voiceConsent.checked;
+  $('c-mic').disabled = !on;
+  $('c-mic').classList.toggle('armed', on);
+  if (!on && voiceActive) { voiceDiscard = true; voiceStop('Запись остановлена: разрешение отозвано.'); }
+};
+function voiceLangTag() { return $('c-lang').value === 'en' ? 'en-US' : 'ru-RU'; }
+function voiceApiLang() { return $('c-lang').value === 'en' ? 'en' : 'ru'; }
+function voiceSay(msg) { $('c-voice-msg').textContent = msg; }
+let voiceTimer = null, voiceT0 = 0, voiceActive = null; // 'browser' | 'server' | null
+let voiceRec = null, voiceStream = null, voiceRecorder = null, voiceChunks = [];
+let voiceDiscard = false;
+function voiceTick() {
+  const el = $('c-rec-t');
+  if (el) el.textContent = ((performance.now() - voiceT0) / 1000).toFixed(1) + ' c';
+}
+function voiceIndicator(label) {
+  $('c-rec').innerHTML = `<span class="rec-dot on"></span><b>● запись</b> ` +
+    `<span id="c-rec-t">0.0 c</span>` + (label ? ` <span class="muted">${esc(label)}</span>` : '');
+  clearInterval(voiceTimer);
+  voiceT0 = performance.now();
+  voiceTimer = setInterval(voiceTick, 200);
+}
+function voiceStop(msg) {
+  clearInterval(voiceTimer); voiceTimer = null;
+  try { if (voiceRec) voiceRec.stop(); } catch (_) {}
+  try { if (voiceRecorder && voiceRecorder.state !== 'inactive') voiceRecorder.stop(); } catch (_) {}
+  try { if (voiceStream) voiceStream.getTracks().forEach(t => t.stop()); } catch (_) {}
+  voiceRec = null; voiceRecorder = null; voiceStream = null;
+  voiceActive = null;
+  $('c-mic').textContent = '🎙 Записать';
+  $('c-rec').innerHTML = '';
+  if (msg) voiceSay(msg);
+}
+async function voiceStartBrowser() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { voiceSay('Этот браузер не поддерживает распознавание речи. Попробуйте Chrome/Edge, режим «Сервер» или введите вопрос вручную.'); return; }
+  const tag = voiceLangTag();
+  const rec = new SR();
+  rec.lang = tag; rec.interimResults = true; rec.maxAlternatives = 1;
+  let finalText = '';
+  rec.onresult = (ev) => {
+    let interim = '';
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      const t = ev.results[i][0].transcript;
+      if (ev.results[i].isFinal) finalText += t;
+      else interim += t;
+    }
+    $('c-voice-text').value = (finalText + interim).trim();
+  };
+  rec.onerror = (ev) => {
+    const map = {
+      'not-allowed': 'Доступ к микрофону запрещён: разрешите его в браузере и попробуйте снова.',
+      'service-not-allowed': 'Доступ к микрофону запрещён настройками браузера.',
+      'no-speech': 'Речь не услышана — подойдите ближе к микрофону и попробуйте снова.',
+      'audio-capture': 'Микрофон не найден или занят другим приложением.',
+      'network': 'Сетевая ошибка службы распознавания. Проверьте соединение или введите вопрос вручную.' };
+    voiceStop(map[ev.error] || `Ошибка распознавания (${ev.error}). Можно ввести вопрос вручную.`);
+  };
+  rec.onend = () => { if (voiceActive === 'browser') voiceStop(); };
+  voiceRec = rec;
+  $('c-voice-text').value = '';
+  try { rec.start(); }
+  catch (e) { voiceStop('Не удалось запустить запись: ' + (e && e.message ? e.message : e)); return; }
+  voiceIndicator(tag === 'en-US' ? 'говорите по-английски' : 'говорите по-русски');
+  $('c-mic').textContent = '⏹ Стоп';
+  voiceSay('');
+}
+async function voiceStartServer() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    voiceSay('Браузер не даёт доступ к микрофону (нужен HTTPS или localhost).'); return;
+  }
+  if (typeof MediaRecorder === 'undefined') {
+    voiceSay('Этот браузер не умеет записывать аудио. Выберите режим «Браузер».'); return;
+  }
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch (e) {
+    voiceSay(e && e.name === 'NotAllowedError'
+      ? 'Доступ к микрофону запрещён: разрешите его в браузере и попробуйте снова.'
+      : 'Микрофон недоступен: ' + (e && e.message ? e.message : e));
+    return;
+  }
+  voiceStream = stream;
+  voiceChunks = [];
+  voiceDiscard = false;
+  let mime = '';
+  for (const c of ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg']) {
+    try { if (MediaRecorder.isTypeSupported(c)) { mime = c; break; } } catch (_) {}
+  }
+  const mr = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+  mr.ondataavailable = (ev) => { if (ev.data && ev.data.size) voiceChunks.push(ev.data); };
+  mr.onstop = async () => {
+    const chunks = voiceChunks; voiceChunks = [];
+    try { stream.getTracks().forEach(t => t.stop()); } catch (_) {}
+    voiceStream = null;
+    if (voiceDiscard || !chunks.length) { voiceDiscard = false; return; }
+    await voiceUpload(chunks, mr.mimeType || mime);
+  };
+  voiceRecorder = mr;
+  $('c-voice-text').value = '';
+  try { mr.start(); }
+  catch (e) { voiceStop('Не удалось запустить запись: ' + (e && e.message ? e.message : e)); return; }
+  voiceIndicator('запись аудио для серверного STT');
+  $('c-mic').textContent = '⏹ Стоп';
+  voiceSay('');
+}
+async function voiceUpload(chunks, mime) {
+  voiceSay('Отправляю аудио на локальное распознавание…');
+  try {
+    const blob = new Blob(chunks, { type: mime || 'audio/webm' });
+    const buf = await blob.arrayBuffer();
+    const r = await api(`api/hub/interview/transcribe?lang=${voiceApiLang()}`, {
+      method: 'POST', headers: { 'Content-Type': mime || 'audio/webm' }, body: buf });
+    if (!r.ok) {
+      voiceSay(r.error === 'stt-unavailable'
+        ? 'Локальный STT на сервере не установлен. Используйте режим «Браузер» или введите вопрос вручную.'
+        : `Сервер не распознал аудио (${r.error || 'ошибка'}). Попробуйте ещё раз или введите вручную.`);
+      return;
+    }
+    $('c-voice-text').value = r.text || '';
+    voiceSay(`Распознано (${r.engine || 'stt'}). Проверьте текст и нажмите «Подтвердить».`);
+  } catch (e) { voiceSay('Ошибка отправки аудио: ' + e.message); }
+}
+$('c-mic').onclick = async () => {
+  if (!voiceConsent.checked) { voiceSay('Сначала поставьте галочку «Разрешаю доступ к микрофону».'); return; }
+  if (voiceActive) {
+    const mode = voiceActive;
+    voiceStop(mode === 'browser' ? 'Запись остановлена.' : '');
+    return;
+  }
+  const mode = $('c-voice-engine').value;
+  voiceActive = mode;
+  if (mode === 'server') await voiceStartServer();
+  else await voiceStartBrowser();
+};
+$('c-voice-ok').onclick = () => {
+  const t = $('c-voice-text').value.trim();
+  if (!t) { voiceSay('Нет текста для подтверждения — сначала запишите вопрос.'); return; }
+  $('c-q').value = t;
+  voiceSay('Вопрос из голосового ввода — нажмите «Быстро» или «Подробно».');
+  $('c-q').focus();
+};
+/*PIPE-START*/
+/* Chunk pipeline: capture -> local STT, one in-flight request, bounded queue.
+   Pure logic (no DOM): the page wires it below, node tests load this block.
+   - push() while stopped returns 'inactive' (cancel during processing).
+   - A full queue drops the OLDEST chunk and counts it (backpressure).
+   - stop()/start() bump the epoch: late results become 'discarded', never rendered. */
+function createPipe(opts) {
+  const postChunk = opts.postChunk;
+  const onEvent = opts.onEvent || function () {};
+  const maxPending = opts.maxPending || 3;
+  let active = false, inflight = false, epoch = 0, seq = 0;
+  let dropped = 0, sent = 0, done = 0;
+  const queue = [];
+  function emit(e) { try { onEvent(e); } catch (_) {} }
+  async function pump() {
+    if (inflight || !queue.length || !active) return;
+    const item = queue.shift();
+    inflight = true; sent++;
+    try {
+      const res = await postChunk(item.bytes, item.seq);
+      if (item.epoch === epoch && active) {
+        done++;
+        emit({ type: 'transcript', text: (res && res.text) || '',
+               engine: res && res.engine, seq: item.seq });
+      } else {
+        emit({ type: 'discarded', seq: item.seq });
+      }
+    } catch (err) {
+      if (item.epoch === epoch && active) {
+        emit({ type: 'error', message: String((err && err.message) || err), seq: item.seq });
+      } else {
+        emit({ type: 'discarded', seq: item.seq });
+      }
+    } finally {
+      inflight = false;
+      if (active) pump();
+    }
+  }
+  return {
+    start() {
+      active = true; epoch++; queue.length = 0; inflight = false;
+      dropped = 0; sent = 0; done = 0;
+      emit({ type: 'state', active: true, epoch });
+    },
+    push(bytes) {
+      if (!active) return 'inactive';
+      seq++;
+      if (queue.length >= maxPending) {
+        queue.shift(); dropped++;
+        emit({ type: 'drop', dropped });
+      }
+      queue.push({ bytes, seq, epoch });
+      pump();
+      return 'queued';
+    },
+    stop() {
+      active = false; epoch++;
+      queue.length = 0;
+      emit({ type: 'state', active: false, epoch });
+    },
+    stats() { return { active, epoch, seq, queued: queue.length, inflight,
+                       dropped, sent, done }; }
+  };
+}
+/*PIPE-END*/
+/* ---- live interview prototype (Phase 5B-2): allowed capture + question candidates ---- */
+/* Capture is real browser getDisplayMedia (user picks the source; nothing is
+   recorded or uploaded). Transcripts here are MOCK/test data or typed by hand
+   until a local STT engine exists — every mock surface is labeled MOCK. */
+function liveMsg(msg) { $('c-live-msg').textContent = msg; }
+let liveStream = null, liveCtx = null, liveAnalyser = null, liveLevelTimer = null;
+let liveSegs = [], liveSent = [];
+const LIVE_MOCK_RU = ['Добрый день! Расскажите о себе.',
+  'Сколько лет вы работаете с Python?', 'Мы используем Docker каждый день.',
+  'Как вы тестируете API?', 'Как вы тестируете API?'];
+const LIVE_MOCK_EN = ['Hello! Tell me about yourself.',
+  'What is your experience with Kubernetes?', 'We deploy every Friday.',
+  'How do you debug production issues?'];
+$('c-live-pick').onclick = async () => {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+    liveMsg('Браузер не поддерживает захват вкладки.'); return;
+  }
+  if (liveStream) { liveMsg('Захват уже активен — сначала остановите текущий.'); return; }
+  let stream;
+  // Chrome rejects audio-only display capture (video:false) with
+  // NotSupportedError("Not supported"), so video must be requested too.
+  // Video is stopped immediately below — only the audio track is ever used.
+  try { stream = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: true }); }
+  catch (e) {
+    liveMsg(e && e.name === 'NotAllowedError'
+      ? 'Захват отклонён: выберите вкладку и разрешите доступ.'
+      : 'Захват недоступен: ' + (e && e.message ? e.message : e));
+    return;
+  }
+  try { stream.getVideoTracks().forEach(t => t.stop()); } catch (_) {}
+  const tracks = stream.getAudioTracks();
+  if (!tracks.length) {
+    try { stream.getTracks().forEach(t => t.stop()); } catch (_) {}
+    liveMsg('Выбранный источник без аудиодорожки: захват отклонён. Выберите вкладку с включённым звуком.');
+    return;
+  }
+  liveStream = stream;
+  $('c-live-src').textContent = 'Источник: ' + (tracks[0].label || 'аудио вкладки');
+  tracks[0].onended = () => liveStopAll('Демонстрация прекращена (кнопка браузера). Все дорожки остановлены.');
+  try {
+    liveCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = liveCtx.createMediaStreamSource(stream);
+    liveAnalyser = liveCtx.createAnalyser(); liveAnalyser.fftSize = 256;
+    src.connect(liveAnalyser);
+    const data = new Uint8Array(liveAnalyser.frequencyBinCount);
+    liveLevelTimer = setInterval(() => {
+      liveAnalyser.getByteTimeDomainData(data);
+      let peak = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = Math.abs(data[i] - 128) / 128;
+        if (v > peak) peak = v;
+      }
+      $('c-live-level').style.width = Math.round(peak * 100) + '%';
+    }, 150);
+  } catch (_) { /* уровень — индикация, без неё захват всё равно работает */ }
+  liveMsg('Захват активен. Аудио нигде не сохраняется — только индикатор уровня.');
+};
+function liveStopAll(msg) {
+  clearInterval(liveLevelTimer); liveLevelTimer = null;
+  try { if (liveStream) liveStream.getTracks().forEach(t => t.stop()); } catch (_) {}
+  try { if (liveCtx && liveCtx.close) liveCtx.close(); } catch (_) {}
+  liveStream = null; liveCtx = null; liveAnalyser = null;
+  if (livePipe) { try { livePipe.stop(); } catch (_) {} livePipe = null; }
+  if (liveChunker) { try { if (liveChunker.state !== 'inactive') liveChunker.stop(); } catch (_) {} liveChunker = null; }
+  liveEpoch++;
+  $('c-live-src').textContent = 'Источник: нет';
+  $('c-live-level').style.width = '0%';
+  liveSttRender();
+  if (msg) liveMsg(msg);
+}
+/* ---- live STT pipeline (Phase 5B-3): captured chunks -> /transcribe -> segments ----
+   Chunking starts only with capture active AND the explicit STT checkbox on.
+   Raw audio is never stored: chunks live in memory until the POST resolves. */
+let livePipe = null, liveChunker = null, liveChunkMime = 'audio/webm', liveLastQ = '';
+let liveStt = { okCount: 0, errCount: 0, dropped: 0, engine: '' };
+function liveSttRender() {
+  const parts = [];
+  if (!livePipe) parts.push('STT: выкл');
+  else if (!liveStt.engine) parts.push('STT: ожидание первого фрагмента');
+  else parts.push('STT: ' + liveStt.engine);
+  parts.push(`ок: ${liveStt.okCount}`, `ошибок: ${liveStt.errCount}`, `отброшено: ${liveStt.dropped}`);
+  const el = $('c-live-stt');
+  if (el) el.textContent = parts.join(' · ');
+}
+async function livePostChunk(bytes) {
+  const r = await api(`api/hub/interview/transcribe?lang=${voiceApiLang()}`, {
+    method: 'POST', headers: { 'Content-Type': liveChunkMime }, body: bytes });
+  if (!r.ok) throw new Error(r.error || 'stt-failed');
+  return r;
+}
+function livePipeEvent(e) {
+  if (e.type === 'transcript') {
+    liveStt.okCount++;
+    if (e.engine && !liveStt.engine) liveStt.engine = e.engine;
+    const t = (e.text || '').trim();
+    if (t) {
+      $('c-live-last').textContent = 'Последний транскрипт: ' + t;
+      liveSegs.push(t);
+      if (liveSegs.length > 20) liveSegs.shift();
+      liveDetect();
+    }
+  } else if (e.type === 'error') {
+    liveStt.errCount++;
+    liveStt.engine = /stt-unavailable/.test(e.message)
+      ? 'недоступен (stt-unavailable) — только MOCK/вручную'
+      : (liveStt.engine || 'ошибка, повторов нет');
+  } else if (e.type === 'drop') {
+    liveStt.dropped = e.dropped;
+  }
+  liveSttRender();
+}
+function livePipeStart() {
+  if (livePipe || !liveStream) return;
+  livePipe = createPipe({ postChunk: livePostChunk, onEvent: livePipeEvent, maxPending: 3 });
+  livePipe.start();
+  liveStt = { okCount: 0, errCount: 0, dropped: 0, engine: '' };
+  liveSttRender();
+}
+function livePipeStop() {
+  if (livePipe) { try { livePipe.stop(); } catch (_) {} livePipe = null; }
+  if (liveChunker) { try { if (liveChunker.state !== 'inactive') liveChunker.stop(); } catch (_) {} liveChunker = null; }
+  liveSttRender();
+}
+function liveChunkerStart() {
+  if (!liveStream || liveChunker) return;
+  if (typeof MediaRecorder === 'undefined') { liveMsg('Браузер не умеет резать аудио — STT-конвейер недоступен.'); return; }
+  let mime = '';
+  for (const c of ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg']) {
+    try { if (MediaRecorder.isTypeSupported(c)) { mime = c; break; } } catch (_) {}
+  }
+  liveChunkMime = mime || 'audio/webm';
+  try {
+    const mr = mime ? new MediaRecorder(liveStream, { mimeType: mime }) : new MediaRecorder(liveStream);
+    mr.ondataavailable = async (ev) => {
+      if (ev.data && ev.data.size && livePipe) {
+        try { livePipe.push(await ev.data.arrayBuffer()); } catch (_) {}
+      }
+    };
+    mr.start(3000);
+    liveChunker = mr;
+    liveMsg('STT-конвейер: фрагменты по 3 c → локальный /transcribe. Сырое аудио не сохраняется.');
+  } catch (e) { liveMsg('Не удалось запустить нарезку: ' + (e && e.message ? e.message : e)); }
+}
+$('c-live-stt-on').onchange = () => {
+  const on = $('c-live-stt-on').checked;
+  if (on && !liveStream) {
+    $('c-live-stt-on').checked = false;
+    liveMsg('Сначала захватите вкладку — потом включайте STT-конвейер.');
+    return;
+  }
+  if (on) { livePipeStart(); liveChunkerStart(); }
+  else livePipeStop();
+};
+$('c-live-detail').onclick = () => {
+  if (!liveLastQ.trim()) { liveMsg('Нет подтверждённого вопроса — сначала подтвердите кандидата.'); return; }
+  $('c-q').value = liveLastQ;
+  $('c-ask').click();
+};
+/* Managed warmup (Phase 5B-4c): model load + autotune now, no mic, no recording. */
+$('c-live-warm').onclick = async () => {
+  const el = $('c-live-warm-state');
+  el.textContent = 'STT: загрузка модели…';
+  try {
+    const r = await api('api/hub/interview/warmup', { method: 'POST' });
+    if (!r.ok) {
+      el.textContent = `STT: ошибка (${r.error || 'недоступен'}) — ${r.detail || 'проверьте модель'}`;
+      return;
+    }
+    el.textContent = `STT готов: ${r.engine}/${r.device}, загрузка ${r.load_s} c, прогрев ${r.warmup_s} c.`;
+  } catch (e) { el.textContent = 'STT: ошибка сети: ' + e.message; }
+};
+function liveMaybeAuto(cands) {
+  if (!$('c-live-auto').checked || !cands.length) return;
+  const best = cands.filter(c => !c.incomplete && c.confidence >= 0.85)[0];
+  if (!best) return;
+  const ep = liveEpoch;
+  liveLastQ = best.text;
+  $('c-q').value = best.text;
+  liveMsg(`Авто: уверенный вопрос (${Math.round(best.confidence * 100)}%) → Быстро.`);
+  coachRunFast(ep);
+}
+$('c-live-stop').onclick = () => liveStopAll('Захват остановлен. Все дорожки остановлены.');
+async function liveDetect() {
+  if (!liveSegs.length) return;
+  try {
+    const r = await api('api/hub/interview/detect', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ segments: liveSegs.slice(-20), lang: $('c-lang').value, already_sent: liveSent }) });
+    if (!r.ok) { liveMsg('Детектор: ' + (r.error || 'ошибка')); return; }
+    liveRenderCands(r.candidates || []);
+  } catch (e) { liveMsg('Детектор недоступен: ' + e.message); }
+}
+function liveRenderCands(cands) {
+  const box = $('c-live-cands');
+  if (box.querySelector('.muted') && !box.querySelector('.card')) box.innerHTML = '';
+  cands.forEach((c) => {
+    liveSent.push(c.norm);
+    const div = document.createElement('div');
+    div.className = 'card';
+    div.innerHTML = `<p><b>❓ ${esc(c.text)}</b> ` +
+      `<span class="badge">${esc(c.lang)} · ${Math.round(c.confidence * 100)}%${c.incomplete ? ' · незавершён' : ''}</span><br>` +
+      `<span class="muted">${esc(c.reason)}</span></p>` +
+      `<div class="toolbar"><button class="btn primary">✓ В вопрос</button> <button class="btn">✎ Исправить</button></div>` +
+      `<div class="toolbar" style="display:none"><input size="60" value="${esc(c.text)}"> <button class="btn">OK</button></div>`;
+    const bars = div.querySelectorAll('.toolbar');
+    const okBtn = bars[0].querySelectorAll('button')[0];
+    const editBtn = bars[0].querySelectorAll('button')[1];
+    const editBar = bars[1];
+    const editInput = editBar.querySelector('input');
+    const editOk = editBar.querySelector('button');
+    okBtn.onclick = () => {
+      $('c-q').value = c.text;
+      liveLastQ = c.text;
+      liveMsg('Вопрос подтверждён — нажмите «Быстро» или «Подробно».');
+      $('c-q').focus();
+    };
+    editBtn.onclick = () => { editBar.style.display = editBar.style.display === 'none' ? '' : 'none'; };
+    editOk.onclick = () => {
+      const t = editInput.value.trim();
+      if (!t) { liveMsg('Исправленный вопрос пуст — ничего не отправлено.'); return; }
+      $('c-q').value = t;
+      liveLastQ = t;
+      liveMsg('Исправленный вопрос принят — нажмите «Быстро» или «Подробно».');
+      $('c-q').focus();
+    };
+    box.appendChild(div);
+  });
+  if (!box.children.length) box.innerHTML = '<span class="muted">Вопросов пока нет — добавьте реплики.</span>';
+  liveMaybeAuto(cands);
+}
+$('c-live-add').onclick = async () => {
+  const t = $('c-live-seg').value.trim();
+  if (!t) { liveMsg('Пустая реплика — ничего не добавлено.'); return; }
+  liveSegs.push(t);
+  if (liveSegs.length > 20) liveSegs.shift();
+  $('c-live-seg').value = '';
+  await liveDetect();
+};
+$('c-live-mock-ru').onclick = async () => {
+  liveSegs.push(...LIVE_MOCK_RU);
+  if (liveSegs.length > 20) liveSegs = liveSegs.slice(-20);
+  liveMsg('MOCK-лента RU добавлена (тестовые данные).');
+  await liveDetect();
+};
+$('c-live-mock-en').onclick = async () => {
+  liveSegs.push(...LIVE_MOCK_EN);
+  if (liveSegs.length > 20) liveSegs = liveSegs.slice(-20);
+  liveMsg('MOCK-лента EN добавлена (тестовые данные).');
+  await liveDetect();
+};
+$('c-live-clear').onclick = () => {
+  liveSegs = []; liveSent = [];
+  liveEpoch++;
+  $('c-live-cands').innerHTML = '<span class="muted">Вопросов пока нет — добавьте реплики.</span>';
+  liveMsg('');
+};
+$('c-gen').onclick = async () => {
+  try {
+    const r = await api('api/hub/interview/questions', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(coachCtx()) });
+    if (!r.ok) { $('c-qlist').textContent = 'Ошибка: ' + (r.error || ''); return; }
+    coachSession = r.session_id;
+    $('c-qlist').innerHTML = '<ol>' + (r.questions || []).map(q =>
+      `<li><b>[${esc(q.kind)}]</b> ${esc(q.question)}<br><span class="muted">${esc(q.why_asked || '')}</span></li>`).join('') + '</ol>';
+  } catch (e) { $('c-qlist').textContent = 'Ошибка: ' + e.message; }
+};
+$('c-grade').onclick = async () => {
+  try {
+    const r = await api('api/hub/interview/evaluate', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: $('c-myq').value, answer: $('c-mya').value, ...coachCtx() }) });
+    if (!r.ok) { $('c-grade-out').textContent = 'Ошибка: ' + (r.error || ''); return; }
+    coachSession = r.session_id;
+    const ev = r.evaluation || {};
+    $('c-grade-out').innerHTML =
+      `<p>Полнота ${esc(ev.completeness)}/10, ясность ${esc(ev.clarity)}/10</p>` +
+      `<p><b>Хорошо:</b> ${esc(ev.what_was_good || '')}</p>` +
+      `<p><b>Улучшить:</b> ${esc(ev.what_to_improve || '')}</p>` +
+      `<p><b>Лучшая версия:</b> ${esc(ev.better_version || '')}</p>`;
+  } catch (e) { $('c-grade-out').textContent = 'Ошибка: ' + e.message; }
+};
+$('c-history').onclick = async () => {
+  const d = await api('api/hub/interview/sessions');
+  $('c-sessions').innerHTML = d.items.map(s =>
+    `<div>Сессия #${s.id} (${esc(s.role_title || s.vacancy_stable_id || 'без роли')}, ходов: ${s.turns}) ` +
+    `<button class="btn" onclick="coachOpen(${s.id})">Открыть</button> ` +
+    `<button class="btn" onclick="coachDel(${s.id})">Удалить</button></div>`).join('')
+    || '<span class="muted">Пока пусто.</span>';
+};
+async function coachOpen(id) {
+  const s = await api(`api/hub/interview/sessions/${id}`);
+  $('c-sessions').innerHTML += `<hr><b>Сессия #${s.id}</b>` + (s.turns || []).map(t =>
+    `<p><b>[${esc(t.kind)}]</b> ${esc(t.question)}<br><span class="muted">${esc(JSON.stringify(t.answer)).slice(0, 300)}</span></p>`).join('');
+}
+async function coachDel(id) {
+  await api(`api/hub/interview/sessions/${id}`, { method: 'DELETE' });
+  $('c-history').onclick();
+}
+function loadCoach() { /* открывается по требованию */ }
+
+loadOverview();
+</script>
+</body>
+</html>
