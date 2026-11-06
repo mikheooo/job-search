@@ -34,12 +34,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
+import time
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any
-from collections.abc import Callable
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, Field
 
@@ -1783,13 +1788,126 @@ def _conversations_list_js() -> str:
     )
 
 
-def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> dict[str, Any]:
+# A hung DevTools socket must not be waited on forever, and it must not be
+# reported as an empty inbox. The page fetch aborts sooner than this so a slow
+# chatik HTTP call returns an error string the DOM fallback can still handle.
+# The Python bound is the backstop for a CDP target that never answers.
+DIALOG_LIST_EVAL_TIMEOUT_SECONDS = 25.0
+
+_CDP_TRANSPORT_HINTS = (
+    "timeout",
+    "timed out",
+    "connection closed",
+    "connection refused",
+    "connection reset",
+    "connectionreset",
+    "connection failed",
+    "connection aborted",
+    "target closed",
+    "target disconnected",
+    "tab is gone",
+    "10061",
+    "websocket",
+    "broken pipe",
+    "brokenpipe",
+    "failed to fetch",
+)
+
+
+def dialog_list_eval_timeout_seconds() -> float:
+    raw = os.environ.get("HH_DIALOG_LIST_EVAL_TIMEOUT")
+    if not raw:
+        return DIALOG_LIST_EVAL_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return DIALOG_LIST_EVAL_TIMEOUT_SECONDS
+    return value if value > 0 else DIALOG_LIST_EVAL_TIMEOUT_SECONDS
+
+
+def cdp_transport_failure_reason(exc: BaseException) -> str | None:
+    """Return a reason when *exc* means the CDP target hung or dropped.
+
+    Ordinary evaluate bugs return None so the dialog list can still try the DOM
+    fallback. A timeout must not: the next evaluate would hang the same way,
+    and an empty DOM read would look like a successful check.
+    """
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return f"{type(exc).__name__}: {exc}"
+    text = f"{type(exc).__name__}: {exc}"
+    low = text.lower()
+    if any(hint in low for hint in _CDP_TRANSPORT_HINTS):
+        return text
+    return None
+
+
+def _dialog_list_transport_error(reason: str) -> dict[str, Any]:
+    return {"error": reason, "conversations": []}
+
+
+def _empty_dialog_list_payload_error(raw: Any) -> str | None:
+    """A CDP evaluate that returned nothing is a failed read, not zero chats."""
+    if raw is None:
+        return "dialog list CDP evaluate returned no payload (hung or closed target)"
+    if not isinstance(raw, str):
+        return (
+            "dialog list CDP evaluate returned "
+            f"{type(raw).__name__}, not JSON text (hung or closed target)"
+        )
+    if raw.strip() in {"", "{}", "null", "undefined"}:
+        return "dialog list CDP evaluate returned an empty payload (hung or closed target)"
+    return None
+
+
+def _evaluate_dialog_list(
+    evaluate_fn: Callable[[str], str],
+    expression: str,
+    timeout_seconds: float,
+) -> str:
+    """Run one list-read evaluate and surface a hung target as TimeoutError.
+
+    ``concurrent.futures.TimeoutError`` is ``TimeoutError`` on Python 3.11, so a
+    worker that raises TimeoutError itself is distinguished by ``future.done()``:
+    the outer bound only fires while the worker is still running.
+    """
+    worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hh-dialog-list")
+    future = worker.submit(evaluate_fn, expression)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except TimeoutError as exc:
+        if future.done():
+            raise
+        raise TimeoutError(
+            f"dialog list CDP evaluate timed out after {timeout_seconds:.0f}s"
+        ) from exc
+    finally:
+        worker.shutdown(wait=False, cancel_futures=True)
+
+
+def fetch_hh_conversations_list_readonly(
+    evaluate_fn: Callable[[str], str],
+    *,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
     """Stage 30D.9: Read-only enumeration of all visible conversations in HH chat interface.
-    Uses internal chatik API first (100% reliable, direct participant & message metadata),
-    with robust DOM fallback.
+
+    Uses the chatik API first, then the DOM. ``timeout_seconds`` bounds each CDP
+    evaluate. A hung or dropped target returns ``{"error": ..., "conversations": []}``
+    and does not fall through to a second evaluate that would hang the same way.
+    An empty ``{}`` / ``null`` payload is that same failure, not a confirmed empty
+    inbox. API-level errors (HTTP status, "No chats found") still try the DOM.
+
     Returns:
         conversations: List[Dict[str, Any]] (conversation_id, url, title, employer, snippet, is_selected, is_outgoing)
+        error: set when the read itself failed
     """
+    bound = dialog_list_eval_timeout_seconds() if timeout_seconds is None else float(timeout_seconds)
+    if bound <= 0:
+        bound = DIALOG_LIST_EVAL_TIMEOUT_SECONDS
+    # Abort the in-page fetch before the CDP bound so a slow HTTP call comes
+    # back as a JSON error (DOM fallback) instead of holding the socket.
+    page_fetch_ms = int(max(1000, min(12000, (bound - 2) * 1000)))
+
     # 1. Native Chatik API fetch inside browser context
     chatik_api_js = """(async () => {
         try {
@@ -1802,7 +1920,7 @@ def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> d
                 if (cursor) {
                     url += '&from=' + encodeURIComponent(cursor);
                 }
-                let r = await fetch(url, {credentials: 'include'});
+                let r = await fetch(url, {credentials: 'include', signal: AbortSignal.timeout(__FETCH_TIMEOUT_MS__)});
                 if (!r.ok) {
                     if (allChats.length > 0) break;
                     return JSON.stringify({error: 'HTTP ' + r.status});
@@ -1843,29 +1961,63 @@ def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> d
         } catch (e) {
             return JSON.stringify({error: e.toString()});
         }
-    })()"""
+    })()""".replace("__FETCH_TIMEOUT_MS__", str(page_fetch_ms))
+
+    def _read(expression: str) -> str:
+        return _evaluate_dialog_list(evaluate_fn, expression, bound)
 
     try:
-        api_raw = evaluate_fn(chatik_api_js)
-        if api_raw and api_raw != "{}":
-            api_res = json.loads(api_raw)
-            if isinstance(api_res, dict) and api_res.get("conversations"):
-                return api_res
-    except Exception:
-        pass
+        api_raw = _read(chatik_api_js)
+    except Exception as exc:  # noqa: BLE001 - transport failures are returned; other chatik bugs fall back to the DOM
+        reason = cdp_transport_failure_reason(exc)
+        if reason:
+            logger.warning("dialog list chatik read failed: %s", reason)
+            return _dialog_list_transport_error(reason)
+        logger.debug("chatik conversation list unavailable, falling back to DOM: %s", exc)
+    else:
+        if not _empty_dialog_list_payload_error(api_raw):
+            try:
+                api_res = json.loads(api_raw)
+            except json.JSONDecodeError as exc:
+                logger.debug("chatik list payload was not JSON, falling back to DOM: %s", exc)
+            else:
+                if isinstance(api_res, dict) and api_res.get("conversations"):
+                    return api_res
 
-    # 2. DOM fallback
+    # 2. DOM fallback. Reached only when the API evaluate actually returned
+    # (or failed for a non-transport reason). A hung CDP already returned above.
     expr = _conversations_list_js()
     if expr.lstrip().startswith("() =>"):
         expr = "(" + expr + ")()"
-    raw = evaluate_fn(expr)
+    try:
+        raw = _read(expr)
+    except Exception as exc:  # noqa: BLE001 - the DOM read is the last chance; surface every failure
+        reason = cdp_transport_failure_reason(exc) or f"{type(exc).__name__}: {exc}"
+        logger.warning("dialog list DOM read failed: %s", reason)
+        return _dialog_list_transport_error(reason)
+
+    empty = _empty_dialog_list_payload_error(raw)
+    if empty:
+        logger.warning("dialog list DOM read failed: %s", empty)
+        return _dialog_list_transport_error(empty)
+
     try:
         first_res = json.loads(raw)
-    except Exception as e:
-        return {"error": str(e), "conversations": []}
+    except json.JSONDecodeError as exc:
+        return {"error": str(exc), "conversations": []}
 
-    if not isinstance(first_res, dict) or "conversations" not in first_res:
-        return first_res
+    if not isinstance(first_res, dict):
+        return {
+            "error": f"dialog list evaluate returned {type(first_res).__name__}, not a payload",
+            "conversations": [],
+        }
+    if "conversations" not in first_res:
+        if first_res.get("error"):
+            return {"error": str(first_res.get("error")), "conversations": []}
+        return {
+            "error": "dialog list evaluate returned no conversations payload",
+            "conversations": [],
+        }
 
     convs_by_id = {c.get("conversation_id"): c for c in first_res.get("conversations", []) if c.get("conversation_id")}
 
@@ -1880,12 +2032,12 @@ def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> d
 
     try:
         for _ in range(15):
-            sc_raw = evaluate_fn(scroll_check_js)
+            sc_raw = _read(scroll_check_js)
             sc_res = json.loads(sc_raw) if isinstance(sc_raw, str) else {}
             if not sc_res.get("found") or sc_res.get("at_bottom"):
                 break
             time.sleep(0.2)
-            step_raw = evaluate_fn(expr)
+            step_raw = _read(expr)
             step_res = json.loads(step_raw) if isinstance(step_raw, str) else {}
             for c in step_res.get("conversations", []):
                 cid = c.get("conversation_id")
@@ -1893,12 +2045,20 @@ def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> d
                     convs_by_id[cid] = c
 
         # Restore scroll to top
-        evaluate_fn("""(() => {
+        _read("""(() => {
             const sc = document.querySelector('[class*="chats--"], [class*="magritte-scroll-container"]');
             if (sc) sc.scrollTop = 0;
         })()""")
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - scroll is best-effort once at least one card was read
+        reason = cdp_transport_failure_reason(exc)
+        if reason and not convs_by_id:
+            logger.warning("dialog list scroll failed with no cards: %s", reason)
+            return _dialog_list_transport_error(reason)
+        logger.debug(
+            "dialog list scroll stopped (%s card(s) kept): %s",
+            len(convs_by_id),
+            exc,
+        )
 
     first_res["conversations"] = list(convs_by_id.values())
     return first_res

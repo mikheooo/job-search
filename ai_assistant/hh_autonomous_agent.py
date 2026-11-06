@@ -49,6 +49,7 @@ from .hh_browser_launcher import check_hh_session_authenticated, resolve_browser
 from .hh_message_reply import (
     HHDialog,
     HHMessage,
+    cdp_transport_failure_reason,
     classify_hh_conversation_detailed,
     fetch_hh_conversations_list_readonly,
 )
@@ -118,6 +119,11 @@ MSG_CHECK_CHECKED = "CHECKED"   # the list was read; the count is a confirmed nu
 MSG_CHECK_SKIPPED = "SKIPPED"   # the mode does not process correspondence (SEARCH_ONLY)
 MSG_CHECK_BLOCKED = "BLOCKED"   # the transport works but the check cannot be trusted
 MSG_CHECK_ERROR = "ERROR"       # the check itself failed (no transport, read error)
+
+# Bound a hung CDP dialog-list read. Above the in-page chatik fetch abort and
+# short enough that a stuck DevTools target becomes an ERROR instead of a
+# confirmed empty inbox. The daemon records that ERROR on the heartbeat.
+DIALOG_LIST_READ_TIMEOUT_SECONDS = 25.0
 
 MESSAGE_CHECK_STATUSES = (
     MSG_CHECK_CHECKED,
@@ -1350,23 +1356,38 @@ class AutonomousJobAgent:
                     logger.info("Navigating open tab to https://hh.ru/chat (was: %s)", curr_url)
                     eval_fn("window.location.href = 'https://hh.ru/chat'")
                     time.sleep(4)
-            except Exception as exc_nav:
+            except Exception as exc_nav:  # noqa: BLE001 - a hung CDP stops the check; other nav errors are best-effort
+                transport_reason = cdp_transport_failure_reason(exc_nav)
+                if transport_reason:
+                    return _stop(MSG_CHECK_ERROR, f"dialog list read failed: {transport_reason}")
                 logger.debug("Navigation to /chat pre-check exception: %s", exc_nav)
 
             try:
-                raw_res = fetch_hh_conversations_list_readonly(evaluate_fn=eval_fn)
-            except Exception as exc:
+                raw_res = fetch_hh_conversations_list_readonly(
+                    evaluate_fn=eval_fn,
+                    timeout_seconds=DIALOG_LIST_READ_TIMEOUT_SECONDS,
+                )
+            except TimeoutError as exc:
+                return _stop(MSG_CHECK_ERROR, f"dialog list read failed: TimeoutError: {exc}")
+            except Exception as exc:  # noqa: BLE001 - any read failure is an ERROR, never a silent zero
                 return _stop(MSG_CHECK_ERROR, f"dialog list read failed: {type(exc).__name__}: {exc}")
 
-            if isinstance(raw_res, dict) and raw_res.get("error"):
-                return _stop(MSG_CHECK_ERROR, f"dialog list read failed: {raw_res.get('error')}")
-
-            if isinstance(raw_res, dict):
-                convs = raw_res.get("conversations", [])
-            elif isinstance(raw_res, list):
+            if isinstance(raw_res, list):
                 convs = raw_res
+            elif not isinstance(raw_res, dict):
+                return _stop(
+                    MSG_CHECK_ERROR,
+                    f"dialog list read failed: unexpected payload type {type(raw_res).__name__}",
+                )
+            elif raw_res.get("error"):
+                return _stop(MSG_CHECK_ERROR, f"dialog list read failed: {raw_res.get('error')}")
+            elif "conversations" not in raw_res:
+                return _stop(
+                    MSG_CHECK_ERROR,
+                    "dialog list read failed: evaluate returned no conversations payload",
+                )
             else:
-                convs = []
+                convs = raw_res.get("conversations") or []
 
         dialogs: list[HHDialog] = []
         for it in convs:
