@@ -14,9 +14,10 @@ def _legacy_bot_enabled() -> bool:
 def _refuse_legacy_bot() -> None:
     print(
         "[SAFETY LOCKOUT] 'ai_assistant.bot' is a legacy entry and is disabled.\n"
-        "It is not a production bot. Recruiter and digest callbacks belong to the\n"
-        "canonical Telegram feedback processor.\n"
-        "Set LEGACY_BOT_OVERRIDE=1 only to inspect this old path deliberately.",
+        "It is not a production bot. The live long-poller is:\n"
+        "  python -m ai_assistant.telegram_control_bot\n"
+        "Read-only command handling lives on ai_assistant.telegram_bot.TelegramBot,\n"
+        "which is not a poller. Set LEGACY_BOT_OVERRIDE=1 only to inspect this old path.",
         file=sys.stderr,
     )
     raise SystemExit(1)

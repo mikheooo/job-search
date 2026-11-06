@@ -13,8 +13,8 @@ baked into its blocker list (``"Специалист по внедрению и 
 its address from ``tools/.t713_hh_drive.py``, which hard-codes the BrowserOS port. T7.22
 needs the resume decided by the vacancy and the address decided by the mode, so the
 submit path is its own file. The click and text paths themselves are the ones that sent
-the T7.19 responses -- imported from ``tools/.t722_hh_drive.py``, not re-implemented,
-because a fresh copy of a submit path is a fresh chance to get the click wrong.
+the T7.19 responses. This module does not import ``tools/.t*``; the brief
+script and report paths live in the package and under ``artifacts/``.
 
 ``brief`` never reaches the submit button. ``submit`` refuses to click while any
 precondition is unmet, and clicks once: on a timeout or an ambiguous answer it re-reads
@@ -27,7 +27,6 @@ HH's state rather than clicking again.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import pathlib
 import sys
@@ -46,7 +45,7 @@ from ai_assistant.hh_browser_provider import (
 )
 
 OUT = REPO / "artifacts" / "headless-poc"
-WORK = REPO / "tools" / ".t722"
+WORK = REPO / "artifacts" / "hh_cdp"
 
 # The response form, read straight off the SSR payload. Same shape the T7.19 inspect
 # used, plus the resume selector, because this run has to be able to change the resume
@@ -207,17 +206,80 @@ RESUME_OPTIONS_JS = r"""(() => {
 })()"""
 
 
+
+# Vacancy brief read off the SSR payload. Formerly tools/.t722_BRIEF_JS.
+# Production owns this string so submit/brief do not import scratch tools.
+BRIEF_JS = """(() => {
+  try {
+    const vid = '__VID__';
+    const t = document.getElementById('HH-Lux-InitialState');
+    let st = null, err = null;
+    if (t) { try { st = JSON.parse(t.innerHTML); } catch (e) { err = String(e); } }
+    const vf = (st && st.vacancyView && st.vacancyView.vacancyFull) || {};
+    const v = vf.vacancy || {};
+    const s = (st && st.applicantVacancyResponseStatuses || {})[vid] || {};
+    const sv = s.shortVacancy || {};
+    const txt = sel => { const e = document.querySelector(sel); return e ? e.innerText.trim() : ''; };
+    const again = document.querySelector('[data-qa="vacancy-response-link-top-again"]');
+    const viewTopic = document.querySelector('[data-qa="vacancy-response-link-view-topic"]');
+    return JSON.stringify({
+      ok: !!v.name,
+      state_error: err,
+      url: location.href,
+      name: v.name, id: v.id === undefined ? null : String(v.id),
+      employer: v.employer ? {id: v.employer.id, name: v.employer.name,
+        accredited: v.employer.accreditedItEmployer, trusted: v.employer.trusted} : null,
+      area: v.area ? {id: v.area.id, name: v.area.name, iso: v.area.countryIsoCode} : null,
+      address: v.address ? v.address.displayName : null,
+      compensation: v.compensation || null,
+      employment: v.employment, employmentForm: v.employmentForm,
+      workSchedule: v.workSchedule, workFormat: v.workFormat, workFormats: v.workFormats,
+      workingHours: v.workingHours,
+      experience: v.experience || null,
+      archived: v.archived, status: v.status, closedForApplicants: v.closedForApplicants,
+      validTo: v.validTo, creationTime: v.creationTime,
+      responseLetterRequired: v.responseLetterRequired,
+      hasTest: v.hasTest, test: v.test, questions: v.questions,
+      counters: v.counters, responseCounters: v.responseCounters,
+      dom_title: txt('[data-qa="vacancy-title"]'),
+      dom_company: txt('[data-qa="vacancy-company-name"]'),
+      dom_salary: txt('[data-qa="vacancy-salary"]'),
+      dom_already_responded: !!(again || viewTopic),
+      applicant: {
+        alreadyApplied: s.alreadyApplied,
+        responseAllowed: s.by_country_applicant_visibility
+          ? s.by_country_applicant_visibility.responseAllowed : null,
+        responseImpossible: s.responseImpossible,
+        usedResumeIds: s.usedResumeIds, unusedResumeIds: s.unusedResumeIds,
+        hiddenResumeIds: s.hiddenResumeIds,
+        letterMaxLength: s.letterMaxLength,
+        negotiations_total: (s.negotiations || {}).total,
+        test: s.test,
+        shortVacancy_workSchedule: sv['@workSchedule'],
+        shortVacancy_letterRequired: sv['@responseLetterRequired'],
+        shortVacancy_acceptLaborContract: sv.acceptLaborContract,
+        shortVacancy_acceptIncomplete: sv.acceptIncompleteResumes,
+      },
+      description: v.description || ''
+    });
+  } catch (e) { return JSON.stringify({ok: false, fatal: String(e && e.message || e)}); }
+})()"""
+
 def _log(message: str) -> None:
     print(message, flush=True)
 
 
-def _load_tool(name: str, filename: str):
-    spec = importlib.util.spec_from_file_location(name, REPO / "tools" / filename)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+def _window_snapshot(label: str) -> dict[str, Any]:
+    """Label a report section without importing tools/.t722_windows.
+
+    The scratch helper that censused Chrome windows is not part of the package
+    and is not in the tree. The label stays on the report so the gap is visible.
+    """
+    return {
+        "label": label,
+        "source": "package",
+        "note": "chrome window census is not collected in production",
+    }
 
 
 def _tab_ws(endpoint: str, target_id: str) -> str | None:
@@ -356,14 +418,12 @@ def _shutdown(session: HeadlessBrowserSession) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def run_brief(args: argparse.Namespace) -> dict[str, Any]:
-    windows = _load_tool("t722_windows", ".t722_windows.py")
-    scan = _load_tool("t722_scan", ".t722_scan.py")
     vid = args.vid
     report: dict[str, Any] = {
         "command": "brief", "vid": vid,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "endpoint_from_mode": resolve_browser_endpoint(),
-        "windows_before": windows.snapshot("t722_brief_before"),
+        "windows_before": _window_snapshot("t722_brief_before"),
     }
 
     session = HeadlessBrowserSession(require_auth=True)
@@ -388,14 +448,15 @@ def run_brief(args: argparse.Namespace) -> dict[str, Any]:
             report["verdict"] = "NO_TAB"
             return report
         session.navigate(target, _vacancy_url(vid))
-        vacancy = _read(session, target, scan._BRIEF_JS.replace("__VID__", vid))
+        vacancy = _read(session, target, BRIEF_JS.replace("__VID__", vid))
         report["vacancy"] = {k: v for k, v in vacancy.items() if k != "description"}
         report["description"] = vacancy.get("description") or ""
+        WORK.mkdir(parents=True, exist_ok=True)
         (WORK / f"desc_{vid}.txt").write_text(report["description"], encoding="utf-8")
         _log(f"vacancy {vacancy.get('name')!r} archived={vacancy.get('archived')} "
              f"status={vacancy.get('status')}")
 
-        report["windows_during"] = windows.snapshot("t722_brief_during")
+        report["windows_during"] = _window_snapshot("t722_brief_during")
 
         form_target = session.open_extra_tab(_form_url(vid))
         if form_target is not None:
@@ -410,7 +471,7 @@ def run_brief(args: argparse.Namespace) -> dict[str, Any]:
         report["screenshot"] = shot
         session.close_tab(target)
     finally:
-        report["windows_after"] = windows.snapshot("t722_brief_after")
+        report["windows_after"] = _window_snapshot("t722_brief_after")
         report["shutdown"] = _shutdown(session)
 
     report["verdict"] = "BRIEFED" if report.get("vacancy", {}).get("ok") else "NO_VACANCY"
@@ -581,8 +642,6 @@ def _enforce_controlled_gates(
 
 
 def run_submit(args: argparse.Namespace) -> dict[str, Any]:
-    windows = _load_tool("t722_windows", ".t722_windows.py")
-    scan = _load_tool("t722_scan", ".t722_scan.py")
     vid = args.vid
     letter = pathlib.Path(args.letter).read_text(encoding="utf-8")
     report: dict[str, Any] = {
@@ -591,7 +650,7 @@ def run_submit(args: argparse.Namespace) -> dict[str, Any]:
         "endpoint_from_mode": resolve_browser_endpoint(),
         "expect_resume": args.expect_resume,
         "letter_chars": len(letter),
-        "windows_before": windows.snapshot("t722_submit_before"),
+        "windows_before": _window_snapshot("t722_submit_before"),
         "clicked": 0,
     }
 
@@ -637,7 +696,7 @@ def run_submit(args: argparse.Namespace) -> dict[str, Any]:
             report["verdict"] = "NO_TAB"
             return report
         session.navigate(vacancy_tab, _vacancy_url(vid))
-        vacancy = _read(session, vacancy_tab, scan._BRIEF_JS.replace("__VID__", vid))
+        vacancy = _read(session, vacancy_tab, BRIEF_JS.replace("__VID__", vid))
         report["vacancy_before"] = {k: v for k, v in vacancy.items() if k != "description"}
 
         form_tab = session.open_extra_tab(_form_url(vid))
@@ -663,12 +722,12 @@ def run_submit(args: argparse.Namespace) -> dict[str, Any]:
         ):
             report["verdict"] = "REFUSED"
             report["blockers"] = [f"form URL is not hh.ru: {live_form_url!r}"]
-            report["windows_after"] = windows.snapshot("t722_submit_after")
+            report["windows_after"] = _window_snapshot("t722_submit_after")
             return report
         if f"vacancyId={vid}" not in live_form_url and f"/vacancy/{vid}" not in live_form_url:
             report["verdict"] = "REFUSED"
             report["blockers"] = [f"form URL does not belong to vacancy {vid}: {live_form_url!r}"]
-            report["windows_after"] = windows.snapshot("t722_submit_after")
+            report["windows_after"] = _window_snapshot("t722_submit_after")
             return report
 
         # Critical-1: same halt/audit/review gates as execute_hh_submission.
@@ -684,10 +743,10 @@ def run_submit(args: argparse.Namespace) -> dict[str, Any]:
             if not gate_ok:
                 report["verdict"] = "REFUSED"
                 report["blockers"] = [f"controlled gates: {gate_reason}"]
-                report["windows_after"] = windows.snapshot("t722_submit_after")
+                report["windows_after"] = _window_snapshot("t722_submit_after")
                 return report
 
-        report["windows_during"] = windows.snapshot("t722_submit_during")
+        report["windows_during"] = _window_snapshot("t722_submit_during")
 
         # -- resume selection switch if needed ------------------------------
         current_res = (form.get("resume_title") or "").strip()
@@ -804,7 +863,7 @@ def run_submit(args: argparse.Namespace) -> dict[str, Any]:
         if blockers:
             _log(f"REFUSED: {json.dumps(blockers, ensure_ascii=True)}")
             report["verdict"] = "REFUSED"
-            report["windows_after"] = windows.snapshot("t722_submit_after")
+            report["windows_after"] = _window_snapshot("t722_submit_after")
             return report
 
         # -- the one click ---------------------------------------------------
@@ -813,10 +872,10 @@ def run_submit(args: argparse.Namespace) -> dict[str, Any]:
         if point.get("error"):
             report["verdict"] = "REFUSED"
             report["blockers"] = [f"submit point unusable: {point['error']}"]
-            report["windows_after"] = windows.snapshot("t722_submit_after")
+            report["windows_after"] = _window_snapshot("t722_submit_after")
             return report
 
-        report["windows_at_click"] = windows.snapshot("t722_submit_at_click")
+        report["windows_at_click"] = _window_snapshot("t722_submit_at_click")
         CLICK(session.cdp_url, form_tab, point["x"], point["y"])
         report["clicked"] = 1
         _log("clicked submit once")
@@ -824,7 +883,7 @@ def run_submit(args: argparse.Namespace) -> dict[str, Any]:
 
         report["form_after_send"] = _read(session, form_tab, FORM_JS.replace("__VID__", vid))
         session.navigate(vacancy_tab, _vacancy_url(vid))
-        after = _read(session, vacancy_tab, scan._BRIEF_JS.replace("__VID__", vid))
+        after = _read(session, vacancy_tab, BRIEF_JS.replace("__VID__", vid))
         report["vacancy_after"] = {k: v for k, v in after.items() if k != "description"}
         shot = session.capture(OUT / f"t722_after_{vid}.png", vacancy_tab)
         report["screenshot"] = shot
@@ -851,7 +910,7 @@ def run_submit(args: argparse.Namespace) -> dict[str, Any]:
             _log("response not visible after 6 s; re-reading the vacancy page once")
             time.sleep(8.0)
             session.navigate(vacancy_tab, _vacancy_url(vid))
-            after_retry = _read(session, vacancy_tab, scan._BRIEF_JS.replace("__VID__", vid))
+            after_retry = _read(session, vacancy_tab, BRIEF_JS.replace("__VID__", vid))
             if _shows_response(after_retry, form_after_send):
                 post_confirmed = True
                 after = after_retry
@@ -868,7 +927,7 @@ def run_submit(args: argparse.Namespace) -> dict[str, Any]:
         )
         report["resume_after"] = form.get("resume_title") or ""
     finally:
-        report["windows_after"] = windows.snapshot("t722_submit_after")
+        report["windows_after"] = _window_snapshot("t722_submit_after")
         report["shutdown"] = _shutdown(session)
 
     report["verdict"] = "CLICKED" if report["clicked"] == 1 else "NOT_CLICKED"

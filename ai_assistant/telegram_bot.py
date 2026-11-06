@@ -1,4 +1,8 @@
-"""Stage 56: Production Telegram Bot Interface for Autonomous Job Agent.
+"""Read-only Telegram command helper. Not a long-poller.
+
+The live poller is ``python -m ai_assistant.telegram_control_bot``
+(``@jobsassistbot``). This module answers ``/status`` and feedback callbacks
+when a caller hands it an update. Running it as a script does not poll.
 
 Provides commands reading directly from database:
 - /status        -> Agent state, recent cycles, active stats.
@@ -16,8 +20,9 @@ Security:
 from __future__ import annotations
 
 import logging
-from typing import Any
+import sys
 from collections.abc import Callable
+from typing import Any
 
 from ai_assistant import config, db
 from ai_assistant.telegram_notifier import TelegramNotifier
@@ -219,3 +224,18 @@ class TelegramBot:
         if response_text:
             return self.notifier.send_message(text=response_text, chat_id=chat_id)
         return None
+
+
+def main() -> int:
+    """Refuse to poll. The live entry point is telegram_control_bot."""
+    print(
+        "ai_assistant.telegram_bot is not a poller.\n"
+        "Run the live long-poller instead:\n"
+        "  python -m ai_assistant.telegram_control_bot",
+        file=sys.stderr,
+    )
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

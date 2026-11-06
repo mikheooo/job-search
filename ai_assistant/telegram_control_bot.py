@@ -1,4 +1,14 @@
-"""Interactive Telegram Control Bot for Job Search Assistant.
+"""Live Telegram long-poller for @jobsassistbot.
+
+This is the recommended poller entry point:
+
+    python -m ai_assistant.telegram_control_bot
+
+``ai_assistant.bot`` is a locked legacy callback script.
+``ai_assistant.telegram_bot.TelegramBot`` is a read-only command helper and
+does not poll. Do not run a second poller against the same bot token.
+
+Interactive Telegram Control Bot for Job Search Assistant.
 
 Provides an interactive mobile control room via @jobsassistbot:
 - 📊 Статус: real-time application metrics, DB counts, queue health.

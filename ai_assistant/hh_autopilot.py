@@ -479,7 +479,7 @@ def brief_vacancy(vid: str) -> dict[str, Any] | None:
         t722 = _get_t722_send_module()
         args = argparse.Namespace(command="brief", vid=vid)
         report = t722.run_brief(args)
-        out_path = PROJECT_ROOT / "tools" / ".t722" / f"brief_{vid}.json"
+        out_path = PROJECT_ROOT / "artifacts" / "hh_cdp" / f"brief_{vid}.json"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
         return report
@@ -786,7 +786,7 @@ def submit_vacancy(
     # 1b. Auto-resolve screening prefill plan if not provided
     brief_data = None
     if prefill_plan is None:
-        brief_file = PROJECT_ROOT / "tools" / ".t722" / f"brief_{vid}.json"
+        brief_file = PROJECT_ROOT / "artifacts" / "hh_cdp" / f"brief_{vid}.json"
         brief_data = None
         if brief_file.exists():
             try:
@@ -873,7 +873,7 @@ def submit_vacancy(
             prefill_plan=prefill_plan,
         )
         submit_data = t722.run_submit(args)
-        submit_file = PROJECT_ROOT / "tools" / ".t722" / f"submit_{vid}.json"
+        submit_file = PROJECT_ROOT / "artifacts" / "hh_cdp" / f"submit_{vid}.json"
         submit_file.parent.mkdir(parents=True, exist_ok=True)
         submit_file.write_text(json.dumps(submit_data, ensure_ascii=False, indent=1), encoding="utf-8")
     except Exception as e:
@@ -1018,7 +1018,7 @@ def run_autopilot_cycle(
             area=None,
             schedule="remote",
         )
-        out_dir = PROJECT_ROOT / "tools" / ".t727"
+        out_dir = PROJECT_ROOT / "artifacts" / "hh_autopilot"
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "raw_report_autopilot_temp.json").write_text(
             json.dumps(raw_report, ensure_ascii=False, indent=2), encoding="utf-8"

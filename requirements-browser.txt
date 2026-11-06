@@ -1,0 +1,3 @@
+# Optional extra [browser]. Does not repeat the core set.
+#   pip install -r requirements.txt -r requirements-browser.txt
+playwright>=1,<2
