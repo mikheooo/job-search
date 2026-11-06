@@ -261,12 +261,14 @@ def test_telegram_routing_owner_only(monkeypatch):
     assert len(sent_chat_ids) == 1
 
     owner_id = str(config.TELEGRAM_OWNER_ID or "392046103")
-    channel_id = str(config.TELEGRAM_CHANNEL_ID or "-1004399255305")
+    channel_id = str(config.TELEGRAM_CHANNEL_ID or "")
 
     # MUST be owner chat ID
     assert sent_chat_ids[0] == owner_id
-    # MUST NOT be public channel ID
-    assert sent_chat_ids[0] != channel_id
+    # MUST NOT be the public channel, including the removed hardcoded id.
+    if channel_id:
+        assert sent_chat_ids[0] != channel_id
+    assert sent_chat_ids[0] != "-1004399255305"
 
 
 

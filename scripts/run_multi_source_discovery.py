@@ -63,7 +63,16 @@ logger = logging.getLogger("multi_source_discovery")
 # previously hardcoded here, so runtime behavior is unchanged.
 TELEGRAM_BOT_TOKEN = config.HH_TELEGRAM_BOT_TOKEN or config.TELEGRAM_BOT_TOKEN
 TELEGRAM_CHAT_ID = config.HH_TELEGRAM_CHAT_ID or config.TELEGRAM_CHAT_ID
-TELEGRAM_CHANNEL_ID = getattr(config, "TELEGRAM_CHANNEL_ID", None) or os.getenv("TELEGRAM_CHANNEL_ID", "-1004399255305")
+def configured_channel_id() -> str:
+    """Channel from the environment. Empty when unset — never a hardcoded id."""
+    env = (os.getenv("TELEGRAM_CHANNEL_ID") or "").strip()
+    if env:
+        return env
+    return (getattr(config, "TELEGRAM_CHANNEL_ID", "") or "").strip()
+
+
+# Snapshot at import. send_telegram_alert reads configured_channel_id() live.
+TELEGRAM_CHANNEL_ID = configured_channel_id()
 MIN_SALARY_RUB = 100_000
 
 TARGET_KEYWORDS = [
@@ -76,9 +85,14 @@ TARGET_KEYWORDS = [
 
 
 def send_telegram_alert(text: str, chat_id: str | int | None = None) -> bool:
-    """Send message to Telegram channel or chat."""
+    """Send message to Telegram channel or chat. Fail closed without a channel."""
     import urllib.request
-    target = chat_id or TELEGRAM_CHANNEL_ID
+    target = chat_id or configured_channel_id()
+    if not str(target or "").strip():
+        logger.error(
+            "TELEGRAM_CHANNEL_ID is not set; refusing to send a discovery alert"
+        )
+        return False
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload: dict[str, Any] = {
         "chat_id": target,

@@ -103,7 +103,8 @@ def test_2_delivered_vacancies_not_repeated(isolated_env, monkeypatch):
     db.save_vacancy(v1)
     db.save_vacancy(v2)
 
-    # 1. Run export with mark_delivered=True
+    # 1. Run export with mark_delivered=True. A channel is required to record delivery.
+    monkeypatch.setenv("TELEGRAM_CHANNEL_ID", "-100111222")
     buf = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf)
     res1 = export_digest_cmd(format_type="json", limit=5, min_score=60.0, output_json=True, mark_delivered=True)
@@ -180,7 +181,8 @@ def test_5_new_vacancies_appear_in_subsequent_digest(isolated_env, monkeypatch):
     v1 = _make_matching_vacancy("remoteok", "rok_b1", "Batch 1 Co")
     db.save_vacancy(v1)
 
-    # Deliver Batch 1
+    # Deliver Batch 1. Recording delivery names a channel; it does not guess one.
+    monkeypatch.setenv("TELEGRAM_CHANNEL_ID", "-100111222")
     export_digest_cmd(format_type="json", limit=5, min_score=60.0, output_json=True, mark_delivered=True)
     assert db.is_digest_delivered(v1.stable_id())
 

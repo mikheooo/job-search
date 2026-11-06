@@ -1,4 +1,7 @@
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 # Canonical project root — DB and vacancies.json resolve against it so that the
 # working directory never changes which database is used (cron, CLI, agents).
@@ -18,8 +21,8 @@ try:
         hermes_env = os.path.expanduser(r"~\AppData\Local\hermes\.env")
         if os.path.exists(hermes_env):
             load_dotenv(hermes_env)
-except Exception:
-    pass
+except (ImportError, OSError, ValueError) as exc:
+    logger.warning("Could not load .env (%s: %s)", type(exc).__name__, exc)
 
 VACANCIES_FILE = os.getenv("VACANCIES_FILE") or os.path.join(PROJECT_ROOT, "vacancies.json")
 DB_FILE = os.getenv("DB_FILE") or os.path.join(PROJECT_ROOT, "state.db")
@@ -32,7 +35,9 @@ LLM_MODEL = os.getenv("LLM_MODEL", "google/gemini-1.5-pro")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", os.getenv("TG_BOT_TOKEN", ""))
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", os.getenv("TG_CHAT_ID", os.getenv("TELEGRAM_ALLOWED_USERS", os.getenv("TELEGRAM_HOME_CHANNEL", ""))))
 TELEGRAM_OWNER_ID = os.getenv("TELEGRAM_OWNER_ID", os.getenv("TELEGRAM_ADMIN_ID", os.getenv("TELEGRAM_USER_ID", os.getenv("TELEGRAM_ALLOWED_USERS", ""))))
-TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "-1004399255305")
+# No baked-in channel. An empty value means "not configured"; send paths must
+# call require_telegram_channel_id() and refuse rather than guess a chat.
+TELEGRAM_CHANNEL_ID = (os.getenv("TELEGRAM_CHANNEL_ID") or "").strip()
 TG_BOT_TOKEN = TELEGRAM_BOT_TOKEN
 TG_CHAT_ID = TELEGRAM_CHAT_ID
 
@@ -44,35 +49,100 @@ UNIPILE_API_KEY = os.getenv("UNIPILE_API_KEY", "")
 UNIPILE_DSN = os.getenv("UNIPILE_DSN", "")
 UNIPILE_BASE_URL = os.getenv("UNIPILE_BASE_URL", "https://api1.unipile.com:13111/api/v1")
 
-try:
-    STOP_WORDS = [w.strip().lower() for w in os.getenv("STOP_WORDS", "").split(",") if w.strip()]
-    REQUIRED_WORDS = [w.strip().lower() for w in os.getenv("REQUIRED_WORDS", "").split(",") if w.strip()]
-    MIN_SALARY = int(os.getenv("MIN_SALARY", "0"))
-    BATCH_LIMIT = int(os.getenv("BATCH_LIMIT", "10"))
-    DIGEST_ATTEMPT_STALE_MINUTES = int(os.getenv("DIGEST_ATTEMPT_STALE_MINUTES", "60"))
-    if DIGEST_ATTEMPT_STALE_MINUTES <= 0:
-        DIGEST_ATTEMPT_STALE_MINUTES = 60
-    PRODUCTION_FAILURE_ALERT_THRESHOLD = int(os.getenv("PRODUCTION_FAILURE_ALERT_THRESHOLD", "3"))
-    if PRODUCTION_FAILURE_ALERT_THRESHOLD <= 0:
-        PRODUCTION_FAILURE_ALERT_THRESHOLD = 3
-    PREFERENCE_CALIBRATION_ENABLED = os.getenv("PREFERENCE_CALIBRATION_ENABLED", "false").strip().lower() in ("1", "true", "yes")
-    PREFERENCE_MAX_ADJUSTMENT = float(os.getenv("PREFERENCE_MAX_ADJUSTMENT", "8.0"))
-    PREFERENCE_MIN_EVIDENCE_THRESHOLD = int(os.getenv("PREFERENCE_MIN_EVIDENCE_THRESHOLD", "5"))
-except Exception:
-    STOP_WORDS = []
-    REQUIRED_WORDS = []
-    MIN_SALARY = 0
-    BATCH_LIMIT = 10
-    DIGEST_ATTEMPT_STALE_MINUTES = 60
-    PRODUCTION_FAILURE_ALERT_THRESHOLD = 3
-    PREFERENCE_CALIBRATION_ENABLED = False
-    PREFERENCE_MAX_ADJUSTMENT = 8.0
-    PREFERENCE_MIN_EVIDENCE_THRESHOLD = 5
+def _parse_word_list(key: str) -> list[str]:
+    """Comma-separated word list. Empty or unset stays empty for this key only."""
+    raw = os.getenv(key)
+    if raw is None or not str(raw).strip():
+        return []
+    return [w.strip().lower() for w in str(raw).split(",") if w.strip()]
 
-LOGS_DIR = os.getenv("LOGS_DIR") or os.path.join(PROJECT_ROOT, "logs", "job_search")
+
+def _parse_int_env(key: str, default: int, *, minimum: int | None = None) -> int:
+    """Parse one integer env var. Failure keeps `default` and does not touch other keys."""
+    raw = os.getenv(key)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError) as exc:
+        logger.error(
+            "Failed to parse %s=%r (%s: %s); keeping default %s",
+            key,
+            raw,
+            type(exc).__name__,
+            exc,
+            default,
+        )
+        return default
+    if minimum is not None and value < minimum:
+        logger.error(
+            "%s=%r is below minimum %s; keeping default %s",
+            key,
+            raw,
+            minimum,
+            default,
+        )
+        return default
+    return value
+
+
+def _parse_float_env(key: str, default: float) -> float:
+    raw = os.getenv(key)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return float(str(raw).strip())
+    except (TypeError, ValueError) as exc:
+        logger.error(
+            "Failed to parse %s=%r (%s: %s); keeping default %s",
+            key,
+            raw,
+            type(exc).__name__,
+            exc,
+            default,
+        )
+        return default
+
+
 def _parse_bool_env(raw: object) -> bool:
     return str(raw or "").strip().lower() in ("1", "true", "yes")
 
+
+# Each key is parsed on its own. A bad MIN_SALARY must not wipe STOP_WORDS.
+STOP_WORDS = _parse_word_list("STOP_WORDS")
+REQUIRED_WORDS = _parse_word_list("REQUIRED_WORDS")
+MIN_SALARY = _parse_int_env("MIN_SALARY", 0)
+BATCH_LIMIT = _parse_int_env("BATCH_LIMIT", 10)
+DIGEST_ATTEMPT_STALE_MINUTES = _parse_int_env("DIGEST_ATTEMPT_STALE_MINUTES", 60, minimum=1)
+PRODUCTION_FAILURE_ALERT_THRESHOLD = _parse_int_env(
+    "PRODUCTION_FAILURE_ALERT_THRESHOLD", 3, minimum=1
+)
+PREFERENCE_CALIBRATION_ENABLED = _parse_bool_env(os.getenv("PREFERENCE_CALIBRATION_ENABLED", "false"))
+PREFERENCE_MAX_ADJUSTMENT = _parse_float_env("PREFERENCE_MAX_ADJUSTMENT", 8.0)
+PREFERENCE_MIN_EVIDENCE_THRESHOLD = _parse_int_env("PREFERENCE_MIN_EVIDENCE_THRESHOLD", 5)
+
+
+class TelegramChannelRequired(RuntimeError):
+    """A channel send was requested but TELEGRAM_CHANNEL_ID is unset."""
+
+
+def require_telegram_channel_id() -> str:
+    """Channel id from the environment. Fail closed when it is missing.
+
+    Reads the live environment so a late export is honored. Never substitutes
+    a hardcoded chat id.
+    """
+    channel = (os.getenv("TELEGRAM_CHANNEL_ID") or "").strip()
+    if not channel:
+        logger.error(
+            "TELEGRAM_CHANNEL_ID is not set; refusing to target a channel"
+        )
+        raise TelegramChannelRequired(
+            "TELEGRAM_CHANNEL_ID is required to target a channel and is not set"
+        )
+    return channel
+
+LOGS_DIR = os.getenv("LOGS_DIR") or os.path.join(PROJECT_ROOT, "logs", "job_search")
 
 SUBMIT_ALLOWED = _parse_bool_env(
     _OPERATOR_SUBMIT_ALLOWED

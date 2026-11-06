@@ -284,7 +284,7 @@ def test_health_is_unknown_when_duplicate_check_itself_fails(monkeypatch):
 # explicit error flag; these tests pin that flag on every path that produces it.
 
 def test_snapshot_without_page_is_marked_as_error():
-    adapter = be.PlaywrightBrowserAdapter()
+    adapter = be.PlaywrightBrowserAdapter(cdp_url="http://127.0.0.1:9222")
     res = adapter.extract_application_form()
     assert res["questions"] == []
     assert res["error"] is True
@@ -292,7 +292,7 @@ def test_snapshot_without_page_is_marked_as_error():
 
 
 def test_snapshot_marks_error_when_extraction_raises():
-    adapter = be.PlaywrightBrowserAdapter()
+    adapter = be.PlaywrightBrowserAdapter(cdp_url="http://127.0.0.1:9222")
 
     class _DeadPage:
         def content(self):
@@ -511,7 +511,7 @@ def test_cdp_attach_failure_is_flagged_and_logged(monkeypatch, caplog):
     import logging
 
     _patch_playwright(monkeypatch, cdp_works=False)
-    adapter = be.PlaywrightBrowserAdapter()
+    adapter = be.PlaywrightBrowserAdapter(cdp_url="http://127.0.0.1:9222")
     with caplog.at_level(logging.WARNING, logger="ai_assistant.browser_executor"):
         res = adapter.open("https://hh.ru/vacancy/1")
 
@@ -523,7 +523,7 @@ def test_cdp_attach_failure_is_flagged_and_logged(monkeypatch, caplog):
 def test_successful_cdp_attach_leaves_fallback_flag_clear(monkeypatch):
     """Counter-check: without it the test above would pass for every browser."""
     _patch_playwright(monkeypatch, cdp_works=True)
-    adapter = be.PlaywrightBrowserAdapter()
+    adapter = be.PlaywrightBrowserAdapter(cdp_url="http://127.0.0.1:9222")
     res = adapter.open("https://hh.ru/vacancy/1")
 
     assert res["cdp_fallback"] is False
@@ -531,7 +531,7 @@ def test_successful_cdp_attach_leaves_fallback_flag_clear(monkeypatch):
 
 
 def test_snapshot_exposes_cdp_fallback():
-    adapter = be.PlaywrightBrowserAdapter()
+    adapter = be.PlaywrightBrowserAdapter(cdp_url="http://127.0.0.1:9222")
     adapter._cdp_fallback_reason = "connect_over_cdp(http://127.0.0.1:9222) failed: OSError"
     adapter.page = _FakePage()
     res = adapter.extract_application_form()
@@ -677,6 +677,7 @@ def test_resolve_cdp_url_logs_browseros_swap(monkeypatch, caplog):
 
     monkeypatch.delenv("CDP_URL", raising=False)
     monkeypatch.delenv("HH_CDP_URL", raising=False)
+    monkeypatch.setenv("HH_CDP_ALLOW_FALLBACK", "1")
     monkeypatch.setattr(
         hl, "probe_cdp",
         lambda url, timeout=1.5: hl.CDP_ALIVE if url == hl.BROWSEROS_CDP_URL else hl.CDP_DEAD,
@@ -702,6 +703,7 @@ def test_resolve_cdp_url_does_not_hop_on_slow_chrome(monkeypatch, caplog):
 
     monkeypatch.delenv("CDP_URL", raising=False)
     monkeypatch.delenv("HH_CDP_URL", raising=False)
+    monkeypatch.setenv("HH_CDP_ALLOW_FALLBACK", "1")
     monkeypatch.setattr(
         hl, "probe_cdp",
         lambda url, timeout=1.5: hl.CDP_TIMEOUT if url == hl.DEFAULT_HH_CDP_URL else hl.CDP_ALIVE,

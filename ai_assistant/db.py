@@ -2059,7 +2059,7 @@ def compute_digest_batch_key(vacancy_ids: list[str]) -> str:
     return f"digest_batch:{h}"
 
 
-def record_digest_attempt(vacancy_ids: list[str], chat_id: str = "-1004399255305") -> str | None:
+def record_digest_attempt(vacancy_ids: list[str], chat_id: str = "") -> str | None:
     """DURABLY record/acquire in-flight delivery attempt BEFORE external Telegram API side-effect.
     
     Returns batch_key if this process successfully claimed exclusive attempt permission.
@@ -2140,7 +2140,7 @@ def record_digest_attempt(vacancy_ids: list[str], chat_id: str = "-1004399255305
     return batch_key
 
 
-def mark_digest_delivered(vacancy_ids: list[str], batch_key: str | None = None, chat_id: str = "-1004399255305") -> int:
+def mark_digest_delivered(vacancy_ids: list[str], batch_key: str | None = None, chat_id: str = "") -> int:
     """Atomically record successful digest delivery for vacancy stable_ids and associated batch."""
     if not vacancy_ids:
         return 0
@@ -2187,7 +2187,7 @@ def mark_digest_delivered(vacancy_ids: list[str], batch_key: str | None = None, 
     return count
 
 
-def record_digest_failed(vacancy_ids: list[str], batch_key: str | None = None, chat_id: str = "-1004399255305", error: str = "") -> int:
+def record_digest_failed(vacancy_ids: list[str], batch_key: str | None = None, chat_id: str = "", error: str = "") -> int:
     """Record confirmed Telegram delivery failure so vacancies remain retryable."""
     if not vacancy_ids:
         return 0
@@ -2233,7 +2233,7 @@ def record_digest_failed(vacancy_ids: list[str], batch_key: str | None = None, c
     return count
 
 
-def record_digest_ambiguous(vacancy_ids: list[str], batch_key: str | None = None, chat_id: str = "-1004399255305", reason: str = "") -> int:
+def record_digest_ambiguous(vacancy_ids: list[str], batch_key: str | None = None, chat_id: str = "", reason: str = "") -> int:
     """Record ambiguous / interrupted attempt so vacancies are protected against duplicate send."""
     if not vacancy_ids:
         return 0
@@ -2380,7 +2380,7 @@ def list_digest_attempts(limit: int = 50, now_dt: Any | None = None) -> list[dic
     return results
 
 
-def reconcile_digest_attempt(batch_key: str, new_status: str, chat_id: str = "-1004399255305") -> bool:
+def reconcile_digest_attempt(batch_key: str, new_status: str, chat_id: str = "") -> bool:
     """Manually reconcile an unresolved digest batch and its associated vacancies. Fails closed if batch does not exist."""
     if new_status not in ("DELIVERED", "FAILED", "AMBIGUOUS"):
         raise ValueError(f"Invalid status: {new_status}. Must be DELIVERED, FAILED, or AMBIGUOUS.")

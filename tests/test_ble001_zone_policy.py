@@ -55,6 +55,7 @@ GREEN_ZONE = {
     "watcher.py",
     "hh_message_watcher.py",
     "hh_browser_launcher.py",
+    "cli_audit.py",
 }
 
 # Re-measured 2026-09-17. Count = broad handlers in that file that leave NO trace

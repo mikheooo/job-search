@@ -181,8 +181,9 @@ def test_unauthenticated_session_detection():
     assert res_auth["authenticated"] is True
 
 
-def test_watcher_stops_if_browser_fails_launch(clean_db):
+def test_watcher_stops_if_browser_fails_launch(clean_db, monkeypatch):
     """Watcher records clear BLOCKED reason if browser cannot be launched."""
+    monkeypatch.setenv("HH_CDP_URL", "http://127.0.0.1:9222")
     with patch("ai_assistant.hh_browser_launcher.ensure_hh_browser", return_value={"ok": False, "error": "Chrome executable not found"}):
         cfg = HHMessageWatcherConfig(
             profile_path=clean_db["profile_path"],
