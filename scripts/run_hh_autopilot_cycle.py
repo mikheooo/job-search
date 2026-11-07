@@ -64,6 +64,24 @@ AUTH_ALERT_MARKER = LOG_DIR / "hh_auth_alert.sent"
 AUTH_ALERT_SUPPRESS_SECONDS = 12 * 3600
 AUTH_RECHECK_DELAY_SECONDS = 12.0
 
+# Non-auth cycle failures (import errors, transport, disk) use a separate
+# ledger so they reach the same jobs-bot route without looking like a login
+# loss. Default cooldown is 6h: a 4-hour schedule cannot repeat the same page.
+OPS_ALERT_STATE = LOG_DIR / "hh_autopilot_ops_alert.json"
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return default
+
+
+OPS_ALERT_COOLDOWN_SECONDS = _env_int("HH_AUTOPILOT_FAILURE_ALERT_COOLDOWN_SECONDS", 6 * 3600)
+
 _AUTH_FAILURE_NEEDLES = (
     "HH_AUTH_REQUIRED",
     "account/login",
@@ -203,13 +221,119 @@ def _confirm_hh_auth_required(error_text: str) -> dict:
     }
 
 
-def _handle_auth_failure(error_text: str) -> bool:
-    """Alert only after a fresh, verified login-page observation."""
-    if not _auth_error_is_suspicious(error_text):
+def _deliver_owner_alert(text: str) -> bool:
+    """Jobs-bot route. Tests replace this; production does not log the body."""
+    from ai_assistant.automation_alerts import deliver_owner_alert
+
+    return bool(deliver_owner_alert(text))
+
+
+def _run_scheduled_autopilot(**kwargs):
+    from ai_assistant.hh_autopilot import run_autopilot_cycle
+
+    return run_autopilot_cycle(**kwargs)
+
+
+def _bump_resumes():
+    from ai_assistant.hh_resume_bumper import bump_hh_resumes
+
+    return bump_hh_resumes()
+
+
+def _run_message_agent() -> None:
+    """Best-effort chat pass. Failures here do not change the cycle exit code."""
+    from ai_assistant import hh_browser_lease as _lease
+    from ai_assistant.autonomous_mode import FULL
+    from ai_assistant.hh_autonomous_agent import (
+        AutonomousConfig,
+        AutonomousJobAgent,
+    )
+
+    logger.info("Starting message-agent cycle (auto-reply to incoming HH chats)...")
+    with _lease.hh_operation(
+        _lease.OWNER_AUTONOMOUS,
+        purpose="message_processing",
+        session_kwargs={"require_auth": False},
+    ) as op:
+        if op.get("session"):
+            try:
+                op["session"].start()
+                from ai_assistant.hh_browser_launcher import DEFAULT_HH_URL
+                op["session"].open_hh_page(DEFAULT_HH_URL)
+            except Exception as b_err:  # noqa: BLE001 - a closed page must not abort the chat pass
+                logger.debug("Session start/open in message cycle: %s", b_err)
+        msg_cfg = AutonomousConfig(mode=FULL, auto_start_browser=True)
+        msg_agent = AutonomousJobAgent(config=msg_cfg)
+        msg_res = msg_agent._process_messages()
+    logger.info(
+        "Message-agent cycle: checked=%d, status=%s, reason=%s, "
+        "auto_replies=%d, interviews=%d, rejections=%d",
+        msg_res.get("messages_checked", 0),
+        msg_res.get("messages_check_status", ""),
+        msg_res.get("messages_check_reason", ""),
+        msg_res.get("auto_replies_count", 0),
+        msg_res.get("interviews_detected", 0),
+        msg_res.get("rejections_count", 0),
+    )
+
+
+def _notify_non_auth_failure(error_text: str, submitted: int | None) -> bool:
+    from ai_assistant.automation_alerts import (
+        notify_hh_non_auth_failure,
+        sanitize_alert_text,
+    )
+
+    safe = sanitize_alert_text(error_text)
+    logger.info(
+        "Non-auth HH failure; operational alert (not an auth alert): %s",
+        safe[:200],
+    )
+    decision = notify_hh_non_auth_failure(
+        error_text,
+        state_path=OPS_ALERT_STATE,
+        send_fn=_deliver_owner_alert,
+        submitted=submitted,
+        cooldown_seconds=OPS_ALERT_COOLDOWN_SECONDS,
+    )
+    logger.info(
+        "Non-auth HH operational alert: action=%s sent=%s streak=%s",
+        decision.get("action"),
+        decision.get("sent"),
+        decision.get("streak"),
+    )
+    return bool(decision.get("sent"))
+
+
+def _notify_non_auth_recovery() -> bool:
+    from ai_assistant.automation_alerts import notify_hh_non_auth_recovery
+
+    decision = notify_hh_non_auth_recovery(
+        state_path=OPS_ALERT_STATE,
+        send_fn=_deliver_owner_alert,
+        cooldown_seconds=OPS_ALERT_COOLDOWN_SECONDS,
+    )
+    if decision.get("action") not in {None, "none"}:
         logger.info(
-            "Non-auth HH failure; no auth alert: %s", (error_text or "")[:200]
+            "Non-auth HH recovery alert: action=%s sent=%s",
+            decision.get("action"),
+            decision.get("sent"),
         )
-        return False
+    return bool(decision.get("sent"))
+
+
+def _coerce_submitted(res) -> int | None:
+    if not isinstance(res, dict) or res.get("submitted") is None:
+        return None
+    try:
+        return int(res.get("submitted"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _handle_auth_failure(error_text: str, submitted: int | None = None) -> bool:
+    """Auth loss keeps the verified-login alert. Every other failure pages too."""
+    if not _auth_error_is_suspicious(error_text):
+        return _notify_non_auth_failure(error_text, submitted)
 
     confirmation = _confirm_hh_auth_required(error_text)
     status = confirmation.get("status")
@@ -239,20 +363,27 @@ def _maybe_notify_auth_failure(error_text: str) -> bool:
     except Exception:
         pass
 
-    from ai_assistant.auth_notifications import AUTH_FAILURE_MESSAGE
-    from ai_assistant.hh_autopilot import send_telegram_alert
+    try:
+        from ai_assistant.auth_notifications import AUTH_FAILURE_MESSAGE
+    except ImportError:
+        AUTH_FAILURE_MESSAGE = (
+            "⚠️ HH Autopilot: подтверждена потеря авторизации (HH_AUTH_REQUIRED).\n"
+            "Запустите: python scripts/hh_open_login_window.py"
+        )
 
     try:
-        sent = bool(send_telegram_alert(AUTH_FAILURE_MESSAGE))
+        sent = bool(_deliver_owner_alert(AUTH_FAILURE_MESSAGE))
     except Exception as e:
-        logger.warning(f"Auth alert delivery failed: {e}")
+        logger.warning("Auth alert delivery failed: %s", type(e).__name__)
         return False
     if not sent:
         logger.warning("Auth alert not confirmed; suppression marker not written.")
         return False
     try:
+        from ai_assistant.automation_alerts import sanitize_alert_text
+
         AUTH_ALERT_MARKER.write_text(
-            f"{datetime.datetime.now().isoformat()}\n{error_text[:300]}",
+            f"{datetime.datetime.now().isoformat()}\n{sanitize_alert_text(error_text, limit=300)}",
             encoding="utf-8",
         )
     except Exception as e:
@@ -265,14 +396,18 @@ def _maybe_notify_auth_recovered() -> bool:
     if not AUTH_ALERT_MARKER.exists():
         return False
 
-    from ai_assistant.auth_notifications import AUTH_RECOVERED_MESSAGE
-    from ai_assistant.hh_autopilot import send_telegram_alert
+    try:
+        from ai_assistant.auth_notifications import AUTH_RECOVERED_MESSAGE
+    except ImportError:
+        AUTH_RECOVERED_MESSAGE = (
+            "✅ HH Autopilot: сессия HH снова авторизована."
+        )
 
     sent = False
     try:
-        sent = bool(send_telegram_alert(AUTH_RECOVERED_MESSAGE))
+        sent = bool(_deliver_owner_alert(AUTH_RECOVERED_MESSAGE))
     except Exception as e:
-        logger.warning(f"Auth recovery alert failed: {e}")
+        logger.warning("Auth recovery alert failed: %s", type(e).__name__)
     finally:
         # A confirmed authenticated session must never leave a 12-hour marker
         # behind, even when the recovery notice itself could not be delivered.
@@ -343,16 +478,14 @@ def main() -> int:
     try:
         # 1. Auto-bump resume to top of HH search
         try:
-            from ai_assistant.hh_resume_bumper import bump_hh_resumes
-            bump_res = bump_hh_resumes()
+            bump_res = _bump_resumes()
             logger.info(f"HH resume auto-bump result: {bump_res}")
         except Exception as be:
             logger.warning(f"Resume auto-bump failed: {be}")
 
         # 2. Run application cycle
-        from ai_assistant.hh_autopilot import run_autopilot_cycle
         logger.info(f"Starting scheduled autopilot run (max_submits={args.max_submits})...")
-        res = run_autopilot_cycle(
+        res = _run_scheduled_autopilot(
             max_submits=args.max_submits,
             queries=args.query,
             read_limit=args.read_limit,
@@ -366,52 +499,25 @@ def main() -> int:
             logger.warning("Skipping message-agent cycle because autopilot reported auth error: %s", cycle_err[:200])
         else:
             try:
-                from ai_assistant.hh_autonomous_agent import (
-                    AutonomousConfig,
-                    AutonomousJobAgent,
-                )
-                from ai_assistant.autonomous_mode import FULL
-                from ai_assistant import hh_browser_lease as _lease
-
-                logger.info("Starting message-agent cycle (auto-reply to incoming HH chats)...")
-                with _lease.hh_operation(
-                    _lease.OWNER_AUTONOMOUS,
-                    purpose="message_processing",
-                    session_kwargs={"require_auth": False},
-                ) as op:
-                    if op.get("session"):
-                        try:
-                            op["session"].start()
-                            from ai_assistant.hh_browser_launcher import DEFAULT_HH_URL
-                            op["session"].open_hh_page(DEFAULT_HH_URL)
-                        except Exception as b_err:
-                            logger.debug("Session start/open in message cycle: %s", b_err)
-                    msg_cfg = AutonomousConfig(mode=FULL, auto_start_browser=True)
-                    msg_agent = AutonomousJobAgent(config=msg_cfg)
-                    msg_res = msg_agent._process_messages()
-                logger.info(
-                    "Message-agent cycle: checked=%d, status=%s, reason=%s, "
-                    "auto_replies=%d, interviews=%d, rejections=%d",
-                    msg_res.get("messages_checked", 0),
-                    msg_res.get("messages_check_status", ""),
-                    msg_res.get("messages_check_reason", ""),
-                    msg_res.get("auto_replies_count", 0),
-                    msg_res.get("interviews_detected", 0),
-                    msg_res.get("rejections_count", 0),
-                )
+                _run_message_agent()
             except Exception as me:
                 logger.warning(f"Message-agent cycle failed (non-fatal): {me}")
 
-        # Phase 4A.2: an ERROR result must not masquerade as success (exit 0).
-        # Auth outages additionally trigger the single-suppressed alert.
+        # An ERROR result must not masquerade as success (exit 0).
+        # Confirmed auth loss uses the auth alert. Every other failure uses
+        # the operational alert (cooldown + recovery) on the same route.
         if isinstance(res, dict) and res.get("status") == "ERROR":
-            _handle_auth_failure(str(res.get("error") or ""))
+            _handle_auth_failure(
+                str(res.get("error") or ""),
+                submitted=_coerce_submitted(res),
+            )
             return 1
         _maybe_notify_auth_recovered()
+        _notify_non_auth_recovery()
         return 0
     except Exception as e:
         logger.error(f"Autopilot cycle failed with unhandled exception: {e}", exc_info=True)
-        _handle_auth_failure(str(e))
+        _handle_auth_failure(f"{type(e).__name__}: {e}")
         return 1
     finally:
         release_lock()

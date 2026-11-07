@@ -13,8 +13,8 @@ import time
 import pytest
 
 from ai_assistant.hh_browser_provider import (
-    HH_AUTH_REQUIRED,
     HH_AUTH_OK,
+    HH_AUTH_REQUIRED,
     auth_gate,
     decide_authentication,
     launch_headless,
@@ -99,75 +99,123 @@ def cycle(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "LOCK_FILE", tmp_path / "autopilot.lock")
     monkeypatch.setattr(mod, "AUTH_ALERT_MARKER", tmp_path / "hh_auth_alert.sent")
     monkeypatch.setattr(mod, "AUTH_ALERT_SUPPRESS_SECONDS", 12 * 3600)
+    monkeypatch.setattr(mod, "OPS_ALERT_STATE", tmp_path / "hh_autopilot_ops_alert.json")
+    monkeypatch.setattr(mod, "OPS_ALERT_COOLDOWN_SECONDS", 6 * 3600)
+    monkeypatch.setattr(mod, "AUTH_RECHECK_DELAY_SECONDS", 0)
+    monkeypatch.setattr(mod, "_run_message_agent", lambda: None)
     monkeypatch.setattr("sys.argv", ["prog"])
     return mod
 
 
-def _stub_cycle_env(monkeypatch, result):
-    import ai_assistant.hh_autopilot as ha
-    import ai_assistant.hh_resume_bumper as hb
+def _capture_alerts(monkeypatch, cycle):
+    sent: list[str] = []
+    monkeypatch.setattr(cycle, "_deliver_owner_alert", lambda text: sent.append(text) or True)
+    return sent
 
-    monkeypatch.setattr(hb, "bump_hh_resumes", lambda: {"status": "SKIPPED"})
-    monkeypatch.setattr(ha, "run_autopilot_cycle", lambda **kw: result)
+
+def _stub_cycle_env(monkeypatch, cycle, result):
+    monkeypatch.setattr(cycle, "_bump_resumes", lambda: {"status": "SKIPPED"})
+    monkeypatch.setattr(cycle, "_run_scheduled_autopilot", lambda **kw: result)
 
 
 # Auth ERROR result: exit 1 (not false success) + exactly one alert.
 def test_error_result_exits_1_with_single_alert(cycle, tmp_path, monkeypatch):
     _stub_cycle_env(
         monkeypatch,
+        cycle,
         {"status": "ERROR",
          "error": "the browser session is not usable: HH_AUTH_REQUIRED test",
          "submitted": 0},
     )
-    import ai_assistant.hh_autopilot as ha
-
-    sent = []
-    monkeypatch.setattr(ha, "send_telegram_alert", lambda text: sent.append(text) or True)
+    monkeypatch.setattr(
+        cycle,
+        "_check_hh_auth_now",
+        lambda: {"status": "HH_AUTH_REQUIRED", "message": "login", "auth": None},
+    )
+    sent = _capture_alerts(monkeypatch, cycle)
     assert cycle.main() == 1
     assert len(sent) == 1, "exactly one informative alert"
+    assert "HH_AUTH_REQUIRED" in sent[0]
     # Second failing run inside the window: still exit 1, no second alert.
     _stub_cycle_env(
         monkeypatch,
+        cycle,
         {"status": "ERROR", "error": "HH_AUTH_REQUIRED again", "submitted": 0},
     )
     assert cycle.main() == 1
     assert len(sent) == 1, "alerts must not repeat inside suppression window"
 
 
-# Non-auth errors: honest exit 1, no auth alert.
-def test_nonauth_error_no_alert(cycle, tmp_path, monkeypatch):
+# Non-auth errors: exit 1 and one operational alert, not an auth alert.
+def test_nonauth_error_sends_operational_alert(cycle, tmp_path, monkeypatch):
+    secret = "bot123456:AAFakeTokenValueForTestOnlyXXXX"
     _stub_cycle_env(
         monkeypatch,
-        {"status": "ERROR", "error": "disk quota exceeded (test)", "submitted": 0},
+        cycle,
+        {
+            "status": "ERROR",
+            "error": (
+                "cannot import name 'hh_structured_preflight' "
+                f"from /home/misha/job-search password={secret}"
+            ),
+            "submitted": 0,
+        },
     )
-    import ai_assistant.hh_autopilot as ha
-
-    sent = []
-    monkeypatch.setattr(ha, "send_telegram_alert", lambda text: sent.append(text) or True)
+    sent = _capture_alerts(monkeypatch, cycle)
     assert cycle.main() == 1
-    assert sent == []
+    assert len(sent) == 1
+    assert "hh_structured_preflight" in sent[0]
+    assert "Отправлено откликов в этом цикле: 0" in sent[0]
+    assert "не потеря авторизации" in sent[0]
+    assert "HH_AUTH_REQUIRED" not in sent[0]
+    assert secret not in sent[0]
+    assert "misha" not in sent[0]
+    assert cycle.main() == 1
+    assert len(sent) == 1, "the same non-auth failure stays inside the cooldown"
+    _stub_cycle_env(
+        monkeypatch,
+        cycle,
+        {"status": "SUCCESS", "submitted": 0, "applications": []},
+    )
+    assert cycle.main() == 0
+    assert len(sent) == 2
+    assert "снова завершился без этой ошибки" in sent[1]
 
 
-# Success path unchanged: exit 0, no alert.
+def test_unhandled_import_error_alerts_without_secrets(cycle, monkeypatch):
+    secret = "bot123456:AAFakeTokenValueForTestOnlyXXXX"
+
+    def _boom(**_kwargs):
+        raise ImportError(
+            f"cannot import name 'hh_structured_preflight' password={secret}"
+        )
+
+    monkeypatch.setattr(cycle, "_bump_resumes", lambda: {"status": "SKIPPED"})
+    monkeypatch.setattr(cycle, "_run_scheduled_autopilot", _boom)
+    sent = _capture_alerts(monkeypatch, cycle)
+    assert cycle.main() == 1
+    assert len(sent) == 1
+    assert "hh_structured_preflight" in sent[0]
+    assert secret not in sent[0]
+    assert "HH_AUTH_REQUIRED" not in sent[0]
+    assert "не потеря авторизации" in sent[0]
+
+
+# Success path with no prior failure: exit 0, no alert.
 def test_success_path_unchanged(cycle, tmp_path, monkeypatch):
     _stub_cycle_env(
         monkeypatch,
+        cycle,
         {"status": "SUCCESS", "submitted": 0, "applications": []},
     )
-    import ai_assistant.hh_autopilot as ha
-
-    sent = []
-    monkeypatch.setattr(ha, "send_telegram_alert", lambda text: sent.append(text) or True)
+    sent = _capture_alerts(monkeypatch, cycle)
     assert cycle.main() == 0
     assert sent == []
 
 
 # Suppression expiry: old marker allows a fresh alert.
 def test_alert_suppression_expires(cycle, tmp_path, monkeypatch):
-    import ai_assistant.hh_autopilot as ha
-
-    sent = []
-    monkeypatch.setattr(ha, "send_telegram_alert", lambda text: sent.append(text) or True)
+    sent = _capture_alerts(monkeypatch, cycle)
     assert cycle._maybe_notify_auth_failure("HH_AUTH_REQUIRED x") is True
     assert cycle._maybe_notify_auth_failure("HH_AUTH_REQUIRED x") is False
     old = time.time() - 13 * 3600
