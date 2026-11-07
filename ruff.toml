@@ -530,3 +530,8 @@ ignore = [
 #   the whole probe on the first surprise throws away the diagnosis, which is
 #   the only thing this tool exists to produce. Each catch prints what it ate.
 "tools/e2e_pipeline_probe.py" = ["BLE001"]
+# BLE001: recovered local sources (docs/automation_alerts.md). The broad catches
+# are the original fail-soft paths around CDP, SQLite, and Telegram parsing.
+# They were not rewritten; S110 silence was replaced with a debug log only.
+"ai_assistant/gig/kwork_inbox_monitor.py" = ["BLE001"]
+"ai_assistant/telegram_routing.py" = ["BLE001"]

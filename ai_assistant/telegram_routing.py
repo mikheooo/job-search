@@ -9,14 +9,15 @@ ambiguous configuration is an error, not something to work around.
 from __future__ import annotations
 
 import json
-import os
+import logging
 import pathlib
 import re
 import socket
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 HERMES_ENV_FILE = pathlib.Path.home() / "AppData" / "Local" / "hermes" / ".env"
 TOOLS_ENV_FILE = pathlib.Path.home() / "tools" / ".env"
@@ -63,7 +64,7 @@ def _read_env_token(path: pathlib.Path) -> str:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return ""
-    match = re.search(r"^TELEGRAM_BOT_TOKEN\s*=\s*(.+)$", text, re.M)
+    match = re.search(r"^TELEGRAM_BOT_TOKEN\s*=\s*(.+)$", text, re.MULTILINE)
     return _normalize_token(match.group(1).strip().strip('"').strip("'")) if match else ""
 
 
@@ -144,7 +145,7 @@ def _is_ambiguous_transport_error(exc: BaseException) -> bool:
         ):
             return True
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("http.client import failed during transport classification")
     if isinstance(exc, urllib.error.URLError):
         reason = getattr(exc, "reason", exc)
         if isinstance(reason, (socket.timeout, TimeoutError)):
@@ -212,7 +213,9 @@ def send_job_message_result(
                 except Exception:
                     # HTTP 200 already confirms delivery even if the ack body
                     # cannot be parsed. Do not turn success into ambiguity.
-                    pass
+                    logging.getLogger(__name__).debug(
+                        "Telegram ack body was not parsed; delivery stays confirmed"
+                    )
             return JobSendResult(True, "delivered", "HTTP 200", message_id)
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
