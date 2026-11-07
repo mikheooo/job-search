@@ -243,6 +243,100 @@ def test_new_buyer_message_is_not_repeated_as_a_health_alert(cycle, monkeypatch)
     assert "Нужен бот" in messages[0]
 
 
+def _block_message_cards(monkeypatch) -> list[str]:
+    sent: list[str] = []
+    monkeypatch.setattr(
+        "ai_assistant.gig.kwork_inbox_monitor.telegram_routing.send_job_message_result",
+        _message_sender(sent),
+    )
+    return sent
+
+
+def test_import_failure_is_recorded_then_reraised(cycle, monkeypatch):
+    monkeypatch.setenv("KWORK_INBOX_NOT_READY_STREAK", "1")
+    health: list[str] = []
+    messages = _block_message_cards(monkeypatch)
+    monkeypatch.setattr(
+        "ai_assistant.automation_alerts.deliver_owner_alert",
+        lambda text: health.append(text) or True,
+    )
+    original = cycle._import_monitor
+    failed = {"on": True}
+
+    def _import():
+        if failed["on"]:
+            raise ImportError("cannot import name 'list_tabs' password=supersecretvalue")
+        return original()
+
+    monkeypatch.setattr(cycle, "_import_monitor", _import)
+    with pytest.raises(ImportError, match="list_tabs"):
+        cycle.run_cycle(dry_run=False)
+    assert messages == []
+    assert len(health) == 1
+    assert "list_tabs" in health[0]
+    assert "не признак истёкшей авторизации" in health[0]
+    assert "supersecretvalue" not in health[0]
+    stored = cycle.KWORK_HEALTH_STATE.read_text(encoding="utf-8")
+    assert "supersecretvalue" not in stored
+    assert json.loads(stored)["awaiting_recovery"] is True
+
+    failed["on"] = False
+    _install_scan(
+        monkeypatch,
+        cycle,
+        KworkScanResult(is_authenticated=True, auth_status="OK", active_dialogues_count=0),
+    )
+    recovered = cycle.run_cycle(dry_run=False)
+    assert recovered["health_alert"]["action"] == "recovery"
+    assert recovered["health_alert"]["sent"] is True
+    assert "снова проходит" in health[-1]
+    assert messages == []
+
+
+def test_scan_failure_persists_on_live_and_is_silent_on_dry_run(cycle, monkeypatch):
+    health: list[str] = []
+    messages = _block_message_cards(monkeypatch)
+    monkeypatch.setattr(
+        "ai_assistant.automation_alerts.deliver_owner_alert",
+        lambda text: health.append(text) or True,
+    )
+
+    def _boom(cdp_url):
+        raise RuntimeError(f"scan failed password=supersecretvalue cdp={cdp_url}")
+
+    monkeypatch.setattr(cycle, "scan_kwork_inbox_via_cdp", _boom)
+    with pytest.raises(RuntimeError, match="scan failed"):
+        cycle.run_cycle(dry_run=False)
+    assert messages == []
+    assert health == []
+    ledger = json.loads(cycle.KWORK_HEALTH_STATE.read_text(encoding="utf-8"))
+    assert ledger["streak"] == 1
+    assert ledger["awaiting_recovery"] is False
+    assert "supersecretvalue" not in json.dumps(ledger)
+
+    cycle.KWORK_HEALTH_STATE.unlink()
+    with pytest.raises(RuntimeError, match="scan failed"):
+        cycle.run_cycle(dry_run=True)
+    assert health == []
+    assert messages == []
+    assert not cycle.KWORK_HEALTH_STATE.exists()
+
+
+def test_reporter_failure_does_not_mask_the_scan_error(cycle, monkeypatch):
+    def _boom(cdp_url):
+        raise RuntimeError("scan blew up")
+
+    monkeypatch.setattr(cycle, "scan_kwork_inbox_via_cdp", _boom)
+
+    def _reporter(**_kwargs):
+        raise RuntimeError("reporter down")
+
+    monkeypatch.setattr("ai_assistant.automation_alerts.observe_kwork_inbox", _reporter)
+    with pytest.raises(RuntimeError, match="scan blew up"):
+        cycle.run_cycle(dry_run=False)
+    assert not cycle.KWORK_HEALTH_STATE.exists()
+
+
 def test_cli_live_flag_reaches_the_cycle(cycle, monkeypatch, capsys):
     seen: dict[str, bool] = {}
 

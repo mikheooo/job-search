@@ -41,6 +41,12 @@ pages again only if the failure is still there after six hours.
 `scripts/run_kwork_inbox_monitor_cycle.py`. The default is dry-run. `--live`
 is what the scheduled task passes.
 
+If loading the monitor or the scan raises, the runner records that as
+`EXCEPTION` with zero dialogues read, then re-raises. The process still
+exits nonzero. A dry-run records nothing and sends nothing. Login-loss and
+buyer-message cards are not sent from this path. If the health recorder
+itself raises, the original scan error is what propagates.
+
 After `process_monitor_cycle` returns, the runner reads that report:
 
 - `auth_status` — `PAGE_NOT_READY`, `CDP_UNAVAILABLE`, and `UNKNOWN` are

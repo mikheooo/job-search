@@ -53,13 +53,13 @@ except Exception:  # noqa: BLE001 - missing dotenv falls back to a manual .env r
                 "Could not read .env: %s", type(exc).__name__
             )
 
-from ai_assistant.gig.kwork_inbox_monitor import (
-    DEFAULT_CDP_URL,
-    KworkInboxStorage,
-    get_ambiguous_diagnostic_report,
-    process_monitor_cycle,
-    scan_kwork_inbox_via_cdp,
-)
+# Same port the recovered monitor hard-codes. The module itself is imported
+# inside the cycle so a missing import can be recorded before the process exits.
+DEFAULT_CDP_URL = "http://127.0.0.1:9111"
+KworkInboxStorage = None
+get_ambiguous_diagnostic_report = None
+process_monitor_cycle = None
+scan_kwork_inbox_via_cdp = None
 
 try:
     from ai_assistant.runner import is_pid_running as _is_pid_running
@@ -135,6 +135,81 @@ def release_monitor_lock() -> None:
         pass
 
 
+def _import_monitor():
+    """Load the inbox monitor, keeping any test double already installed."""
+    global KworkInboxStorage, get_ambiguous_diagnostic_report, process_monitor_cycle
+    global scan_kwork_inbox_via_cdp
+    if (
+        KworkInboxStorage is not None
+        and get_ambiguous_diagnostic_report is not None
+        and process_monitor_cycle is not None
+        and scan_kwork_inbox_via_cdp is not None
+    ):
+        return (
+            KworkInboxStorage,
+            get_ambiguous_diagnostic_report,
+            process_monitor_cycle,
+            scan_kwork_inbox_via_cdp,
+        )
+    from ai_assistant.gig.kwork_inbox_monitor import (
+        KworkInboxStorage as _Storage,
+        get_ambiguous_diagnostic_report as _diag,
+        process_monitor_cycle as _process,
+        scan_kwork_inbox_via_cdp as _scan,
+    )
+    if KworkInboxStorage is None:
+        KworkInboxStorage = _Storage
+    if get_ambiguous_diagnostic_report is None:
+        get_ambiguous_diagnostic_report = _diag
+    if process_monitor_cycle is None:
+        process_monitor_cycle = _process
+    if scan_kwork_inbox_via_cdp is None:
+        scan_kwork_inbox_via_cdp = _scan
+    return (
+        KworkInboxStorage,
+        get_ambiguous_diagnostic_report,
+        process_monitor_cycle,
+        scan_kwork_inbox_via_cdp,
+    )
+
+
+def _health_kwargs(dry_run: bool) -> dict[str, Any]:
+    from ai_assistant.automation_alerts import (
+        KWORK_ALERT_COOLDOWN_SECONDS,
+        KWORK_NOT_READY_STREAK,
+        deliver_owner_alert,
+        env_int,
+    )
+
+    return {
+        "state_path": KWORK_HEALTH_STATE,
+        "send_fn": None if dry_run else deliver_owner_alert,
+        "dry_run": dry_run,
+        "cooldown_seconds": env_int(
+            "KWORK_INBOX_ALERT_COOLDOWN_SECONDS", KWORK_ALERT_COOLDOWN_SECONDS
+        ),
+        "streak_required": env_int("KWORK_INBOX_NOT_READY_STREAK", KWORK_NOT_READY_STREAK),
+    }
+
+
+def _record_cycle_exception(exc: BaseException, *, dry_run: bool) -> None:
+    """Count an import or scan crash. Never replaces the original exception."""
+    try:
+        from ai_assistant.automation_alerts import observe_kwork_inbox
+
+        observe_kwork_inbox(
+            status="EXCEPTION",
+            checked=0,
+            error=f"{type(exc).__name__}: {exc}",
+            **_health_kwargs(dry_run),
+        )
+    except Exception as reporter_exc:  # noqa: BLE001 - the scan error must still escape
+        logger.warning(
+            "Kwork operational health update failed: %s",
+            type(reporter_exc).__name__,
+        )
+
+
 def _record_cycle_health(report: Any, *, dry_run: bool) -> dict[str, Any]:
     """Persist operational health from the monitor report. Does not send message cards."""
     from ai_assistant.automation_alerts import (
@@ -206,23 +281,31 @@ def run_cycle(dry_run: bool = True, send_one: bool = False, cdp_url: str = DEFAU
         return {"status": "LOCKED"}
 
     try:
-        storage = KworkInboxStorage() if INBOX_DB is None else KworkInboxStorage(INBOX_DB)
+        try:
+            Storage, diag_fn, process, scan = _import_monitor()
+            storage = Storage() if INBOX_DB is None else Storage(INBOX_DB)
 
-        diag = get_ambiguous_diagnostic_report(storage)
-        if diag["needs_operator_review"]:
-            logger.warning("Found %s AMBIGUOUS messages requiring operator review!", diag["ambiguous_count"])
+            diag = diag_fn(storage)
+            if diag["needs_operator_review"]:
+                logger.warning(
+                    "Found %s AMBIGUOUS messages requiring operator review!",
+                    diag["ambiguous_count"],
+                )
 
-        logger.info("Starting Kwork inbox scan (dry_run=%s, send_one=%s)...", dry_run, send_one)
+            logger.info("Starting Kwork inbox scan (dry_run=%s, send_one=%s)...", dry_run, send_one)
 
-        def _scan():
-            return scan_kwork_inbox_via_cdp(cdp_url=cdp_url)
+            def _scan():
+                return scan(cdp_url=cdp_url)
 
-        report = process_monitor_cycle(
-            storage=storage,
-            scan_fn=_scan,
-            dry_run=dry_run,
-            send_one=send_one,
-        )
+            report = process(
+                storage=storage,
+                scan_fn=_scan,
+                dry_run=dry_run,
+                send_one=send_one,
+            )
+        except Exception as exc:
+            _record_cycle_exception(exc, dry_run=dry_run)
+            raise
 
         logger.info(
             "Cycle finished: auth=%s, scanned=%s, new=%s, sent=%s, pending=%s, failed=%s",
