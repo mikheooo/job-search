@@ -52,11 +52,17 @@ _KWORK_AUTH_STATUSES = {
 }
 _KWORK_UNHEALTHY_STATUSES = {
     "PAGE_NOT_READY",
+    "CDP_UNAVAILABLE",
+    "UNKNOWN",
     "EXCEPTION",
     "ERROR",
     "FAILED",
     "UNAVAILABLE",
 }
+# The inbox monitor already pages AUTH_REQUIRED / AUTH_LOST on its own cooldown.
+# The operational ledger must not send a second alert, and must not treat that
+# status as proof the page read recovered.
+_KWORK_MONITOR_AUTH_STATUSES = _KWORK_AUTH_STATUSES | {"AUTH_LOST"}
 _KWORK_HEALTHY_STATUSES = {
     "OK",
     "CHECKED",
@@ -346,7 +352,7 @@ def classify_kwork_inbox(
     if error and not str(status or "").strip():
         status = "EXCEPTION"
     norm = str(status or "").strip().upper().replace("-", "_").replace(" ", "_")
-    if norm in _KWORK_AUTH_STATUSES:
+    if norm in _KWORK_MONITOR_AUTH_STATUSES:
         return False, "ignored_auth_status"
     if norm == "PAGE_NOT_READY":
         return True, "page_not_ready"
@@ -377,6 +383,12 @@ def kwork_failure_text(summary: str, streak: int, status: str, checked: int | No
 
 def kwork_recovery_text() -> str:
     return "✅ Kwork inbox: проверка снова проходит. Служебное предупреждение снято."
+
+
+def kwork_report_should_update_health(auth_status: str | None) -> bool:
+    """False when the monitor owns the alert (login loss), so we leave the ledger alone."""
+    norm = str(auth_status or "").strip().upper().replace("-", "_").replace(" ", "_")
+    return norm not in _KWORK_MONITOR_AUTH_STATUSES
 
 
 def observe_kwork_inbox(

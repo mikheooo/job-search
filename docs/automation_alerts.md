@@ -38,68 +38,59 @@ pages again only if the failure is still there after six hours.
 
 `scripts/run_kwork_inbox_monitor.ps1` and
 `scripts/run_kwork_monitor_silent.vbs` launch
-`scripts/run_kwork_inbox_monitor_cycle.py`. **That cycle script is not in
-this repository** (local-only). This change does not add or replace it, so
-a machine that already has the file keeps it.
+`scripts/run_kwork_inbox_monitor_cycle.py`. The default is dry-run. `--live`
+is what the scheduled task passes.
 
-What is in the repo is the decision helper and a small reporter:
+After `process_monitor_cycle` returns, the runner reads that report:
 
-```text
-python scripts/report_kwork_inbox_health.py --status PAGE_NOT_READY --checked 0 --dry-run
-python scripts/report_kwork_inbox_health.py --status CHECKED --checked 4 --live
-```
+- `auth_status` — `PAGE_NOT_READY`, `CDP_UNAVAILABLE`, and `UNKNOWN` are
+  operational failures (the monitor itself sends nothing for these)
+- `scanned_dialogues` — dialogs actually read; zero on those failures
+- `AUTH_REQUIRED` and `AUTH_LOST` are not copied into this ledger. The
+  monitor already sends its own login warning, with its own cooldown, and
+  only after two confirmed login-page reads. Treating those as "page
+  recovered" would clear a real not-ready streak.
+- `OK`, including zero dialogues, is a successful read. It clears the streak
+  and sends one recovery note if an operational alert is open.
 
-`--dry-run` prints JSON and does not send. `--live` delivers only after the
-streak threshold. One not-ready read is not an incident. A healthy read with
-`checked=0` (empty inbox) is not an incident. A status that already says
-the session expired is ignored here, so this alert cannot claim that auth
-expired.
+New buyer-message cards stay inside `process_monitor_cycle`. The health
+alert is a separate send and does not repeat those cards. Dry-run builds the
+decision and does not send or write `logs/kwork_inbox_ops_alert.json`.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `KWORK_INBOX_NOT_READY_STREAK` | `3` | Consecutive unhealthy observations before the first alert |
+| `KWORK_INBOX_NOT_READY_STREAK` | `3` | Consecutive unhealthy live cycles before the first alert |
 | `KWORK_INBOX_ALERT_COOLDOWN_SECONDS` | `21600` (6h) | Repeat gap while the inbox stays unhealthy |
 | state file | `logs/kwork_inbox_ops_alert.json` | Streak and cooldown |
 
-Unhealthy means `PAGE_NOT_READY`, or a failed read (`ERROR`, `FAILED`,
-`EXCEPTION`, `UNAVAILABLE`). New Kwork message cards stay on the existing
-cycle path; this reporter never sends them.
+`scripts/report_kwork_inbox_health.py` remains a manual preview of the same
+ledger. The scheduled cycle does not need it.
 
-### Wiring the local cycle
+## Files added from local feature branches
 
-Inside the local script, after the read and without removing its message
-alerts:
+These were not on `chore-ruff-cleanup`. They were copied from local commits
+that were never pushed. They were not decompiled and their control flow was
+not redesigned. Six `except: pass` sites now log at debug, because this repo
+does not allow a silent handler. `sqlite3.Row` still uses `in row.keys()`:
+`in row` checks values, not column names. Broad `except Exception` in those
+two files stays, and `ruff.toml` ignores BLE001 there for that reason.
 
-```python
-from ai_assistant.automation_alerts import deliver_owner_alert, observe_kwork_inbox
+| File | Provenance |
+| --- | --- |
+| `ai_assistant/gig/kwork_inbox_monitor.py` | `75f1d55` on local `feat/untracked-product-batch` (6 Nov 2026, 22:54 Bangkok) |
+| `ai_assistant/telegram_routing.py` | `2a1370e` on local `feat/telegram-notifications`. Required import of the monitor (`from .. import telegram_routing`) and of `hh_autopilot.send_telegram_alert` |
+| `scripts/run_kwork_inbox_monitor_cycle.py` | Local untracked Aorus15 runner, plus the health hook above |
 
-observe_kwork_inbox(
-    status=result_status,          # "PAGE_NOT_READY", "CHECKED", ...
-    checked=checked_count,         # dialogs actually read
-    error=error_text or None,      # optional; tokens are stripped
-    state_path=pathlib.Path("logs/kwork_inbox_ops_alert.json"),
-    send_fn=None if dry_run else deliver_owner_alert,
-    dry_run=dry_run,
-)
-```
+Adding the monitor file does not close the whole import graph. The module
+also calls `hh_browser_provider.list_tabs`, `open_tab`, `make_target_evaluate`,
+and `cdp_version` (already in this repo) and `websockets` when it has to open
+a tab over the browser socket. A live scan still needs a reachable CDP on
+`127.0.0.1:9111` and a configured jobs-bot route. This checkout was not run
+against that browser.
 
-Or schedule the reporter next to the existing task, passing the status that
-cycle already computed. Do not point either command at a bot token; the
-route reads the environment the jobs bot already uses.
+## Still not in this branch
 
-## What this checkout does not contain
+- `ai_assistant/auth_notifications.py` — present on local `feat/telegram-notifications` (`2a1370e`). The HH cycle uses its `AUTH_FAILURE_MESSAGE` when the module is installed, and a short fallback otherwise. It is not required by the Kwork monitor, so it was not copied.
+- `ai_assistant/hh_structured_preflight.py` — recovered read-only from local `8be421a` on `feat/hh-shortlist-preflight` (6 Nov 2026, 22:54 Bangkok). It is intentionally not added. The HH operational alert already includes the `ImportError` text when discovery cannot import it. Merging that feature branch would change preflight and submission behavior and is separate work.
 
-These names are imported by code that already ships, and they are absent
-here. They were not recreated, because a local copy would be overwritten:
-
-- `ai_assistant/telegram_routing.py` — jobs-bot send used by `send_telegram_alert`
-- `ai_assistant/auth_notifications.py` — auth failure / recovery wording
-- `ai_assistant/hh_structured_preflight.py` — imported by `hh_readonly_operation`
-  (matches the logged `cannot import name hh_structured_preflight`)
-- `scripts/run_kwork_inbox_monitor_cycle.py` — inbox monitor the launchers call
-
-On a machine where auth alerts already arrive, the first two are present
-and the new alerts use that same route. Where `telegram_routing` is missing,
-delivery returns false and the ledger does not mark the alert as sent, so a
-later run can retry. Fixing the missing preflight module is a separate
-change; the alert only reports the failure.
+Neither source was lost. Both still live on those local branches.
