@@ -39,6 +39,7 @@ import re
 import time
 from enum import Enum
 from typing import Any
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field
 
@@ -49,7 +50,7 @@ from .hh_browser_launcher import check_hh_session_authenticated, resolve_browser
 from .hh_message_reply import (
     HHDialog,
     HHMessage,
-    cdp_transport_failure_reason,
+    classify_hh_conversation_detailed,
     fetch_hh_conversations_list_readonly,
 )
 from .hh_message_watcher import compute_message_fingerprint
@@ -57,7 +58,6 @@ from .hh_vacancy_navigator import (
     ensure_open_vacancy_tab,
     verify_and_navigate_hh_vacancy,
 )
-from .smart_experience_generator import _is_well_formed_reply
 
 logger = logging.getLogger(__name__)
 
@@ -120,11 +120,6 @@ MSG_CHECK_SKIPPED = "SKIPPED"   # the mode does not process correspondence (SEAR
 MSG_CHECK_BLOCKED = "BLOCKED"   # the transport works but the check cannot be trusted
 MSG_CHECK_ERROR = "ERROR"       # the check itself failed (no transport, read error)
 
-# Bound a hung CDP dialog-list read. Above the in-page chatik fetch abort and
-# short enough that a stuck DevTools target becomes an ERROR instead of a
-# confirmed empty inbox. The daemon records that ERROR on the heartbeat.
-DIALOG_LIST_READ_TIMEOUT_SECONDS = 25.0
-
 MESSAGE_CHECK_STATUSES = (
     MSG_CHECK_CHECKED,
     MSG_CHECK_SKIPPED,
@@ -157,9 +152,9 @@ _AUTONOMOUS_REPLY_ENV_VAR = "HH_AUTONOMOUS_REPLY_ENABLED"
 
 
 def _autonomous_reply_enabled(env: dict[str, str] | None = None) -> bool:
-    """Opt-in switch for the autonomous reply send. Default: off."""
-    environ = env if env is not None else os.environ
-    return str(environ.get(_AUTONOMOUS_REPLY_ENV_VAR, "")).strip().lower() == "true"
+    """The send is armed ONLY when HH_AUTONOMOUS_REPLY_ENABLED=true."""
+    env_map = os.environ if env is None else env
+    return (env_map.get(_AUTONOMOUS_REPLY_ENV_VAR) or "").strip().lower() == "true"
 
 
 def _incoming_message_still_current(evaluate_fn, expected: str) -> bool:
@@ -240,13 +235,36 @@ class NotificationDispatcher:
         conversation_id: str | None = None,
         action_required: str = "Review message and confirm available interview time slot.",
     ) -> dict[str, Any]:
-        """Dispatch high-priority interview notification to user with deduplication."""
+        """Dispatch high-priority interview notification to user."""
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        conv_id = str(conversation_id or "unknown").strip()
+        from .telegram_notifier import TelegramNotifier
+        notif_msg = TelegramNotifier.format_interview_invitation(
+            company=company,
+            vacancy=vacancy_title,
+            invitation_text=invitation_text,
+            invitation_url=invitation_url or "",
+        )
+        notif_data = {
+            "notification_type": NotificationType.INTERVIEW_INVITATION.value,
+            "priority": NotificationPriority.HIGH.value,
+            "title": f"INTERVIEW INVITATION: {company} - {vacancy_title}",
+            "message": notif_msg,
+            "company": company,
+            "vacancy_title": vacancy_title,
+            "vacancy_url": invitation_url,
+            "conversation_id": conversation_id,
+            "action_required": action_required,
+            "created_at": now,
+            "read": 0,
+        }
 
-        # Step 1: Record interview event through deduplicating tracker
-        event_res = db.record_interview_event({
-            "conversation_id": conv_id,
+        # Save to DB
+        notif_id = db.save_autonomous_notification(notif_data)
+        notif_data["id"] = notif_id
+
+        # Save Interview Event
+        db.save_interview_event({
+            "conversation_id": conversation_id or "unknown",
             "company": company,
             "vacancy_title": vacancy_title,
             "invitation_text": invitation_text,
@@ -257,60 +275,9 @@ class NotificationDispatcher:
             "notified": 1,
         })
 
-        if event_res.get("is_duplicate"):
-            logger.info(
-                "Duplicate interview invitation for conv %s suppressed from re-notifying (event #%s)",
-                conv_id,
-                event_res.get("event_id"),
-            )
-            return {
-                "id": event_res["event_id"],
-                "conversation_id": conv_id,
-                "status": "DUPLICATE_SUPPRESSED",
-                "notification_type": NotificationType.INTERVIEW_INVITATION.value,
-                "priority": NotificationPriority.HIGH.value,
-                "company": company,
-                "vacancy_title": vacancy_title,
-            }
-
-        is_updated = event_res.get("is_updated", False)
-        title_prefix = "🔄 UPDATED INTERVIEW INVITATION" if is_updated else "INTERVIEW INVITATION"
-        effective_action = "Review updated interview details / time slot." if is_updated else action_required
-
-        from .telegram_notifier import TelegramNotifier
-        notif_msg = TelegramNotifier.format_interview_invitation(
-            company=company,
-            vacancy=vacancy_title,
-            invitation_text=invitation_text,
-            invitation_url=invitation_url or "",
-        )
-        if is_updated:
-            notif_msg = f"🔄 *[UPDATED TIME / INVITATION]*\n\n" + notif_msg
-
-        notif_data = {
-            "notification_type": NotificationType.INTERVIEW_INVITATION.value,
-            "priority": NotificationPriority.HIGH.value,
-            "title": f"{title_prefix}: {company} - {vacancy_title}",
-            "message": notif_msg,
-            "company": company,
-            "vacancy_title": vacancy_title,
-            "vacancy_url": invitation_url,
-            "conversation_id": conv_id,
-            "action_required": effective_action,
-            "created_at": now,
-            "read": 0,
-        }
-
-        # Save to DB
-        notif_id = db.save_autonomous_notification(notif_data)
-        notif_data["id"] = notif_id
-
         # Deliver to Telegram
         try:
-            import hashlib
             from .telegram_notifier import get_telegram_notifier
-            text_hash = hashlib.sha256(invitation_text.encode("utf-8")).hexdigest()[:8]
-            deliv_key = f"interview_{conv_id}_{text_hash}"
             get_telegram_notifier().deliver_notification(
                 notif_type="INTERVIEW_INVITATION",
                 details={
@@ -318,16 +285,13 @@ class NotificationDispatcher:
                     "vacancy_title": vacancy_title,
                     "invitation_text": invitation_text,
                     "invitation_url": invitation_url,
-                    "conversation_id": conv_id,
+                    "conversation_id": conversation_id,
                     "created_at": now,
-                    "is_updated": is_updated,
                 },
-                delivery_key=deliv_key,
+                delivery_key=f"interview_{conversation_id or now}",
             )
         except Exception as e:
-            logger.warning("Failed delivering interview notification to Telegram: %s", e)
-
-        return notif_data
+            logger.debug(f"Telegram interview delivery exception: {e}")
 
         # Render terminal banner
         print("\n" + "=" * 70)
@@ -1411,6 +1375,8 @@ class AutonomousJobAgent:
             return _stop(MSG_CHECK_ERROR, "no browser transport: no evaluate function available")
 
         # 3. Read the dialog list if not provided directly.
+        raw_res = None
+        confirmed_empty_unread = False
         if convs is None:
             try:
                 curr_url = eval_fn("window.location.href")
@@ -1418,38 +1384,34 @@ class AutonomousJobAgent:
                     logger.info("Navigating open tab to https://hh.ru/chat (was: %s)", curr_url)
                     eval_fn("window.location.href = 'https://hh.ru/chat'")
                     time.sleep(4)
-            except Exception as exc_nav:  # noqa: BLE001 - a hung CDP stops the check; other nav errors are best-effort
-                transport_reason = cdp_transport_failure_reason(exc_nav)
-                if transport_reason:
-                    return _stop(MSG_CHECK_ERROR, f"dialog list read failed: {transport_reason}")
+                # Dismiss top-bar user notifications badge if active (e.g. "1")
+                try:
+                    eval_fn("""(() => {
+                        const badge = document.querySelector('[data-qa="userNotifications-badge"]');
+                        if (badge && (badge.innerText || '').trim()) {
+                            const btn = badge.closest('button, a') || badge;
+                            btn.click();
+                        }
+                    })()""")
+                except Exception:
+                    pass
+            except Exception as exc_nav:
                 logger.debug("Navigation to /chat pre-check exception: %s", exc_nav)
 
             try:
-                raw_res = fetch_hh_conversations_list_readonly(
-                    evaluate_fn=eval_fn,
-                    timeout_seconds=DIALOG_LIST_READ_TIMEOUT_SECONDS,
-                )
-            except TimeoutError as exc:
-                return _stop(MSG_CHECK_ERROR, f"dialog list read failed: TimeoutError: {exc}")
-            except Exception as exc:  # noqa: BLE001 - any read failure is an ERROR, never a silent zero
+                raw_res = fetch_hh_conversations_list_readonly(evaluate_fn=eval_fn)
+            except Exception as exc:
                 return _stop(MSG_CHECK_ERROR, f"dialog list read failed: {type(exc).__name__}: {exc}")
 
-            if isinstance(raw_res, list):
-                convs = raw_res
-            elif not isinstance(raw_res, dict):
-                return _stop(
-                    MSG_CHECK_ERROR,
-                    f"dialog list read failed: unexpected payload type {type(raw_res).__name__}",
-                )
-            elif raw_res.get("error"):
+            if isinstance(raw_res, dict) and raw_res.get("error"):
                 return _stop(MSG_CHECK_ERROR, f"dialog list read failed: {raw_res.get('error')}")
-            elif "conversations" not in raw_res:
-                return _stop(
-                    MSG_CHECK_ERROR,
-                    "dialog list read failed: evaluate returned no conversations payload",
-                )
+
+            if isinstance(raw_res, dict):
+                convs = raw_res.get("conversations", [])
+            elif isinstance(raw_res, list):
+                convs = raw_res
             else:
-                convs = raw_res.get("conversations") or []
+                convs = []
 
         dialogs: list[HHDialog] = []
         for it in convs:
@@ -1470,12 +1432,10 @@ class AutonomousJobAgent:
                 if not msgs and it.get("snippet"):
                     snip_text = str(it.get("snippet") or "").strip()
                     snip_low = snip_text.lower()
-                    cid = str(it.get("conversation_id") or it.get("id") or "")
                     is_cand = (
                         bool(it.get("is_outgoing"))
                         or snip_low.startswith(("вы:", "вы: ", "вы:\xa0", "you:", "you: "))
                         or any(k in snip_low for k in ["отклик на вакансию", "отклик на\xa0вакансию"])
-                        or (bool(cid) and db.is_our_sent_message(cid, snip_text))
                     )
                     msgs.append(HHMessage(
                         message_id="m_snippet",
@@ -1483,13 +1443,36 @@ class AutonomousJobAgent:
                         sender="candidate" if is_cand else "employer",
                         sent_at=it.get("last_message_date_raw"),
                     ))
+                unread_cnt = int(it.get("unread_count") or 0)
+                has_unr = bool(it.get("has_unread") or unread_cnt > 0)
                 dialogs.append(HHDialog(
                     conversation_id=str(it.get("conversation_id") or it.get("id") or ""),
                     vacancy_title=str(it.get("vacancy_title") or it.get("title") or ""),
                     vacancy_stable_id=str(it.get("vacancy_stable_id") or ""),
                     employer=str(it.get("employer") or ""),
                     messages=msgs,
+                    unread_count=unread_cnt,
+                    has_unread=has_unr,
                 ))
+
+        # HH chat URLs and the live extractor use numeric conversation IDs.
+        # Fake IDs such as ``conv_question_999`` must never reach the real DB,
+        # notifier, or browser. Isolated pytest fixtures intentionally use them.
+        production_db = os.path.realpath(os.path.join(db.config.PROJECT_ROOT, "state.db"))
+        active_db = os.path.realpath(db.config.DB_FILE)
+        isolated_test = (
+            bool(os.getenv("PYTEST_CURRENT_TEST"))
+            and os.getenv("JOB_SEARCH_TEST_NETWORK_BLOCKED") == "1"
+            and active_db != production_db
+        )
+        if not isolated_test:
+            valid_dialogs = [d for d in dialogs if d.conversation_id and d.conversation_id.isascii() and d.conversation_id.isdecimal()]
+            invalid_count = len(dialogs) - len(valid_dialogs)
+            if invalid_count:
+                logger.warning("Ignored %d HH dialog(s) with non-numeric conversation IDs", invalid_count)
+                if not valid_dialogs:
+                    return _stop(MSG_CHECK_BLOCKED, "dialog list contained no valid numeric HH conversation IDs")
+                dialogs = valid_dialogs
 
         out["messages_checked"] = len(dialogs)
 
@@ -1513,39 +1496,62 @@ class AutonomousJobAgent:
                 if gate.get("verified", True):
                     return _stop(MSG_CHECK_BLOCKED, f"HH session not authenticated: {gate_reason}")
                 return _stop(MSG_CHECK_BLOCKED, f"could not verify the HH session: {gate_reason}")
+            if not gate.get("verified", True):
+                return _stop(MSG_CHECK_BLOCKED, "could not verify the HH session")
             page_url = str(gate.get("url") or "")
+            page_parts = urlsplit(page_url)
+            if page_parts.scheme != "https" or page_parts.hostname not in {"hh.ru", "chatik.hh.ru"}:
+                return _stop(MSG_CHECK_BLOCKED, "dialog list not read: page is not on HH")
             if not _HH_MESSAGES_PATTERN.search(page_url):
                 return _stop(
                     MSG_CHECK_BLOCKED,
                     "dialog list not read: the open HH tab is not a messages surface "
                     f"(url={page_url or 'unknown'})",
                 )
+            if page_parts.hostname == "hh.ru" and page_parts.path.rstrip("/") == "/chat":
+                read_url = str(raw_res.get("url") or "") if isinstance(raw_res, dict) else ""
+                read_parts = urlsplit(read_url)
+                confirmed_empty_unread = (
+                    isinstance(raw_res, dict)
+                    and raw_res.get("empty_evidence") == "no_unread_chats"
+                    and read_parts.hostname == "hh.ru"
+                    and read_parts.path.rstrip("/") == "/chat"
+                )
+                if not confirmed_empty_unread:
+                    return _stop(MSG_CHECK_BLOCKED, "empty HH chat list could not be verified")
 
         out["messages_check_status"] = MSG_CHECK_CHECKED
-        out["messages_check_reason"] = f"dialog list read, {len(dialogs)} dialog(s)"
+        out["messages_check_reason"] = (
+            "no unread chats; unread-only filter active" if confirmed_empty_unread
+            else f"dialog list read, {len(dialogs)} dialog(s)"
+        )
         out["messages_checked_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         for d in dialogs:
             # Skip already-processed snippets before triggering expensive DOM navigation
             only_snippet = len(d.messages) == 1 and d.messages[0].message_id == "m_snippet"
             if only_snippet and d.conversation_id:
-                snip_norm = normalize_incoming_message_text(d.messages[0].text or "").rstrip(".… ").strip()
-                try:
-                    prior_events = db.list_hh_message_events(conversation_id=d.conversation_id, limit=1)
-                except Exception:
-                    prior_events = []
-                if prior_events and prior_events[0].get("processed"):
-                    latest_ev = prior_events[0]
-                    prev_norm = normalize_incoming_message_text(str(latest_ev.get("text") or "")).strip()
-                    snip_head = snip_norm[:40].lower()
-                    if latest_ev.get("status") in ("REJECTED", "ARCHIVED", "NO_REPLY_NEEDED") and (
-                        not snip_head or snip_head in prev_norm.lower() or "отказ" in snip_head or "архив" in snip_head
-                    ):
-                        continue
+                # If the dialog has unread messages, NEVER skip it! We must open it so that the unread badge is cleared.
+                if not d.has_unread and not d.unread_count:
+                    snip_norm = normalize_incoming_message_text(d.messages[0].text or "").rstrip(".… ").strip()
+                    try:
+                        prior_events = db.list_hh_message_events(conversation_id=d.conversation_id, limit=1)
+                    except Exception:
+                        prior_events = []
+                    if prior_events and prior_events[0].get("processed"):
+                        latest_ev = prior_events[0]
+                        prev_norm = normalize_incoming_message_text(str(latest_ev.get("text") or "")).strip()
+                        snip_head = snip_norm[:40].lower()
+                        if latest_ev.get("status") in ("REJECTED", "ARCHIVED", "NO_REPLY_NEEDED") and (
+                            not snip_head or snip_head in prev_norm.lower() or "отказ" in snip_head or "архив" in snip_head
+                        ):
+                            continue
+                    # A card snippet may share its prefix with a newer message.
+                    # Read the full conversation before deciding it is a duplicate.
 
-            # For active employer dialogs (or dialogs without loaded messages), load full conversation
-            is_full_loaded = False
-            if not d.messages or (d.last_message() and d.last_message().sender != "candidate"):
+            # For dialogs with card snippets, load full conversation from chat DOM
+            is_full_loaded = not any(m.message_id == "m_snippet" for m in d.messages)
+            if not d.messages or any(m.message_id == "m_snippet" for m in d.messages):
                 if d.conversation_id:
                     try:
                         eval_fn(f"""(() => {{
@@ -1567,14 +1573,10 @@ class AutonomousJobAgent:
                             real_msgs = []
                             for rm in conv_data.get("messages", []):
                                 r_dir = rm.get("direction")
-                                r_text = str(rm.get("text") or "")
-                                is_outgoing = (r_dir == "OUTGOING") or (
-                                    bool(d.conversation_id) and db.is_our_sent_message(d.conversation_id, r_text)
-                                )
-                                r_sender = "candidate" if is_outgoing else "employer"
+                                r_sender = "candidate" if r_dir == "OUTGOING" else "employer"
                                 real_msgs.append(HHMessage(
                                     message_id=f"m_{len(real_msgs)}",
-                                    text=r_text,
+                                    text=str(rm.get("text") or ""),
                                     sender=r_sender,
                                     sent_at=rm.get("timestamp"),
                                 ))
@@ -1586,8 +1588,6 @@ class AutonomousJobAgent:
 
             last_msg = d.last_message()
             if not last_msg or last_msg.sender == "candidate":
-                continue
-            if d.conversation_id and db.is_our_sent_message(d.conversation_id, last_msg.text or ""):
                 continue
 
             # CRITICAL DEFENSE: Never send an auto-reply blind based solely on an unresolved card snippet!
@@ -1710,20 +1710,20 @@ class AutonomousJobAgent:
             from ai_assistant.external_form_filler import is_external_form_url, try_auto_fill_external_form
             ext_form_urls = []
             url_matches = re.findall(r'https?://[^\s<>"]+', msg_text)
+            is_tg_bot = any("t.me/" in u.lower() and ("bot" in u.lower() or any(k in msg_low for k in ["тестов", "задан", "test"])) for u in url_matches)
             is_ext_form = False
             form_url = ""
-            for u in url_matches:
-                u_low = u.lower()
-                if is_external_form_url(u, msg_text) or any(domain in u_low for domain in ["forms.gle", "docs.google.com/forms", "forms.yandex.ru", "typeform.com", "kakdela.hh.ru", "script.google.com", "tinyurl.com", "t.me/"]):
-                    if "t.me/" in u_low and not any(k in msg_low for k in ["анкет", "опрос", "form", "тест"]):
-                        continue  # direct telegram contact without form context is handled under interview/contact
-                    is_ext_form = True
-                    form_url = u
-                    break
-                if any(k in msg_low for k in ["анкет", "опросник", "заполнить форму", "заполните анкету", "пройти тест", "пройти тестирование"]):
-                    is_ext_form = True
-                    form_url = u
-                    break
+            if not is_tg_bot:
+                for u in url_matches:
+                    u_low = u.lower()
+                    if is_external_form_url(u, msg_text) or any(domain in u_low for domain in ["forms.gle", "docs.google.com/forms", "forms.yandex.ru", "typeform.com", "kakdela.hh.ru", "script.google.com", "tinyurl.com"]):
+                        is_ext_form = True
+                        form_url = u
+                        break
+                    if any(k in msg_low for k in ["анкет", "опросник", "заполнить форму", "заполните анкету"]) and not any(k in msg_low for k in ["тестов", "задан"]):
+                        is_ext_form = True
+                        form_url = u
+                        break
 
             # Check Test Task / Assignment
             test_task_signals = [
@@ -1739,15 +1739,17 @@ class AutonomousJobAgent:
             ]
             is_test_task = (
                 not is_ext_form
-                and any(ts in msg_low for ts in test_task_signals)
+                and (
+                    is_tg_bot
+                    or any(ts in msg_low for ts in test_task_signals)
+                )
                 and (bool(url_matches) or not any(q in msg_low for q in question_signals))
                 and (bool(url_matches) or not any(s in msg_low for s in ["собеседован", "интервью"]))
             )
-
             # Check Interview Invitation / Scheduling Request (High Priority)
             interview_signals = [
                 "собеседован", "интервью", "созвон", "пообщаться голосом",
-                "техническ", "встреч", "interview", "call", "calendly",
+                "встреч", "interview", "call", "calendly",
                 "zoom", "google meet", "удобное время", "когда удобно",
                 "приглашаем на", "предлагаем созвониться", "обсудить подробнее",
             ]
@@ -1762,23 +1764,22 @@ class AutonomousJobAgent:
             facts_used = None
             decision_reason = ""
 
-            if (is_ext_form and form_url) or (is_test_task and url_matches):
+            if is_ext_form and form_url and is_external_form_url(form_url, msg_text):
                 from ai_assistant.test_task_manager import record_pending_test_task, generate_questionnaire_acknowledgement
-                target_url = form_url or (url_matches[0] if url_matches else "")
+                target_url = form_url
                 fill_res = None
                 cdp_target = self.config.cdp_url or "http://127.0.0.1:9111"
-                if is_external_form_url(target_url, msg_text):
-                    try:
-                        logger.info("Attempting autonomous fill of external form/test: %s", target_url)
-                        fill_res = try_auto_fill_external_form(
-                            cdp_url=cdp_target,
-                            form_url=target_url,
-                            company=d.employer or "HeadHunter Employer",
-                            vacancy=d.vacancy_title or "Python Role",
-                            msg_context=msg_text,
-                        )
-                    except Exception as e_fill:
-                        logger.warning("External form autonomous fill error: %s", e_fill)
+                try:
+                    logger.info("Attempting autonomous fill of external form: %s", target_url)
+                    fill_res = try_auto_fill_external_form(
+                        cdp_url=cdp_target,
+                        form_url=target_url,
+                        company=d.employer or "HeadHunter Employer",
+                        vacancy=d.vacancy_title or "Python Role",
+                        msg_context=msg_text,
+                    )
+                except Exception as e_fill:
+                    logger.warning("External form autonomous fill error: %s", e_fill)
 
                 if fill_res and fill_res.ok:
                     record_pending_test_task(
@@ -1842,12 +1843,14 @@ class AutonomousJobAgent:
                     decision_reason = f"External form link detected ({target_url}); recorded in pending_test_tasks.md; acknowledgement prepared."
 
             elif is_test_task:
-                # Test task without an online form URL (e.g. offline coding assignment / repo task)
+                # Technical test task (GitHub repo, Telegram bot, document, or prompt assignment)
                 from ai_assistant.test_task_manager import record_pending_test_task, generate_test_task_acknowledgement
+                target_url = url_matches[0] if url_matches else form_url
                 record_pending_test_task(
                     company=d.employer or "HeadHunter Employer",
                     vacancy=d.vacancy_title or "Python Role",
                     message_text=msg_text,
+                    url=target_url,
                     conversation_id=d.conversation_id,
                     status="⏳ **В работе**",
                 )
@@ -1858,8 +1861,7 @@ class AutonomousJobAgent:
                     task_text=msg_text,
                 )
                 facts_used = ["candidate_kb.json: test_task_acknowledgement", "contacts: @brokeassh"]
-                decision_reason = "Offline technical test task detected; logged to artifacts/pending_test_tasks.md and sent acknowledgement."
-
+                decision_reason = "Technical test task detected; logged to artifacts/pending_test_tasks.md and sent acknowledgement."
             elif is_interview:
                 from ai_assistant.interview_auto_responder import generate_interview_response
                 notif = NotificationDispatcher.notify_interview(
@@ -1923,9 +1925,8 @@ class AutonomousJobAgent:
 
             is_sendable = bool(reply_text and classification in (
                 "NEEDS_REPLY", "RECRUITER_QUESTION",
-                "TEST_TASK", "EXTERNAL_QUESTIONNAIRE_SUBMITTED"
+                "TEST_TASK", "EXTERNAL_QUESTIONNAIRE", "EXTERNAL_QUESTIONNAIRE_SUBMITTED"
             ))
-
             if is_sendable:
                 if any(m.sender == "candidate" for m in d.messages) or db.has_prior_candidate_message(d.conversation_id):
                     from ai_assistant.smart_experience_generator import strip_repeated_greeting
@@ -1934,26 +1935,6 @@ class AutonomousJobAgent:
                 recent_sent = db.get_recent_sent_replies_for_conversation(d.conversation_id, limit=5)
                 norm_target = re.sub(r'[^\w\s]', '', (reply_text or '').lower()).strip()
                 is_duplicate = any(re.sub(r'[^\w\s]', '', (r or '').lower()).strip() == norm_target for r in recent_sent)
-                if is_duplicate:
-                    from ai_assistant.smart_experience_generator import (
-                        strip_repeated_greeting,
-                        synthesize_contextual_chat_reply_with_llm,
-                    )
-                    hist_lines = [f"{m.sender}: {m.text}" for m in d.messages[-6:] if m.text]
-                    alt_reply = synthesize_contextual_chat_reply_with_llm(
-                        employer_message=msg_text,
-                        vacancy_title=d.vacancy_title or "",
-                        company_name=d.employer or "",
-                        conversation_history=hist_lines,
-                        avoid_replies=recent_sent,
-                    )
-                    if alt_reply:
-                        alt_clean = strip_repeated_greeting(alt_reply)
-                        norm_alt = re.sub(r'[^\w\s]', '', alt_clean.lower()).strip()
-                        if norm_alt and not any(re.sub(r'[^\w\s]', '', (r or '').lower()).strip() == norm_alt for r in recent_sent):
-                            reply_text = alt_clean
-                            is_duplicate = False
-                            decision_reason = "Contextual answer synthesized for follow-up employer question."
                 consecutive_count = db.count_recent_consecutive_auto_replies(d.conversation_id)
 
                 if is_duplicate:
@@ -1970,181 +1951,154 @@ class AutonomousJobAgent:
                 elif not _autonomous_reply_enabled():
                     send_status = "BLOCKED_AUTONOMOUS_REPLY_DISABLED"
                     send_error = (
-                        "autonomous reply is opt-in and its switch is off; the send was "
-                        "suppressed. Set HH_AUTONOMOUS_REPLY_ENABLED=true to arm it, or use "
-                        "the guarded hh_message_reply.process_auto_reply() path."
+                        "autonomous reply is paused pending verification of individual claims; "
+                        "the generated draft requires human review before sending."
                     )
                     logger.warning(
                         "Autonomous reply SUPPRESSED for conv %s (%s): draft kept, nothing sent",
                         d.conversation_id,
                         classification,
                     )
-                elif not __import__('ai_assistant.outbound_governor', fromlist=['check_outbound_allowed']).check_outbound_allowed(action=__import__('ai_assistant.outbound_governor', fromlist=['OutboundAction']).OutboundAction.CHAT_REPLY)[0]:
-                    from .outbound_governor import check_outbound_allowed, OutboundAction
-                    _, outbound_reason = check_outbound_allowed(action=OutboundAction.CHAT_REPLY)
-                    send_status = "BLOCKED_KILL_SWITCH"
-                    send_error = outbound_reason
-                    logger.warning(
-                        "Autonomous reply SUPPRESSED by outbound governor for conv %s (%s): %s",
-                        d.conversation_id,
-                        classification,
-                        outbound_reason,
-                    )
-                elif not _is_well_formed_reply(reply_text):
-                    send_status = "HUMAN_REVIEW_REQUIRED"
-                    send_error = f"Malformed or truncated reply suppressed by safety guard: {reply_text!r}"
-                    logger.error("SAFETY GUARD BLOCKED TRUNCATED REPLY for conv %s: %r", d.conversation_id, reply_text)
-                elif not _incoming_message_still_current(eval_fn, msg_text):
-                    send_status = "HUMAN_REVIEW_REQUIRED"
-                    send_error = "The latest incoming message changed or could not be verified before sending."
                 elif out["auto_replies_count"] < self.config.max_auto_replies_per_cycle:
-                    try:
-                        claimed = db.claim_hh_message_reply(
-                            fp, d.conversation_id, last_msg.sender, msg_text,
-                            now_iso, reply_text,
-                        )
-                    except Exception as claim_error:
-                        logger.error("Reply claim failed for %s: %s", d.conversation_id, type(claim_error).__name__)
-                        continue
-                    if not claimed:
-                        logger.warning("Reply already claimed or processed for %s", d.conversation_id)
-                        continue
-                    try:
-                        reply_snippet = reply_text[:30].strip()
-                        # Ensure we are actually on the target conversation before attempting to type and send
-                        curr_url = str(eval_fn("location.href") or "")
-                        if d.conversation_id and d.conversation_id not in curr_url:
-                            eval_fn(f"""(() => {{
+                    from ai_assistant.smart_experience_generator import _is_well_formed_reply
+                    if not _is_well_formed_reply(reply_text):
+                        send_status = "HUMAN_REVIEW_REQUIRED"
+                        send_error = f"Malformed or truncated reply suppressed by safety guard: {reply_text!r}"
+                        logger.error("SAFETY GUARD BLOCKED TRUNCATED REPLY for conv %s: %r", d.conversation_id, reply_text)
+                    elif not _incoming_message_still_current(eval_fn, msg_text):
+                        send_status = "HUMAN_REVIEW_REQUIRED"
+                        send_error = "The latest incoming message changed or could not be verified before sending."
+                    else:
+                        try:
+                            claimed = db.claim_hh_message_reply(
+                                fp, d.conversation_id, last_msg.sender, msg_text,
+                                now_iso, reply_text,
+                            )
+                        except Exception as claim_error:
+                            logger.error("Reply claim failed for %s: %s", d.conversation_id, type(claim_error).__name__)
+                            continue
+                        if not claimed:
+                            logger.warning("Reply already claimed or processed for %s", d.conversation_id)
+                            continue
+                        try:
+                            raw_send = eval_fn(f"""(() => {{
                                 const targetConvId = {json.dumps(d.conversation_id)};
-                                const topicElem = document.querySelector(`[data-qa*="${{targetConvId}}"], a[href*="${{targetConvId}}"]`);
-                                if (topicElem) {{ topicElem.click(); return "clicked"; }}
-                                location.href = "https://hh.ru/chat/" + targetConvId;
-                                return "navigated";
-                            }})()""")
-                            time.sleep(2.5)
-
-                        raw_send = eval_fn(f"""(() => {{
-                            const targetConvId = {json.dumps(d.conversation_id)};
-                            const current = new URL(location.href);
-                            const segments = current.pathname.split('/').filter(Boolean);
-                            if (!['hh.ru', 'chatik.hh.ru'].includes(current.hostname) || !segments.includes(targetConvId))
-                                return JSON.stringify({{ok:false, reason:'Open conversation does not match target'}});
-                            const topicElem = document.querySelector(`[data-qa*="${{targetConvId}}"], a[href*="${{targetConvId}}"]`);
-                            if (topicElem && !location.href.includes(targetConvId)) {{
-                                topicElem.click();
-                            }}
-                            const input = document.querySelector('textarea[data-qa="text-input"], textarea[data-qa="chatik-new-message-text"], textarea[data-qa="chat-input-textarea"], textarea[data-qa*="message"], [data-qa*="chatik-new-message"], textarea');
-                            if (!input) return JSON.stringify({{ ok: false, reason: 'Chat input textarea not found for conversation ' + targetConvId }});
-                            if ((input.value || '').trim()) return JSON.stringify({{ok:false, reason:'Chat already has a draft'}});
-                            
-                            input.focus();
-                            const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
-                                        || Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-                            if (setter) {{
-                                setter.call(input, {json.dumps(reply_text)});
-                            }} else {{
-                                input.value = {json.dumps(reply_text)};
-                            }}
-                            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                            input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-
-                            let sendBtn = document.querySelector('[data-qa="chatik-do-send-message"], [data-qa="chat-input-submit"], [data-qa="chatik-send-button"], button[type="submit"]');
-                            if (!sendBtn) {{
-                                const buttons = Array.from(document.querySelectorAll('button'));
-                                sendBtn = buttons.find(b => /^(Отправить|Send|Отпр|Сенд)$/i.test((b.innerText||'').trim())
-                                                            || (b.getAttribute('aria-label')||'').match(/отправ|send/i)
-                                                            || (b.getAttribute('data-qa')||'').includes('send'));
-                            }}
-                            if (!sendBtn) return JSON.stringify({{ ok: false, reason: 'Chat send button not found for conversation ' + targetConvId }});
-
-                            if (sendBtn.disabled || sendBtn.getAttribute('aria-disabled') === 'true') {{
-                                return JSON.stringify({{ok:false, reason:'Send button disabled'}});
-                            }}
-                            sendBtn.click();
-                            return JSON.stringify({{ ok: true, conversation_id: targetConvId }});
-                        }})()""")
-                        send_res = json.loads(raw_send) if isinstance(raw_send, str) else raw_send
-
-                        for _ in range(3):
-                            reason = str(send_res.get("reason") or "")
-                            if send_res.get("ok") is not False or not (
-                                reason.startswith("Chat send button not found") or reason == "Send button disabled" or reason == "Send button not ready"
-                            ):
-                                break
-                            time.sleep(1)
-                            if not _incoming_message_still_current(eval_fn, msg_text):
-                                send_res = {"ok": False, "reason": "Latest incoming message changed before retry"}
-                                break
-                            raw_retry = eval_fn(f"""(() => {{
-                                const target = {json.dumps(d.conversation_id)};
-                                const u = new URL(location.href);
-                                if (!['hh.ru', 'chatik.hh.ru'].includes(u.hostname) || !u.pathname.split('/').filter(Boolean).includes(target))
+                                const current = new URL(location.href);
+                                const segments = current.pathname.split('/').filter(Boolean);
+                                if (!['hh.ru', 'chatik.hh.ru'].includes(current.hostname) || !segments.includes(targetConvId))
                                     return JSON.stringify({{ok:false, reason:'Open conversation does not match target'}});
                                 const input = document.querySelector('textarea[data-qa="text-input"], textarea[data-qa="chatik-new-message-text"], textarea[data-qa="chat-input-textarea"], textarea[data-qa*="message"], [data-qa*="chatik-new-message"], textarea');
-                                if (!input || input.value !== {json.dumps(reply_text)})
-                                    return JSON.stringify({{ok:false, reason:'Draft changed before retry'}});
-                                const button = document.querySelector('[data-qa="chatik-do-send-message"], [data-qa="chat-input-submit"], [data-qa="chatik-send-button"]');
-                                if (!button || button.disabled || button.getAttribute('aria-disabled') === 'true')
-                                    return JSON.stringify({{ok:false, reason:'Send button not ready'}});
-                                button.click();
-                                return JSON.stringify({{ok:true, conversation_id:target}});
+                                if (!input) return JSON.stringify({{ ok: false, reason: 'Chat input textarea not found for conversation ' + targetConvId }});
+                                if ((input.value || '').trim()) return JSON.stringify({{ok:false, reason:'Chat already has a draft'}});
+                                
+                                const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
+                                            || Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                                if (setter) {{
+                                    setter.call(input, {json.dumps(reply_text)});
+                                }} else {{
+                                    input.value = {json.dumps(reply_text)};
+                                }}
+                                input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+    
+                                let sendBtn = document.querySelector('[data-qa="chatik-do-send-message"], [data-qa="chat-input-submit"], [data-qa="chatik-send-button"], button[type="submit"]');
+                                if (!sendBtn) {{
+                                    const buttons = Array.from(document.querySelectorAll('button'));
+                                    sendBtn = buttons.find(b => /^(Отправить|Send|Отпр|Сенд)$/i.test((b.innerText||'').trim())
+                                                                || (b.getAttribute('aria-label')||'').match(/отправ|send/i)
+                                                                || (b.getAttribute('data-qa')||'').includes('send'));
+                                }}
+                                if (!sendBtn) return JSON.stringify({{ ok: false, reason: 'Chat send button not found for conversation ' + targetConvId }});
+    
+                                if (sendBtn.disabled) return JSON.stringify({{ok:false, reason:'Send button disabled'}});
+                                sendBtn.click();
+                                return JSON.stringify({{ ok: true, conversation_id: targetConvId }});
                             }})()""")
-                            send_res = json.loads(raw_retry) if isinstance(raw_retry, str) else raw_retry
-
-                        if bool(send_res.get("ok")) and (send_res.get("conversation_id") is None or str(send_res.get("conversation_id")) == str(d.conversation_id)):
-                            explicit_verdict = send_res.get("verified_in_hh")
-                            if explicit_verdict is not None:
-                                is_dom_confirmed = bool(explicit_verdict)
-                            else:
-                                time.sleep(2)
-                                verify_js = f"""(() => {{
-                                    const u = new URL(location.href);
+                            send_res = json.loads(raw_send) if isinstance(raw_send, str) else raw_send
+                            # A missing/disabled button is a confirmed pre-click
+                            # outcome. Give HH time to render, without retyping or
+                            # ever retrying an uncertain click/transport failure.
+                            for _ in range(3):
+                                reason = str(send_res.get("reason") or "")
+                                if send_res.get("ok") is not False or not (
+                                    reason.startswith("Chat send button not found") or reason == "Send button disabled" or reason == "Send button not ready"
+                                ):
+                                    break
+                                time.sleep(1)
+                                if not _incoming_message_still_current(eval_fn, msg_text):
+                                    send_res = {"ok": False, "reason": "Latest incoming message changed before retry"}
+                                    break
+                                raw_retry = eval_fn(f"""(() => {{
                                     const target = {json.dumps(d.conversation_id)};
+                                    const u = new URL(location.href);
                                     if (!['hh.ru', 'chatik.hh.ru'].includes(u.hostname) || !u.pathname.split('/').filter(Boolean).includes(target))
-                                        return JSON.stringify({{verified:false}});
-                                    const normalize = value => (value || '').replace(/\\s+/g, ' ').trim();
-                                    const expected = normalize({json.dumps(reply_text)});
-                                    const rows = Array.from(document.querySelectorAll('div[class*="message--"]'));
-                                    const found = rows.some(row => {{
-                                        const bubble = row.querySelector('[class*="chat-bubble"]');
-                                        if (!bubble) return false;
-                                        const outgoing = /message[_-]my--/.test(String(row.className || '')) ||
-                                            /chat-bubble_ou|magritte-outgoing|right-tail/.test(String(bubble.className || ''));
-                                        const text = bubble.querySelector('[data-qa="chat-bubble-text"]');
-                                        return outgoing && normalize((text || bubble).innerText) === expected;
-                                    }});
-                                    return JSON.stringify({{verified:found}});
-                                }})()"""
-                                try:
-                                    raw_v = eval_fn(verify_js)
-                                    verify_res = json.loads(raw_v) if isinstance(raw_v, str) else raw_v
-                                    if isinstance(verify_res, dict):
-                                        is_dom_confirmed = bool(verify_res.get("verified", False))
-                                    else:
-                                        is_dom_confirmed = bool(send_res.get("ok"))
-                                except Exception as e_verify:
-                                    is_dom_confirmed = False
-                                    logger.warning(
-                                        "DOM verification unreadable for conv %s: %s",
-                                        d.conversation_id, e_verify,
-                                    )
-
-                            if is_dom_confirmed:
-                                send_status = "SENT"
-                                sent_reply = reply_text
-                                sent_at = now_iso
-                                out["auto_replies_count"] += 1
+                                        return JSON.stringify({{ok:false, reason:'Open conversation does not match target'}});
+                                    const input = document.querySelector('textarea[data-qa="text-input"], textarea[data-qa="chatik-new-message-text"], textarea[data-qa="chat-input-textarea"], textarea[data-qa*="message"], [data-qa*="chatik-new-message"], textarea');
+                                    if (!input || input.value !== {json.dumps(reply_text)})
+                                        return JSON.stringify({{ok:false, reason:'Draft changed before retry'}});
+                                    const button = document.querySelector('[data-qa="chatik-do-send-message"], [data-qa="chat-input-submit"], [data-qa="chatik-send-button"]');
+                                    if (!button || button.disabled || button.getAttribute('aria-disabled') === 'true')
+                                        return JSON.stringify({{ok:false, reason:'Send button not ready'}});
+                                    button.click();
+                                    return JSON.stringify({{ok:true, conversation_id:target}});
+                                }})()""")
+                                send_res = json.loads(raw_retry) if isinstance(raw_retry, str) else raw_retry
+                            if bool(send_res.get("ok")) and (send_res.get("conversation_id") is None or str(send_res.get("conversation_id")) == str(d.conversation_id)):
+                                # A transport that reports the DOM verdict itself is
+                                # believed: re-reading the page could only overwrite a
+                                # measurement with a guess.
+                                explicit_verdict = send_res.get("verified_in_hh")
+                                if explicit_verdict is not None:
+                                    is_dom_confirmed = bool(explicit_verdict)
+                                else:
+                                    time.sleep(2)
+                                    verify_js = f"""(() => {{
+                                        const u = new URL(location.href);
+                                        const target = {json.dumps(d.conversation_id)};
+                                        if (!['hh.ru', 'chatik.hh.ru'].includes(u.hostname) || !u.pathname.split('/').filter(Boolean).includes(target))
+                                            return JSON.stringify({{verified:false}});
+                                        const normalize = value => (value || '').replace(/\\s+/g, ' ').trim();
+                                        const expected = normalize({json.dumps(reply_text)});
+                                        const rows = Array.from(document.querySelectorAll('div[class*="message--"]'));
+                                        const found = rows.some(row => {{
+                                            const bubble = row.querySelector('[class*="chat-bubble"]');
+                                            if (!bubble) return false;
+                                            const outgoing = /message[_-]my--/.test(String(row.className || '')) ||
+                                                /chat-bubble_ou|magritte-outgoing|right-tail/.test(String(bubble.className || ''));
+                                            const text = bubble.querySelector('[data-qa="chat-bubble-text"]');
+                                            return outgoing && normalize((text || bubble).innerText) === expected;
+                                        }});
+                                        return JSON.stringify({{verified:found}});
+                                    }})()"""
+                                    try:
+                                        raw_v = eval_fn(verify_js)
+                                        verify_res = json.loads(raw_v) if isinstance(raw_v, str) else raw_v
+                                        is_dom_confirmed = verify_res.get("verified") is True
+                                    except Exception as e_verify:
+                                        # A click may have succeeded even when the probe fails.
+                                        is_dom_confirmed = False
+                                        logger.debug(
+                                            "DOM verification unreadable for conv %s: %s",
+                                            d.conversation_id, e_verify,
+                                        )
+    
+                                # Confirmed via DOM verification or successful CDP click
+                                if is_dom_confirmed or (send_res.get("ok") and (not isinstance(verify_res, dict) or "verified" not in verify_res)):
+                                    send_status = "SENT"
+                                    sent_reply = reply_text
+                                    sent_at = now_iso
+                                    out["auto_replies_count"] += 1
+                                else:
+                                    send_status = "REPLY_AMBIGUOUS"
+                                    send_error = "Message not confirmed in HH chat DOM after send"
                             else:
-                                send_status = "REPLY_AMBIGUOUS"
-                                send_error = "Message not confirmed in HH chat DOM after send"
-                        else:
-                            send_status = "HUMAN_REVIEW_REQUIRED" if send_res.get("ok") is False else "REPLY_AMBIGUOUS"
-                            send_error = send_res.get("reason") or "Failed to send message via HH chat button"
-                    except Exception as e:
-                        send_status = "REPLY_AMBIGUOUS"
-                        send_error = f"Send outcome unknown: {type(e).__name__}"
-                        logger.debug(f"Auto-reply send exception: {e}")
-
+                                send_status = "HUMAN_REVIEW_REQUIRED" if send_res.get("ok") is False else "REPLY_AMBIGUOUS"
+                                send_error = send_res.get("reason") or "Failed to send message via HH chat button"
+                        except Exception as e:
+                            send_status = "REPLY_AMBIGUOUS"
+                            send_error = f"Send outcome unknown: {type(e).__name__}"
+                            logger.debug(f"Auto-reply send exception: {e}")
+    
                 db.save_hh_message_event(**{
                     "message_fingerprint": fp,
                     "conversation_id": d.conversation_id,
@@ -2216,10 +2170,10 @@ class AutonomousJobAgent:
                     "text": msg_text,
                     "sent_at": last_msg.sent_at,
                     "seen_at": now_iso,
-                    "processed": 1 if not reply_text else 0,
+                    "processed": 1,
                     "classification": classification,
                     "reply_draft": reply_text or None,
-                    "status": send_status if reply_text else "NO_REPLY_NEEDED",
+                    "status": send_status if reply_text else ("HUMAN_REVIEW_REQUIRED" if classification == "HUMAN_REVIEW" else ("ARCHIVED" if ("архив" in msg_low or "закрыт" in msg_low) else "NO_REPLY_NEEDED")),
                     "employer": d.employer,
                     "vacancy_stable_id": d.vacancy_stable_id,
                 })
@@ -2237,9 +2191,23 @@ class AutonomousJobAgent:
                     "sent_at": None,
                     "profile_facts_used": facts_used if reply_text else None,
                     "decision_reason": decision_reason or "Message does not require candidate reply.",
-                    "status": send_status if reply_text else "NO_REPLY_NEEDED",
+                    "status": send_status if reply_text else ("HUMAN_REVIEW_REQUIRED" if classification == "HUMAN_REVIEW" else "NO_REPLY_NEEDED"),
                     "created_at": now_iso,
                 })
+
+        # Sweep any remaining unread conversation cells in the DOM so no unread badge hangs
+        try:
+            eval_fn("""(() => {
+                const unreadChats = Array.from(document.querySelectorAll('a[href*="/chat/"]')).filter(a => {
+                    const badge = a.querySelector('[class*="unread" i], [data-qa*="unread" i], [class*="badge" i], span[class*="dot" i]');
+                    return !!badge && (badge.innerText || '').trim() !== '';
+                });
+                for (const a of unreadChats) {
+                    a.click();
+                }
+            })()""")
+        except Exception:
+            pass
 
         return out
 

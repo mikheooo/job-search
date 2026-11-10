@@ -2511,7 +2511,7 @@ def submit_application_in_browser(
     profile = _load_profile(profile_path)
 
     # Defense-in-Depth Hard Constraint Gate
-    from .matcher import _coerce_profile, _hard_constraints
+    from .matcher import _coerce_profile, _hard_constraints_for_send
     from .remote_filter import is_strictly_remote
 
     if getattr(profile, "remote_required", False):
@@ -2525,7 +2525,7 @@ def submit_application_in_browser(
                 executor_version="v1",
             )
 
-    hard_reject, hard_reason = _hard_constraints(_coerce_profile(profile), vac)
+    hard_reject, hard_reason = _hard_constraints_for_send(_coerce_profile(profile), vac)
     if hard_reject:
         return SubmitResult(
             vacancy_stable_id=vacancy_stable_id,
@@ -2684,7 +2684,7 @@ def submit_application_in_browser(
     resume_text = get_resume_text(profile)
 
     # Defense-in-Depth Hard Constraint Gate
-    from .matcher import _coerce_profile, _hard_constraints
+    from .matcher import _coerce_profile, _hard_constraints_for_send
     from .remote_filter import is_strictly_remote
 
     if getattr(profile, "remote_required", False):
@@ -2698,7 +2698,7 @@ def submit_application_in_browser(
                 executor_version="v1",
             )
 
-    hard_reject, hard_reason = _hard_constraints(_coerce_profile(profile), vac)
+    hard_reject, hard_reason = _hard_constraints_for_send(_coerce_profile(profile), vac)
     if hard_reject:
         return SubmitResult(
             vacancy_stable_id=vacancy_stable_id,

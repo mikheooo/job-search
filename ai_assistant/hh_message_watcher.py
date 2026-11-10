@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import time
+import urllib.parse
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -31,7 +32,6 @@ from .candidate_profile import load_candidate_profile
 from .db import (
     get_hh_message_event,
     is_hh_message_processed,
-    is_our_sent_message,
     save_hh_message_event,
 )
 from .hh_message_reply import (
@@ -40,6 +40,7 @@ from .hh_message_reply import (
     classify_hh_conversation_detailed,
     fetch_hh_conversation_readonly,
     fetch_hh_conversations_list_readonly,
+    parse_card_date,
     resolve_vacancy_for_dialog,
     validate_hh_reply_draft,
 )
@@ -66,8 +67,21 @@ def compute_message_fingerprint(
 ) -> str:
     """Build a stable, collision-resistant SHA-256 fingerprint for an HH message.
 
-    Uses conversation_id, normalized sender, timestamp, and message text.
+    Keyed on conversation_id, normalized sender, timestamp, and message text.
     Does NOT rely on message text alone.
+
+    ``sent_at`` stays in the key (T7.28). It was tempting to drop it once the
+    card date became readable, since the date is relative most of the time
+    (``вчера``, ``пн``..``вс``) and therefore unstable across days. But the key is
+    already established history: all 38 stored ``hh_mfp_`` fingerprints in
+    ``state.db`` reproduce exactly with this four-field payload - verified, 38 of
+    38. Removing a field would orphan every one of them.
+
+    The instability is handled at the **call site** instead, and more precisely:
+    when only a card *snippet* is available the date is not known to be the
+    message's own timestamp, so the extractor passes ``sent_at=""`` and keeps the
+    key identical to what earlier runs wrote. A date that is merely *displayed*
+    on the card does not become part of a message's identity.
     """
     if message_id and not message_id.startswith("m") and not message_id.startswith("msg_") and len(message_id) > 10:
         return f"hh_mid_{message_id}"
@@ -188,89 +202,132 @@ def run_message_watcher_cycle(
     # 2. Resolve CDP evaluate function
     ev = config.custom_evaluate_fn or evaluate_fn
     if ev is None:
+        from . import hh_browser_lease as _lease
+        from . import hh_browser_provider as _bp
         from .cli import (
             _DEFAULT_HH_MESSAGES_URL_SUBSTRING,
             _default_hh_cdp_url,
             _resolve_hh_evaluate,
         )
-        from .hh_browser_launcher import (
-            check_hh_session_authenticated,
-            ensure_hh_browser,
-        )
+        from .hh_browser_launcher import check_hh_session_authenticated
 
         cdp = config.cdp_url or _default_hh_cdp_url()
         sub = config.url_substring or _DEFAULT_HH_MESSAGES_URL_SUBSTRING
+        port = urllib.parse.urlparse(cdp).port or _bp.HEADLESS_CDP_PORT
 
-        # Auto-ensure browser is running
-        browser_info = ensure_hh_browser(
-            cdp_url=cdp,
-            auto_start=config.auto_start_browser,
+        # T7.25 §6: one poll, one browser. The watcher used to call
+        # ensure_hh_browser() and then read through the CDP endpoint for the rest
+        # of the *process* - so a daemon polling every N seconds held Chrome for
+        # its entire lifetime, and nothing owned the shutdown. The operation below
+        # owns the browser for exactly this cycle; `hh_operation`'s finally is what
+        # releases it, on the BLOCKED returns as much as on the happy path.
+        #
+        # auto_start_browser=False keeps its meaning - "do not launch one". A
+        # browser that is already listening is adopted; one that is not is
+        # reported BLOCKED instead of being started.
+        if config.auto_start_browser or _bp.port_is_listening(port):
+            try:
+                with _lease.hh_operation(
+                    _lease.OWNER_WATCHER,
+                    purpose="messages",
+                    cdp_port=port,
+                    session_kwargs={"cdp_url": cdp, "require_auth": False},
+                ) as op:
+                    started = op["session"].start()
+                    if not started.get("ok"):
+                        err_msg = (
+                            "BLOCKED: "
+                            + str(started.get("message") or "HH Chrome browser unavailable")
+                        )
+                        logger.error(err_msg)
+                        result.errors.append(err_msg)
+                        result.blocked += 1
+                        return result
+
+                    # T7.25: ensure_hh_browser() opened the HH messages page as
+                    # part of "ensure a browser", and the resolve below attaches to
+                    # that tab. Ownership moved; the page did not - without this the
+                    # resolve finds no hh.ru tab on a browser sitting on about:blank.
+                    from .hh_browser_launcher import DEFAULT_HH_URL as _DEFAULT_HH_URL
+
+                    if op["session"].open_hh_page(_DEFAULT_HH_URL) is None:
+                        err_msg = "BLOCKED: could not open the HH messages page"
+                        logger.error(err_msg)
+                        result.errors.append(err_msg)
+                        result.blocked += 1
+                        return result
+                    try:
+                        ev = _resolve_hh_evaluate(
+                            cdp_url=cdp,
+                            url_substring=sub,
+                        )
+                    except Exception as e:
+                        err_str = str(e)
+                        if "no open tab matching" in err_str:
+                            err_msg = f"BLOCKED: connected to Chrome on {cdp}, but no open tab matching '{sub}' was found. Open hh.ru in Chrome."
+                        else:
+                            err_msg = f"BLOCKED: CDP/HH connection failed: {e}"
+
+                        logger.error(err_msg)
+                        result.errors.append(err_msg)
+                        result.blocked += 1
+                        return result
+
+                    # Verify session authentication
+                    try:
+                        auth_info = check_hh_session_authenticated(ev)
+                    except Exception as e:
+                        # BLE001 finding #28: this used to be a debug log with no return.
+                        # The cycle then carried on and reported "0 conversations, 0
+                        # errors", which is indistinguishable from "no new employer
+                        # messages". A check that cannot run must stop the cycle.
+                        auth_info = {
+                            "authenticated": False,
+                            "verified": False,
+                            "reason": f"auth check raised {type(e).__name__}: {e}",
+                        }
+
+                    # Fail-closed read (BLE001 finding #28): a missing key is not a pass.
+                    if not auth_info.get("authenticated", False):
+                        reason = auth_info.get("reason") or "Login required"
+                        if auth_info.get("verified", True):
+                            err_msg = f"BLOCKED: HH session not authenticated ({reason}). Please log in to HeadHunter."
+                        else:
+                            err_msg = (
+                                f"BLOCKED: could not verify the HH session ({reason}). "
+                                "Refusing to report this cycle as 'no new messages' - "
+                                "fix the browser/CDP connection and retry."
+                            )
+                        logger.warning(err_msg)
+                        result.errors.append(err_msg)
+                        result.blocked += 1
+                        return result
+
+                    # The body runs with `evaluate_fn` set, so the re-entrant call
+                    # owns nothing and acquires nothing: the browser is ours for
+                    # the length of this cycle, and the release is already armed.
+                    return run_message_watcher_cycle(
+                        config, evaluate_fn=ev, iteration=iteration
+                    )
+            except _lease.BrowserBusy as e:
+                err_msg = f"BLOCKED: another operation holds the HH browser ({e})."
+                logger.error(err_msg)
+                result.errors.append(err_msg)
+                result.blocked += 1
+                return result
+
+        err_msg = (
+            f"BLOCKED: CDP endpoint {cdp} is not listening and "
+            "auto_start_browser is False."
         )
-        if not browser_info.get("ok"):
-            err_msg = f"BLOCKED: {browser_info.get('error', 'HH Chrome browser unavailable')}"
-            logger.error(err_msg)
-            result.errors.append(err_msg)
-            result.blocked += 1
-            return result
-
-        try:
-            ev = _resolve_hh_evaluate(
-                cdp_url=cdp,
-                url_substring=sub,
-            )
-        except Exception as e:
-            err_str = str(e)
-            if "no open tab matching" in err_str:
-                err_msg = f"BLOCKED: connected to Chrome on {cdp}, but no open tab matching '{sub}' was found. Open hh.ru in Chrome."
-            else:
-                err_msg = f"BLOCKED: CDP/HH connection failed: {e}"
-
-            logger.error(err_msg)
-            result.errors.append(err_msg)
-            result.blocked += 1
-            return result
-
-        # Verify session authentication
-        try:
-            auth_info = check_hh_session_authenticated(ev)
-        except Exception as e:
-            # BLE001 finding #28: this used to be a debug log with no return.
-            # The cycle then carried on and reported "0 conversations, 0
-            # errors", which is indistinguishable from "no new employer
-            # messages". A check that cannot run must stop the cycle.
-            auth_info = {
-                "authenticated": False,
-                "verified": False,
-                "reason": f"auth check raised {type(e).__name__}: {e}",
-            }
-
-        # Fail-closed read (BLE001 finding #28): a missing key is not a pass.
-        if not auth_info.get("authenticated", False):
-            reason = auth_info.get("reason") or "Login required"
-            if auth_info.get("verified", True):
-                err_msg = f"BLOCKED: HH session not authenticated ({reason}). Please log in to HeadHunter."
-            else:
-                err_msg = (
-                    f"BLOCKED: could not verify the HH session ({reason}). "
-                    "Refusing to report this cycle as 'no new messages' - "
-                    "fix the browser/CDP connection and retry."
-                )
-            logger.warning(err_msg)
-            result.errors.append(err_msg)
-            result.blocked += 1
-            return result
+        logger.error(err_msg)
+        result.errors.append(err_msg)
+        result.blocked += 1
+        return result
 
     # 3. Discover conversations
     try:
         raw_list = fetch_hh_conversations_list_readonly(ev)
-        # An error payload with no cards is a failed read. Treating it as
-        # "zero conversations" used to look like a quiet, successful cycle.
-        if (
-            isinstance(raw_list, dict)
-            and raw_list.get("error")
-            and not (raw_list.get("conversations") or [])
-        ):
-            raise RuntimeError(str(raw_list.get("error")))
         raw_convs = raw_list.get("conversations") or []
     except Exception as e:
         err_msg = f"Failed to fetch HH conversations list: {e}"
@@ -316,12 +373,16 @@ def run_message_watcher_cycle(
 
             # If no detailed messages, construct from card snippet if available
             dialog_msgs: list[HHMessage] = []
+            #: T7.28 - date shown on the card, keyed by message_id. Kept beside
+            #: `dialog_msgs` rather than inside `HHMessage` so that the model (and
+            #: with it the fingerprint payload) does not change shape: the date is
+            #: presentation metadata, not part of a message's identity.
+            card_dates: dict[str, str] = {}
             if raw_msgs:
                 for idx, m in enumerate(raw_msgs):
                     direction = (m.get("direction") or "").upper()
+                    sender = "candidate" if direction == "OUTGOING" else "employer"
                     msg_text = (m.get("text") or "").strip()
-                    is_out = (direction == "OUTGOING") or (bool(cid) and is_our_sent_message(cid, msg_text))
-                    sender = "candidate" if is_out else "employer"
                     sent_at = m.get("sent_at") or m.get("time")
                     mid = str(m.get("message_id") or f"m{idx}")
                     dialog_msgs.append(
@@ -335,12 +396,24 @@ def run_message_watcher_cycle(
             elif c.get("snippet"):
                 snippet = (c.get("snippet") or "").replace("\xa0", " ").strip()
                 snippet_lower = snippet.lower()
-                is_cand = (
-                    "отклик на вакансию" in snippet_lower
-                    or snippet_lower.startswith(("вы:", "вы: ", "you:", "you: "))
-                    or (bool(cid) and is_our_sent_message(cid, snippet))
-                )
-                sender = "candidate" if is_cand else "employer"
+                sender = "candidate" if "отклик на вакансию" in snippet_lower else "employer"
+                # T7.28: the card carries a date ('вчера', 'пн'..'вс', '20.09') and
+                # it used to be dropped on the floor right here - `sent_at` was
+                # hardcoded to None, so hh_message_events.sent_at stayed empty in
+                # 37 of 38 rows and there was no way to tell WHEN a message
+                # arrived. That is why a 'Собеседование' from 30.08 sat unnoticed
+                # for a month.
+                #
+                # The parsed date goes into `card_date` - a display field, kept
+                # separate from `sent_at` on purpose. `sent_at` stays empty for
+                # the snippet path because the card shows a *relative* date that
+                # changes with the calendar ('вчера' becomes 'позавчера'
+                # tomorrow), and `sent_at` is part of the message fingerprint.
+                # Feeding it a moving value would make the same rejection look
+                # new after every midnight. Identity stays (conversation, sender,
+                # text) + the empty timestamp the previous runs wrote - verified
+                # reproducible for all 38 stored fingerprints.
+                card_date = parse_card_date(c.get("last_message_date_raw"))
                 dialog_msgs.append(
                     HHMessage(
                         message_id="m0",
@@ -349,6 +422,8 @@ def run_message_watcher_cycle(
                         sender=sender,
                     )
                 )
+                if card_date is not None:
+                    card_dates["m0"] = card_date.isoformat()
 
             result.messages_seen += len(dialog_msgs)
 
@@ -359,7 +434,7 @@ def run_message_watcher_cycle(
             last_msg = dialog_msgs[-1]
 
             # Rule: Outgoing messages from user/candidate are NOT incoming messages
-            if last_msg.sender == "candidate" or (bool(cid) and is_our_sent_message(cid, last_msg.text or "")):
+            if last_msg.sender == "candidate":
                 continue
 
             # Compute stable fingerprint
@@ -386,7 +461,14 @@ def run_message_watcher_cycle(
                             message_id=last_msg.message_id,
                             sender=last_msg.sender,
                             text=last_msg.text,
-                            sent_at=last_msg.sent_at,
+                            # T7.28: prefer the date the card showed. `sent_at` is
+                            # still None for a snippet-only read (see the branch
+                            # that builds dialog_msgs), so without this every row
+                            # written from a card has no date and "when did this
+                            # arrive" is unanswerable. The card date is a *day*,
+                            # so it is used as-is: a time of 00:00 in an ISO date
+                            # states "this day", which is exactly what is known.
+                            sent_at=last_msg.sent_at or card_dates.get(last_msg.message_id),
                             vacancy_stable_id=ev_item.get("vacancy_stable_id"),
                             title=title,
                             employer=ev_item.get("employer") or employer,
@@ -457,13 +539,19 @@ def run_message_watcher_cycle(
                 status = HHMessageWatcherStatus.NO_REPLY.value
                 stop_reason = "No reply required (system notification, auto-rejection, or closing)"
 
+            # The date to record: a real per-message timestamp when the detailed
+            # read provided one, otherwise the day the card showed (T7.28). This
+            # is a display/storage value and is NOT what the fingerprint is keyed
+            # on - see compute_message_fingerprint for why those must differ.
+            recorded_sent_at = last_msg.sent_at or card_dates.get(last_msg.message_id)
+
             # Save message event in state.db
             save_hh_message_event(
                 message_fingerprint=mfp,
                 conversation_id=cid,
                 sender=last_msg.sender,
                 text=last_msg.text,
-                sent_at=last_msg.sent_at,
+                sent_at=recorded_sent_at,
                 processed=1,
                 classification=classification,
                 validation=val_status,
@@ -482,7 +570,7 @@ def run_message_watcher_cycle(
                     message_id=last_msg.message_id,
                     sender=last_msg.sender,
                     text=last_msg.text,
-                    sent_at=last_msg.sent_at,
+                    sent_at=recorded_sent_at,
                     vacancy_stable_id=vac_stable_id,
                     title=title,
                     employer=resolved_employer,
@@ -500,7 +588,7 @@ def run_message_watcher_cycle(
                 message_fingerprint=mfp,
                 sender=last_msg.sender,
                 text=last_msg.text,
-                sent_at=last_msg.sent_at,
+                sent_at=recorded_sent_at,
                 vacancy_stable_id=vac_stable_id,
                 employer=resolved_employer,
                 participant=title or resolved_employer or None,

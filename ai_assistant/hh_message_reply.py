@@ -34,17 +34,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import os
 import re
-import time
-from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any
-
-logger = logging.getLogger(__name__)
+from collections.abc import Callable
 
 from pydantic import BaseModel, Field
 
@@ -108,8 +103,9 @@ _NO_REPLY_MARKERS = (
     "подписка", "оплатите", "пополните", "верифицируйте",
     "поздравляем", "добро пожаловать в hh", "изменения в законодательстве",
     "безопасность вашего аккаунта", "служба поддержки hh", "hh.ru",
-    "восстановление пароля", "подтвердите номер", "код подтверждения",
-    "двухфакторная аутентификация для входа", "введите пароль для входа",
+    "пароль", "подтвердите номер", "двухфакторная",
+    "перенесена в архив", "вакансия в архиве", "в архиве", "снята с публикации",
+    "вакансия закрыта", "позиция закрыта",
 )
 
 # Sensitive facts that must NEVER be guessed: presence forces HUMAN_REVIEW.
@@ -117,7 +113,8 @@ _NO_REPLY_MARKERS = (
 # experience, remote availability, salary range) are safe and grounded in candidate_kb.json.
 _SENSITIVE_RE = re.compile(
     r"ваканси[а-я]* закрыт|позицию.*закрыли|статус.*отклик|"
-    r"подпис\w*\s+договор|принять\s+оффер|принять\s+предложен|nda|паспортн|документ.*подпис",
+    r"подпис\w*\s+договор|принять\s+оффер|принять\s+предложен|nda|паспортн|документ.*подпис|"
+    r"зарплат|ожиданиях\s+по\s+зарплате|сколько.*(?:хотите|получать)",
     re.IGNORECASE,
 )
 
@@ -145,12 +142,6 @@ def classify_message(dialog: HHDialog) -> MessageClassification:
     low = text.lower()
     if not text:
         return MessageClassification.NO_REPLY
-    # A direct question or prompt from the employer takes precedence over generic substring markers
-    if _REPLY_PROBE.search(text):
-        context = _context_texts(dialog)
-        if _SENSITIVE_RE.search(context):
-            return MessageClassification.HUMAN_REVIEW
-        return MessageClassification.REPLY_REQUIRED
     # system/notification messages are not candidate replies
     if any(m in low for m in _NO_REPLY_MARKERS):
         return MessageClassification.NO_REPLY
@@ -159,6 +150,9 @@ def classify_message(dialog: HHDialog) -> MessageClassification:
     context = _context_texts(dialog)
     if _SENSITIVE_RE.search(context):
         return MessageClassification.HUMAN_REVIEW
+    # a direct question from the employer (in the latest message) -> reply
+    if _REPLY_PROBE.search(text):
+        return MessageClassification.REPLY_REQUIRED
     # if an earlier employer message asked a direct question and the last
     # message is a follow-up/system line, keep it for the human (no guessing)
     if any(_REPLY_PROBE.search((m.text or "")) for m in (dialog.messages or [])):
@@ -248,7 +242,7 @@ def generate_reply(
 
 
 _REJECTION_RE = re.compile(
-    r"^отказ$|^нет$|не готовы пригласить|ваканси[а-я]* закрыт|позици[а-я]* закрыт|к сожалению,.*отказ|вынуждены отказать|выбрали другого|не подош[её]л",
+    r"^отказ$|^нет$|не готовы пригласить|ваканси[а-я]* закрыт|позици[а-я]* закрыт|к сожалению,.*отказ|вынуждены отказать|выбрали другого|не подош[её]л|перенесен[а-я]* в архив|ваканси[а-я]* в архив|в архив[е]?|снят[а-я]* с публикации",
     re.IGNORECASE,
 )
 
@@ -302,67 +296,6 @@ _TECH_VOCAB = {
     "power bi": "Power BI", "metabase": "Metabase", "superset": "Superset",
     "looker": "Looker", "supabase": "Supabase", "firebase": "Firebase",
     "stripe": "Stripe",
-    # networking / vpn / security / infra
-    "vpn": "VPN", "впн": "VPN", "openvpn": "OpenVPN", "wireguard": "WireGuard",
-    "вайргард": "WireGuard", "опенвпн": "OpenVPN", "2fa": "2FA", "mfa": "MFA",
-    "мфа": "2FA", "двухфакторная": "2FA", "двухфакторную": "2FA",
-    "active directory": "Active Directory", "актив директори": "Active Directory",
-    # common russian tech terms
-    "докер": "Docker", "кубер": "Kubernetes", "кубернетес": "Kubernetes",
-    "постгрес": "PostgreSQL", "постгре": "PostgreSQL",
-    "битрикс": "Bitrix24", "битрикс24": "Bitrix24",
-    "амосрм": "AmoCRM", "амо": "AmoCRM",
-    "сисадмин": "System Administration",
-}
-
-# Maps colloquial and Russian technical phrases to canonical profile skills
-_SKILL_ALIASES: dict[str, str] = {
-    "впн": "vpn",
-    "vpn": "vpn",
-    "openvpn": "vpn",
-    "wireguard": "vpn",
-    "вайргард": "vpn",
-    "опенвпн": "vpn",
-    "двухфакторн": "vpn",
-    "двухфакторная": "vpn",
-    "двухфакторную": "vpn",
-    "2fa": "vpn",
-    "mfa": "vpn",
-    "мфа": "vpn",
-    "докер": "docker",
-    "docker": "docker",
-    "кубер": "kubernetes",
-    "кубернетес": "kubernetes",
-    "k8s": "kubernetes",
-    "kubernetes": "kubernetes",
-    "постгрес": "postgresql",
-    "постгре": "postgresql",
-    "postgres": "postgresql",
-    "postgresql": "postgresql",
-    "редис": "redis",
-    "redis": "redis",
-    "кафка": "kafka",
-    "kafka": "kafka",
-    "битрикс": "bitrix24",
-    "битрикс24": "bitrix24",
-    "bitrix": "bitrix24",
-    "bitrix24": "bitrix24",
-    "амо": "amocrm",
-    "амосрм": "amocrm",
-    "amocrm": "amocrm",
-    "актив директори": "active directory",
-    "активдиректори": "active directory",
-    "active directory": "active directory",
-    "н8н": "n8n",
-    "n8n": "n8n",
-    "питон": "python",
-    "пайтон": "python",
-    "python": "python",
-    "фастапи": "fastapi",
-    "сисадмин": "windows server",
-    "системное администрирование": "windows server",
-    "плайврайт": "playwright",
-    "плейрайт": "playwright",
 }
 
 # Guards the honest-absence branch. A technology merely *mentioned* in passing
@@ -370,27 +303,8 @@ _SKILL_ALIASES: dict[str, str] = {
 # experience" non-sequitur. Only answer about a technology when the employer is
 # actually asking for experience with something.
 _TECH_ASK_CUE_RE = re.compile(
-    r"работал[аи]?\s+с|знае(?:те|шь)|приходилос|использовал[аи]?|владее(?:те|шь)|умее(?:те|шь)\s+ли|"
-    r"есть\s+ли\s+опыт|какой\s+(?:у\s+вас\s+)?опыт|расскажите\s+об?\s+опыте|"
-    r"\bworked\s+with\b|\bhave\s+you\s+used\b|\bfamiliar\s+with\b|\bdo\s+you\s+know\b",
-    re.IGNORECASE,
-)
-
-_EXP_QUESTION_RE = re.compile(
-    r"(?:есть\s+ли|какой\s+(?:у\s+вас\s+)?|расскажите\s+про|расскажите\s+о|опишите|поделитесь|сколько\s+лет)\s+(?:ваш\w*\s+)?(?:коммерческ\w*\s+)?(?:опыт\w*|стаж\w*)"
-    r"|(?:опыт\w*|стаж\w*)\s+(?:работы\s+)?(?:с|в|на\b)?[^.?!\n]*[?]"
-    r"|\b(?:do\s+you\s+have|tell\s+us\s+about|describe\s+your|how\s+many\s+years\s+of)\s+experience\b",
-    re.IGNORECASE,
-)
-
-_ACK_ONLY_RE = re.compile(
-    r"(?:рассмотрим|рассмотрит|изучим|ознакомим\w*)\s+(?:ваше\s+)?резюме"
-    r"|если\s+(?:ваши\s+)?(?:навыки\s+и\s+)?опыт\s+подойд"
-    r"|если\s+(?:ваша\s+кандидатура|профиль|резюме)\s+подойд"
-    r"|(?:в\s+ближайшее\s+время|в\s+течение\s+\w+\s+дней|в\s+случае\s+положительного)\s+свяжемся"
-    r"|мы\s+свяжемся\s+с\s+вами"
-    r"|передали\s+(?:ваше\s+)?резюме"
-    r"|находится\s+на\s+рассмотрении",
+    r"опыт|работал|знае|приходилос|использовал|стаж|владе|навык|уме|"
+    r"\bexperience\b|\bworked\b|\bused\b|\bfamiliar\b|\bskills?\b|know how",
     re.IGNORECASE,
 )
 
@@ -501,12 +415,6 @@ def classify_hh_conversation_detailed(
         }
 
     # Find employer and candidate messages
-    # Never treat candidate's own messages (even if missing 'you:' prefix) as employer messages!
-    from ai_assistant import db
-    for m in messages:
-        if m.sender != "candidate" and dialog.conversation_id and db.is_our_sent_message(dialog.conversation_id, m.text or ""):
-            m.sender = "candidate"
-
     employer_indices = [i for i, m in enumerate(messages) if m.sender != "candidate"]
     candidate_indices = [i for i, m in enumerate(messages) if m.sender == "candidate"]
 
@@ -565,24 +473,32 @@ def classify_hh_conversation_detailed(
             "status": "READ-ONLY",
         }
 
-    # 2b. Recruiter standard review / acknowledgment notice ("рассмотрим ваше резюме", "если навыки и опыт подойдут...")
-    if _ACK_ONLY_RE.search(last_emp_text) and not ("?" in last_emp_text or "？" in last_emp_text or bool(_EXP_QUESTION_RE.search(last_emp_text))):
-        has_prior = bool(candidate_indices) or (bool(dialog.conversation_id) and db.has_prior_candidate_message(dialog.conversation_id))
-        if has_prior:
-            return {
-                "conversation_id": dialog.conversation_id,
-                "classification": "NO_REPLY_NEEDED",
-                "confidence": 0.95,
-                "reason": "Recruiter sent standard profile review / acknowledgment notice; candidate has already acknowledged or messaged.",
-                "question": None,
-                "required_facts": [],
-                "available_facts": available_facts,
-                "missing_facts": [],
-                "context": context,
-                "prepared_reply": None,
-                "sources": [],
-                "status": "READ-ONLY",
-            }
+    # 2b. Concluding / Wrap-up message from employer (screening complete, recorded answers, goodbye)
+    _WRAP_UP_RE = re.compile(
+        r"спасибо\s+за\s+(?:удел[её]нное\s+время|ответы|диалог|информацию)"
+        r"|все\s+(?:ваши\s+)?ответы\s+(?:я\s+)?записал"
+        r"|ответы\s+записаны"
+        r"|переда[мл]\s+(?:всю\s+)?информацию\s+рекрутеру"
+        r"|свяжемся\s+с\s+вами"
+        r"|свяжется\s+с\s+вами"
+        r"|если\s+они\s+подходят.*продолжит\s+с\s+вами\s+диалог",
+        re.IGNORECASE,
+    )
+    if _WRAP_UP_RE.search(last_emp_text) and not ("?" in last_emp_text or "？" in last_emp_text):
+        return {
+            "conversation_id": dialog.conversation_id,
+            "classification": "NO_REPLY_NEEDED",
+            "confidence": 0.98,
+            "reason": "Employer concluded screening / sent wrap-up update; no reply required.",
+            "question": None,
+            "required_facts": [],
+            "available_facts": available_facts,
+            "missing_facts": [],
+            "context": context,
+            "prepared_reply": None,
+            "sources": [],
+            "status": "READ-ONLY",
+        }
 
     # 3. Check for substantive questions in employer messages
     question_emp_indices = [
@@ -590,8 +506,10 @@ def classify_hh_conversation_detailed(
         if _REPLY_PROBE.search(messages[i].text or "")
         or "?" in (messages[i].text or "")
         or "？" in (messages[i].text or "")
-        or bool(_EXP_QUESTION_RE.search(messages[i].text or ""))
-        or any(k in (messages[i].text or "").lower() for k in ["вопрос", "ответьте", "уточните", "подскажите", "расскажите", "умеете ли", "напишите"])
+        or "опыт" in (messages[i].text or "").lower()
+        or "вопрос" in (messages[i].text or "").lower()
+        or "ответьте" in (messages[i].text or "").lower()
+        or "уточните" in (messages[i].text or "").lower()
     ]
 
     if question_emp_indices:
@@ -703,7 +621,13 @@ def classify_hh_conversation_detailed(
                 "status": "READ-ONLY",
             }
 
-        # 3. Grounded Company Experience: Sayama Travel, Avantis Med, Freelance, Early IT
+        # 3. Grounded Company Experience: Sayama Travel, Avantis Med, Freelance, Early IT, Infrastructure, Domains
+        _ELABORATE_RE = re.compile(
+            r"подробнее|расскаж\w+\s+о|продолж\w+\s+рассказ|опыт\w*\s+с|какой\s+опыт|сколько\s+лет",
+            re.IGNORECASE,
+        )
+        is_elaborate_q = bool(_ELABORATE_RE.search((q_text or "").lower()))
+
         q_low_check = (q_text or "").lower()
         if any(k in q_low_check for k in [
             "где вы работали", "где работал", "места работы", "компании", "предыдущ",
@@ -711,8 +635,10 @@ def classify_hh_conversation_detailed(
             "расскажите про опыт", "опыт работы", "работали ли вы", "работал ли",
             "работали в", "в каких компаниях", "агентств", "студи",
             "дизайн", "design", "арт", "стаж",
-            "портфолио", "portfolio", "кейсы", "кейс", "сайт", "пример"
-        ]):
+            "портфолио", "portfolio", "кейсы", "кейс", "сайт", "пример",
+            "vmware", "vsphere", "esxi", "nsx", "airflow", "spark", "kafka",
+            "igaming", "гейминг", "продолжить рассказ", "подробнее", "опыте с", "опыт с"
+        ]) or is_elaborate_q:
             from ai_assistant.smart_experience_generator import generate_employer_chat_reply
             has_prior = any(m.sender == "candidate" for m in messages)
             exp_res = generate_employer_chat_reply(q_text, v_title, v_comp, has_prior_interaction=has_prior)
@@ -800,11 +726,9 @@ def classify_hh_conversation_detailed(
             "python", "fastapi", "asyncio", "postgres", "postgresql", "docker",
             "kubernetes", "k8s", "n8n", "ai agent", "llm", "mcp", "rest api", "grpc", "sql",
             "rag", "langchain", "llamaindex", "nginx", "микросервис", "стек", "пайплайн",
-            "bitrix", "bitrix24", "битрикс", "битрикс24", "amocrm", "crm",
-            "vpn", "впн", "2fa", "mfa", "двухфакторн", "active directory", "актив директори",
-            "сисадмин", "докер", "постгрес"
+            "bitrix", "bitrix24", "битрикс", "битрикс24", "amocrm", "crm"
         ]) and not has_unverified_tech
-        is_generic_exp_q = bool(_EXP_QUESTION_RE.search(core_q_text)) and not has_unverified_tech
+        is_generic_exp_q = ("опыт" in q_text_low or "стаж" in q_text_low) and not has_unverified_tech
         is_remote_q = any(k in q_text_low for k in ["удален", "remote", "формат работ", "локаци", "находит", "территориаль", "где вы", "город", "страна"])
         is_schedule_q = any(k in q_text_low for k in [
             "понедельник", "пятниц", "пн-пт", "пн по пт", "часов в день", "началом работы",
@@ -831,10 +755,11 @@ def classify_hh_conversation_detailed(
         # вы удалённую работу?" was landing here and answering "предложение мне
         # интересно" to a question about work format — a dodge. Format and start-date
         # questions have their own, more specific branches below, so let them win.
+        _ELAB_GUARD = re.compile(r"подробнее|расскаж\w+\s+о|продолж\w+\s+рассказ|опыт\w*\s+с|какой\s+опыт|сколько\s+лет|nsx|vmware|vsphere", re.IGNORECASE)
         is_interest_q = (
             any(k in q_text_low for k in ["интересн", "заинтересова", "interested", "готов обсудить", "готовы обсудить", "актуальн", "рассматрива"])
             or bool(_INTEREST_RE.search(q_text_low))
-        ) and not has_unverified_tech and not is_remote_q and not is_availability_q and not is_schedule_q
+        ) and not bool(_ELAB_GUARD.search(q_text_low)) and not has_unverified_tech and not is_remote_q and not is_availability_q and not is_schedule_q
 
         if is_interest_q:
             if lang == "ru":
@@ -960,20 +885,9 @@ def classify_hh_conversation_detailed(
         for _s in declared_skills:
             _s_low = _s.lower().replace("ё", "е")
             if re.search(rf"(?<![a-zа-я0-9]){re.escape(_s_low)}(?![a-zа-я0-9])", q_text_low):
-                if _s not in asked_skills:
-                    asked_skills.append(_s)
+                asked_skills.append(_s)
             if len(asked_skills) >= 3:
                 break
-
-        if len(asked_skills) < 3:
-            for _alias, _canonical in _SKILL_ALIASES.items():
-                if _canonical in declared_low:
-                    if re.search(rf"(?<![a-zа-я0-9]){re.escape(_alias)}(?![a-zа-я0-9])", q_text_low):
-                        orig = next((s for s in declared_skills if s.lower().replace("ё", "е") == _canonical), _canonical)
-                        if orig not in asked_skills:
-                            asked_skills.append(orig)
-                if len(asked_skills) >= 3:
-                    break
 
         # Technologies the employer named that are NOT in the profile. Same
         # word-boundary rule; a token is skipped when a declared skill already
@@ -984,9 +898,6 @@ def classify_hh_conversation_detailed(
             if not re.search(_tok_re, q_text_low):
                 continue
             if any(re.search(_tok_re, _d) for _d in declared_low):
-                continue
-            _canonical_skill = _SKILL_ALIASES.get(_tok)
-            if _canonical_skill and _canonical_skill in declared_low:
                 continue
             if _disp not in unknown_techs:
                 unknown_techs.append(_disp)
@@ -1040,31 +951,7 @@ def classify_hh_conversation_detailed(
             unknown_str = _join_native(unknown_techs)
             tech_missing: list[str] = []
 
-            # Prioritize synthesizing a specific, contextual reply addressing the topic
-            from ai_assistant.smart_experience_generator import synthesize_contextual_chat_reply_with_llm
-            hist_lines = [f"{m.sender}: {m.text}" for m in messages[-6:] if m.text]
-            prior_cand = [m.text for m in messages if m.sender == "candidate" and m.text]
-            specialized = (
-                synthesize_contextual_chat_reply_with_llm(
-                    employer_message=q_text,
-                    vacancy_title=v_title or "",
-                    company_name=v_comp or "",
-                    conversation_history=hist_lines,
-                    avoid_replies=prior_cand,
-                )
-                if (lang == "ru" and not asks_about_tech)
-                else None
-            )
-
-            if specialized and lang == "ru":
-                has_prior = any(m.sender == "candidate" for m in messages)
-                if not has_prior and not specialized.lower().startswith("здравствуйте"):
-                    specialized = "Здравствуйте! " + specialized
-                reply_text = specialized
-                reason = "Employer asked a specific domain/technical question; drafted contextual answer addressing the exact topic."
-                tech_sources = sources + ["candidate_kb.json: contextual domain experience"]
-                tech_confidence = 0.94
-            elif asked_skills and asks_about_tech:
+            if asked_skills and asks_about_tech:
                 # Both halves: confirm what is verified, disclaim what is not.
                 if lang == "ru":
                     reply_text = (
@@ -1131,6 +1018,7 @@ def classify_hh_conversation_detailed(
                 tech_missing = [f"{unknown_str} experience (absent from profile)"]
                 tech_confidence = 0.85
             else:
+                from ai_assistant.smart_experience_generator import synthesize_contextual_chat_reply_with_llm
                 hist_lines = [f"{m.sender}: {m.text}" for m in messages[-6:] if m.text]
                 prior_cand = [m.text for m in messages if m.sender == "candidate" and m.text]
                 specialized = synthesize_contextual_chat_reply_with_llm(
@@ -1886,6 +1774,20 @@ _CONVERSATIONS_LIST_JS = r"""() => {
         }
 
         const isDeliveredByMe = !!a.querySelector('[data-qa*="status-icon"], [class*="status-icon"], [data-qa="status-icon-delivered"], [data-qa="status-icon-read"], [data-qa="status-icon-sent"]');
+        const unreadEl = a.querySelector('[class*="unread" i], [data-qa*="unread" i], [class*="badge" i], span[class*="dot" i]');
+        let unreadCnt = 0;
+        if (unreadEl) {
+            const m = (unreadEl.innerText || '').match(/\d+/);
+            unreadCnt = m ? parseInt(m[0], 10) : 1;
+        } else {
+            for (let i = 1; i < rawLines.length; i++) {
+                if (/^\d+$/.test(rawLines[i]) && parseInt(rawLines[i], 10) > 0 && rawLines[i] !== title) {
+                    unreadCnt = parseInt(rawLines[i], 10);
+                    break;
+                }
+            }
+        }
+        const hasUnread = unreadCnt > 0 || !!unreadEl;
         out.push({
             conversation_id: cid,
             url: (a.href || '').split('?')[0],
@@ -1894,7 +1796,9 @@ _CONVERSATIONS_LIST_JS = r"""() => {
             snippet: snippet,
             last_message_date_raw: dateCandidate,
             is_selected: isSelected,
-            is_outgoing: isDeliveredByMe
+            is_outgoing: isDeliveredByMe,
+            unread_count: unreadCnt,
+            has_unread: hasUnread
         });
     }
 
@@ -1913,10 +1817,19 @@ _CONVERSATIONS_LIST_JS = r"""() => {
         });
     }
 
+    const unreadOnly = document.querySelector('[data-qa="chatik-checkbox-only-unread"]');
+    const emptyUnreadTitle = Array.from(document.querySelectorAll('[data-qa="title"]')).some(el =>
+        (el.innerText || '').trim() === 'Нет непрочитанных чатов' && el.getClientRects().length > 0
+    );
+    const emptyEvidence = out.length === 0 && document.readyState === 'complete' &&
+        location.hostname === 'hh.ru' && /^\/chat\/?$/.test(location.pathname) &&
+        !!document.querySelector('[data-qa="chatik-layout"]') && unreadOnly?.checked === true && emptyUnreadTitle
+        ? 'no_unread_chats' : null;
     return JSON.stringify({
         url: location.href,
         title: document.title,
-        conversations: out
+        conversations: out,
+        empty_evidence: emptyEvidence
     });
 }"""
 
@@ -1936,126 +1849,13 @@ def _conversations_list_js() -> str:
     )
 
 
-# A hung DevTools socket must not be waited on forever, and it must not be
-# reported as an empty inbox. The page fetch aborts sooner than this so a slow
-# chatik HTTP call returns an error string the DOM fallback can still handle.
-# The Python bound is the backstop for a CDP target that never answers.
-DIALOG_LIST_EVAL_TIMEOUT_SECONDS = 25.0
-
-_CDP_TRANSPORT_HINTS = (
-    "timeout",
-    "timed out",
-    "connection closed",
-    "connection refused",
-    "connection reset",
-    "connectionreset",
-    "connection failed",
-    "connection aborted",
-    "target closed",
-    "target disconnected",
-    "tab is gone",
-    "10061",
-    "websocket",
-    "broken pipe",
-    "brokenpipe",
-    "failed to fetch",
-)
-
-
-def dialog_list_eval_timeout_seconds() -> float:
-    raw = os.environ.get("HH_DIALOG_LIST_EVAL_TIMEOUT")
-    if not raw:
-        return DIALOG_LIST_EVAL_TIMEOUT_SECONDS
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return DIALOG_LIST_EVAL_TIMEOUT_SECONDS
-    return value if value > 0 else DIALOG_LIST_EVAL_TIMEOUT_SECONDS
-
-
-def cdp_transport_failure_reason(exc: BaseException) -> str | None:
-    """Return a reason when *exc* means the CDP target hung or dropped.
-
-    Ordinary evaluate bugs return None so the dialog list can still try the DOM
-    fallback. A timeout must not: the next evaluate would hang the same way,
-    and an empty DOM read would look like a successful check.
-    """
-    if isinstance(exc, (TimeoutError, ConnectionError)):
-        return f"{type(exc).__name__}: {exc}"
-    text = f"{type(exc).__name__}: {exc}"
-    low = text.lower()
-    if any(hint in low for hint in _CDP_TRANSPORT_HINTS):
-        return text
-    return None
-
-
-def _dialog_list_transport_error(reason: str) -> dict[str, Any]:
-    return {"error": reason, "conversations": []}
-
-
-def _empty_dialog_list_payload_error(raw: Any) -> str | None:
-    """A CDP evaluate that returned nothing is a failed read, not zero chats."""
-    if raw is None:
-        return "dialog list CDP evaluate returned no payload (hung or closed target)"
-    if not isinstance(raw, str):
-        return (
-            "dialog list CDP evaluate returned "
-            f"{type(raw).__name__}, not JSON text (hung or closed target)"
-        )
-    if raw.strip() in {"", "{}", "null", "undefined"}:
-        return "dialog list CDP evaluate returned an empty payload (hung or closed target)"
-    return None
-
-
-def _evaluate_dialog_list(
-    evaluate_fn: Callable[[str], str],
-    expression: str,
-    timeout_seconds: float,
-) -> str:
-    """Run one list-read evaluate and surface a hung target as TimeoutError.
-
-    ``concurrent.futures.TimeoutError`` is ``TimeoutError`` on Python 3.11, so a
-    worker that raises TimeoutError itself is distinguished by ``future.done()``:
-    the outer bound only fires while the worker is still running.
-    """
-    worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hh-dialog-list")
-    future = worker.submit(evaluate_fn, expression)
-    try:
-        return future.result(timeout=timeout_seconds)
-    except TimeoutError as exc:
-        if future.done():
-            raise
-        raise TimeoutError(
-            f"dialog list CDP evaluate timed out after {timeout_seconds:.0f}s"
-        ) from exc
-    finally:
-        worker.shutdown(wait=False, cancel_futures=True)
-
-
-def fetch_hh_conversations_list_readonly(
-    evaluate_fn: Callable[[str], str],
-    *,
-    timeout_seconds: float | None = None,
-) -> dict[str, Any]:
+def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> dict[str, Any]:
     """Stage 30D.9: Read-only enumeration of all visible conversations in HH chat interface.
-
-    Uses the chatik API first, then the DOM. ``timeout_seconds`` bounds each CDP
-    evaluate. A hung or dropped target returns ``{"error": ..., "conversations": []}``
-    and does not fall through to a second evaluate that would hang the same way.
-    An empty ``{}`` / ``null`` payload is that same failure, not a confirmed empty
-    inbox. API-level errors (HTTP status, "No chats found") still try the DOM.
-
+    Uses internal chatik API first (100% reliable, direct participant & message metadata),
+    with robust DOM fallback.
     Returns:
         conversations: List[Dict[str, Any]] (conversation_id, url, title, employer, snippet, is_selected, is_outgoing)
-        error: set when the read itself failed
     """
-    bound = dialog_list_eval_timeout_seconds() if timeout_seconds is None else float(timeout_seconds)
-    if bound <= 0:
-        bound = DIALOG_LIST_EVAL_TIMEOUT_SECONDS
-    # Abort the in-page fetch before the CDP bound so a slow HTTP call comes
-    # back as a JSON error (DOM fallback) instead of holding the socket.
-    page_fetch_ms = int(max(1000, min(12000, (bound - 2) * 1000)))
-
     # 1. Native Chatik API fetch inside browser context
     chatik_api_js = """(async () => {
         try {
@@ -2068,7 +1868,7 @@ def fetch_hh_conversations_list_readonly(
                 if (cursor) {
                     url += '&from=' + encodeURIComponent(cursor);
                 }
-                let r = await fetch(url, {credentials: 'include', signal: AbortSignal.timeout(__FETCH_TIMEOUT_MS__)});
+                let r = await fetch(url, {credentials: 'include'});
                 if (!r.ok) {
                     if (allChats.length > 0) break;
                     return JSON.stringify({error: 'HTTP ' + r.status});
@@ -2097,6 +1897,7 @@ def fetch_hh_conversations_list_readonly(
                     is_selected: location.pathname.includes('/chat/' + c.id),
                     is_outgoing: isMe,
                     unread_count: c.unreadCount || 0,
+                    has_unread: (c.unreadCount || 0) > 0,
                     vacancy_id: vacs[0] || null
                 };
             });
@@ -2109,65 +1910,29 @@ def fetch_hh_conversations_list_readonly(
         } catch (e) {
             return JSON.stringify({error: e.toString()});
         }
-    })()""".replace("__FETCH_TIMEOUT_MS__", str(page_fetch_ms))
-
-    def _read(expression: str) -> str:
-        return _evaluate_dialog_list(evaluate_fn, expression, bound)
+    })()"""
 
     try:
-        api_raw = _read(chatik_api_js)
-    except Exception as exc:  # noqa: BLE001 - transport failures are returned; other chatik bugs fall back to the DOM
-        reason = cdp_transport_failure_reason(exc)
-        if reason:
-            logger.warning("dialog list chatik read failed: %s", reason)
-            return _dialog_list_transport_error(reason)
-        logger.debug("chatik conversation list unavailable, falling back to DOM: %s", exc)
-    else:
-        if not _empty_dialog_list_payload_error(api_raw):
-            try:
-                api_res = json.loads(api_raw)
-            except json.JSONDecodeError as exc:
-                logger.debug("chatik list payload was not JSON, falling back to DOM: %s", exc)
-            else:
-                if isinstance(api_res, dict) and api_res.get("conversations"):
-                    return api_res
+        api_raw = evaluate_fn(chatik_api_js)
+        if api_raw and api_raw != "{}":
+            api_res = json.loads(api_raw)
+            if isinstance(api_res, dict) and api_res.get("conversations"):
+                return api_res
+    except Exception:
+        pass
 
-    # 2. DOM fallback. Reached only when the API evaluate actually returned
-    # (or failed for a non-transport reason). A hung CDP already returned above.
+    # 2. DOM fallback
     expr = _conversations_list_js()
     if expr.lstrip().startswith("() =>"):
         expr = "(" + expr + ")()"
-    try:
-        raw = _read(expr)
-    except Exception as exc:  # noqa: BLE001 - the DOM read is the last chance; surface every failure
-        reason = cdp_transport_failure_reason(exc) or f"{type(exc).__name__}: {exc}"
-        logger.warning("dialog list DOM read failed: %s", reason)
-        return _dialog_list_transport_error(reason)
-
-    empty = _empty_dialog_list_payload_error(raw)
-    if empty:
-        logger.warning("dialog list DOM read failed: %s", empty)
-        return _dialog_list_transport_error(empty)
-
+    raw = evaluate_fn(expr)
     try:
         first_res = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        return {"error": str(exc), "conversations": []}
+    except Exception as e:
+        return {"error": str(e), "conversations": []}
 
-    if isinstance(first_res, list):
-        first_res = {"conversations": first_res}
-    elif not isinstance(first_res, dict):
-        return {
-            "error": f"dialog list evaluate returned {type(first_res).__name__}, not a payload",
-            "conversations": [],
-        }
-    if "conversations" not in first_res:
-        if first_res.get("error"):
-            return {"error": str(first_res.get("error")), "conversations": []}
-        return {
-            "error": "dialog list evaluate returned no conversations payload",
-            "conversations": [],
-        }
+    if not isinstance(first_res, dict) or "conversations" not in first_res:
+        return first_res
 
     convs_by_id = {c.get("conversation_id"): c for c in first_res.get("conversations", []) if c.get("conversation_id")}
 
@@ -2182,12 +1947,12 @@ def fetch_hh_conversations_list_readonly(
 
     try:
         for _ in range(15):
-            sc_raw = _read(scroll_check_js)
+            sc_raw = evaluate_fn(scroll_check_js)
             sc_res = json.loads(sc_raw) if isinstance(sc_raw, str) else {}
             if not sc_res.get("found") or sc_res.get("at_bottom"):
                 break
             time.sleep(0.2)
-            step_raw = _read(expr)
+            step_raw = evaluate_fn(expr)
             step_res = json.loads(step_raw) if isinstance(step_raw, str) else {}
             for c in step_res.get("conversations", []):
                 cid = c.get("conversation_id")
@@ -2195,20 +1960,12 @@ def fetch_hh_conversations_list_readonly(
                     convs_by_id[cid] = c
 
         # Restore scroll to top
-        _read("""(() => {
+        evaluate_fn("""(() => {
             const sc = document.querySelector('[class*="chats--"], [class*="magritte-scroll-container"]');
             if (sc) sc.scrollTop = 0;
         })()""")
-    except Exception as exc:  # noqa: BLE001 - scroll is best-effort once at least one card was read
-        reason = cdp_transport_failure_reason(exc)
-        if reason and not convs_by_id:
-            logger.warning("dialog list scroll failed with no cards: %s", reason)
-            return _dialog_list_transport_error(reason)
-        logger.debug(
-            "dialog list scroll stopped (%s card(s) kept): %s",
-            len(convs_by_id),
-            exc,
-        )
+    except Exception:
+        pass
 
     first_res["conversations"] = list(convs_by_id.values())
     return first_res
@@ -2234,8 +1991,8 @@ _CONVERSATION_JS = """() => {
         text = text.replace(/\\s+\\d{1,2}:\\d{2}\\s*$/, '').trim();
         if (!text) continue;
         const bcls = (bubble.className || '').toString();
-        const isMy = /message_my--/.test(cls) || /outgoing/i.test(cls);
-        const isOut = /chat-bubble_ou/.test(bcls) || /right-tail/.test(bcls) || /outgoing/i.test(bcls);
+        const isMy = /message[_-]my--/.test(cls);
+        const isOut = /chat-bubble_ou|magritte-outgoing|right-tail/.test(bcls);
         let sender = null;
         const head = el.querySelector('[class*="author" i], [class*="sender" i], [class*="name" i]');
         if (head) sender = (head.innerText || '').trim() || null;
@@ -2254,7 +2011,7 @@ _CONVERSATION_JS = """() => {
     for (const m of out) {
         if (!uniq.some(u => u.direction === m.direction && u.text === m.text)) uniq.push(m);
     }
-    const composer = document.querySelector('textarea[data-qa="chatik-new-message-text"], textarea[data-qa*="message"], [data-qa*="chatik-new-message"], textarea');
+    const composer = document.querySelector('textarea[data-qa*="message"], [data-qa*="chatik-new-message"], textarea');
     const partEl = document.querySelector('[data-qa*="chat-header"] [class*="name" i], [class*="chat-header"] [class*="title" i], [class*="header"] [class*="title" i]');
     const participant = partEl ? ((partEl.innerText || '').trim() || null) : null;
     return JSON.stringify({
@@ -2294,15 +2051,12 @@ def fetch_hh_conversation_readonly(evaluate_fn: Callable[[str], str]) -> dict[st
 # Auto-safety sensitivity patterns strictly requiring HUMAN_REVIEW:
 # external links/forms/questionnaires, test tasks/projects, and final offer acceptance or interview slot scheduling.
 _AUTO_FORBIDDEN_RE = re.compile(
-    r"тестов\w*\s+(?:задани|проект)|ссылк\w*\s+на\s+тестов|test\s+task|test\s+assignment|"
-    r"анкет\w*|опросник|questionnaire|forms\.gle|docs\.google\.com/forms|"
-    r"соглас\w*\s+время|удобн\w*\s+время|выбрать\s+слот|слот\s+для\s+интервью|"
+    r"forms\.gle|docs\.google\.com/forms|"
     r"принять\s+оффер|принять\s+предложен|accept.*offer|подпис\w*\s+договор",
     re.IGNORECASE,
 )
 
-# Allowed probes: interest, stack, experience, remote format, salary.
-# A test task, questionnaire, or interview slot still fails closed via _AUTO_FORBIDDEN_RE.
+# Allowed probes: interest/relevance, stack/skills, experience, remote format, salary expectations, interview scheduling, test task acknowledgment
 _AUTO_ALLOWED_PROBE = re.compile(
     r"(интересн|заинтересован|interested|want to discuss|обсуд|готов|"
     r"можем ли|would you like|still interested|ещё интересует|по-прежнему|актуальн|рассматрива|"

@@ -96,7 +96,7 @@ def _freshness_score(vacancy: Vacancy) -> tuple[int, str]:
     return score, reason
 
 def _salary_fit_score(vacancy: Vacancy, profile: CandidateProfile) -> tuple[int, str]:
-    # 0-100, unknown -> 0 (not invented), but explain
+    # 0-100. Unknown -> 50 (neither confirmed nor refuted), never 0: scoring an unknown salary as "below the floor" reads an absent figure as a fact (T7.3).
     if profile.minimum_salary is None:
         return 50, "salary neutral (no profile requirement)"
     # vacancy salary
@@ -106,14 +106,14 @@ def _salary_fit_score(vacancy: Vacancy, profile: CandidateProfile) -> tuple[int,
     p_min = profile.minimum_salary
     p_curr = (profile.salary_currency or "").upper() if profile.salary_currency else None
     if s_min is None and s_max is None:
-        return 0, "salary unknown (vacancy no salary - not invented, lowers priority)"
+        return 50, "salary unknown (not confirmed either way, not read as below or above)"
     # currency check
     if p_curr and s_curr and p_curr != s_curr:
         return 0, f"salary currency mismatch {s_curr} vs {p_curr} (not confirmed)"
     # determine effective top
     top = s_max if s_max is not None else s_min
     if top is None:
-        return 0, "salary unknown (no effective)"
+        return 50, "salary unknown (no effective figure, not confirmed either way)"
     if top >= p_min:
         return 100, f"salary fit {top} >= {p_min} {p_curr or ''} (confirmed)"
     else:
@@ -204,7 +204,7 @@ def compute_priority(
     salary_fit, salary_reason = _salary_fit_score(vacancy, profile)
     if salary_fit == 100:
         reasons.append(salary_reason)
-    elif salary_fit == 0 and "unknown" in salary_reason:
+    elif "unknown" in salary_reason:
         warnings.append(salary_reason)
     else:
         if salary_fit < 50:
@@ -614,7 +614,7 @@ def generate_queue(top_n: int = 20, profile_path: str | None = None, status_filt
     deep_map: dict[str, Any] = {}
 
     matcher = JobMatcher(profile)
-    from .db import get_vacancy_eligibility, save_vacancy_eligibility    from .eligibility import assess_vacancy_eligibility
+    from .db import get_vacancy_eligibility, save_vacancy_eligibility    from .eligibility import assess_vacancy_eligibility, geo_band_permits_auto_send
 
     for sid in allowed_ids:
         row = get_vacancy_by_id(sid)
@@ -633,7 +633,7 @@ def generate_queue(top_n: int = 20, profile_path: str | None = None, status_filt
             if hasattr(e_status, "value"):
                 e_status = e_status.value
         
-        if str(e_status).lower() in ("ineligible", "unknown"):
+        if str(e_status).lower() in ("ineligible", "unknown") or not geo_band_permits_auto_send(assess_vacancy_eligibility(vac))[0]:
             continue
 
         # Defense-in-Depth: Hard constraints & strict remote filter
@@ -694,7 +694,7 @@ def generate_queue(top_n: int = 20, profile_path: str | None = None, status_filt
                 if hasattr(e_status, "value"):
                     e_status = e_status.value
             
-            if str(e_status).lower() in ("ineligible", "unknown"):
+            if str(e_status).lower() in ("ineligible", "unknown") or not geo_band_permits_auto_send(assess_vacancy_eligibility(vac))[0]:
                 continue
 
             # Defense-in-Depth: Hard constraints & strict remote filter

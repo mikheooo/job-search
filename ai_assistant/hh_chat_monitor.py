@@ -169,11 +169,18 @@ def process_negotiation_alerts(cards: list[dict[str, Any]], dry_run: bool = Fals
             role = lines[1]
             employer = lines[2]
 
-        # Skip rejections outright — once an employer said "no", the conversation
-        # is dead. New auto-generated messages on a rejected vacancy are noise.
+        # Skip rejections / archives outright — once an employer said "no" or vacancy is archived,
+        # the conversation is dead. If it has an unread badge, record it as read so it stops hanging.
         full_text = " ".join(lines).lower()
-        if any(needle in full_text for needle in REJECTION_NEEDLES):
-            logger.info(f"Skipping rejected application: {role} at {employer}")
+        if any(needle in full_text for needle in REJECTION_NEEDLES) or "архив" in full_text:
+            if card.get("has_unread"):
+                card_key = f"{role}:{employer}:archived_read".strip().lower()
+                cursor.execute(
+                    "INSERT OR REPLACE INTO hh_negotiation_card_alerts (card_key, role, employer, status, chat_url, alerted_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (card_key, role, employer, "ARCHIVED/REJECTED", card.get("chat_url") or "", time.strftime("%Y-%m-%dT%H:%M:%SZ"))
+                )
+                conn.commit()
+            logger.info(f"Skipping rejected/archived application: {role} at {employer} (marked as read)")
             continue
 
         card_key = f"{role}:{employer}:{status}".strip().lower()

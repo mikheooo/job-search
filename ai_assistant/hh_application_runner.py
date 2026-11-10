@@ -303,24 +303,49 @@ def run_application(
     nav_status = RunnerPreCheckStatus.NOT_RUN
     target_url = resolve_hh_vacancy_url(vac_stable_id or app_id)
 
-    # Attach evaluate_fn to the target vacancy tab if evaluate_fn is not provided
+    # Attach evaluate_fn to the target vacancy tab if evaluate_fn is not provided.
+    #
+    # T7.25 §4: the browser belongs to *this run* and is released when the run
+    # ends - preflight, the optional submit, verification and reconciliation all
+    # happen inside the operation, and the release is in its ``finally``. The
+    # re-entrant call is deliberate: the outer call owns and releases, the inner
+    # call does the work, and the work happens exactly once.
+    #
+    # Nothing else about the submit path changed. If the reader cannot be built,
+    # ``evaluate_fn`` stays None and the run proceeds exactly as it did before.
     if evaluate_fn is None:
+        from . import hh_browser_lease as lease
+
+        session_kwargs: dict = {"require_auth": False}
+        if cdp_url:
+            session_kwargs["cdp_url"] = cdp_url
         try:
-            from .cli import _default_hh_cdp_url, _resolve_hh_evaluate
-            from .hh_browser_launcher import ensure_hh_browser
-            from .hh_vacancy_navigator import (
-                ensure_open_vacancy_tab,
-                extract_hh_numeric_id,
-            )
-            ensure_hh_browser()
-            endpoint = cdp_url or _default_hh_cdp_url()
-            if target_url:
-                ensure_open_vacancy_tab(endpoint, target_url)
-            vac_num = vac_id or extract_hh_numeric_id(str(target_url or ""))
-            fresh_eval = _resolve_hh_evaluate(endpoint, vac_num) if vac_num else None
-            if fresh_eval:
-                evaluate_fn = fresh_eval
-        except Exception as e:
+            with lease.hh_operation(
+                lease.OWNER_CLI, purpose="application",
+                session_kwargs=session_kwargs,
+            ) as op:
+                started = op["session"].start()
+                reader = None
+                if started.get("ok"):
+                    reader = _owned_vacancy_reader(op["session"], target_url, vac_id)
+                if reader is not None:
+                    return run_application(
+                        application_id,
+                        confirm_submit=confirm_submit,
+                        auto=auto,
+                        evaluate_fn=reader,
+                        cdp_url=cdp_url,
+                        queue_ready_count=queue_ready_count,
+                        queue_review_count=queue_review_count,
+                        queue_submitted_count=queue_submitted_count,
+                        dry_run=dry_run,
+                    )
+        except lease.BrowserBusy as e:
+            logger.warning("Another operation holds the HH browser: %s", e)
+        except Exception as e:  # noqa: BLE001 - parity with the block this replaced
+            # The old code was best-effort here: a browser it could not prepare
+            # left `evaluate_fn` unset and the run carried on. That behaviour is
+            # deliberately unchanged - T7.25 moved ownership, not the gate.
             logger.debug(f"Could not resolve evaluate_fn: {e}")
 
     if evaluate_fn is not None:
@@ -823,3 +848,35 @@ def format_runner_result_cli(res: RunnerExecutionResult, mode: str = "preview") 
         "=======================================================",
     ]
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# T7.25 §4: the reader for an *owned* session
+# ---------------------------------------------------------------------------
+# Appended at the end of the file on purpose: this module is cited by line number
+# in docs/ble001_triage.md, so new code goes below every existing reference
+# rather than shifting them.
+
+def _owned_vacancy_reader(session, target_url: str, vac_id: str):
+    """A read-only reader bound to the vacancy tab of an owned session.
+
+    Replaces the old ``ensure_hh_browser() + ensure_open_vacancy_tab()`` pair: the
+    browser now belongs to the caller's operation, and the vacancy is loaded into
+    the session's single working tab instead of a fresh tab per run.
+
+    Returns ``None`` when there is nothing readable. The caller then behaves
+    exactly as it did before this change - ``evaluate_fn`` stays unset - so a
+    browser that cannot be prepared is not a new failure mode, only an old one.
+    """
+    from .cli import _resolve_hh_evaluate
+    from .hh_vacancy_navigator import extract_hh_numeric_id
+
+    target = session.ensure_work_tab()
+    if target is None:
+        return None
+    if target_url:
+        session.navigate(target, target_url)
+    vac_num = vac_id or extract_hh_numeric_id(str(target_url or ""))
+    if not vac_num:
+        return None
+    return _resolve_hh_evaluate(session.cdp_url, vac_num)

@@ -9,6 +9,36 @@ if str(ai_assistant_dir) not in sys.path:
     sys.path.insert(0, str(ai_assistant_dir))
 
 
+# Audit 2026-10-19: SUBMIT_ALLOWED is read from the process environment at call
+# time, so a single test that writes it directly (or rebuilds config state)
+# changes the kill-switch for every later test in the session. Measured in the
+# 2026-10-19 audit: test_submission_verifier/test_hh_submit_policy pass in
+# isolation and fail in the full run with "Submission is disabled by
+# SUBMIT_ALLOWED configuration". Restore the operator baseline after every test.
+_SUBMIT_KILL_SWITCH_BASELINE: tuple | None = None
+
+
+@pytest.fixture(autouse=True)
+def restore_submit_kill_switch():
+    from ai_assistant import config as _config
+
+    global _SUBMIT_KILL_SWITCH_BASELINE
+    if _SUBMIT_KILL_SWITCH_BASELINE is None:
+        _SUBMIT_KILL_SWITCH_BASELINE = (
+            os.environ.get("SUBMIT_ALLOWED"),
+            getattr(_config, "_OPERATOR_SUBMIT_ALLOWED", None),
+            getattr(_config, "SUBMIT_ALLOWED", None),
+        )
+    yield
+    saved_env, saved_operator, saved_flag = _SUBMIT_KILL_SWITCH_BASELINE
+    if saved_env is None:
+        os.environ.pop("SUBMIT_ALLOWED", None)
+    else:
+        os.environ["SUBMIT_ALLOWED"] = saved_env
+    _config._OPERATOR_SUBMIT_ALLOWED = saved_operator
+    _config.SUBMIT_ALLOWED = saved_flag
+
+
 @pytest.fixture(autouse=True)
 def global_test_isolation(monkeypatch, tmp_path):
     """Fail closed for real network and production runtime state.
@@ -34,11 +64,25 @@ def global_test_isolation(monkeypatch, tmp_path):
     monkeypatch.setenv("VACANCIES_FILE", str(vacancies_file))
     monkeypatch.setenv("LOGS_DIR", str(logs_dir))
 
-    # Isolate SUBMIT_ALLOWED so tests do not inherit a disabled kill-switch from .env
-    monkeypatch.setattr(config, "_OPERATOR_SUBMIT_ALLOWED", None)
-    monkeypatch.setattr(config, "SUBMIT_ALLOWED", True)
-    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
-    monkeypatch.setenv("JOB_FETCHER_NO_REEXEC", "1")
+    # The headless runner keeps a record and a lease, and both are repository files
+    # (artifacts/headless-poc/). They are shared with whatever is really running, so
+    # a test that merely calls stop() - or reaches the launch path - would stamp the
+    # record of the live browser. Measured 29.09 (T7.24): runner-state.json carried
+    # `pid: null, stopped_at: ...` from six separate pytest runs while root pid 26152
+    # was still listening on 9111, and a lease appeared naming the pytest process
+    # itself as the owner of that browser.
+    from ai_assistant import hh_browser_lease as _lease
+    from ai_assistant import hh_browser_provider as _bp
+
+    headless_dir = state_dir / "headless"
+    headless_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(_bp, "STATE_DIR", headless_dir)
+    monkeypatch.setattr(_bp, "STATE_FILE", headless_dir / "runner-state.json")
+    monkeypatch.setattr(_bp, "CHROME_LOG", headless_dir / "chrome-headless.log")
+    # Computed at import time from STATE_DIR, so it needs its own redirect.
+    monkeypatch.setattr(_lease, "LEASE_FILE", headless_dir / "browser-lease.json")
+
+    monkeypatch.setenv("HH_CDP_URL", "http://127.0.0.1:9222")
 
     def blocked_urlopen(req, *args, **kwargs):
         url = req.full_url if hasattr(req, "full_url") else str(req)
@@ -54,7 +98,13 @@ def global_test_isolation(monkeypatch, tmp_path):
         if not isinstance(address, tuple) or len(address) < 2:
             return False
         host, port = address[0], address[1]
-        return str(host).lower() in {"127.0.0.1", "::1", "localhost"} and port not in {9222, 9223, 9999}
+        # 9111 is the headless runner's own CDP port (T7.21) and carries a *real*
+        # browser with a *real* HH session, so it belongs in this list. It was
+        # missing, and the consequence was measured on 29.09 (T7.24): a pytest
+        # process reached the live browser over 9111 and registered itself as its
+        # owner. Keep this set in step with hh_browser_provider.HEADLESS_CDP_PORT.
+        blocked_ports = {9110, 9111, 9010, 9210, 9222, 9223, 9999}
+        return str(host).lower() in {"127.0.0.1", "::1", "localhost"} and port not in blocked_ports
 
     def blocked_connection(*args, **kwargs):
         target = args[0] if args else kwargs.get("address", "unknown")
@@ -81,3 +131,18 @@ def global_test_isolation(monkeypatch, tmp_path):
     monkeypatch.setattr(socket.socket, "connect", blocked_connect)
     monkeypatch.setattr(socket.socket, "connect_ex", blocked_connect_ex)
     monkeypatch.setenv("JOB_SEARCH_TEST_NETWORK_BLOCKED", "1")
+
+
+@pytest.fixture(autouse=True)
+def autonomous_reply_switch_on(monkeypatch):
+    """Arm the Stage 51-55 autonomous reply send for the test suite.
+
+    That send is opt-in in production (HH_AUTONOMOUS_REPLY_ENABLED, off by
+    default — see ai_assistant/hh_autonomous_agent.py). The Stage 51-55 tests
+    (test_stage51..60) pin the *mechanism*, so they need the switch armed
+    explicitly rather than relying on a production default.
+
+    Tests that assert the OFF behaviour must monkeypatch.delenv this variable
+    themselves; see tests/test_hh_autonomous_reply_optin.py.
+    """
+    monkeypatch.setenv("HH_AUTONOMOUS_REPLY_ENABLED", "true")

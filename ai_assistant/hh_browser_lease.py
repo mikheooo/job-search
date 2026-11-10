@@ -418,6 +418,20 @@ def release(
         report["reason"] = "stop_browser=False; browser left running with no operation"
         return report
 
+    if session is not None and getattr(session, "reused", False):
+        # An attached session does not own the shared Chrome process. Close
+        # only the tabs it created; another workload may be using the browser.
+        try:
+            report["tabs_owned_by_session"] = len(session.owned)
+            tabs = session.close_all_owned_tabs()
+            report["tabs_closed"] = tabs.get("closed_count")
+            report["tabs_that_would_not_close"] = tabs.get("failed")
+        except Exception as exc:
+            report["error"] = f"{type(exc).__name__}: {exc}"
+        report["reason"] = "attached session released; shared browser left running"
+        heartbeat(lease.get("session_id"))
+        return report
+
     endpoint = lease.get("cdp_url") or bp.headless_cdp_url()
     if bp.endpoint_is_foreign_browser(endpoint):
         # T7.25 §2: a browser this operation did not start is not its to close.

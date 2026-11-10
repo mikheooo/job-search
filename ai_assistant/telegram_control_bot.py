@@ -725,6 +725,32 @@ def handle_gigact_callback(data: str, callback_query_id: str | None = None) -> N
         send_message(ALLOWED_CHAT_ID, confirm)
 
 
+def handle_fb_callback(cq: dict[str, Any], cq_id: str) -> None:
+    """Route fb: digest-feedback callbacks to TelegramFeedbackProcessor.
+
+    Gated by TELEGRAM_FB_CALLBACKS_ENABLED (default off): when OFF the click
+    is logged and acknowledged. When ON, the tested fail-closed processor
+    handles it.
+    """
+    from ai_assistant.telegram_feedback import TelegramFeedbackProcessor
+
+    if not getattr(config, "TELEGRAM_FB_CALLBACKS_ENABLED", False):
+        logger.info("fb: callback ignored (TELEGRAM_FB_CALLBACKS_ENABLED off): %s",
+                    cq.get("data"))
+        answer_callback_query(cq_id)
+        return
+
+    try:
+        processor = TelegramFeedbackProcessor(
+            allowed_user_id=ALLOWED_CHAT_ID,
+            allowed_chat_id=ALLOWED_CHAT_ID,
+        )
+        processor.process_callback_query(cq)
+    except Exception as e:
+        logger.warning(f"Feedback callback failed: {e}")
+        answer_callback_query(cq_id)
+
+
 def handle_gigs_command(chat_id: int):
     """Deliver fresh freelance and project gigs with interactive action buttons."""
     def worker():
@@ -1216,6 +1242,8 @@ def run_bot_polling():
                             except Exception as e:
                                 logger.warning(f"Gig callback failed: {e}")
                                 answer_callback_query(cq_id)
+                        elif cq_data.startswith("fb:"):
+                            handle_fb_callback(cq, cq_id)
                         elif cq_data == "mock_stop":
                             stop_mock_interview(ALLOWED_CHAT_ID)
                             send_message(ALLOWED_CHAT_ID, "🛑 <b>Тренировка завершена.</b> Вы можете начать заново в любое время через меню <b>«🎤 Тренажер интервью»</b>!")

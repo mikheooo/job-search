@@ -422,7 +422,7 @@ _ROLE_FAMILY_PATTERNS: list[tuple[RoleFamily, list[str]]] = [
     (
         RoleFamily.APPLICATION_SUPPORT,
         [
-            r"\bbitrix\w*\b", r"\b1c\b", r"\b1с\b", r"\bcrm\b", r"\berp\b",
+            r"\bbitrix\w*\b", r"\b1c\b", r"\b1с\b", r"\bcrm\b", r"\berp\b", r"\bбитрикс\w*\b",
             r"\bapplication\s+support\b", r"\bсопровождение\s+по\b", r"\bинженер\s+внедрения\b",
             r"\bадминистратор\s+bitrix\b"
         ],
@@ -472,10 +472,32 @@ _ROLE_FAMILY_PATTERNS: list[tuple[RoleFamily, list[str]]] = [
 ]
 
 
+def is_non_technical_crm_role(title: str) -> bool:
+    """A CRM business/marketing title is not evidence of application support.
+
+    Technical qualifiers must belong to the title itself. Mentions of tools
+    elsewhere in an employer's description must not rescue a marketing role.
+    """
+    text = (title or "").lower()
+    if not re.search(r"\b(?:crm|bitrix\w*|битрикс\w*)\b", text):
+        return False
+    if not re.search(r"\b(?:manager|marketing|marketer|менеджер\w*|маркетолог\w*|маркетинг\w*)\b", text):
+        return False
+    return not re.search(
+        r"\b(?:technical|technician|engineer|developer|administrator|admin|support|"
+        r"implementation|integration|техническ\w*|инженер\w*|разработ\w*|"
+        r"администр\w*|поддержк\w*|внедрен\w*|внедрени\w*|интеграц\w*)\b",
+        text,
+    )
+
+
 def classify_role_family(title: str, description: str = "") -> RoleFamily:
     """Classify vacancy into canonical role family based on title and description."""
     t_lower = (title or "").lower()
     d_lower = (description or "").lower()
+
+    if is_non_technical_crm_role(title):
+        return RoleFamily.OTHER
 
     # 1. First priority: search title with precise patterns
     for family, patterns in _ROLE_FAMILY_PATTERNS:
@@ -626,6 +648,36 @@ def extract_required_years(title: str, description: str = "") -> int | None:
     return None
 
 
+#: Which ``domain_years`` keys describe a role family. ``domain_years`` is the
+#: profile field whose meaning *is* established (``it_support: 11.0`` and so on,
+#: confirmed against the KB chronology); ``years_experience`` is not (see
+#: ``candidate/job_brief.py``). T7.3 therefore reads tenure from here.
+_FAMILY_DOMAIN_YEARS: dict[RoleFamily, tuple[str, ...]] = {
+    RoleFamily.APPLICATION_SUPPORT: ("it_support", "application_support"),
+    RoleFamily.TECH_SUPPORT: ("it_support", "application_support"),
+    RoleFamily.SYSTEM_ADMIN: ("it_support", "system_admin"),
+    RoleFamily.AI_AUTOMATION: ("automation", "ai_llm"),
+    RoleFamily.PYTHON_BACKEND: ("python",),
+    RoleFamily.DATA_ENGINEERING: ("python", "automation"),
+    RoleFamily.DEVOPS_SRE: ("system_admin", "automation"),
+}
+
+
+def _family_domain_years(profile_dict: dict[str, Any], family: RoleFamily) -> float | None:
+    """Established tenure in the domain a role family belongs to, or ``None``.
+
+    ``None`` means "no established figure", and every caller must read it as
+    *unknown* rather than as zero: an unestablished tenure may not be replaced
+    by a guess (T7.3), because a guess here silently penalises the vacancy.
+    """
+    domain_years = profile_dict.get("domain_years") or {}
+    for key in _FAMILY_DOMAIN_YEARS.get(family, ()):
+        value = domain_years.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            return float(value)
+    return None
+
+
 # =============================================================================
 # HARD REQUIREMENTS EVALUATOR
 # =============================================================================
@@ -660,6 +712,12 @@ def evaluate_hard_requirements(
     loc = (vacancy.location or "").lower()
     country_text = ", ".join(vacancy.country_restrictions or []).lower()
     reasons: list[str] = []
+
+    if is_non_technical_crm_role(vacancy.title):
+        return HardRequirementStatus.INELIGIBLE, [
+            "Non-technical CRM management/marketing title; technical support, "
+            "administration or implementation role is not established"
+        ]
 
     # 1. Excluded roles (hard avoid)
     for role in profile_dict.get("excluded_roles_lc", []):
@@ -718,11 +776,14 @@ def evaluate_hard_requirements(
                 return HardRequirementStatus.INELIGIBLE, [f"Remote required but vacancy is not remote: {rem_reason}"]
 
             # Multi-dimensional Remote Eligibility Gate
-            from .eligibility import EligibilityStatus, assess_vacancy_eligibility
+            from .eligibility import EligibilityStatus, GeoBand, assess_vacancy_eligibility
             cand_country = profile_dict.get("candidate_country") or "TH"
             assessment = assess_vacancy_eligibility(vacancy, candidate_country=cand_country)
-            if assessment.eligibility == EligibilityStatus.INELIGIBLE:
-                return HardRequirementStatus.INELIGIBLE, [f"Ineligible remote vacancy: {'; '.join(assessment.eligibility_reasons)}"]
+            if assessment.eligibility == EligibilityStatus.INELIGIBLE or getattr(assessment, "geo_band", None) is GeoBand.C:
+                band = getattr(getattr(assessment, "geo_band", None), "value", "?")
+                return HardRequirementStatus.INELIGIBLE, [
+                    f"Ineligible remote vacancy (band {band}): {'; '.join(assessment.eligibility_reasons)}"
+                ]
 
     # 7. Mandatory foreign language mismatch (e.g., Native Japanese / Fluent German)
     cand_langs = profile_dict.get("languages_lc", [])
@@ -762,6 +823,22 @@ def _hard_constraints(profile_dict: dict[str, Any], vacancy: Vacancy) -> tuple[b
     status, reasons = evaluate_hard_requirements(profile_dict, vacancy)
     if status == HardRequirementStatus.INELIGIBLE:
         return True, reasons[0] if reasons else "Hard constraint violated"
+    return False, ""
+
+
+def _hard_constraints_for_send(profile_dict: dict[str, Any], vacancy: Vacancy) -> tuple[bool, str]:
+    """``_hard_constraints`` plus the T7.7 geographic send gate."""
+    rejected, reason = _hard_constraints(profile_dict, vacancy)
+    if rejected:
+        return True, reason
+
+    from .eligibility import assess_vacancy_eligibility, geo_band_permits_auto_send
+
+    cand_country = profile_dict.get("candidate_country") or "TH"
+    assessment = assess_vacancy_eligibility(vacancy, candidate_country=cand_country)
+    allowed, geo_reason = geo_band_permits_auto_send(assessment)
+    if not allowed:
+        return True, geo_reason
     return False, ""
 
 
@@ -1224,19 +1301,15 @@ class JobMatcher:
         negative_penalties = 0.0
         penalty_reasons: list[str] = []
 
-        domain_years = self._p.get("domain_years", {})
-        if vacancy_family in (RoleFamily.APPLICATION_SUPPORT, RoleFamily.TECH_SUPPORT, RoleFamily.SYSTEM_ADMIN):
-            domain_cand_years = domain_years.get("it_support") or domain_years.get("application_support") or cand_years or 3
-        elif vacancy_family == RoleFamily.AI_AUTOMATION:
-            domain_cand_years = domain_years.get("automation") or domain_years.get("ai_llm") or cand_years or 3
-        elif vacancy_family == RoleFamily.PYTHON_BACKEND:
-            domain_cand_years = domain_years.get("python") or cand_years or 3
-        else:
-            domain_cand_years = cand_years if cand_years is not None else 3
+        # ``None`` means "no established tenure for this family" and the gap
+        # penalty below is then skipped. The old code fell back to
+        # ``cand_years or 3`` -- that is, to ``years_experience``, or to a
+        # hardcoded 3 -- and both invented a figure nobody had established.
+        domain_cand_years = _family_domain_years(self._p, vacancy_family)
 
         # Negative penalty 1: Seniority / Experience years gap
         req_years = extract_required_years(title, desc)
-        if req_years is not None:
+        if req_years is not None and domain_cand_years is not None:
             if req_years > domain_cand_years + 1:
                 gap_val = min(20.0, (req_years - domain_cand_years) * 5.0)
                 negative_penalties += gap_val

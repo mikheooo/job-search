@@ -10,6 +10,12 @@ SAFETY INVARIANTS:
 3. Missing submit button alone does NOT imply REJECTED.
 4. Browser/navigation error does NOT imply REJECTED or fatal FAILED.
 5. Blocks duplicate submissions if state == SUBMITTED (reason: application_already_submitted).
+
+T7.25 §7 adds a sixth, about the browser rather than the verdict: when this module
+has to obtain a browser for itself it does so as an **owned operation** -
+``acquire -> verify -> release`` - so the browser is gone when the verification
+returns, and gone just the same when the verification *fails*. A verifier that
+leaves a Chrome running is a verifier that cannot be called twice.
 """
 
 from __future__ import annotations
@@ -93,74 +99,52 @@ class PostSubmitVerificationResult(BaseModel):
     timestamp: str = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())
     reason: str = ""
     submit_count: int = 0  # Invariant: always 0 during verification!
+    release: dict | None = None  # T7.25: what the owned operation left behind
 
     model_config = {"extra": "forbid"}
 
 
-def verify_hh_submitted_application(
-    application_id: str,
-    evaluate_fn: Callable[[str], str] | None = None,
-    cdp_url: str | None = None,
-) -> PostSubmitVerificationResult:
-    """Verify that a submitted application is factually recorded on HeadHunter.
+def _owned_vacancy_evaluate(session, target_url: str) -> tuple[Callable[[str], str] | None, str]:
+    """Start the owned session, land on the vacancy, return a read-only reader.
 
-    SAFETY INVARIANTS:
-    1. Read-only: Zero DOM submit clicks or network submissions.
-    2. Missing submit button alone does NOT imply REJECTED.
-    3. Browser/navigation error does NOT imply REJECTED.
-    4. Idempotent: Does not modify state unless explicit proof requires it.
+    Returns ``(evaluate_fn, "")`` or ``(None, why)``. The reader is addressed by
+    the *target id* of the tab this function opened, not by a URL substring:
+    with several hh.ru tabs open, "the hh.ru tab" is not a well-defined object.
     """
-    db.init_db()
-    app = db.get_hh_application(application_id)
-    if not app:
-        app = db.get_hh_application_by_vacancy(application_id)
-    if not app:
-        app = db.get_hh_application_by_conversation(application_id)
+    start = session.start()
+    if not start.get("ok"):
+        return None, str(start.get("message") or "the headless browser is unavailable")
 
-    app_id = app.get("application_id", application_id) if app else application_id
-    current_state = app.get("state", "UNKNOWN") if app else "UNKNOWN"
+    target = session.ensure_work_tab()
+    if target is None:
+        # No tab of ours: fall back to the navigator's own tab handling, which
+        # opens one and settles it. Still read-only.
+        ensure_open_vacancy_tab(session.cdp_url, target_url)
+        vac_num = extract_hh_numeric_id(target_url) or "vacancy"
+        from .cli import _resolve_hh_evaluate
 
-    res = PostSubmitVerificationResult(
-        application_id=app_id,
-        current_state=current_state,
-        submit_count=0,
-    )
+        reader = _resolve_hh_evaluate(session.cdp_url, vac_num) or _resolve_hh_evaluate(
+            session.cdp_url, "hh.ru"
+        )
+        if reader is None:
+            return None, f"no readable hh.ru tab on {session.cdp_url}"
+        return reader, ""
 
-    if not app:
-        res.reason = f"Application '{application_id}' not found in database"
-        res.verification_verdict = "FAIL"
-        res.hh_status = "NOT_FOUND"
-        return res
+    session.navigate(target, target_url)
+    return (lambda js: session.evaluate_on(target, js)), ""
 
-    # 1. Resolve canonical vacancy URL
-    target_url = resolve_hh_vacancy_url(app)
-    res.vacancy_url = target_url
-    res.vacancy_id = extract_hh_numeric_id(str(target_url or ""))
 
-    if not target_url:
-        res.reason = f"Could not resolve canonical vacancy URL for application {app_id}"
-        res.verification_verdict = "BLOCKED"
-        res.hh_status = "BLOCKED"
-        return res
+def _classify_and_record(
+    res: PostSubmitVerificationResult,
+    evaluate_fn: Callable[[str], str],
+    current_state: str,
+    app_id: str,
+) -> PostSubmitVerificationResult:
+    """Read the page, classify the factual state, and record the evidence.
 
-    # 2. Resolve evaluate_fn if not provided
-    if evaluate_fn is None:
-        try:
-            from .cli import _default_hh_cdp_url, _resolve_hh_evaluate
-            from .hh_browser_launcher import ensure_hh_browser
-            ensure_hh_browser()
-            endpoint = cdp_url or _default_hh_cdp_url()
-            ensure_open_vacancy_tab(endpoint, target_url)
-            vac_num = extract_hh_numeric_id(target_url) or "vacancy"
-            evaluate_fn = _resolve_hh_evaluate(endpoint, vac_num)
-            if not evaluate_fn:
-                evaluate_fn = _resolve_hh_evaluate(endpoint, "hh.ru")
-        except Exception as e:
-            res.reason = f"Browser connection error during verification: {e}"
-            res.verification_verdict = "BLOCKED"
-            res.hh_status = "BLOCKED"
-            return res
-
+    Unchanged from the pre-T7.25 verifier: this is the part that decides the
+    verdict, and the migration touched only who owns the browser.
+    """
     # 3. Evaluate inspection script
     try:
         raw = evaluate_fn(_POST_SUBMIT_INSPECT_JS)
@@ -226,3 +210,89 @@ def verify_hh_submitted_application(
         })
 
     return res
+
+
+def verify_hh_submitted_application(
+    application_id: str,
+    evaluate_fn: Callable[[str], str] | None = None,
+    cdp_url: str | None = None,
+    owner_type: str | None = None,
+) -> PostSubmitVerificationResult:
+    """Verify that a submitted application is factually recorded on HeadHunter.
+
+    SAFETY INVARIANTS:
+    1. Read-only: Zero DOM submit clicks or network submissions.
+    2. Missing submit button alone does NOT imply REJECTED.
+    3. Browser/navigation error does NOT imply REJECTED.
+    4. Idempotent: Does not modify state unless explicit proof requires it.
+    5. T7.25: when this function has to obtain a browser, it owns it for exactly
+       the length of the verification - including the failure paths.
+
+    ``evaluate_fn`` is the seam that says "the caller already owns a browser":
+    when it is given, nothing is acquired and nothing is released here.
+    """
+    db.init_db()
+    app = db.get_hh_application(application_id)
+    if not app:
+        app = db.get_hh_application_by_vacancy(application_id)
+    if not app:
+        app = db.get_hh_application_by_conversation(application_id)
+
+    app_id = app.get("application_id", application_id) if app else application_id
+    current_state = app.get("state", "UNKNOWN") if app else "UNKNOWN"
+
+    res = PostSubmitVerificationResult(
+        application_id=app_id,
+        current_state=current_state,
+        submit_count=0,
+    )
+
+    if not app:
+        res.reason = f"Application '{application_id}' not found in database"
+        res.verification_verdict = "FAIL"
+        res.hh_status = "NOT_FOUND"
+        return res
+
+    # 1. Resolve canonical vacancy URL
+    target_url = resolve_hh_vacancy_url(app)
+    res.vacancy_url = target_url
+    res.vacancy_id = extract_hh_numeric_id(str(target_url or ""))
+
+    if not target_url:
+        res.reason = f"Could not resolve canonical vacancy URL for application {app_id}"
+        res.verification_verdict = "BLOCKED"
+        res.hh_status = "BLOCKED"
+        return res
+
+    # 2. The caller already owns a browser: use it, own nothing.
+    if evaluate_fn is not None:
+        return _classify_and_record(res, evaluate_fn, current_state, app_id)
+
+    # 3. Own the browser for exactly this verification (T7.25 §7).
+    from . import hh_browser_lease as lease
+
+    session_kwargs: dict = {"require_auth": False}
+    if cdp_url:
+        # An explicit endpoint is honoured; the release refuses to close a
+        # browser that turns out not to be ours (9110/BrowserOS).
+        session_kwargs["cdp_url"] = cdp_url
+
+    try:
+        with lease.hh_operation(
+            owner_type or lease.OWNER_CLI, purpose="verify",
+            session_kwargs=session_kwargs,
+        ) as op:
+            reader, why = _owned_vacancy_evaluate(op["session"], target_url)
+            if reader is None:
+                res.reason = f"Browser connection error during verification: {why}"
+                res.verification_verdict = "BLOCKED"
+                res.hh_status = "BLOCKED"
+                return res
+            res = _classify_and_record(res, reader, current_state, app_id)
+            res.release = op["release_report"]
+            return res
+    except lease.BrowserBusy as exc:
+        res.reason = f"Another operation holds the browser: {exc}"
+        res.verification_verdict = "BLOCKED"
+        res.hh_status = "BLOCKED"
+        return res

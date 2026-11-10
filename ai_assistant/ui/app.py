@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
@@ -36,7 +37,33 @@ from ..db import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    yield
+    # T7.24 §6: the UI is a long-lived owner, so it must give up its browser on the
+    # way out - normal exit, exception and Ctrl+C all end here. ``atexit`` covers
+    # the paths that skip the ASGI shutdown (a hard kill of the process).
+    atexit.register(_release_ui_browser, "lifespan/atexit")
+    try:
+        yield
+    finally:
+        _release_ui_browser("shutdown")
+
+
+def _release_ui_browser(why: str) -> dict[str, Any]:
+    """Release the browser this UI owns, and only what it owns.
+
+    Never raises: a shutdown hook that can throw turns a clean stop into a crash.
+    """
+    try:
+        from .. import hh_browser_lease as lease
+
+        result = lease.release_owner(lease.OWNER_UI)
+        result["why"] = why
+        if result.get("released"):
+            logging.getLogger(__name__).info("released the HH browser: %s", result)
+        return result
+    except Exception as exc:  # noqa: BLE001 - a hook may not fail a shutdown
+        logging.getLogger(__name__).debug("browser release failed: %s", exc)
+        return {"released": False, "why": why, "error": f"{type(exc).__name__}: {exc}"}
+
 
 app = FastAPI(title="Job Search Hub", version="1.0.0", lifespan=lifespan)
 
@@ -575,6 +602,113 @@ def run_collect(req: CollectRequest | None = None) -> dict[str, Any]:
         return {"status": "success", "new_vacancies": new_count, "sources": sources}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class HhPreflightRequest(BaseModel):
+    vacancy_id: str
+
+
+@app.get("/api/hh/ownership")
+def hh_ownership() -> dict[str, Any]:
+    """Who owns the dedicated headless browser right now - or nobody.
+
+    Read-only and cheap: it answers from the lease and a socket probe, so the UI can
+    show "no browser running" without starting one to find out.
+    """
+    from .. import hh_browser_lease as lease
+
+    return {
+        "status": "success",
+        "owner_type": lease.OWNER_UI,
+        "summary": lease.ownership_summary(),
+    }
+
+
+@app.post("/api/hh/preflight")
+def hh_preflight(req: HhPreflightRequest) -> dict[str, Any]:
+    """Read-only HH operation: search, read one vacancy, run the preflight.
+
+    The browser is acquired here and released before this returns - the UI process
+    being alive is not a reason for Chrome to be alive (§4). Nothing is clicked,
+    typed or sent.
+    """
+    from .. import hh_browser_lease as lease
+    from ..hh_readonly_operation import operation_report
+
+    if not req.vacancy_id.strip():
+        raise HTTPException(status_code=400, detail="vacancy_id is required")
+    try:
+        report = operation_report(
+            req.vacancy_id.strip(), owner_type=lease.OWNER_UI,
+            purpose=f"ui-preflight:{req.vacancy_id.strip()}",
+        )
+    except lease.BrowserBusy as exc:
+        # §9: another operation holds the browser. Say so; never start a second one.
+        raise HTTPException(status_code=409, detail=f"browser busy: {exc}") from exc
+    except Exception as exc:  # report the failure, do not crash the UI
+        logging.getLogger(__name__).exception("HH preflight failed for %s", req.vacancy_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"status": "success", "report": report}
+
+
+@app.get("/api/review-list")
+def get_review_list(
+    limit: int = Query(100, ge=1, le=500),
+    category: str | None = Query(None, description="remote_confirmed | remote_unclear | local_thailand"),
+    direction: str | None = None,
+    title_only: bool = True,
+    max_age_days: int | None = Query(30, ge=1, le=365),
+) -> dict[str, Any]:
+    """The manual-review list: bands A and B for remote work, plus Thailand-local.
+
+    This is the middle mode. It is read-only by construction -- the module behind
+    it imports no queue writer -- so opening this view can never approve a
+    vacancy. Band C is absent: neither an automatic application nor a place in
+    the list of suitable vacancies. Band B is shown on purpose so its conditions
+    can be checked by hand; it is never queued on the strength of a board label.
+    """
+    init_db()
+    from ..eligibility_review import (
+        CATEGORY_LABELS,
+        DIRECTION_NAMES,
+        build_review_list,
+        summarise,
+    )
+
+    # An unknown filter is refused rather than passed through. It would filter
+    # every row out and return an empty list, and an empty list here is
+    # indistinguishable from "there are no suitable vacancies" -- the kind of
+    # silent loss this project treats as a defect. The known sets are read from
+    # the module so they cannot drift away from what the list actually defines.
+    if category is not None and category not in CATEGORY_LABELS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown category {category!r}; known: {sorted(CATEGORY_LABELS)}",
+        )
+    if direction is not None and direction not in DIRECTION_NAMES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown direction {direction!r}; known: {sorted(DIRECTION_NAMES)}",
+        )
+
+    categories = (category,) if category else None
+    directions = (direction,) if direction else None
+    items = build_review_list(
+        limit=limit,
+        categories=categories,
+        directions=directions,
+        title_only=title_only,
+        max_age_days=max_age_days,
+    )
+    return {
+        "items": items,
+        "summary": summarise(items),
+        "category_labels": CATEGORY_LABELS,
+        "auto_queue_note": (
+            "Только категория remote_confirmed допускается к очереди по географии; "
+            "remote_unclear и local_thailand требуют ручной проверки условий."
+        ),
+    }
 
 
 @app.get("/")

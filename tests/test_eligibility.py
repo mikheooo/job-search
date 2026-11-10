@@ -20,6 +20,8 @@ from ai_assistant.eligibility import (
     LanguageRequirement,
     EmploymentScope,
     EligibilityStatus,
+    GeoBand,
+    GeoEvidence,
 )
 
 
@@ -209,8 +211,15 @@ def test_language_levels_differentiation():
 
 # --- 3. REMOTE PLATFORM DEFAULTS ---
 
-def test_remote_platform_worldwide_defaults():
-    # Vacancies from remoteok/weworkremotely/himalayas with clean locations default to Worldwide
+def test_remote_platform_worldwide_defaults_are_not_employer_permission():
+    """T7.4: a board's permissive label is metadata, not the employer's permission.
+
+    This test used to assert ELIGIBLE. That assertion WAS defect T7.4-1: the
+    engine read remoteok's own "Worldwide" label as a statement by the employer,
+    so a posting whose text says "Applicants must be based in the USA" came out
+    available for a candidate in Thailand. The board label may now only produce
+    band B, which is UNKNOWN -- never band A.
+    """
     vac = _make_vac(
         source="remoteok",
         title="Senior Python Architect",
@@ -218,5 +227,8 @@ def test_remote_platform_worldwide_defaults():
         description="Build scalable distributed APIs. Full-time contractor.",
     )
     res = assess_vacancy_eligibility(vac, candidate_country="TH")
-    assert res.eligibility == EligibilityStatus.ELIGIBLE
+    assert res.eligibility == EligibilityStatus.UNKNOWN
+    assert res.geo_band == GeoBand.B
+    assert res.geo_evidence == GeoEvidence.PLATFORM
     assert res.geo_scope == GeoScope.WORLDWIDE
+    assert any("BAND_B" in r for r in res.eligibility_reasons)

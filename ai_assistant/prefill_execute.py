@@ -369,7 +369,7 @@ def execute_prefill_plan(
 
 # ---------- raw CDP transport ----------
 
-_HH_MESSAGES_PATTERN = re.compile(r"messages|messaging|negotiations|/chat/\d+", re.IGNORECASE)
+_HH_MESSAGES_PATTERN = re.compile(r"messages|messaging|negotiations|/chat(?:/\d+)?(?:[/?#]|$)", re.IGNORECASE)
 
 
 def select_best_hh_target(targets: list[dict[str, Any]], url_substring: str) -> dict[str, Any] | None:

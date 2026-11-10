@@ -249,7 +249,7 @@ def run_discovery(notify: bool = True) -> dict[str, Any]:
     duration = round(time.time() - start_time, 1)
 
     # Summary notification to Telegram channel (@remotejobd)
-    if notify and new_saved > 0:
+    if notify and new_saved > 0 and not getattr(config, "TELEGRAM_FLASH_SUPPRESS_ENABLED", False):
         sample_lines = []
         for v in filtered[:4]:
             sal = f" ({v.salary_min or ''}..{v.salary_max or ''} {v.salary_currency})" if v.salary_min or v.salary_max else ""

@@ -60,6 +60,7 @@ from .application_tracking import (
 )
 from .candidate_profile import load_candidate_profile
 from .config import CANDIDATE_PROFILE_FILE
+from .hh_browser_launcher import check_hh_session_authenticated
 from .db import (
     _row_to_vacancy,
     get_application_package,
@@ -5081,7 +5082,7 @@ def hh_message_triage(conversation_id: str | None = None, limit: int | None = No
 
                       cdp_url=None, url_substring=None, evaluate_fn=None,
 
-                      as_json: bool = False, profile=None) -> int:
+                      as_json: bool = False, profile=None, auth_verified=None) -> int:
 
     """Stage 30D.9: Multi-conversation read-only triage.
 
@@ -5091,35 +5092,174 @@ def hh_message_triage(conversation_id: str | None = None, limit: int | None = No
 
     Strictly READ-ONLY: never modifies DOM, never navigates, never sends.
 
+
+
+    Fail-closed reading, defect A (the shape of BLE001 finding #28). A browser
+
+    that is not logged in renders an EMPTY conversation list, so ``found: 0``
+
+    used to be returned both when there was nothing to triage AND when the
+
+    session had been logged out. Those are different answers, and only one of
+
+    them is a measurement. The session is verified in the main frame before the
+
+    list is read, and a check that cannot run stops the read.
+
+
+
+    ``auth_verified`` carries a verdict already reached by an outer call. The
+
+    owned path verifies once (main frame) and passes it down; re-asking the
+
+    chatik transport would be asking a frame that cannot answer.
+
     """
 
     ev = evaluate_fn
 
     if ev is None:
+        from . import hh_browser_lease as _lease
 
+        # T7.25 §3: this command used to call ensure_hh_browser() and then read
+        # through the CDP endpoint for the rest of the run, so the browser it
+        # started outlived it and nothing owned the shutdown. The operation below
+        # owns the browser for exactly this command: hh_operation's finally
+        # releases it, on the failure path as much as on the happy one.
         try:
+            with _lease.hh_operation(
+                _lease.OWNER_CLI,
+                purpose="messages",
+                session_kwargs={"require_auth": False},
+            ) as _op:
+                _started = _op["session"].start()
+                if not _started.get("ok"):
+                    raise RuntimeError(
+                        _started.get("message") or "the headless browser is unavailable"
+                    )
 
-            from .hh_browser_launcher import ensure_hh_browser
+                # T7.25: ensure_hh_browser() opened the HH chat page as part of
+                # "ensure a browser", and the read below attaches to that tab.
+                # Ownership moved; the page did not - so the operation opens it in
+                # the session's own work tab. Without this the resolve would look
+                # for an hh.ru tab on a browser still sitting on about:blank.
+                from .hh_browser_launcher import DEFAULT_HH_URL as _DEFAULT_HH_URL
 
-            ensure_hh_browser(cdp_url=cdp_url)
+                if _op["session"].open_hh_page(_DEFAULT_HH_URL) is None:
+                    raise RuntimeError("could not open the HH chat page")
 
-            ev = _resolve_chatik_evaluate(cdp_url=cdp_url, url_substring=url_substring)
+                ev = _resolve_chatik_evaluate(cdp_url=cdp_url, url_substring=url_substring)
+                if ev is None:
+
+                    raise RuntimeError("no readable hh.ru chat tab was found")
+
+
+
+                # Defect A: verify BEFORE reading, and verify in the MAIN frame.
+
+                # `ev` is bound to the chatik iframe's isolated world - the right
+
+                # transport for reading messages, the wrong one for asking "who
+
+                # am I": that frame carries no profile navigation, and with no
+
+                # conversation open it answers with its `chatik frame not found`
+
+                # sentinel. Live 2026-09-30: the main frame reported
+
+                # authenticated=True while the chatik frame returned the
+
+                # sentinel, so probing the wrong frame would have refused a
+
+                # healthy session. The watcher already splits the two; this
+
+                # command only ever had the iframe transport.
+
+                auth_ev = _resolve_hh_evaluate(cdp_url=cdp_url, url_substring=url_substring)
+
+                try:
+
+                    _auth = check_hh_session_authenticated(auth_ev)
+
+                except Exception as _auth_err:
+
+                    _auth = {
+
+                        "authenticated": False,
+
+                        "verified": False,
+
+                        "reason": f"auth check raised {type(_auth_err).__name__}: {_auth_err}",
+
+                    }
+
+
+
+                if not _auth.get("authenticated", False):
+
+                    _reason = _auth.get("reason") or "Login required"
+
+                    if _auth.get("verified", True):
+
+                        raise RuntimeError(
+
+                            f"HH session not authenticated ({_reason}). "
+
+                            "Log in to HeadHunter and retry."
+
+                        )
+
+                    raise RuntimeError(
+
+                        f"could not verify the HH session ({_reason}). "
+
+                        "Refusing to report this run as 'no conversations' - "
+
+                        "fix the browser/CDP connection and retry."
+
+                    )
+
+
+
+                # The body runs inside the operation: one browser, one command.
+
+                # `auth_verified` carries the verdict down so the re-entrant call
+
+                # does not re-ask the chatik transport.
+
+                return hh_message_triage(
+
+                    conversation_id, limit, cdp_url, url_substring, ev, as_json, profile,
+
+                    _auth,
+
+                )
 
         except Exception as e:
+
+            # Fail-closed (defect A): the banner is BLOCKED, not READ-ONLY, and
+
+            # the exit code is non-zero. This is the branch the auth refusal
+
+            # above lands in, so "could not verify the session" must never be
+
+            # reported with the same status as a completed read.
 
             if as_json:
 
                 import json
 
+
+
                 payload = {
 
-                    "status": "READ-ONLY",
+                    "status": "BLOCKED",
 
                     "conversation_count": 0,
 
                     "items": [],
 
-                    "errors": [f"CDP connection failed: {e}"],
+                    "errors": [f"BLOCKED: {e}"],
 
                 }
 
@@ -5129,11 +5269,102 @@ def hh_message_triage(conversation_id: str | None = None, limit: int | None = No
 
             else:
 
-                print(f"[hh-message] triage failed: CDP connection failed ({e}).")
+                print(f"[hh-message] triage blocked: {e}")
 
-                print("status: READ-ONLY — nothing sent.")
+                print("status: BLOCKED — nothing read, nothing sent.")
 
                 return 1
+
+
+
+
+    # Defect A. `evaluate_fn` can be injected by a test, or by the owned path
+
+    # above - which has already verified the session in the main frame and passes
+
+    # the verdict in `auth_verified`. Re-checking here would put the question to
+
+    # the chatik transport, which cannot answer it (see the note on `auth_ev`
+
+    # above), so a present verdict is honoured verbatim.
+
+    if auth_verified is None:
+
+        try:
+
+            _gate = check_hh_session_authenticated(ev)
+
+        except Exception as _gate_err:
+
+            _gate = {
+
+                "authenticated": False,
+
+                "verified": False,
+
+                "reason": f"auth check raised {type(_gate_err).__name__}: {_gate_err}",
+
+            }
+
+    else:
+
+        _gate = auth_verified
+
+
+
+    if not _gate.get("authenticated", False):
+
+        _gate_reason = _gate.get("reason") or "Login required"
+
+        if _gate.get("verified", True):
+
+            _blocked_msg = (
+
+                f"BLOCKED: HH session not authenticated ({_gate_reason}). Please log in."
+
+            )
+
+        else:
+
+            _blocked_msg = (
+
+                f"BLOCKED: could not verify the HH session ({_gate_reason}). "
+
+                "Refusing to report this run as 'no conversations' - "
+
+                "fix the browser/CDP connection and retry."
+
+            )
+
+        if as_json:
+
+            import json
+
+
+
+            print(json.dumps({
+
+                "status": "BLOCKED",
+
+                "conversation_count": 0,
+
+                "items": [],
+
+                "errors": [_blocked_msg],
+
+            }, indent=2, ensure_ascii=False))
+
+        else:
+
+            print("[hh-message] triage (READ-ONLY)")
+
+            print()
+
+            print(_blocked_msg)
+
+            print("status: BLOCKED - nothing sent.")
+
+        return 1
 
 
 
@@ -7108,18 +7339,44 @@ def questionnaire_submit_cmd(
 
 
     if evaluate_fn is None:
+        from . import hh_browser_lease as _lease
 
+        # T7.25 §3: the same shape as the triage command - the browser is owned by
+        # this command and released by hh_operation's finally, including when the
+        # questionnaire submit raises. The submit itself happens once, in the
+        # re-entrant call, with the reader already in hand.
         try:
+            with _lease.hh_operation(
+                _lease.OWNER_CLI,
+                purpose="application",
+                session_kwargs={"require_auth": False},
+            ) as _op:
+                _started = _op["session"].start()
+                if not _started.get("ok"):
+                    raise RuntimeError(
+                        _started.get("message") or "the headless browser is unavailable"
+                    )
 
-            from .hh_browser_launcher import ensure_hh_browser
-            from .hh_vacancy_navigator import ensure_open_vacancy_tab
+                from .hh_vacancy_navigator import ensure_open_vacancy_tab
 
-            ensure_hh_browser()
+                ensure_open_vacancy_tab(
+                    _default_hh_cdp_url(),
+                    quest.vacancy_stable_id or quest.questionnaire_id,
+                )
 
-            ensure_open_vacancy_tab(_default_hh_cdp_url(), quest.vacancy_stable_id or quest.questionnaire_id)
-
+                _vac_sub = (
+                    quest.vacancy_stable_id.split(":")[-1]
+                    if quest.vacancy_stable_id
+                    else "vacancy"
+                )
+                _reader = _resolve_hh_evaluate(_default_hh_cdp_url(), _vac_sub)
+                if not _reader:
+                    _reader = _resolve_hh_evaluate(_default_hh_cdp_url(), "hh.ru")
+                if _reader is not None:
+                    return questionnaire_submit_cmd(
+                        target_id, confirm_submit, answers_json, _reader
+                    )
         except Exception as e:
-
             logger.debug(f"ensure_open_vacancy_tab error: {e}")
 
         
@@ -7783,19 +8040,31 @@ def application_runner_cmd(
             res = run_next_application(confirm_submit=confirm_submit, auto=auto, evaluate_fn=None, dry_run=dry_run)
 
         else:
-
             if evaluate_fn is None:
+                from . import hh_browser_lease as _lease
 
+                # T7.25 §3: the runner is handed a reader that belongs to an owned
+                # operation. The runner reuses that same browser for its own
+                # acquire -> ... -> release, so one command is one browser.
                 try:
+                    with _lease.hh_operation(
+                        _lease.OWNER_CLI,
+                        purpose="application",
+                        session_kwargs={"require_auth": False},
+                    ) as _op:
+                        _started = _op["session"].start()
+                        if _started.get("ok"):
+                            from .hh_browser_launcher import (
+                                DEFAULT_HH_URL as _DEFAULT_HH_URL,
+                            )
 
-                    from .hh_browser_launcher import ensure_hh_browser
-
-                    ensure_hh_browser()
-
-                    evaluate_fn = _resolve_hh_evaluate(_default_hh_cdp_url(), "hh.ru")
-
+                            _op["session"].open_hh_page(_DEFAULT_HH_URL)
+                            _reader = _resolve_hh_evaluate(_default_hh_cdp_url(), "hh.ru")
+                            if _reader is not None:
+                                return application_runner_cmd(
+                                    command, confirm_submit, auto, as_json, _reader, dry_run
+                                )
                 except Exception:
-
                     evaluate_fn = None
 
             res = run_next_application(confirm_submit=confirm_submit, auto=auto, evaluate_fn=evaluate_fn, dry_run=dry_run)
@@ -7903,6 +8172,12 @@ def export_digest_cmd(
 
 
     for v in vacancies:
+
+        # Validate persisted Telegram posts before matching; never rewrite the DB.
+        if v.source.startswith("tg_") or v.source in ("telegram", "tg"):
+            from .adapters.telegram_channels import prepare_telegram_digest_title
+            if not prepare_telegram_digest_title(v):
+                continue
 
         if not include_legacy:
 
@@ -11338,15 +11613,15 @@ from .cli_audit import (
 
 
 
-def autonomous_once_cmd(as_json: bool = False, limit: int = 5) -> int:
+def autonomous_once_cmd(as_json: bool = False, limit: int = 5, mode: str = "SEARCH_ONLY") -> int:
 
-    """Execute a single complete autonomous cycle."""
+    """Execute a single complete autonomous cycle. T7.8: mode defaults to SEARCH_ONLY, which emits nothing."""
 
     import json
 
     from .hh_autonomous_agent import AutonomousConfig, run_autonomous_cycle
 
-    cfg = AutonomousConfig(max_applications_per_cycle=limit)
+    cfg = AutonomousConfig(max_applications_per_cycle=limit, mode=mode)
 
     res = run_autonomous_cycle(config=cfg)
 
@@ -11356,7 +11631,7 @@ def autonomous_once_cmd(as_json: bool = False, limit: int = 5) -> int:
 
         print(json.dumps(res.model_dump(), indent=2, ensure_ascii=False))
 
-        return 0 if res.status == "SUCCESS" else 1
+        return 0 if res.status in ("SUCCESS", "SEARCH_ONLY") else 1
 
 
 
@@ -11404,13 +11679,13 @@ def autonomous_once_cmd(as_json: bool = False, limit: int = 5) -> int:
 
 
 
-def autonomous_start_cmd(interval: int = 60) -> int:
+def autonomous_start_cmd(interval: int = 60, mode: str = "SEARCH_ONLY") -> int:
 
     """Start continuous autonomous agent loop."""
 
     from .hh_autonomous_agent import AutonomousConfig, start_autonomous_daemon
 
-    cfg = AutonomousConfig(poll_interval_seconds=interval)
+    cfg = AutonomousConfig(poll_interval_seconds=interval, mode=mode)
 
     start_autonomous_daemon(config=cfg)
 

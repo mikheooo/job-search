@@ -43,6 +43,12 @@ _INSPECT_VACANCY_PAGE_JS = """(() => {
     // Check if candidate has already responded to this vacancy
     const alreadyResponded = document.querySelector('[data-qa*="responded-success"], [data-qa*="vacancy-response-link-view-topic"]');
     
+    // T7.26 §8: the two signals the deterministic settle waits on. ``ready`` is the
+    // document's own readiness; ``has_ssr`` is the HH marker the structured reader
+    // also addresses, so "the vacancy payload is really here" is checkable rather
+    // than assumed.
+    const ssr = document.querySelector('#HH-Lux-InitialState');
+
     return JSON.stringify({
         url: url,
         title: title,
@@ -53,8 +59,81 @@ _INSPECT_VACANCY_PAGE_JS = """(() => {
         already_responded: !!alreadyResponded,
         is_chat: url.includes('/chat') || url.includes('/messages'),
         is_vacancy_page: url.includes('/vacancy/') || url.includes('vacancyId='),
+        ready: document.readyState,
+        has_ssr: !!ssr,
     });
 })()"""
+
+
+# T7.26 §8: how long the deterministic settle is willing to wait, and how often it
+# looks. 40 x 0.25s = 10s, which is comfortably past the 2.5s the fixed sleep used
+# to allow - a page that renders at 4s must still be read, not declared a mismatch.
+_SETTLE_ATTEMPTS = 40
+_SETTLE_DELAY = 0.25
+
+
+def _document_settled(state: dict[str, Any], before_url: str) -> bool:
+    """Is this read of the page proof that the *new* document has rendered?
+
+    Four conditions, all required, and each one closes a way the old code lied:
+
+    * the URL is real and is **not** the one we came from - the navigation actually
+      happened. Compared against the previous URL rather than the requested one,
+      because HH redirects and the final address is allowed to differ;
+    * the URL really is a vacancy page - a login wall or a chat tab is not;
+    * when the page reports its own readiness (``ready``), it must be ``complete``;
+    * when the page reports the HH payload marker (``has_ssr``), the marker must be
+      present - that is the "needed SSR/DOM marker" half of the requirement.
+
+    A probe that cannot see a signal cannot assert it, so an absent key is not read
+    as a pass: the probe used in production reports both keys, and the ``title``
+    fallback below is what lets a stubbed page - one that reports a rendered page
+    without modelling a load phase - still settle.
+    """
+    href = str(state.get("url") or "")
+    if not href or href == "about:blank" or href == before_url:
+        return False
+    if not state.get("is_vacancy_page"):
+        return False
+    if state.get("has_ssr"):
+        return state.get("ready") == "complete"
+    return bool(str(state.get("title") or "").strip())
+
+
+def _settle_after_navigation(
+    evaluate_fn: Callable[[str], str],
+    before_url: str,
+    attempts: int | None = None,
+    delay: float | None = None,
+) -> dict[str, Any]:
+    """Wait until the document really rendered, instead of until a timer expired.
+
+    Returns the last state read, with ``timeout: True`` when the page never settled.
+    A read that raises mid-navigation is expected (the document is being replaced)
+    and simply counts as "not settled yet".
+
+    The budget is read from the module at call time, not captured as a default, so
+    the wait can be tuned (and tested) without redefining the function.
+    """
+    import time
+
+    attempts = _SETTLE_ATTEMPTS if attempts is None else int(attempts)
+    delay = _SETTLE_DELAY if delay is None else float(delay)
+
+    last: dict[str, Any] = {}
+    for _ in range(max(1, attempts)):
+        try:
+            raw = evaluate_fn(_INSPECT_VACANCY_PAGE_JS)
+            state = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except Exception as e:  # noqa: BLE001 - mid-navigation reads fail by design
+            last = {"error": f"{type(e).__name__}: {e}"}
+            state = {}
+        if isinstance(state, dict):
+            last = state
+            if _document_settled(state, before_url):
+                return state
+        time.sleep(delay)
+    return {"timeout": True, **last}
 
 
 def _make_navigate_js(target_url: str) -> str:
@@ -200,7 +279,26 @@ def ensure_open_vacancy_tab(cdp_url: str, target: str | dict[str, Any]) -> str |
         except Exception as e:
             logger.debug(f"Failed to open new tab via /json/new: {e}")
 
-    time.sleep(2.0)
+    # T7.26 §8: the same defect in its cheaper form - a fixed sleep followed by a
+    # return that never looked at the result. Poll the target list instead, so the
+    # wait ends when the tab is really on the page rather than when the timer says so.
+    deadline = time.time() + _SETTLE_ATTEMPTS * _SETTLE_DELAY
+    while time.time() < deadline:
+        try:
+            with _NO_PROXY_OPENER.open(f"{base_url}/json/list", timeout=5) as r:
+                now_targets = json.loads(r.read().decode("utf-8"))
+        except Exception as e:  # noqa: BLE001 - a failed listing is "not ready yet"
+            logger.debug(f"Could not re-list CDP targets: {e}")
+            now_targets = []
+        for t in now_targets:
+            u = t.get("url") or ""
+            if u and u != "about:blank" and (
+                (target_id and target_id in u) or target_url in u
+            ):
+                return target_url
+        time.sleep(_SETTLE_DELAY)
+
+    logger.debug(f"Tab for {target_url} was still not on the page when the wait ended")
     return target_url
 
 
@@ -288,13 +386,25 @@ def verify_and_navigate_hh_vacancy(
             logger.info(f"Navigating browser from {current_url} to target vacancy: {target_url}")
             nav_raw = evaluate_fn(_make_navigate_js(target_url))
             res.navigated = True
-            
-            import time
-            time.sleep(2.5)
 
-            # Re-inspect after navigation
-            recheck_raw = evaluate_fn(_INSPECT_VACANCY_PAGE_JS)
-            recheck = json.loads(recheck_raw) if isinstance(recheck_raw, str) else recheck_raw
+            # T7.26 §8: this used to be `time.sleep(2.5)` followed by an immediate
+            # re-read. A page slower than the sleep returned the document we had just
+            # left, so the URL check below reported a false "does not match" and the
+            # UI flags described the *previous* page. The wait is the provider's own
+            # two-condition idiom instead - the URL really moved, the document really
+            # rendered, the vacancy marker is really there - and it is compared
+            # against the URL we came from, so an HH redirect still settles.
+            recheck = _settle_after_navigation(evaluate_fn, before_url=current_url)
+            if recheck.get("timeout"):
+                res.reason = (
+                    f"Navigation to {target_url} did not settle within "
+                    f"{_SETTLE_ATTEMPTS * _SETTLE_DELAY:.1f}s "
+                    f"(still at {recheck.get('url') or 'unknown'})"
+                )
+                res.status = "BLOCKED"
+                res.ok = False
+                return res
+
             current_url = recheck.get("url") or ""
             current_title = recheck.get("title") or ""
             res.current_url = current_url

@@ -2,8 +2,15 @@
 <html lang="ru" class="dark">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Job-Search Hub | Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Job Search</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Job Search">
+  <meta name="theme-color" content="#16a34a">
+  <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
+  <link rel="manifest" href="manifest.json">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -23,228 +30,159 @@
     }
   </script>
   <style>
+    :root {
+      --sat: env(safe-area-inset-top, 0px);
+      --sar: env(safe-area-inset-right, 0px);
+      --sab: env(safe-area-inset-bottom, 0px);
+      --sal: env(safe-area-inset-left, 0px);
+    }
+    html {
+      -webkit-text-size-adjust: 100%;
+    }
+    body {
+      overflow-x: hidden;
+      padding-top: var(--sat);
+      padding-bottom: var(--sab);
+      padding-left: var(--sal);
+      padding-right: var(--sar);
+      -webkit-tap-highlight-color: transparent;
+    }
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: #1e293b; }
     ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
   </style>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans selection:bg-brand-500 selection:text-black">
 
   <!-- TOP HEADER -->
-  <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-40 px-6 py-4 flex items-center justify-between">
-    <div class="flex items-center gap-3">
-      <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-brand-600 to-emerald-400 flex items-center justify-center font-bold text-xl text-black shadow-lg shadow-brand-500/20">
-        ⚡
+  <header class="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-40 px-3 sm:px-6 py-2.5 sm:py-4 transition-all">
+    <div class="max-w-7xl mx-auto flex items-center justify-between gap-2">
+      <!-- Branding -->
+      <div class="flex items-center gap-2.5 sm:gap-3 min-w-0">
+        <div class="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-tr from-brand-600 to-emerald-400 flex items-center justify-center font-bold text-lg sm:text-xl text-black shadow-lg shadow-brand-500/20 flex-shrink-0">
+          ⚡
+        </div>
+        <div class="min-w-0">
+          <div class="flex items-center gap-1.5 sm:gap-2">
+            <h1 class="text-base sm:text-xl font-bold tracking-tight text-white truncate">Job-Search Hub</h1>
+            <span class="text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 rounded-full bg-brand-500/10 text-brand-400 border border-brand-500/20 font-medium whitespace-nowrap">Safe Mode</span>
+          </div>
+          <p class="hidden sm:block text-xs text-slate-400 truncate">Система автоматизации поиска работы с ревью-контролем</p>
+        </div>
       </div>
-      <div>
-        <h1 class="text-xl font-bold tracking-tight text-white flex items-center gap-2">
-          Job-Search Hub
-          <span class="text-xs px-2 py-0.5 rounded-full bg-brand-500/10 text-brand-400 border border-brand-500/20 font-medium">Safe Mode</span>
-        </h1>
-        <p class="text-xs text-slate-400">Система автоматизации поиска работы с ревью-контролем</p>
+
+      <!-- Actions -->
+      <div class="flex items-center gap-1.5 sm:gap-3 flex-shrink-0">
+        <!-- Desktop Token Input -->
+        <div class="hidden md:flex items-center gap-2 bg-slate-800/90 px-3 py-1.5 rounded-lg border border-slate-700">
+          <span class="text-xs text-slate-400" title="DASHBOARD_TOKEN">🔑</span>
+          <input type="password" id="dashboard-token-input" placeholder="DASHBOARD_TOKEN" class="bg-transparent text-xs text-slate-200 placeholder-slate-500 focus:outline-none w-36" onchange="saveDashboardToken(this.value)" />
+        </div>
+
+        <!-- Mobile Token Button -->
+        <button onclick="toggleMobileToken()" id="mobile-token-btn" class="md:hidden w-11 h-11 min-w-[44px] min-h-[44px] rounded-xl bg-slate-800/90 border border-slate-700 text-slate-300 flex items-center justify-center text-sm transition active:scale-95" title="Ввести токен">
+          🔑
+        </button>
+
+        <!-- Collect Vacancies Button -->
+        <button onclick="triggerCollect()" id="collect-btn" class="min-h-[44px] px-3 sm:px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-500 text-slate-950 font-semibold text-xs sm:text-sm transition flex items-center gap-1.5 sm:gap-2 shadow-md shadow-brand-600/30 active:scale-95">
+          <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+          <span class="hidden sm:inline">Собрать вакансии</span>
+          <span class="sm:hidden font-bold">Сбор</span>
+        </button>
+
+        <!-- Refresh Button -->
+        <button onclick="loadAllData()" class="w-11 h-11 min-w-[44px] min-h-[44px] rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition active:scale-95" title="Обновить">
+          <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+        </button>
+
+        <!-- Unified Dashboard Link (Phase 4D): Job + Gig hub -->
+        <a href="/hub" class="min-h-[44px] px-3 sm:px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs sm:text-sm transition flex items-center gap-1.5 sm:gap-2" title="Единый Dashboard: вакансии и заказы">
+          <span class="hidden sm:inline">Единый Dashboard</span>
+          <span class="sm:hidden font-bold">Хаб</span>
+        </a>
       </div>
     </div>
 
-    <!-- Actions -->
-    <div class="flex items-center gap-3">
-      <div class="flex items-center gap-2 bg-slate-800/90 px-3 py-1.5 rounded-lg border border-slate-700">
-        <span class="text-xs text-slate-400" title="DASHBOARD_TOKEN">🔑</span>
-        <input type="password" id="dashboard-token-input" placeholder="DASHBOARD_TOKEN" class="bg-transparent text-xs text-slate-200 placeholder-slate-500 focus:outline-none w-36" onchange="saveDashboardToken(this.value)" />
+    <!-- Mobile Collapsible Token Panel -->
+    <div id="mobile-token-panel" class="hidden md:hidden pt-2.5 pb-1 max-w-7xl mx-auto">
+      <div class="flex items-center gap-2 bg-slate-800/90 px-3 py-2 rounded-xl border border-slate-700">
+        <span class="text-sm">🔑</span>
+        <input type="password" id="dashboard-token-input-mobile" placeholder="Введите DASHBOARD_TOKEN" class="bg-transparent text-xs text-slate-200 placeholder-slate-500 focus:outline-none flex-1 min-h-[32px]" onchange="saveDashboardToken(this.value)" />
+        <button onclick="toggleMobileToken()" class="min-h-[44px] px-3 text-xs text-brand-400 font-semibold flex items-center">Готово</button>
       </div>
-      <button onclick="triggerCollect()" id="collect-btn" class="px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-slate-950 font-semibold text-sm transition flex items-center gap-2 shadow-md shadow-brand-600/30">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-        Собрать вакансии
-      </button>
-      <button onclick="loadAllData()" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition" title="Обновить">
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-      </button>
     </div>
   </header>
 
   <!-- MAIN CONTAINER -->
-  <main class="flex-1 max-w-7xl w-full mx-auto p-6 space-y-6">
+  <main class="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-6 space-y-4 sm:space-y-6">
 
-    <!-- KPI STATS CARDS -->
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" id="stats-grid">
-      <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 flex flex-col justify-between">
-        <span class="text-xs font-medium text-slate-400">Всего вакансий в базе</span>
-        <span class="text-2xl font-bold text-white mt-2" id="stat-total-vacancies">...</span>
-        <span class="text-[11px] text-slate-500 mt-1" id="stat-sources">Источники: ...</span>
+    <!-- KPI STATS CARDS (2x2 on Mobile, 4x1 on Desktop) -->
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4" id="stats-grid">
+      <div class="p-3 sm:p-4 rounded-xl bg-slate-900 border border-slate-800 flex flex-col justify-between">
+        <span class="text-[11px] sm:text-xs font-medium text-slate-400 truncate">Всего вакансий</span>
+        <span class="text-xl sm:text-2xl font-bold text-white mt-1 sm:mt-2" id="stat-total-vacancies">...</span>
+        <span class="text-[10px] sm:text-[11px] text-slate-500 mt-1 truncate" id="stat-sources">Источники: ...</span>
       </div>
-      <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 flex flex-col justify-between">
-        <span class="text-xs font-medium text-slate-400">В очереди на отклик</span>
-        <span class="text-2xl font-bold text-emerald-400 mt-2" id="stat-queue-count">...</span>
-        <span class="text-[11px] text-slate-500 mt-1">Готовы к ревью</span>
+      <div class="p-3 sm:p-4 rounded-xl bg-slate-900 border border-slate-800 flex flex-col justify-between">
+        <span class="text-[11px] sm:text-xs font-medium text-slate-400 truncate">В очереди</span>
+        <span class="text-xl sm:text-2xl font-bold text-emerald-400 mt-1 sm:mt-2" id="stat-queue-count">...</span>
+        <span class="text-[10px] sm:text-[11px] text-slate-500 mt-1 truncate">Готовы к ревью</span>
       </div>
-      <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 flex flex-col justify-between">
-        <span class="text-xs font-medium text-slate-400">Сгенерировано пакетов</span>
-        <span class="text-2xl font-bold text-cyan-400 mt-2" id="stat-packages">...</span>
-        <span class="text-[11px] text-slate-500 mt-1">Резюме + Cover Letters</span>
+      <div class="p-3 sm:p-4 rounded-xl bg-slate-900 border border-slate-800 flex flex-col justify-between">
+        <span class="text-[11px] sm:text-xs font-medium text-slate-400 truncate">Пакетов резюме</span>
+        <span class="text-xl sm:text-2xl font-bold text-cyan-400 mt-1 sm:mt-2" id="stat-packages">...</span>
+        <span class="text-[10px] sm:text-[11px] text-slate-500 mt-1 truncate">Resume + CL</span>
       </div>
-      <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 flex flex-col justify-between">
-        <span class="text-xs font-medium text-slate-400">Статус откликов</span>
-        <span class="text-2xl font-bold text-purple-400 mt-2" id="stat-applied">...</span>
-        <span class="text-[11px] text-slate-500 mt-1" id="stat-tracking-summary">Активный трекинг</span>
+      <div class="p-3 sm:p-4 rounded-xl bg-slate-900 border border-slate-800 flex flex-col justify-between">
+        <span class="text-[11px] sm:text-xs font-medium text-slate-400 truncate">Статус откликов</span>
+        <span class="text-xl sm:text-2xl font-bold text-purple-400 mt-1 sm:mt-2" id="stat-applied">...</span>
+        <span class="text-[10px] sm:text-[11px] text-slate-500 mt-1 truncate" id="stat-tracking-summary">Активный трекинг</span>
       </div>
     </div>
 
     <!-- NAVIGATION TABS -->
-    <div class="flex border-b border-slate-800 space-x-6 text-sm font-medium">
-      <button onclick="switchTab('autopilot')" id="tab-btn-autopilot" class="pb-3 border-b-2 border-brand-500 text-brand-400 flex items-center gap-2 font-semibold">
-        <span>🤖 Центр управления Автопилотом</span>
-        <span id="badge-blockers-count" class="hidden px-2 py-0.5 rounded-full text-xs font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30">0</span>
-      </button>
-      <button onclick="switchTab('vacancies')" id="tab-btn-vacancies" class="pb-3 border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2">
+    <div class="flex border-b border-slate-800 gap-2 sm:gap-6 text-sm font-medium overflow-x-auto no-scrollbar pb-px">
+      <button onclick="switchTab('vacancies')" id="tab-btn-vacancies" class="min-h-[44px] px-3 sm:px-1 pb-3 border-b-2 border-brand-500 text-brand-400 flex items-center gap-2 whitespace-nowrap font-semibold">
         <span>📋 Вакансии</span>
       </button>
-      <button onclick="switchTab('queue')" id="tab-btn-queue" class="pb-3 border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2">
+      <button onclick="switchTab('review')" id="tab-btn-review" class="min-h-[44px] px-3 sm:px-1 pb-3 border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2 whitespace-nowrap">
+        <span>🔎 Ручное ревью</span>
+      </button>
+      <button onclick="switchTab('queue')" id="tab-btn-queue" class="min-h-[44px] px-3 sm:px-1 pb-3 border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2 whitespace-nowrap">
         <span>⚡ Очередь и Ревью</span>
       </button>
-      <button onclick="switchTab('stats')" id="tab-btn-stats" class="pb-3 border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2">
+      <button onclick="switchTab('stats')" id="tab-btn-stats" class="min-h-[44px] px-3 sm:px-1 pb-3 border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2 whitespace-nowrap">
         <span>📊 Аналитика воронки</span>
-      </button>
-      <button onclick="switchTab('funnel')" id="tab-btn-funnel" class="pb-3 border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2">
-        <span>💰 Бизнес-воронка и заказы (P1.1)</span>
       </button>
     </div>
 
-    <!-- TAB 0: AUTOPILOT CONTROL CENTER -->
-    <section id="tab-autopilot" class="space-y-6">
-
-      <!-- TOP ROLES & STATUS BANNER -->
-      <div class="bg-slate-900 p-5 rounded-2xl border border-slate-800">
-        <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-4 mb-4">
-          <div>
-            <h2 class="text-lg font-bold text-white flex items-center gap-2">
-              🤖 Автономный ролевой конвейер Paseo
-              <span class="text-xs px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">Safe Mode &bull; $0.00</span>
-            </h2>
-            <p class="text-xs text-slate-400 mt-1">Детерминированная передача задач: Worker ➔ QA Tester ➔ Independent Reviewer ➔ Регистрация сделки</p>
-          </div>
-          <div class="flex items-center gap-3">
-            <span class="text-xs text-slate-400">Сторожевой пульс:</span>
-            <span class="text-xs font-mono px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-300">Paseo Watchdog &bull; 30с</span>
-          </div>
-        </div>
-
-        <!-- 4 Model Roles Grid -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs" id="autopilot-roles-grid">
-          <!-- Roles injected by JS -->
-        </div>
-      </div>
-
-      <!-- 1. BLOCKERS / ACTION REQUIRED (ЗАТЫКИ) -->
-      <div class="bg-slate-900 p-6 rounded-2xl border border-rose-900/40 shadow-xl space-y-4">
-        <div class="flex items-center justify-between">
-          <div class="flex items-center gap-3">
-            <div class="w-8 h-8 rounded-lg bg-rose-500/20 text-rose-400 border border-rose-500/30 flex items-center justify-center font-bold text-sm">
-              ⚠️
-            </div>
-            <div>
-              <h3 class="text-base font-bold text-white">Требует твоего решения (Затыки и вопросы к владельцу)</h3>
-              <p class="text-xs text-slate-400">Действия, которые не может выполнить автономный агент без личного участия человека</p>
-            </div>
-          </div>
-          <span id="blockers-count-badge" class="text-xs px-3 py-1 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/20 font-bold">Загрузка...</span>
-        </div>
-
-        <div id="blockers-container" class="space-y-3">
-          <!-- Injected by JS -->
-        </div>
-      </div>
-
-      <!-- 2. LIVE TASK QUEUE (P2 BACKLOG) -->
-      <div class="bg-slate-900 p-6 rounded-2xl border border-slate-800 space-y-4">
-        <div class="flex items-center justify-between">
-          <div>
-            <h3 class="text-base font-bold text-white flex items-center gap-2">
-              📋 Очередь задач этапа P2 (Бэклог монетизации)
-            </h3>
-            <p class="text-xs text-slate-400 mt-1">Автономное продвижение по приоритетным направлениям без простоя</p>
-          </div>
-          <span class="text-xs text-slate-400 font-mono">BACKLOG.md &bull; state.db</span>
-        </div>
-
-        <div id="queue-tasks-table-container" class="overflow-x-auto">
-          <!-- Injected by JS -->
-        </div>
-      </div>
-
-      <!-- 3. SUBMITTED PROPOSALS & OUTBOUNDS (ВЫПОЛНЕННЫЕ ОТКЛИКИ) -->
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-
-        <!-- Kwork Proposals -->
-        <div class="bg-slate-900 p-6 rounded-2xl border border-slate-800 space-y-4">
-          <div class="flex items-center justify-between">
-            <h3 class="text-sm font-bold text-emerald-400 flex items-center gap-2">
-              💼 Отправленные предложения Kwork
-              <span id="kwork-submitted-count" class="text-xs px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-mono font-bold">...</span>
-            </h3>
-            <span class="text-xs text-slate-400">В пайплайне: 27 000 ₽</span>
-          </div>
-          <div id="kwork-proposals-container" class="space-y-3 max-h-96 overflow-y-auto pr-1">
-            <!-- Injected by JS -->
-          </div>
-        </div>
-
-        <!-- Thailand Applications & Hot Chats -->
-        <div class="space-y-6">
-          <!-- Thailand Direct -->
-          <div class="bg-slate-900 p-6 rounded-2xl border border-slate-800 space-y-4">
-            <div class="flex items-center justify-between">
-              <h3 class="text-sm font-bold text-cyan-400 flex items-center gap-2">
-                🌴 Прямые отклики: Таиланд (Бангкок)
-                <span class="text-xs px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 font-mono font-bold">1</span>
-              </h3>
-              <span class="text-xs text-slate-400">120 000 THB (~340 000 ₽)</span>
-            </div>
-            <div id="thailand-apps-container" class="space-y-3">
-              <!-- Injected by JS -->
-            </div>
-          </div>
-
-          <!-- Hot Negotiations -->
-          <div class="bg-slate-900 p-6 rounded-2xl border border-slate-800 space-y-4">
-            <div class="flex items-center justify-between">
-              <h3 class="text-sm font-bold text-amber-400 flex items-center gap-2">
-                💬 Горячие переписки (HeadHunter)
-              </h3>
-              <span class="text-xs text-slate-400">Live Daemon :9111</span>
-            </div>
-            <div id="hot-chats-container" class="space-y-3">
-              <!-- Injected by JS -->
-            </div>
-          </div>
-        </div>
-
-      </div>
-
-    </section>
-
     <!-- TAB 1: VACANCIES -->
-    <section id="tab-vacancies" class="space-y-4 hidden">
+    <section id="tab-vacancies" class="space-y-3 sm:space-y-4">
       <!-- Search & Filters -->
-      <div class="flex flex-wrap gap-3 items-center justify-between bg-slate-900 p-4 rounded-xl border border-slate-800">
-        <div class="flex flex-1 min-w-[240px] items-center bg-slate-950 px-3 py-2 rounded-lg border border-slate-800">
-          <svg class="w-4 h-4 text-slate-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+      <div class="flex flex-col sm:flex-row gap-2.5 sm:gap-3 bg-slate-900 p-3 sm:p-4 rounded-xl border border-slate-800">
+        <div class="flex flex-1 items-center bg-slate-950 px-3 py-2.5 rounded-xl border border-slate-800 min-h-[44px]">
+          <svg class="w-4 h-4 text-slate-500 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
           <input type="text" id="filter-search" oninput="loadVacancies()" placeholder="Поиск по должности, стеку или компании..." class="bg-transparent text-sm text-slate-100 placeholder-slate-500 focus:outline-none w-full">
         </div>
-        <div class="flex items-center gap-3">
-          <select id="filter-eligibility" onchange="loadVacancies()" class="bg-slate-950 text-slate-200 text-sm px-3 py-2 rounded-lg border border-slate-800 focus:outline-none">
+        <div class="grid grid-cols-2 sm:flex items-center gap-2 sm:gap-3">
+          <select id="filter-eligibility" onchange="loadVacancies()" class="bg-slate-950 text-slate-200 text-xs sm:text-sm px-3 py-2.5 rounded-xl border border-slate-800 focus:outline-none min-h-[44px] w-full sm:w-auto">
             <option value="">Все статусы</option>
             <option value="eligible">✅ Подходят (Eligible)</option>
             <option value="eligible_with_warning">⚠️ С предупреждением</option>
             <option value="unknown">❓ Требуют проверки</option>
             <option value="ineligible">❌ Исключены</option>
           </select>
-          <select id="filter-source" onchange="loadVacancies()" class="bg-slate-950 text-slate-200 text-sm px-3 py-2 rounded-lg border border-slate-800 focus:outline-none">
+          <select id="filter-source" onchange="loadVacancies()" class="bg-slate-950 text-slate-200 text-xs sm:text-sm px-3 py-2.5 rounded-xl border border-slate-800 focus:outline-none min-h-[44px] w-full sm:w-auto">
             <option value="">Все источники</option>
             <option value="habrcareer">Хабр Карьера</option>
             <option value="weworkremotely">WeWorkRemotely</option>
             <option value="remoteok">RemoteOK</option>
             <option value="himalayas">Himalayas</option>
           </select>
-          <select id="filter-limit" onchange="loadVacancies()" class="bg-slate-950 text-slate-200 text-sm px-3 py-2 rounded-lg border border-slate-800 focus:outline-none">
+          <select id="filter-limit" onchange="loadVacancies()" class="col-span-2 sm:col-span-1 bg-slate-950 text-slate-200 text-xs sm:text-sm px-3 py-2.5 rounded-xl border border-slate-800 focus:outline-none min-h-[44px] w-full sm:w-auto">
             <option value="20">20 шт.</option>
             <option value="50" selected>50 шт.</option>
             <option value="100">100 шт.</option>
@@ -252,8 +190,8 @@
         </div>
       </div>
 
-      <!-- Vacancies Table -->
-      <div class="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden shadow">
+      <!-- Desktop Table View (>= 768px) -->
+      <div class="hidden md:block bg-slate-900 rounded-xl border border-slate-800 overflow-hidden shadow">
         <div class="overflow-x-auto">
           <table class="w-full text-left text-sm">
             <thead class="bg-slate-950/70 text-slate-400 text-xs uppercase border-b border-slate-800 font-semibold">
@@ -271,76 +209,53 @@
           </table>
         </div>
       </div>
+
+      <!-- Mobile Cards View (< 768px) -->
+      <div class="block md:hidden space-y-3" id="vacancies-mobile-cards">
+        <div class="text-center py-8 text-slate-500 text-sm">Загрузка данных...</div>
+      </div>
     </section>
 
-    <!-- TAB 2: QUEUE & REVIEW -->
-    <section id="tab-queue" class="space-y-4 hidden">
-      <div class="bg-slate-900/60 p-4 rounded-xl border border-slate-800 text-xs text-slate-400 flex items-center justify-between">
-        <span>⚡ <b>Очередь откликов (Priority Queue)</b>: ранжирование по алгоритму соответствия навыков. Проверяйте Cover Letter перед отправкой.</span>
+    <!-- TAB 2: MANUAL REVIEW (bands A and B, Thailand-local separate) -->
+    <section id="tab-review" class="space-y-3 sm:space-y-4 hidden">
+      <div class="p-3 sm:p-4 rounded-xl bg-slate-900 border border-slate-800">
+        <h2 class="text-sm sm:text-base font-semibold text-slate-100">Список для ручного рассмотрения</h2>
+        <p class="text-[11px] sm:text-xs text-slate-400 mt-1">
+          Средний режим между поиском и очередью отправки. Полоса C сюда не попадает.
+          Полоса B показана специально: площадка заявляет удалённость, работодатель о географии молчит —
+          условия нужно проверить вручную. Из этого списка ничего не отправляется и ничего не встаёт в очередь.
+        </p>
+        <div class="flex flex-wrap gap-2 mt-3">
+          <button onclick="loadReviewList('')" class="min-h-[36px] px-3 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-200 hover:border-brand-500">Все</button>
+          <button onclick="loadReviewList('remote_confirmed')" class="min-h-[36px] px-3 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-200 hover:border-brand-500">A — удалённо подтверждено</button>
+          <button onclick="loadReviewList('remote_unclear')" class="min-h-[36px] px-3 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-200 hover:border-brand-500">B — география неясна</button>
+          <button onclick="loadReviewList('local_thailand')" class="min-h-[36px] px-3 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-200 hover:border-brand-500">Работа в Таиланде</button>
+        </div>
+        <div id="review-summary" class="text-[11px] sm:text-xs text-slate-400 mt-3"></div>
       </div>
-      <div id="queue-cards-container" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div id="review-list" class="space-y-2.5"></div>
+    </section>
+
+    <!-- TAB 3: QUEUE & REVIEW -->
+    <section id="tab-queue" class="space-y-3 sm:space-y-4 hidden">
+      <div class="bg-slate-900/60 p-3 sm:p-4 rounded-xl border border-slate-800 text-xs text-slate-400 flex items-center justify-between">
+        <span>⚡ <b>Очередь откликов (Priority Queue)</b>: ранжирование по соответствию профилю. Проверяйте Cover Letter перед отправкой.</span>
+      </div>
+      <div id="queue-cards-container" class="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4">
         <!-- Rendered dynamically -->
       </div>
     </section>
 
     <!-- TAB 3: STATS -->
-    <section id="tab-stats" class="space-y-6 hidden">
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div class="bg-slate-900 p-6 rounded-xl border border-slate-800">
+    <section id="tab-stats" class="space-y-4 sm:space-y-6 hidden">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+        <div class="bg-slate-900 p-4 sm:p-6 rounded-xl border border-slate-800">
           <h3 class="text-sm font-semibold text-slate-300 mb-4">Распределение по источникам</h3>
           <div id="sources-chart-bars" class="space-y-3 text-xs">...</div>
         </div>
-        <div class="bg-slate-900 p-6 rounded-xl border border-slate-800">
+        <div class="bg-slate-900 p-4 sm:p-6 rounded-xl border border-slate-800">
           <h3 class="text-sm font-semibold text-slate-300 mb-4">Воронка жизненного цикла откликов</h3>
           <div id="funnel-container" class="space-y-3 text-xs">...</div>
-        </div>
-      </div>
-    </section>
-
-    <!-- TAB 4: BUSINESS FUNNEL & TOP GIGS (P1.1) -->
-    <section id="tab-funnel" class="space-y-6 hidden">
-      <!-- Funnel Metrics Overview -->
-      <div class="bg-slate-900 p-6 rounded-xl border border-slate-800 space-y-4">
-        <div class="flex items-center justify-between">
-          <h3 class="text-base font-bold text-white">Сквозная конверсионная бизнес-воронка (8 этапов)</h3>
-          <span class="text-xs px-2.5 py-1 bg-brand-500/20 text-brand-400 rounded-full font-medium">Обновляется в реальном времени</span>
-        </div>
-        <div id="bf-stages-grid" class="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
-          <!-- Populated by JS -->
-        </div>
-      </div>
-
-      <!-- Search Streams & Active Negotiations -->
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div class="bg-slate-900 p-6 rounded-xl border border-slate-800">
-          <h3 class="text-sm font-semibold text-slate-300 mb-3">Направления поиска (3 стрима)</h3>
-          <div id="bf-streams-container" class="space-y-3 text-xs">
-            <!-- Populated by JS -->
-          </div>
-        </div>
-        <div class="bg-slate-900 p-6 rounded-xl border border-slate-800">
-          <h3 class="text-sm font-semibold text-amber-400 mb-3">⚠️ Требуются действия (Приоритетные переговоры)</h3>
-          <div class="space-y-3 text-xs">
-            <div class="p-3 bg-slate-950 rounded-lg border border-amber-500/30">
-              <div class="font-bold text-slate-200">1. AYITO Tech (Olena) — Тест скорости печати</div>
-              <div class="text-slate-400 mt-1">Пройдите 1-мин тест на <a href="https://brainapps.ru/typing-test" target="_blank" class="text-brand-400 underline">brainapps.ru</a> и укажите зн/мин в чате.</div>
-            </div>
-            <div class="p-3 bg-slate-950 rounded-lg border border-amber-500/30">
-              <div class="font-bold text-slate-200">2. «Первый Бит» (Интегратор) — Согласование условий</div>
-              <div class="text-slate-400 mt-1">Черновик готов: график 7:00 МСК (11:00 Бангкок), вилка 130 000 – 160 000 ₽. Готов к отправке в HH.</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Top Validated Commercial Gigs -->
-      <div class="bg-slate-900 p-6 rounded-xl border border-slate-800 space-y-4">
-        <div class="flex items-center justify-between">
-          <h3 class="text-base font-bold text-white">Топ-10 валидированных коммерческих заказов (Kwork / Freelancer)</h3>
-          <span class="text-xs text-slate-400">Без ботов и артефактов регулярных выражений</span>
-        </div>
-        <div id="bf-gigs-table-container" class="overflow-x-auto">
-          <!-- Populated by JS -->
         </div>
       </div>
     </section>
@@ -348,23 +263,23 @@
   </main>
 
   <!-- MODAL: PACKAGE INSPECTOR & REVIEW -->
-  <div id="package-modal" class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 hidden">
-    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+  <div id="package-modal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 hidden" onclick="handleModalBackdrop(event)">
+    <div class="bg-slate-900 border border-slate-800 w-full sm:max-w-4xl max-h-[92dvh] rounded-t-2xl sm:rounded-2xl flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150" onclick="event.stopPropagation()">
       <!-- Modal Header -->
-      <div class="p-5 border-b border-slate-800 flex items-center justify-between bg-slate-950/50">
-        <div>
-          <span id="modal-company" class="text-xs font-semibold text-brand-400 uppercase tracking-wider">Company</span>
-          <h2 id="modal-title" class="text-lg font-bold text-white">Vacancy Title</h2>
+      <div class="p-4 sm:p-5 border-b border-slate-800 flex items-start justify-between bg-slate-950/70 gap-3">
+        <div class="min-w-0 flex-1 pr-2">
+          <span id="modal-company" class="text-xs font-semibold text-brand-400 uppercase tracking-wider block truncate">Company</span>
+          <h2 id="modal-title" class="text-base sm:text-lg font-bold text-white break-words mt-0.5 leading-snug">Vacancy Title</h2>
         </div>
-        <button onclick="closeModal()" class="text-slate-400 hover:text-white p-2 rounded-lg bg-slate-800/50">✕</button>
+        <button onclick="closeModal()" class="w-11 h-11 min-w-[44px] min-h-[44px] text-slate-400 hover:text-white rounded-xl bg-slate-800/60 hover:bg-slate-800 flex items-center justify-center text-lg font-bold flex-shrink-0 transition active:scale-95" title="Закрыть (Esc)">✕</button>
       </div>
 
       <!-- Modal Body -->
-      <div class="p-6 overflow-y-auto space-y-6 flex-1 text-sm">
+      <div class="p-4 sm:p-6 overflow-y-auto space-y-4 sm:space-y-6 flex-1 text-sm overscroll-contain">
         <!-- Fit Score & Analysis -->
-        <div id="modal-deep-section" class="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
-          <div class="flex items-center justify-between">
-            <span class="font-semibold text-slate-300">Оценка ИИ (Deep Fit):</span>
+        <div id="modal-deep-section" class="p-3 sm:p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <span class="font-semibold text-slate-300 text-xs sm:text-sm">Оценка ИИ (Deep Fit):</span>
             <span id="modal-fit-score" class="px-2.5 py-1 rounded bg-brand-500/20 text-brand-300 font-bold text-xs">--</span>
           </div>
           <p id="modal-deep-summary" class="text-xs text-slate-400 italic">Анализ профиля...</p>
@@ -372,28 +287,28 @@
 
         <!-- Cover Letter -->
         <div class="space-y-2">
-          <label class="font-semibold text-slate-300 block">Сгенерированное Сопроводительное Письмо (Cover Letter):</label>
-          <textarea id="modal-cover-letter" rows="8" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-slate-200 focus:outline-none focus:border-brand-500 font-mono leading-relaxed"></textarea>
+          <label class="font-semibold text-slate-300 block text-xs sm:text-sm">Сгенерированное Сопроводительное Письмо (Cover Letter):</label>
+          <textarea id="modal-cover-letter" rows="8" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs sm:text-sm text-slate-200 focus:outline-none focus:border-brand-500 font-mono leading-relaxed resize-y"></textarea>
         </div>
 
         <!-- Screening Q&A -->
         <div id="modal-qa-section" class="space-y-2">
-          <label class="font-semibold text-slate-300 block">Ответы на скрининг-вопросы (Truth-only QA):</label>
+          <label class="font-semibold text-slate-300 block text-xs sm:text-sm">Ответы на скрининг-вопросы (Truth-only QA):</label>
           <div id="modal-qa-container" class="space-y-2 text-xs">...</div>
         </div>
       </div>
 
       <!-- Modal Footer -->
-      <div class="p-4 border-t border-slate-800 bg-slate-950/80 flex items-center justify-between">
-        <a id="modal-job-url" href="#" target="_blank" class="text-xs text-slate-400 hover:text-brand-400 flex items-center gap-1">
+      <div class="p-3 sm:p-4 border-t border-slate-800 bg-slate-950/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))]">
+        <a id="modal-job-url" href="#" target="_blank" class="min-h-[44px] text-xs text-slate-400 hover:text-brand-400 flex items-center justify-center sm:justify-start gap-1 py-1">
           <span>Открыть оригинал вакансии</span> ↗
         </a>
-        <div class="flex items-center gap-3">
-          <button onclick="submitReview('reject')" class="px-4 py-2 rounded-lg bg-rose-950/80 hover:bg-rose-900 border border-rose-800/50 text-rose-300 text-xs font-semibold">
+        <div class="grid grid-cols-2 sm:flex items-center gap-2 sm:gap-3">
+          <button onclick="submitReview('reject')" class="min-h-[44px] px-4 py-2.5 rounded-xl bg-rose-950/80 hover:bg-rose-900 border border-rose-800/50 text-rose-300 text-xs font-semibold flex items-center justify-center transition active:scale-95">
             ❌ Отклонить
           </button>
-          <button onclick="submitReview('approve')" class="px-5 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-slate-950 text-xs font-bold shadow-lg shadow-brand-600/30">
-            ✅ Утвердить пакет
+          <button onclick="submitReview('approve')" class="min-h-[44px] px-5 py-2.5 rounded-xl bg-brand-600 hover:bg-brand-500 text-slate-950 text-xs font-bold shadow-lg shadow-brand-600/30 flex items-center justify-center transition active:scale-95">
+            ✅ Утвердить
           </button>
         </div>
       </div>
@@ -409,8 +324,34 @@
     }
 
     function saveDashboardToken(token) {
-      localStorage.setItem('dashboard_token', (token || '').trim());
+      const cleanToken = (token || '').trim();
+      localStorage.setItem('dashboard_token', cleanToken);
+      const inputDesktop = document.getElementById('dashboard-token-input');
+      const inputMobile = document.getElementById('dashboard-token-input-mobile');
+      if (inputDesktop && inputDesktop.value !== cleanToken) inputDesktop.value = cleanToken;
+      if (inputMobile && inputMobile.value !== cleanToken) inputMobile.value = cleanToken;
     }
+
+    function toggleMobileToken() {
+      const panel = document.getElementById('mobile-token-panel');
+      if (panel) {
+        panel.classList.toggle('hidden');
+        if (!panel.classList.contains('hidden')) {
+          const input = document.getElementById('dashboard-token-input-mobile');
+          if (input) input.focus();
+        }
+      }
+    }
+
+    function handleModalBackdrop(e) {
+      if (e.target.id === 'package-modal') {
+        closeModal();
+      }
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeModal();
+    });
 
     function getAuthHeaders(extraHeaders = {}) {
       const token = getDashboardToken();
@@ -421,13 +362,42 @@
       return headers;
     }
 
-    // Обёртка над fetch для чтения /api/*: шлёт токен и не даёт странице молча
-    // показать «undefined» вместо данных. Без неё при включённом
-    // DASHBOARD_REQUIRE_AUTH_FOR_READS и невведённом токене GET отдаёт 401 с
-    // JSON-ом ошибки, а render-код разбирает его как успешный ответ.
-    // Кидает ошибку с name === 'ApiError', чтобы вызывающий catch не дублировал алерт.
+    // --- html-safety helpers ------------------------------------------------
+    // Titles, companies, locations, URLs and package form fields all originate
+    // from external boards (Telegram channels, HH, Hirify, LinkedIn, ...) and
+    // must be treated as hostile text. Never interpolate them into innerHTML
+    // directly: escapeHtml() first, and let only absolute http(s) URLs reach an
+    // href via safeUrl(). Anything else (javascript:, data:, relative paths,
+    // protocol-relative //host) becomes '#'.
+    const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (ch) => HTML_ESCAPES[ch]);
+    }
+
+    function safeUrl(value) {
+      const raw = String(value ?? '').trim();
+      if (!/^https?:\/\//i.test(raw)) return '#';
+      try {
+        const parsed = new URL(raw);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '#';
+        return parsed.href;
+      } catch (e) {
+        return '#';
+      }
+    }
+    // --- end html-safety helpers --------------------------------------------
+
+    function getApiUrl(url) {
+      const pfx = window.location.pathname.startsWith('/job-search') ? '/job-search' : '';
+      if (pfx && typeof url === 'string' && url.startsWith('/api/')) {
+        return pfx + url;
+      }
+      return url;
+    }
+
     async function fetchApi(url) {
-      const res = await fetch(url, { headers: getAuthHeaders() });
+      const res = await fetch(getApiUrl(url), { headers: getAuthHeaders() });
       if (res.ok) return res;
 
       const body = await res.json().catch(() => ({}));
@@ -445,34 +415,89 @@
     }
 
     window.addEventListener('DOMContentLoaded', () => {
-      const input = document.getElementById('dashboard-token-input');
-      if (input) {
-        input.value = getDashboardToken();
-      }
+      const token = getDashboardToken();
+      const inputDesktop = document.getElementById('dashboard-token-input');
+      const inputMobile = document.getElementById('dashboard-token-input-mobile');
+      if (inputDesktop) inputDesktop.value = token;
+      if (inputMobile) inputMobile.value = token;
     });
 
     async function loadAllData() {
-      await Promise.all([loadAutopilotTab(), loadStats(), loadVacancies(), loadQueue()]);
+      await Promise.all([loadStats(), loadVacancies(), loadReviewList(''), loadQueue()]);
+    }
+
+    // Manual-review list: bands A and B for remote work, Thailand-local apart.
+    // Read-only view -- nothing here can approve or queue a vacancy.
+    async function loadReviewList(category) {
+      const box = document.getElementById('review-list');
+      const summaryBox = document.getElementById('review-summary');
+      if (!box) return;
+      box.innerHTML = '<div class="text-xs text-slate-500 p-3">Загрузка…</div>';
+      try {
+        const qs = category ? `&category=${encodeURIComponent(category)}` : '';
+        const res = await fetchApi(`/api/review-list?limit=100${qs}`);
+        const d = await res.json();
+        const items = d.items || [];
+        const s = d.summary || {};
+        const labels = d.category_labels || {};
+        const byCat = Object.entries(s.by_category || {})
+          .map(([k, v]) => `${escapeHtml(labels[k] || k)}: <span class="text-slate-200 font-semibold">${escapeHtml(v)}</span>`)
+          .join(' · ');
+        summaryBox.innerHTML = `Всего: <span class="text-slate-200 font-semibold">${escapeHtml(s.total || 0)}</span> · ${byCat}<br>
+          <span class="text-amber-400/80">Требуют ручной проверки: ${escapeHtml(s.needs_manual_review || 0)}</span>`;
+        if (!items.length) {
+          box.innerHTML = '<div class="text-xs text-slate-500 p-4 rounded-xl bg-slate-900 border border-slate-800">В этой категории подходящих вакансий нет. Пустой список — это результат, а не сбой.</div>';
+          return;
+        }
+        box.innerHTML = items.map(it => {
+          const bandColour = it.band === 'A' ? 'text-emerald-400' : 'text-amber-400';
+          const catColour = it.category === 'local_thailand' ? 'text-sky-400' : bandColour;
+          const salary = (it.salary_min || it.salary_max)
+            ? escapeHtml(`${it.salary_min ?? '?'}–${it.salary_max ?? '?'} ${it.salary_currency || ''}`)
+            : '<span class="text-slate-500">не указана</span>';
+          const questions = (it.open_questions || [])
+            .map(q => `<li class="text-[11px] text-amber-300/90">${escapeHtml(q)}</li>`).join('');
+          const reasons = (it.band_reasons || [])
+            .map(r => `<li class="text-[11px] text-slate-400">${escapeHtml(r)}</li>`).join('');
+          return `<div class="p-3 sm:p-4 rounded-xl bg-slate-900 border border-slate-800">
+            <div class="flex flex-wrap items-start justify-between gap-2">
+              <div class="min-w-0">
+                <a href="${escapeHtml(safeUrl(it.url))}" target="_blank" rel="noopener" class="text-sm font-semibold text-slate-100 hover:text-brand-400 break-words">${escapeHtml(it.title)}</a>
+                <div class="text-[11px] text-slate-400 mt-0.5">${escapeHtml(it.company || '—')} · ${escapeHtml(it.source)} · ${escapeHtml(it.age_days === null ? 'дата неизвестна' : it.age_days + ' дн.')}</div>
+              </div>
+              <div class="text-right flex-shrink-0">
+                <div class="${catColour} text-[11px] font-semibold">${escapeHtml(it.category_label || it.category)}</div>
+                <div class="text-[11px] text-slate-500">полоса ${escapeHtml(it.band || '—')} · ${escapeHtml(it.direction)}</div>
+                <div class="text-[11px] ${it.auto_queue_allowed ? 'text-emerald-400' : 'text-amber-400'}">
+                  ${it.auto_queue_allowed ? 'география допускает очередь' : 'в очередь не встаёт'}
+                </div>
+              </div>
+            </div>
+            <div class="text-[11px] text-slate-400 mt-2">${escapeHtml(it.location || '—')} · зарплата: ${salary} · график: ${escapeHtml(it.timezone_details || it.timezone || 'не указан')}</div>
+            <ul class="mt-2 space-y-1">${reasons}</ul>
+            ${questions ? `<ul class="mt-2 space-y-1 list-disc list-inside">${questions}</ul>` : ''}
+          </div>`;
+        }).join('');
+      } catch (e) {
+        box.innerHTML = `<div class="text-xs text-rose-400 p-3">Не удалось загрузить список: ${escapeHtml(e)}</div>`;
+      }
     }
 
     async function loadStats() {
       try {
         const res = await fetchApi('/api/stats');
         const d = await res.json();
-        document.getElementById('stat-total-vacancies').innerText = d.total_vacancies;
-        document.getElementById('stat-packages').innerText = d.total_packages;
+        document.getElementById('stat-total-vacancies').innerText = (d.total_vacancies || 0).toLocaleString();
+        document.getElementById('stat-packages').innerText = (d.total_packages || 0).toLocaleString();
 
-        // Sources string
-        const srcArr = Object.entries(d.by_source).map(([k, v]) => `${k}: ${v}`).join(' | ');
+        const srcArr = Object.entries(d.by_source || {}).map(([k, v]) => `${k}: ${v}`).join(' | ');
         document.getElementById('stat-sources').innerText = srcArr || 'Нет данных';
 
-        // Tracking summary
-        const appliedCount = d.tracking_status['APPLIED'] || 0;
+        const appliedCount = (d.tracking_status && d.tracking_status['APPLIED']) || 0;
         document.getElementById('stat-applied').innerText = `${appliedCount} откликов`;
 
-        // Render Bars
-        renderSourceBars(d.by_source, d.total_vacancies);
-        renderFunnel(d.tracking_status, d.total_vacancies);
+        renderSourceBars(d.by_source || {}, d.total_vacancies || 0);
+        renderFunnel(d.tracking_status || {}, d.total_vacancies || 0);
       } catch (e) {
         console.error('Stats error:', e);
       }
@@ -487,8 +512,8 @@
         container.innerHTML += `
           <div>
             <div class="flex justify-between mb-1">
-              <span class="font-medium text-slate-300">${src}</span>
-              <span class="text-slate-400">${count} (${pct}%)</span>
+              <span class="font-medium text-slate-300">${escapeHtml(src)}</span>
+              <span class="text-slate-400">${escapeHtml(count)} (${pct}%)</span>
             </div>
             <div class="w-full bg-slate-800 rounded-full h-2">
               <div class="bg-brand-500 h-2 rounded-full" style="width: ${pct}%"></div>
@@ -502,13 +527,13 @@
       const container = document.getElementById('funnel-container');
       container.innerHTML = `
         <div class="p-3 bg-slate-950 rounded-lg flex justify-between items-center border border-slate-800">
-          <span>Собрано вакансий</span><span class="font-bold text-white">${total}</span>
+          <span>Собрано вакансий</span><span class="font-bold text-white">${escapeHtml(total)}</span>
         </div>
         <div class="p-3 bg-slate-950 rounded-lg flex justify-between items-center border border-slate-800">
-          <span>В очереди / Готовы</span><span class="font-bold text-emerald-400">${tracking['READY_TO_APPLY'] || 0}</span>
+          <span>В очереди / Готовы</span><span class="font-bold text-emerald-400">${escapeHtml(tracking['READY_TO_APPLY'] || 0)}</span>
         </div>
         <div class="p-3 bg-slate-950 rounded-lg flex justify-between items-center border border-slate-800">
-          <span>Отправлено откликов</span><span class="font-bold text-purple-400">${tracking['APPLIED'] || 0}</span>
+          <span>Отправлено откликов</span><span class="font-bold text-purple-400">${escapeHtml(tracking['APPLIED'] || 0)}</span>
         </div>
       `;
     }
@@ -528,47 +553,90 @@
         const res = await fetchApi(`/api/vacancies?${params}`);
         const list = await res.json();
         const tbody = document.getElementById('vacancies-tbody');
+        const mobileContainer = document.getElementById('vacancies-mobile-cards');
         tbody.innerHTML = '';
+        mobileContainer.innerHTML = '';
 
         if (!list.length) {
           tbody.innerHTML = '<tr><td colspan="5" class="text-center py-8 text-slate-500">Вакансии не найдены.</td></tr>';
+          mobileContainer.innerHTML = '<div class="text-center py-8 text-slate-500 text-sm">Вакансии не найдены.</div>';
           return;
         }
 
         list.forEach(v => {
-          const salary = v.salary_min ? `${v.salary_min.toLocaleString()} ${v.salary_max ? '– ' + v.salary_max.toLocaleString() : ''} ${v.salary_currency || ''}` : '—';
-          
+          const salary = v.salary_min
+            ? escapeHtml(`${v.salary_min.toLocaleString()} ${v.salary_max ? '– ' + v.salary_max.toLocaleString() : ''} ${v.salary_currency || ''}`)
+            : '—';
+          const eligibilityTitle = escapeHtml((v.eligibility_reasons || []).join('; '));
+
           let eligBadge = '<span class="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400 border border-slate-700">Unknown</span>';
           if (v.eligibility_status === 'eligible') {
             eligBadge = '<span class="px-2 py-0.5 rounded text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">✅ Eligible</span>';
           } else if (v.eligibility_status === 'eligible_with_warning') {
-            eligBadge = `<span class="px-2 py-0.5 rounded text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/20 font-medium" title="${(v.eligibility_reasons || []).join('; ')}">⚠️ Warning</span>`;
+            eligBadge = `<span class="px-2 py-0.5 rounded text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/20 font-medium" title="${eligibilityTitle}">⚠️ Warning</span>`;
           } else if (v.eligibility_status === 'ineligible') {
-            eligBadge = `<span class="px-2 py-0.5 rounded text-[10px] bg-rose-500/10 text-rose-400 border border-rose-500/20 font-medium" title="${(v.eligibility_reasons || []).join('; ')}">❌ Ineligible</span>`;
+            eligBadge = `<span class="px-2 py-0.5 rounded text-[10px] bg-rose-500/10 text-rose-400 border border-rose-500/20 font-medium" title="${eligibilityTitle}">❌ Ineligible</span>`;
           } else if (v.eligibility_status === 'unknown') {
-            eligBadge = `<span class="px-2 py-0.5 rounded text-[10px] bg-sky-500/10 text-sky-400 border border-sky-500/20 font-medium" title="${(v.eligibility_reasons || []).join('; ')}">❓ Review Req</span>`;
+            eligBadge = `<span class="px-2 py-0.5 rounded text-[10px] bg-sky-500/10 text-sky-400 border border-sky-500/20 font-medium" title="${eligibilityTitle}">❓ Review Req</span>`;
           }
 
+          // 1. Desktop Table Row
           tbody.innerHTML += `
             <tr class="hover:bg-slate-800/40 transition">
               <td class="px-4 py-3 font-medium text-xs text-slate-400">
                 <div class="flex flex-col gap-1 items-start">
-                  <span class="px-2 py-0.5 rounded bg-slate-800 border border-slate-700">${v.source}</span>
+                  <span class="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 font-mono">${escapeHtml(v.source)}</span>
                   ${eligBadge}
                 </div>
               </td>
-              <td class="px-4 py-3 font-semibold text-slate-200">${v.company || '—'}</td>
+              <td class="px-4 py-3 font-semibold text-slate-200">${escapeHtml(v.company || '—')}</td>
               <td class="px-4 py-3">
-                <div class="font-medium text-white">${v.title}</div>
-                <div class="text-xs text-slate-500">${v.location || 'Remote'}</div>
+                <div class="font-medium text-white break-words">${escapeHtml(v.title)}</div>
+                <div class="text-xs text-slate-500">${escapeHtml(v.location || 'Remote')}</div>
               </td>
               <td class="px-4 py-3 text-xs text-slate-300 font-mono">${salary}</td>
               <td class="px-4 py-3 text-right">
-                <button onclick="openPackageModal('${v.stable_id}')" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-brand-600 hover:text-black text-xs font-medium text-slate-200 transition">
+                <button data-stable-id="${escapeHtml(v.stable_id)}" onclick="openPackageModal(this.dataset.stableId)" class="min-h-[36px] px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-brand-600 hover:text-black text-xs font-medium text-slate-200 transition">
                   Пакет отклика
                 </button>
               </td>
             </tr>
+          `;
+
+          // 2. Mobile Responsive Card
+          mobileContainer.innerHTML += `
+            <div class="p-3.5 rounded-xl bg-slate-900 border border-slate-800 space-y-2.5 shadow hover:border-slate-700 transition">
+              <div class="flex items-start justify-between gap-2">
+                <div class="min-w-0 flex-1">
+                  <div class="text-xs font-bold text-slate-400 truncate">${escapeHtml(v.company || '—')}</div>
+                  <h4 class="font-bold text-white text-sm sm:text-base mt-0.5 leading-snug break-words">${escapeHtml(v.title)}</h4>
+                </div>
+                <div class="flex flex-col items-end gap-1 flex-shrink-0">
+                  <span class="px-2 py-0.5 rounded text-[10px] bg-slate-800 border border-slate-700 font-mono text-slate-400">${escapeHtml(v.source)}</span>
+                  ${eligBadge}
+                </div>
+              </div>
+              
+              <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
+                <div class="flex items-center gap-1">
+                  <span class="text-slate-500">📍</span>
+                  <span class="truncate max-w-[150px]">${escapeHtml(v.location || 'Remote')}</span>
+                </div>
+                <div class="flex items-center gap-1 font-mono text-emerald-400 font-medium">
+                  <span class="text-slate-500">💰</span>
+                  <span>${salary}</span>
+                </div>
+              </div>
+
+              <div class="flex items-center justify-between pt-2 border-t border-slate-800/80 gap-2">
+                <a href="${escapeHtml(safeUrl(v.job_url))}" target="_blank" class="min-h-[44px] px-2 text-xs text-slate-400 hover:text-brand-400 flex items-center gap-1">
+                  <span>Оригинал</span> ↗
+                </a>
+                <button data-stable-id="${escapeHtml(v.stable_id)}" onclick="openPackageModal(this.dataset.stableId)" class="min-h-[44px] min-w-[130px] px-4 py-2 rounded-xl bg-slate-800 active:bg-brand-600 hover:bg-brand-600 active:text-black hover:text-black text-xs font-bold text-slate-100 transition shadow active:scale-95 flex items-center justify-center">
+                  Пакет отклика
+                </button>
+              </div>
+            </div>
           `;
         });
       } catch (e) {
@@ -580,32 +648,34 @@
       try {
         const res = await fetchApi('/api/queue');
         const items = await res.json();
-        document.getElementById('stat-queue-count').innerText = items.length;
+        document.getElementById('stat-queue-count').innerText = (items.length || 0).toLocaleString();
         const container = document.getElementById('queue-cards-container');
         container.innerHTML = '';
 
         if (!items.length) {
-          container.innerHTML = '<div class="col-span-2 text-center py-12 text-slate-500">Очередь пуста. Выполните команду prepare-applications.</div>';
+          container.innerHTML = '<div class="col-span-full text-center py-12 text-slate-500 text-sm">Очередь пуста. Выполните команду prepare-applications.</div>';
           return;
         }
 
         items.forEach(it => {
           container.innerHTML += `
-            <div class="p-5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col justify-between space-y-4 hover:border-slate-700 transition">
+            <div class="p-4 sm:p-5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col justify-between space-y-3 sm:space-y-4 hover:border-slate-700 transition">
               <div>
-                <div class="flex items-center justify-between">
-                  <span class="text-xs font-semibold text-brand-400">${it.company || 'Компания'}</span>
-                  <span class="text-xs font-bold px-2 py-0.5 rounded bg-brand-500/20 text-brand-300">Приоритет: ${Math.round(it.priority_score || 0)}</span>
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-xs font-semibold text-brand-400 truncate">${escapeHtml(it.company || 'Компания')}</span>
+                  <span class="text-xs font-bold px-2 py-0.5 rounded bg-brand-500/20 text-brand-300 flex-shrink-0">Приоритет: ${escapeHtml(Math.round(it.priority_score || 0))}</span>
                 </div>
-                <h3 class="font-bold text-white text-base mt-1">${it.title}</h3>
+                <h3 class="font-bold text-white text-base mt-1 break-words">${escapeHtml(it.title)}</h3>
                 <div class="text-xs text-slate-400 mt-2 space-y-1">
-                  <div>Матчинг: <b class="text-slate-200">${it.match_score || '-'}</b> | Deep fit: <b class="text-slate-200">${it.deep_score || '-'}</b></div>
-                  <div>Статус ревью: <b class="text-slate-300">${it.review_status}</b></div>
+                  <div>Матчинг: <b class="text-slate-200">${escapeHtml(it.match_score || '-')}</b> | Deep fit: <b class="text-slate-200">${escapeHtml(it.deep_score || '-')}</b></div>
+                  <div>Статус ревью: <b class="text-slate-300">${escapeHtml(it.review_status)}</b></div>
                 </div>
               </div>
-              <div class="flex items-center justify-between pt-3 border-t border-slate-800/80">
-                <a href="${it.job_url}" target="_blank" class="text-xs text-slate-400 hover:text-brand-400">Открыть вакансию ↗</a>
-                <button onclick="openPackageModal('${it.vacancy_stable_id}')" class="px-4 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-slate-950 text-xs font-bold transition">
+              <div class="flex items-center justify-between pt-3 border-t border-slate-800/80 gap-2">
+                <a href="${escapeHtml(safeUrl(it.job_url))}" target="_blank" class="min-h-[44px] px-2 text-xs text-slate-400 hover:text-brand-400 flex items-center gap-1">
+                  <span>Вакансия</span> ↗
+                </a>
+                <button data-stable-id="${escapeHtml(it.vacancy_stable_id)}" onclick="openPackageModal(this.dataset.stableId)" class="min-h-[44px] min-w-[130px] px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-500 text-slate-950 text-xs font-bold transition shadow-md shadow-brand-600/20 active:scale-95 flex items-center justify-center">
                   Ревью пакета
                 </button>
               </div>
@@ -625,7 +695,7 @@
 
         document.getElementById('modal-company').innerText = d.vacancy?.company || 'Компания';
         document.getElementById('modal-title').innerText = d.vacancy?.title || 'Вакансия';
-        document.getElementById('modal-job-url').href = d.vacancy?.job_url || '#';
+        document.getElementById('modal-job-url').href = safeUrl(d.vacancy?.job_url);
 
         if (d.deep_analysis) {
           document.getElementById('modal-fit-score').innerText = `Score: ${d.deep_analysis.fit_score || '--'}`;
@@ -643,9 +713,9 @@
         if (d.package?.form?.questions?.length) {
           d.package.form.questions.forEach(q => {
             qaCont.innerHTML += `
-              <div class="p-2.5 bg-slate-950 rounded border border-slate-800">
-                <div class="font-medium text-slate-300">${q.label || q.name}</div>
-                <div class="text-brand-400 mt-1">${q.resolved_value || '(нет ответа)'}</div>
+              <div class="p-2.5 bg-slate-950 rounded-lg border border-slate-800">
+                <div class="font-medium text-slate-300 break-words">${escapeHtml(q.label || q.name)}</div>
+                <div class="text-brand-400 mt-1 break-words">${escapeHtml(q.resolved_value || '(нет ответа)')}</div>
               </div>
             `;
           });
@@ -655,7 +725,6 @@
 
         document.getElementById('package-modal').classList.remove('hidden');
       } catch (e) {
-        // ApiError уже показал свой алерт внутри fetchApi.
         if (!e || e.name !== 'ApiError') alert('Ошибка при загрузке пакета: ' + e);
       }
     }
@@ -668,7 +737,7 @@
     async function submitReview(action) {
       if (!currentVacancyId) return;
       try {
-        const res = await fetch(`/api/review/${currentVacancyId}`, {
+        const res = await fetch(getApiUrl(`/api/review/${currentVacancyId}`), {
           method: 'POST',
           headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ action })
@@ -694,10 +763,11 @@
 
     async function triggerCollect() {
       const btn = document.getElementById('collect-btn');
-      btn.innerText = 'Сбор вакансий...';
+      const originalText = btn.innerHTML;
+      btn.innerText = 'Сбор...';
       btn.disabled = true;
       try {
-        const res = await fetch('/api/collect', {
+        const res = await fetch(getApiUrl('/api/collect'), {
           method: 'POST',
           headers: getAuthHeaders({ 'Content-Type': 'application/json' })
         });
@@ -717,366 +787,18 @@
       } catch (e) {
         alert('Ошибка сбора: ' + e);
       } finally {
-        btn.innerText = 'Собрать вакансии';
+        btn.innerHTML = originalText;
         btn.disabled = false;
       }
     }
 
     function switchTab(tab) {
-      ['autopilot', 'vacancies', 'queue', 'stats', 'funnel'].forEach(t => {
-        const sec = document.getElementById(`tab-${t}`);
-        const btn = document.getElementById(`tab-btn-${t}`);
-        if (sec) sec.classList.add('hidden');
-        if (btn) btn.className = 'pb-3 border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2';
+      ['vacancies', 'review', 'queue', 'stats'].forEach(t => {
+        document.getElementById(`tab-${t}`).classList.add('hidden');
+        document.getElementById(`tab-btn-${t}`).className = 'min-h-[44px] px-3 sm:px-1 pb-3 border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2 whitespace-nowrap';
       });
-      const activeSec = document.getElementById(`tab-${tab}`);
-      const activeBtn = document.getElementById(`tab-btn-${tab}`);
-      if (activeSec) activeSec.classList.remove('hidden');
-      if (activeBtn) activeBtn.className = 'pb-3 border-b-2 border-brand-500 text-brand-400 flex items-center gap-2 font-semibold';
-      if (tab === 'autopilot') loadAutopilotTab();
-      if (tab === 'funnel') loadBusinessFunnelTab();
-    }
-
-    async function loadAutopilotTab() {
-      try {
-        const res = await fetchApi('/api/autopilot/status');
-        const data = await res.json();
-        renderAutopilotTab(data);
-      } catch (err) {
-        console.error('Failed to load autopilot status:', err);
-      }
-    }
-
-    async function resolveAutopilotTask(taskId) {
-      if (!confirm('Отметить эту задачу как выполненную?')) return;
-      try {
-        const res = await fetch('/api/autopilot/resolve-task', {
-          method: 'POST',
-          headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ task_id: taskId, status: 'RESOLVED' })
-        });
-        const d = await res.json();
-        if (d.status === 'success') {
-          loadAutopilotTab();
-        } else {
-          alert('Ошибка: ' + (d.detail || 'Не удалось обновить'));
-        }
-      } catch (e) {
-        alert('Ошибка запроса: ' + e);
-      }
-    }
-
-    function renderAutopilotTab(data) {
-      if (!data) return;
-
-      // 1. Roles Grid
-      const rolesGrid = document.getElementById('autopilot-roles-grid');
-      if (rolesGrid && data.roles) {
-        rolesGrid.innerHTML = `
-          <div class="p-3 bg-slate-950 rounded-xl border border-slate-800">
-            <span class="text-slate-400 block mb-1">🔨 Исполнитель (Worker)</span>
-            <div class="font-bold text-emerald-400 text-sm">${data.roles.worker.name}</div>
-            <div class="text-[11px] text-slate-500">${data.roles.worker.model}</div>
-          </div>
-          <div class="p-3 bg-slate-950 rounded-xl border border-slate-800">
-            <span class="text-slate-400 block mb-1">🧪 Тестировщик (QA)</span>
-            <div class="font-bold text-cyan-400 text-sm">${data.roles.qa.name}</div>
-            <div class="text-[11px] text-slate-500">${data.roles.qa.model}</div>
-          </div>
-          <div class="p-3 bg-slate-950 rounded-xl border border-slate-800">
-            <span class="text-slate-400 block mb-1">🔍 Ревьюер (Reviewer)</span>
-            <div class="font-bold text-purple-400 text-sm">${data.roles.reviewer.name}</div>
-            <div class="text-[11px] text-slate-500">${data.roles.reviewer.model}</div>
-          </div>
-          <div class="p-3 bg-slate-950 rounded-xl border border-slate-800">
-            <span class="text-slate-400 block mb-1">🎯 AI Tech Lead</span>
-            <div class="font-bold text-amber-400 text-sm">${data.roles.manager.name}</div>
-            <div class="text-[11px] text-slate-500">${data.roles.manager.model}</div>
-          </div>
-        `;
-      }
-
-      // 2. Blockers (Затыки)
-      const blockersCont = document.getElementById('blockers-container');
-      const bBadge = document.getElementById('blockers-count-badge');
-      const navBadge = document.getElementById('badge-blockers-count');
-      const blockers = data.blockers || [];
-
-      if (bBadge) bBadge.innerText = `${blockers.length} задач`;
-      if (navBadge) {
-        navBadge.innerText = blockers.length;
-        if (blockers.length > 0) navBadge.classList.remove('hidden');
-        else navBadge.classList.add('hidden');
-      }
-
-      if (blockersCont) {
-        if (blockers.length === 0) {
-          blockersCont.innerHTML = `
-            <div class="p-4 bg-emerald-950/20 border border-emerald-500/30 rounded-xl text-center text-xs text-emerald-400">
-              ✅ Все внешние задачи решены. Автопилот работает в полностью автономном режиме без затыков.
-            </div>
-          `;
-        } else {
-          blockersCont.innerHTML = blockers.map(b => `
-            <div class="p-4 bg-slate-950 rounded-xl border border-rose-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div class="space-y-1">
-                <div class="flex items-center gap-2">
-                  <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase ${b.priority === 'P0_HIGH' ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40' : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'}">${b.priority}</span>
-                  <span class="font-bold text-white text-sm">${b.title}</span>
-                </div>
-                <p class="text-xs text-slate-400">${b.description}</p>
-              </div>
-              <div class="flex items-center gap-2 shrink-0">
-                ${b.action_url ? `<a href="${b.action_url}" target="_blank" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1 border border-slate-700">🔗 Ссылка</a>` : ''}
-                <button onclick="resolveAutopilotTask(${b.id})" class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-slate-950 text-xs font-bold transition">✅ Решено</button>
-              </div>
-            </div>
-          `).join('');
-        }
-      }
-
-      // 3. Queue Tasks Table
-      const qCont = document.getElementById('queue-tasks-table-container');
-      const qTasks = data.queue_tasks || [];
-      if (qCont) {
-        const rows = qTasks.map(t => {
-          let badgeClass = 'bg-slate-800 text-slate-400 border-slate-700';
-          if (t.status === 'COMPLETED') badgeClass = 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30';
-          if (t.status === 'IN_PROGRESS' || t.status === 'ACTIVE') badgeClass = 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30';
-          return `
-            <tr class="border-b border-slate-800/60 hover:bg-slate-800/30">
-              <td class="p-3 font-mono font-bold text-brand-400 text-xs">${t.id}</td>
-              <td class="p-3 font-medium text-white text-xs">${t.title}</td>
-              <td class="p-3 text-slate-400 text-xs">${t.details}</td>
-              <td class="p-3 text-right">
-                <span class="px-2 py-0.5 rounded text-[10px] font-bold border ${badgeClass}">${t.status}</span>
-              </td>
-            </tr>
-          `;
-        }).join('');
-        qCont.innerHTML = `
-          <table class="w-full text-left text-sm">
-            <thead class="text-xs uppercase bg-slate-950/80 text-slate-400 font-semibold border-b border-slate-800">
-              <tr>
-                <th class="p-3">ID</th>
-                <th class="p-3">Задача</th>
-                <th class="p-3">Текущий прогресс</th>
-                <th class="p-3 text-right">Статус</th>
-              </tr>
-            </thead>
-            <tbody>${rows}</tbody>
-          </table>
-        `;
-      }
-
-      // 4. Submitted Kwork proposals
-      const kwCont = document.getElementById('kwork-proposals-container');
-      const kwSubmitted = data.submitted_gigs || [];
-      const kwBadge = document.getElementById('kwork-submitted-count');
-      if (kwBadge) kwBadge.innerText = kwSubmitted.length;
-
-      if (kwCont) {
-        if (kwSubmitted.length === 0) {
-          kwCont.innerHTML = '<div class="text-slate-500 text-xs">Нет отправленных предложений</div>';
-        } else {
-          kwCont.innerHTML = kwSubmitted.map(g => `
-            <div class="p-3 bg-slate-950 rounded-xl border border-slate-800/80 space-y-2">
-              <div class="flex items-center justify-between">
-                <span class="font-bold text-white text-xs">${g.title}</span>
-                <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">SUBMITTED</span>
-              </div>
-              <div class="flex items-center justify-between text-xs text-slate-400">
-                <span>Бюджет: <strong class="text-emerald-300">${g.budget_text || 'Договорной'}</strong></span>
-                <a href="https://kwork.ru/projects/${g.gig_id}/view" target="_blank" class="text-brand-400 hover:underline">Открыть на Kwork ↗</a>
-              </div>
-              <div class="text-[11px] text-slate-500 bg-slate-900/60 p-2 rounded-lg font-mono line-clamp-2">
-                ${g.proposal_pitch ? g.proposal_pitch.substring(0, 150) + '...' : 'Питч отправлен через форму'}
-              </div>
-            </div>
-          `).join('');
-        }
-      }
-
-      // 5. Thailand applications
-      const thCont = document.getElementById('thailand-apps-container');
-      const thApps = data.thailand_applications || [];
-      if (thCont) {
-        if (thApps.length === 0) {
-          thCont.innerHTML = '<div class="text-slate-500 text-xs">Нет подготовленных заявок</div>';
-        } else {
-          thCont.innerHTML = thApps.map(a => `
-            <div class="p-3 bg-slate-950 rounded-xl border border-cyan-500/30 space-y-2">
-              <div class="flex items-center justify-between">
-                <span class="font-bold text-white text-xs">${a.company} — ${a.position}</span>
-                <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">READY</span>
-              </div>
-              <div class="flex items-center justify-between text-xs text-slate-400">
-                <span>Вилка: <strong class="text-cyan-300">120 000 THB</strong></span>
-                <a href="${a.application_url}" target="_blank" class="text-cyan-400 hover:underline">Greenhouse форма ↗</a>
-              </div>
-              <div class="text-[11px] text-slate-400 bg-slate-900/80 p-2 rounded-lg">
-                ✅ Персональное Cover Letter (15+ лет сетевого/ISP опыта) подготовлено к отправке.
-              </div>
-            </div>
-          `).join('');
-        }
-      }
-
-      // 6. Hot Chats
-      const chatsCont = document.getElementById('hot-chats-container');
-      const hotChats = data.hot_chats || [];
-      if (chatsCont) {
-        chatsCont.innerHTML = `
-          <div class="p-3 bg-slate-950 rounded-xl border border-amber-500/30 space-y-1">
-            <div class="flex items-center justify-between text-xs font-bold text-amber-300">
-              <span>Соколь С. Г. (Sergey)</span>
-              <span>Чат 5764818135</span>
-            </div>
-            <p class="text-xs text-slate-400">«Хорошо, напишите мне в ТГ https://t.me/S720054 и выберем время» (приглашение на созвон).</p>
-          </div>
-          <div class="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-1">
-            <div class="flex items-center justify-between text-xs font-bold text-slate-300">
-              <span>AYITO Tech (Olena)</span>
-              <span>Чат 5758258260</span>
-            </div>
-            <p class="text-xs text-slate-400">Все 7 ответов даны. Ожидается прохождение 1-мин теста печати.</p>
-          </div>
-        `;
-      }
-    }
-
-    async function loadBusinessFunnelTab() {
-      try {
-        const [funnelData, gigsData] = await Promise.all([
-          fetchApi('/api/business-funnel'),
-          fetchApi('/api/top-gigs')
-        ]);
-        renderBusinessFunnelTab(funnelData, gigsData);
-      } catch (err) {
-        console.error('Failed to load business funnel tab:', err);
-      }
-    }
-
-    function renderBusinessFunnelTab(fData, gigs) {
-      if (!fData || !fData.stages) return;
-      const s = fData.stages;
-      const st = fData.streams || {};
-      const rev = fData.revenue || {};
-
-      // 1. Stages Grid
-      const stagesGrid = document.getElementById('bf-stages-grid');
-      if (stagesGrid) {
-        stagesGrid.innerHTML = `
-          <div class="p-3 bg-slate-950 rounded-lg border border-slate-800">
-            <span class="text-slate-400 block mb-1">1. Уникальные лиды</span>
-            <span class="text-lg font-bold text-white">${(s['1_unique_leads'] || 0).toLocaleString()}</span>
-          </div>
-          <div class="p-3 bg-slate-950 rounded-lg border border-slate-800">
-            <span class="text-slate-400 block mb-1">2a. Готовые КП/питчи</span>
-            <span class="text-lg font-bold text-brand-400">${s['2a_proposals_prepared'] || 0}</span>
-          </div>
-          <div class="p-3 bg-slate-950 rounded-lg border border-slate-800">
-            <span class="text-slate-400 block mb-1">2c. Подтвержд. отправки</span>
-            <span class="text-lg font-bold text-purple-400">${s['2c_outbounds_confirmed'] || 0}</span>
-          </div>
-          <div class="p-3 bg-slate-950 rounded-lg border border-slate-800">
-            <span class="text-slate-400 block mb-1">3. Содержат. ответы</span>
-            <span class="text-lg font-bold text-cyan-400">${s['3_substantive_replies'] || 0}</span>
-          </div>
-          <div class="p-3 bg-slate-950 rounded-lg border border-slate-800">
-            <span class="text-slate-400 block mb-1">4. Активные диалоги</span>
-            <span class="text-lg font-bold text-emerald-400">${s['4_negotiations'] || 0}</span>
-          </div>
-          <div class="p-3 bg-slate-950 rounded-lg border border-slate-800">
-            <span class="text-slate-400 block mb-1">5. Интервью</span>
-            <span class="text-lg font-bold text-amber-400">${s['5_interviews'] || 0}</span>
-          </div>
-          <div class="p-3 bg-slate-950 rounded-lg border border-slate-800">
-            <span class="text-slate-400 block mb-1">6. Сделки / Офферы</span>
-            <span class="text-lg font-bold text-blue-400">${s['7_deals_agreed'] || 0}</span>
-          </div>
-          <div class="p-3 bg-slate-950 rounded-lg border border-emerald-500/40 bg-emerald-950/20">
-            <span class="text-emerald-400 block mb-1">7. Получено денег</span>
-            <span class="text-lg font-bold text-emerald-300">${(rev.total_rub || 0).toLocaleString()} ₽</span>
-          </div>
-        `;
-      }
-
-      // 2. Streams
-      const streamsCont = document.getElementById('bf-streams-container');
-      if (streamsCont) {
-        const rLeads = (st.REMOTE_GLOBAL && st.REMOTE_GLOBAL.leads) || 0;
-        const thLeads = (st.THAILAND_LOCAL && st.THAILAND_LOCAL.leads) || 0;
-        const gLeads = (st.GIGS_FREELANCE && st.GIGS_FREELANCE.leads) || 0;
-        const total = (rLeads + thLeads + gLeads) || 1;
-
-        streamsCont.innerHTML = `
-          <div>
-            <div class="flex justify-between mb-1">
-              <span class="font-medium text-slate-300">🌐 REMOTE_GLOBAL (РФ и мир удаленка)</span>
-              <span class="text-slate-400">${rLeads.toLocaleString()} (${Math.round((rLeads / total) * 100)}%)</span>
-            </div>
-            <div class="w-full bg-slate-800 rounded-full h-2">
-              <div class="bg-indigo-500 h-2 rounded-full" style="width: ${Math.round((rLeads / total) * 100)}%"></div>
-            </div>
-          </div>
-          <div>
-            <div class="flex justify-between mb-1">
-              <span class="font-medium text-slate-300">🌴 THAILAND_LOCAL (Бангкок и Паттайя)</span>
-              <span class="text-slate-400">${thLeads.toLocaleString()} (${Math.round((thLeads / total) * 100)}%)</span>
-            </div>
-            <div class="w-full bg-slate-800 rounded-full h-2">
-              <div class="bg-amber-500 h-2 rounded-full" style="width: ${Math.round((thLeads / total) * 100)}%"></div>
-            </div>
-          </div>
-          <div>
-            <div class="flex justify-between mb-1">
-              <span class="font-medium text-slate-300">⚡ GIGS_FREELANCE (Быстрые заказы)</span>
-              <span class="text-slate-400">${gLeads.toLocaleString()} (${Math.round((gLeads / total) * 100)}%)</span>
-            </div>
-            <div class="w-full bg-slate-800 rounded-full h-2">
-              <div class="bg-emerald-500 h-2 rounded-full" style="width: ${Math.round((gLeads / total) * 100)}%"></div>
-            </div>
-          </div>
-        `;
-      }
-
-      // 3. Gigs Table
-      const gigsCont = document.getElementById('bf-gigs-table-container');
-      if (gigsCont && Array.isArray(gigs)) {
-        let rows = '';
-        gigs.forEach((g, idx) => {
-          rows += `
-            <tr class="border-b border-slate-800/60 hover:bg-slate-800/30">
-              <td class="p-3 font-mono text-xs text-slate-500">#${idx + 1}</td>
-              <td class="p-3">
-                <div class="font-bold text-slate-200 text-xs">${g.title || ''}</div>
-                <div class="text-[11px] text-slate-400 font-mono mt-0.5">${g.contact || ''}</div>
-              </td>
-              <td class="p-3 text-xs font-semibold text-emerald-400 whitespace-nowrap">${g.budget_text || 'Договорной'}</td>
-              <td class="p-3 text-xs text-slate-400 uppercase font-mono">${g.source || ''}</td>
-              <td class="p-3 text-right whitespace-nowrap">
-                <a href="${g.url || '#'}" target="_blank" class="px-2.5 py-1 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded font-medium inline-block mr-1">Открыть заказ</a>
-                <button onclick="alert(decodeURIComponent('${encodeURIComponent(g.proposal_pitch || '')}'))" class="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded font-medium inline-block">Питч</button>
-              </td>
-            </tr>
-          `;
-        });
-        gigsCont.innerHTML = `
-          <table class="w-full text-left text-sm">
-            <thead class="text-xs uppercase bg-slate-950/80 text-slate-400 font-semibold border-b border-slate-800">
-              <tr>
-                <th class="p-3">№</th>
-                <th class="p-3">Заказ / Канал</th>
-                <th class="p-3">Бюджет</th>
-                <th class="p-3">Площадка</th>
-                <th class="p-3 text-right">Действие</th>
-              </tr>
-            </thead>
-            <tbody>${rows}</tbody>
-          </table>
-        `;
-      }
+      document.getElementById(`tab-${tab}`).classList.remove('hidden');
+      document.getElementById(`tab-btn-${tab}`).className = 'min-h-[44px] px-3 sm:px-1 pb-3 border-b-2 border-brand-500 text-brand-400 flex items-center gap-2 whitespace-nowrap font-semibold';
     }
 
     // Initial load
