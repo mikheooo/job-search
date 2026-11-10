@@ -748,9 +748,16 @@ def generate_english_cover_letter(
     company: str,
     description: str = "",
     location: str = "Bangkok, Thailand",
+    is_remote: bool = False,
+    variant_id: str | None = None,
 ) -> str:
-    """Generate professional, high-impact English cover letter for Bangkok / international tech roles."""
+    """Generate professional, high-impact English cover letter for Bangkok / international tech roles.
+
+    Supports A/B variants: 'direct_focus' (default), 'enterprise_proven', 'speed_delivery'.
+    """
     desc_low = (role + " " + description).lower()
+    loc_low = (location or "").lower()
+    is_local_bkk = not is_remote and ("bangkok" in loc_low or "thailand" in loc_low or "pattaya" in loc_low)
 
     if any(k in desc_low for k in ["devops", "cloud", "kubernetes", "k8s", "docker", "ci/cd", "terraform", "aws", "gcp"]):
         focus_bullets = (
@@ -781,30 +788,86 @@ def generate_english_cover_letter(
             "• Hands-on user onboarding, clear technical documentation, and SLA compliance."
         )
 
-    letter = f"""Dear Hiring Team at {company},
+    if is_local_bkk:
+        location_paragraph = (
+            "I am already permanently based locally in Bangkok, Thailand. Because I am already here on the ground, "
+            "your team incurs zero relocation costs, no flight expenses, and zero international waiting periods. "
+            "I am immediately available for local in-person interviews in Bangkok and ready to start full-time on-site or hybrid work right away."
+        )
+        location_line = "Location: Bangkok, Thailand (Already local — zero relocation costs)"
+        meeting_sentence = "I would welcome the opportunity to meet in person in Bangkok to discuss how my experience aligns with your team's goals."
+    else:
+        location_paragraph = (
+            "I am immediately available for full-time 100% remote work (operating in UTC+7 with flexible hours to align with US / European / Asian time zones). "
+            "I bring a proven track record of autonomous remote delivery, reliable asynchronous communication, and proactive problem-solving."
+        )
+        location_line = "Location: Remote (UTC+7, flexible overlap with US / EU hours)"
+        meeting_sentence = "I would welcome the opportunity to connect via video call to discuss how my experience aligns with your team's goals."
+
+    if variant_id == "enterprise_proven":
+        intro_pitch = (
+            "With over 15 years of battle-tested enterprise experience in IT infrastructure, system reliability, and automation, "
+            "I focus on predictable system stability, strict SLA compliance, and robust technical execution."
+        )
+    elif variant_id == "speed_delivery":
+        intro_pitch = (
+            "With over 15 years of commercial IT experience, I ramp up immediately, absorb codebases and processes rapidly, "
+            "and deliver high-impact results from day one."
+        )
+    else:
+        intro_pitch = (
+            "With over 15 years of hands-on commercial experience in IT infrastructure, system administration, and technical support, "
+            "I deliver rapid results and reliable operations."
+        )
+
+    comp_name = company if company and company != "Company" else "your team"
+
+    letter = f"""Dear Hiring Team at {comp_name},
 
 I am writing to express my strong interest in the {role} position.
 
-I am already permanently based locally in Bangkok, Thailand. Because I am already here on the ground, your team incurs zero relocation costs, no flight expenses, and zero international waiting periods. I am immediately available for local in-person interviews in Bangkok and ready to start full-time on-site or hybrid work right away.
+{location_paragraph}
 
-With over 15 years of hands-on commercial experience in IT infrastructure, system administration, and technical support, I deliver rapid results and reliable operations.
+{intro_pitch}
 
 Key areas where I can deliver immediate value:
 {focus_bullets}
 
 I take pride in solving challenging technical issues rapidly, maintaining high system availability, and collaborating seamlessly with cross-functional teams in an English-speaking environment.
 
-Thank you for your time and consideration. I would welcome the opportunity to meet in person in Bangkok to discuss how my experience aligns with your team's goals.
+Thank you for your time and consideration. {meeting_sentence}
 
 Best regards,
 Mikhail Kolesnikov
-Location: Bangkok, Thailand (Already local — zero relocation costs)
+{location_line}
 Phone / WhatsApp: +7 (993) 339-76-28
 Telegram: @brokeassh
 Email: mikhailthaiban@gmail.com
 GitHub: https://github.com/mikheooo
 """
     return letter.strip()
+
+
+def generate_english_cover_letter_with_variant(
+    role: str,
+    company: str,
+    description: str = "",
+    location: str = "Bangkok, Thailand",
+    is_remote: bool = False,
+    lead_id: str | None = None,
+    variant_id: str | None = None,
+) -> tuple[str, str]:
+    """Generate English cover letter and return tuple of (letter_text, variant_id)."""
+    chosen = variant_id or select_cover_letter_variant(lead_id)
+    letter = generate_english_cover_letter(
+        role=role,
+        company=company,
+        description=description,
+        location=location,
+        is_remote=is_remote,
+        variant_id=chosen,
+    )
+    return letter, chosen
 
 
 def strip_repeated_greeting(text: str) -> str:

@@ -272,6 +272,22 @@ def test_ab_testing_and_variant_tracking(tmp_path):
     assert chosen_var in COVER_LETTER_VARIANTS
     assert len(cand_letter) > 100
 
+    # 1b. English Cover Letter Variants (Remote vs Bangkok)
+    from ai_assistant.smart_experience_generator import (
+        generate_english_cover_letter,
+        generate_english_cover_letter_with_variant,
+    )
+    en_bkk, var_bkk = generate_english_cover_letter_with_variant("DevOps Engineer", "Agoda", location="Bangkok, Thailand", variant_id="enterprise_proven")
+    assert var_bkk == "enterprise_proven"
+    assert "Bangkok, Thailand" in en_bkk
+    assert "zero relocation costs" in en_bkk
+    assert "15 years" in en_bkk
+
+    en_rem, var_rem = generate_english_cover_letter_with_variant("Python Engineer", "Acme", is_remote=True, variant_id="speed_delivery")
+    assert var_rem == "speed_delivery"
+    assert "100% remote work" in en_rem
+    assert "15 years" in en_rem
+
     # 2. Verify Gig Pitch Variants (RU and EN)
     assert len(GIG_PITCH_VARIANTS) == 3
     for lang in ("ru", "en"):
