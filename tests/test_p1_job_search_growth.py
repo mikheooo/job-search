@@ -185,7 +185,7 @@ def test_business_funnel_and_revenue_tracking(tmp_path):
                ('bkk:1', 'bangkok_careers', '1', 'DevOps', 'http://agoda.com/1', 'Bangkok')
     """)
     conn.execute("CREATE TABLE IF NOT EXISTS gigs (id TEXT PRIMARY KEY, source TEXT)")
-    conn.execute("INSERT OR REPLACE INTO gigs VALUES ('kwork:1', 'kwork')")
+    conn.execute("INSERT OR REPLACE INTO gigs (id, source, source_id, title) VALUES ('kwork:1', 'kwork', '1', 'Gig Title')")
     conn.commit()
     conn.close()
 

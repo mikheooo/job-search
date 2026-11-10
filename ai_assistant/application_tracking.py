@@ -6,7 +6,7 @@ from enum import Enum
 
 from pydantic import BaseModel
 
-from .db import get_connection, init_db
+from .db import db_session, get_connection, init_db
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,66 @@ class ApplicationStatus(str, Enum):
     INTERVIEW = "INTERVIEW"
     OFFER = "OFFER"
     WITHDRAWN = "WITHDRAWN"
+
+# Single source of truth mappings
+STATUS_TO_VACANCY_STATE: dict[ApplicationStatus, str] = {
+    ApplicationStatus.DISCOVERED: "DISCOVERED",
+    ApplicationStatus.ANALYZED: "ANALYZED",
+    ApplicationStatus.READY_TO_APPLY: "READY_TO_APPLY",
+    ApplicationStatus.SUBMITTED: "APPLIED",
+    ApplicationStatus.VERIFIED: "APPLIED",
+    ApplicationStatus.APPLIED: "APPLIED",
+    ApplicationStatus.INTERVIEW: "APPLIED",
+    ApplicationStatus.OFFER: "APPLIED",
+    ApplicationStatus.REJECTED: "REJECTED",
+    ApplicationStatus.WITHDRAWN: "ARCHIVED",
+    ApplicationStatus.ANALYSIS_FAILED: "ANALYSIS_FAILED",
+}
+
+STATUS_TO_HH_STATE: dict[ApplicationStatus, str] = {
+    ApplicationStatus.READY_TO_APPLY: "READY_TO_SUBMIT",
+    ApplicationStatus.SUBMITTED: "SUBMITTED",
+    ApplicationStatus.VERIFIED: "SUBMITTED",
+    ApplicationStatus.APPLIED: "SUBMITTED",
+    ApplicationStatus.REJECTED: "REJECTED",
+}
+
+
+def sync_vacancy_lifecycle(conn, vacancy_stable_id: str, new_status: ApplicationStatus | str) -> None:
+    """Propagate application_tracking status to vacancies.state and hh_applications.state."""
+    if isinstance(new_status, str):
+        try:
+            new_status = ApplicationStatus(new_status)
+        except ValueError:
+            return
+    vac_state = STATUS_TO_VACANCY_STATE.get(new_status)
+    if vac_state:
+        conn.execute(
+            "UPDATE vacancies SET state = ? WHERE stable_id = ?",
+            (vac_state, vacancy_stable_id),
+        )
+    hh_state = STATUS_TO_HH_STATE.get(new_status)
+    if hh_state:
+        conn.execute(
+            "UPDATE hh_applications SET state = ? WHERE vacancy_stable_id = ?",
+            (hh_state, vacancy_stable_id),
+        )
+
+
+_sync_vacancy_lifecycle = sync_vacancy_lifecycle
+
+
+def sync_all_vacancy_states_from_tracking() -> int:
+    """Synchronize all vacancies.state and hh_applications.state from application_tracking."""
+    init_db()
+    synced = 0
+    with db_session(commit=True) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT vacancy_stable_id, status FROM application_tracking")
+        for sid, status_val in cur.fetchall():
+            _sync_vacancy_lifecycle(conn, sid, status_val)
+            synced += 1
+    return synced
 
 # Allowed transitions per spec
 _ALLOWED: dict[ApplicationStatus, list[ApplicationStatus]] = {
@@ -113,13 +173,12 @@ def _row_to_record(row: tuple) -> ApplicationRecord:
 
 def get_application_status(vacancy_stable_id: str) -> ApplicationRecord | None:
     init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT vacancy_stable_id, status, company, title, source, vacancy_url, match_score, deep_score, created_at, updated_at, applied_at, last_status_change_at, notes FROM application_tracking WHERE vacancy_stable_id=?", (vacancy_stable_id,))
-    row = cur.fetchone()
-    conn.close()
-    if row:
-        return _row_to_record(row)
+    with db_session(commit=False) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT vacancy_stable_id, status, company, title, source, vacancy_url, match_score, deep_score, created_at, updated_at, applied_at, last_status_change_at, notes FROM application_tracking WHERE vacancy_stable_id=?", (vacancy_stable_id,))
+        row = cur.fetchone()
+        if row:
+            return _row_to_record(row)
     return None
 
 def set_application_status(
@@ -140,75 +199,66 @@ def set_application_status(
     init_db()
     now = _now_iso()
     existing = get_application_status(vacancy_stable_id)
-    conn = get_connection()
-    cur = conn.cursor()
-    if existing:
-        # update, keep created_at, update updated_at and maybe other fields if provided
-        cur.execute(
-            """UPDATE application_tracking SET status=?, company=COALESCE(?, company), title=COALESCE(?, title), source=COALESCE(?, source), vacancy_url=COALESCE(?, vacancy_url),
-               match_score=COALESCE(?, match_score), deep_score=COALESCE(?, deep_score), updated_at=?, last_status_change_at=?, notes=COALESCE(?, notes)
-               WHERE vacancy_stable_id=?""",
-            (
-                status.value,
-                company,
-                title,
-                source,
-                vacancy_url,
-                match_score,
-                deep_score,
-                now,
-                now,
-                notes,
-                vacancy_stable_id,
-            ),
-        )
-        # if moving to APPLIED, set applied_at if not set
-        if status == ApplicationStatus.APPLIED:
-            cur.execute("UPDATE application_tracking SET applied_at=COALESCE(applied_at, ?) WHERE vacancy_stable_id=?", (now, vacancy_stable_id))
-        conn.commit()
-        conn.close()
-        if status == ApplicationStatus.APPLIED:
+    with db_session(commit=True) as conn:
+        cur = conn.cursor()
+        if existing:
+            # update, keep created_at, update updated_at and maybe other fields if provided
+            cur.execute(
+                """UPDATE application_tracking SET status=?, company=COALESCE(?, company), title=COALESCE(?, title), source=COALESCE(?, source), vacancy_url=COALESCE(?, vacancy_url),
+                   match_score=COALESCE(?, match_score), deep_score=COALESCE(?, deep_score), updated_at=?, last_status_change_at=?, notes=COALESCE(?, notes)
+                   WHERE vacancy_stable_id=?""",
+                (
+                    status.value,
+                    company,
+                    title,
+                    source,
+                    vacancy_url,
+                    match_score,
+                    deep_score,
+                    now,
+                    now,
+                    notes,
+                    vacancy_stable_id,
+                ),
+            )
+            # if moving to APPLIED, set applied_at if not set
+            if status == ApplicationStatus.APPLIED:
+                cur.execute("UPDATE application_tracking SET applied_at=COALESCE(applied_at, ?) WHERE vacancy_stable_id=?", (now, vacancy_stable_id))
+        else:
+            # create
+            applied_at = now if status == ApplicationStatus.APPLIED else None
+            cur.execute(
+                """INSERT INTO application_tracking (vacancy_stable_id, status, company, title, source, vacancy_url, match_score, deep_score, created_at, updated_at, applied_at, last_status_change_at, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    vacancy_stable_id,
+                    status.value,
+                    company,
+                    title,
+                    source,
+                    vacancy_url,
+                    match_score,
+                    deep_score,
+                    now,
+                    now,
+                    applied_at,
+                    now,
+                    notes,
+                ),
+            )
+            cur.execute(
+                "INSERT INTO application_status_history (vacancy_stable_id, old_status, new_status, changed_at, note) VALUES (?, ?, ?, ?, ?)",
+                (vacancy_stable_id, None, status.value, now, notes),
+            )
+        _sync_vacancy_lifecycle(conn, vacancy_stable_id, status)
+
+    if status == ApplicationStatus.APPLIED:
+        try:
             from .application_review import complete_review
             complete_review(vacancy_stable_id, "Review consumed after tracking reached APPLIED")
-        return get_application_status(vacancy_stable_id)  # type: ignore
-    else:
-        # create
-        applied_at = now if status == ApplicationStatus.APPLIED else None
-        cur.execute(
-            """INSERT INTO application_tracking (vacancy_stable_id, status, company, title, source, vacancy_url, match_score, deep_score, created_at, updated_at, applied_at, last_status_change_at, notes)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                vacancy_stable_id,
-                status.value,
-                company,
-                title,
-                source,
-                vacancy_url,
-                match_score,
-                deep_score,
-                now,
-                now,
-                applied_at,
-                now,
-                notes,
-            ),
-        )
-        conn.commit()
-        conn.close()
-        # also create history entry for creation? transition handles history, but set should also log history if needed - we will create history via separate insert if needed
-        # For set, we also insert history if not exists? Ensure history for creation
-        conn2 = get_connection()
-        cur2 = conn2.cursor()
-        cur2.execute(
-            "INSERT INTO application_status_history (vacancy_stable_id, old_status, new_status, changed_at, note) VALUES (?, ?, ?, ?, ?)",
-            (vacancy_stable_id, None, status.value, now, notes),
-        )
-        conn2.commit()
-        conn2.close()
-        if status == ApplicationStatus.APPLIED:
-            from .application_review import complete_review
-            complete_review(vacancy_stable_id, "Review consumed after tracking reached APPLIED")
-        return get_application_status(vacancy_stable_id)  # type: ignore
+        except Exception:
+            pass
+    return get_application_status(vacancy_stable_id)  # type: ignore
 
 def transition_application(
     vacancy_stable_id: str,
@@ -237,42 +287,45 @@ def transition_application(
     if not _is_valid_transition(old_status, new_status):
         raise ValueError(f"Invalid transition {old_status.value} -> {new_status.value}")
     now = _now_iso()
-    conn = get_connection()
-    cur = conn.cursor()
-    # update tracking
-    cur.execute(
-        """UPDATE application_tracking SET status=?, updated_at=?, last_status_change_at=?, notes=COALESCE(?, notes),
-           company=COALESCE(?, company), title=COALESCE(?, title), source=COALESCE(?, source), vacancy_url=COALESCE(?, vacancy_url),
-           match_score=COALESCE(?, match_score), deep_score=COALESCE(?, deep_score)
-           WHERE vacancy_stable_id=?""",
-        (
-            new_status.value,
-            now,
-            now,
-            note,
-            company,
-            title,
-            source,
-            vacancy_url,
-            match_score,
-            deep_score,
-            vacancy_stable_id,
-        ),
-    )
+    with db_session(commit=True) as conn:
+        cur = conn.cursor()
+        # update tracking
+        cur.execute(
+            """UPDATE application_tracking SET status=?, updated_at=?, last_status_change_at=?, notes=COALESCE(?, notes),
+               company=COALESCE(?, company), title=COALESCE(?, title), source=COALESCE(?, source), vacancy_url=COALESCE(?, vacancy_url),
+               match_score=COALESCE(?, match_score), deep_score=COALESCE(?, deep_score)
+               WHERE vacancy_stable_id=?""",
+            (
+                new_status.value,
+                now,
+                now,
+                note,
+                company,
+                title,
+                source,
+                vacancy_url,
+                match_score,
+                deep_score,
+                vacancy_stable_id,
+            ),
+        )
+        if new_status == ApplicationStatus.APPLIED:
+            cur.execute("UPDATE application_tracking SET applied_at=COALESCE(applied_at, ?) WHERE vacancy_stable_id=?", (now, vacancy_stable_id))
+        if new_status == ApplicationStatus.VERIFIED:
+            cur.execute("UPDATE application_tracking SET verified_at=COALESCE(verified_at, ?) WHERE vacancy_stable_id=?", (now, vacancy_stable_id))
+        # history
+        cur.execute(
+            "INSERT INTO application_status_history (vacancy_stable_id, old_status, new_status, changed_at, note) VALUES (?, ?, ?, ?, ?)",
+            (vacancy_stable_id, old_status.value, new_status.value, now, note),
+        )
+        _sync_vacancy_lifecycle(conn, vacancy_stable_id, new_status)
+
     if new_status == ApplicationStatus.APPLIED:
-        cur.execute("UPDATE application_tracking SET applied_at=COALESCE(applied_at, ?) WHERE vacancy_stable_id=?", (now, vacancy_stable_id))
-    if new_status == ApplicationStatus.VERIFIED:
-        cur.execute("UPDATE application_tracking SET verified_at=COALESCE(verified_at, ?) WHERE vacancy_stable_id=?", (now, vacancy_stable_id))
-    # history
-    cur.execute(
-        "INSERT INTO application_status_history (vacancy_stable_id, old_status, new_status, changed_at, note) VALUES (?, ?, ?, ?, ?)",
-        (vacancy_stable_id, old_status.value, new_status.value, now, note),
-    )
-    conn.commit()
-    conn.close()
-    if new_status == ApplicationStatus.APPLIED:
-        from .application_review import complete_review
-        complete_review(vacancy_stable_id, "Review consumed after tracking reached APPLIED")
+        try:
+            from .application_review import complete_review
+            complete_review(vacancy_stable_id, "Review consumed after tracking reached APPLIED")
+        except Exception:
+            pass
     return get_application_status(vacancy_stable_id)  # type: ignore
 
 
@@ -314,38 +367,35 @@ def verify_and_apply(
 
 def list_applications(status: str | ApplicationStatus | None = None, limit: int = 100, order_by: str = "updated_at") -> list[ApplicationRecord]:
     init_db()
-    conn = get_connection()
-    cur = conn.cursor()
     allowed_order = {"updated_at", "created_at", "status", "match_score", "deep_score"}
     if order_by not in allowed_order:
         order_by = "updated_at"
-    if status:
-        if isinstance(status, ApplicationStatus):
-            status_val = status.value
+    with db_session(commit=False) as conn:
+        cur = conn.cursor()
+        if status:
+            if isinstance(status, ApplicationStatus):
+                status_val = status.value
+            else:
+                try:
+                    status_val = ApplicationStatus(str(status)).value
+                except Exception:
+                    status_val = str(status)
+            cur.execute(f"SELECT vacancy_stable_id, status, company, title, source, vacancy_url, match_score, deep_score, created_at, updated_at, applied_at, last_status_change_at, notes FROM application_tracking WHERE status=? ORDER BY {order_by} DESC LIMIT ?", (status_val, limit))
         else:
-            # try enum, fallback to string
-            try:
-                status_val = ApplicationStatus(str(status)).value
-            except Exception:
-                status_val = str(status)
-        cur.execute(f"SELECT vacancy_stable_id, status, company, title, source, vacancy_url, match_score, deep_score, created_at, updated_at, applied_at, last_status_change_at, notes FROM application_tracking WHERE status=? ORDER BY {order_by} DESC LIMIT ?", (status_val, limit))
-    else:
-        cur.execute(f"SELECT vacancy_stable_id, status, company, title, source, vacancy_url, match_score, deep_score, created_at, updated_at, applied_at, last_status_change_at, notes FROM application_tracking ORDER BY {order_by} DESC LIMIT ?", (limit,))
-    rows = cur.fetchall()
-    conn.close()
-    return [_row_to_record(r) for r in rows]
+            cur.execute(f"SELECT vacancy_stable_id, status, company, title, source, vacancy_url, match_score, deep_score, created_at, updated_at, applied_at, last_status_change_at, notes FROM application_tracking ORDER BY {order_by} DESC LIMIT ?", (limit,))
+        rows = cur.fetchall()
+        return [_row_to_record(r) for r in rows]
 
 def get_application_history(vacancy_stable_id: str) -> list[HistoryRecord]:
     init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT id, vacancy_stable_id, old_status, new_status, changed_at, note FROM application_status_history WHERE vacancy_stable_id=? ORDER BY changed_at ASC, id ASC", (vacancy_stable_id,))
-    rows = cur.fetchall()
-    conn.close()
-    res = []
-    for r in rows:
-        res.append(HistoryRecord(id=r[0], vacancy_stable_id=r[1], old_status=r[2], new_status=r[3], changed_at=r[4], note=r[5]))
-    return res
+    with db_session(commit=False) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id, vacancy_stable_id, old_status, new_status, changed_at, note FROM application_status_history WHERE vacancy_stable_id=? ORDER BY changed_at ASC, id ASC", (vacancy_stable_id,))
+        rows = cur.fetchall()
+        return [
+            HistoryRecord(id=r[0], vacancy_stable_id=r[1], old_status=r[2], new_status=r[3], changed_at=r[4], note=r[5])
+            for r in rows
+        ]
 
 def sync_application_tracking(profile_path: str | None = None) -> dict[str, int]:
     """
