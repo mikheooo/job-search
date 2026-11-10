@@ -29,8 +29,8 @@ def test_funnel_streams_partition_exhaustive(tmp_path):
             ('vac:4', 'tg_forpython', '4', 'Python Gig', 'http://t.me/4', NULL)
     """)
     conn.execute("""
-        INSERT INTO gigs (id, source, title, url)
-        VALUES ('gig:1', 'kwork', 'Telegram Bot', 'http://kwork.ru/1')
+        INSERT INTO gigs (id, source, source_id, title, url)
+        VALUES ('gig:1', 'kwork', '1', 'Telegram Bot', 'http://kwork.ru/1')
     """)
     conn.commit()
     conn.close()

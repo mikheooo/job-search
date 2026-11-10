@@ -108,6 +108,28 @@ def get_funnel_metrics() -> dict[str, Any]:
         else:
             unknown_rejected += 1
 
+    # Reconcile employer feedback with hh_message_events and tracking outcomes
+    msg_invites = 0
+    msg_rejections = 0
+    try:
+        cursor.execute(
+            "SELECT COUNT(DISTINCT conversation_id) FROM hh_message_events "
+            "WHERE sender = 'employer' AND classification IN ("
+            "'NEEDS_REPLY', 'INTERVIEW_INVITATION', 'RECRUITER_QUESTION', 'TEST_TASK', 'EXTERNAL_QUESTIONNAIRE')"
+        )
+        msg_invites = cursor.fetchone()[0] or 0
+        cursor.execute(
+            "SELECT COUNT(DISTINCT conversation_id) FROM hh_message_events "
+            "WHERE sender = 'employer' AND classification = 'REJECTION'"
+        )
+        msg_rejections = cursor.fetchone()[0] or 0
+    except Exception:
+        pass
+
+    invites = max(invites, track_states.get("INTERVIEW", 0) + track_states.get("OFFER", 0), msg_invites)
+    rejections = max(rejections, employer_rejected, msg_rejections)
+    pending = max(0, total_applied - invites - rejections)
+
     conn.close()
 
     # Calculate conversion percentages

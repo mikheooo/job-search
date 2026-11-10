@@ -1,14 +1,30 @@
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from datetime import datetime
 from enum import Enum
 
 from pydantic import BaseModel
 
-from .db import db_session, get_connection, init_db
+from .db import get_connection, init_db
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def db_session(commit: bool = True):
+    """Managed SQLite session honoring module-level get_connection overrides."""
+    conn = get_connection()
+    try:
+        yield conn
+        if commit:
+            conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 # Keep consistent with spec order
