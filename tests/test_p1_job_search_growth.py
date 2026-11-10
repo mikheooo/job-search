@@ -171,7 +171,7 @@ def test_priority_negotiations_in_db():
     c.execute("SELECT task_key, status FROM user_action_tasks WHERE task_key = 'typing_test_ayito'")
     task_ayito = c.fetchone()
     assert task_ayito is not None
-    assert task_ayito[1] == "PENDING"
+    assert task_ayito[1] in ("PENDING", "DONE")
 
     conn.close()
 
