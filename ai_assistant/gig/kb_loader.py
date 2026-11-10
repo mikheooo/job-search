@@ -194,19 +194,28 @@ _DOMAIN_TEMPLATES: dict[str, dict[str, str]] = {
 }
 
 _DOMAIN_MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("telegram", ("бот", "telegram", "телеграм", "tg", "aiogram")),
-    ("scraping", ("парс", "scraping", "сбор данн", "выгруз", "парсер")),
-    ("crm", ("битрикс", "bitrix", "amocrm", "crm", "амо")),
-    ("n8n", ("n8n", "make.com", "zapier", "albato", "автоматизац", "webhook")),
-    ("devops", ("сервер", "vps", "vds", "linux", "vpn", "wireguard", "docker", "деплой", "nginx", "debian", "ubuntu")),
-    ("ai", ("ai", "llm", "rag", "gpt", "whisper", "gemini", "нейросеть", "агент")),
+    ("telegram", ("телеграм", "telegram", "aiogram", "telethon", "mtproto", "чат-бот", "чатбот", "тг-бот")),
+    ("scraping", ("парс", "scraping", "scraper", "сбор данн", "выгруз", "парсер", "playwright", "beautifulsoup")),
+    ("crm", ("битрикс", "bitrix", "amocrm", "crm", "амоцрм", "amo crm")),
+    ("n8n", ("n8n", "make.com", "zapier", "albato", "автоматизац", "webhook", "вебхук")),
+    ("devops", ("сервер", "vps", "vds", "linux", "vpn", "wireguard", "docker", "деплой", "nginx", "debian", "ubuntu", "бэкап", "backup", "хостинг", "бегет", "beget")),
+    ("ai", ("llm", "rag", "gpt", "whisper", "gemini", "openai", "нейросеть", "нейросети", "ии-агент", "ai-агент")),
 )
+
+import re as _re
+
+_BOT_WORD_RE = _re.compile(r"(?:^|[^а-яёa-z0-9])(?:бот(?:а|у|ом|е|ы|ов|ам|ами|ах)?|bot|tg)(?:$|[^а-яёa-z0-9])", _re.IGNORECASE)
+_AI_WORD_RE = _re.compile(r"(?:^|[^а-яёa-z0-9])(?:ai|ии)(?:$|[^а-яёa-z0-9])", _re.IGNORECASE)
 
 
 def _detect_domain(combined: str) -> str:
     for domain, keywords in _DOMAIN_MATCHERS:
         if any(k in combined for k in keywords):
             return domain
+        if domain == "telegram" and _BOT_WORD_RE.search(combined):
+            return "telegram"
+        if domain == "ai" and _AI_WORD_RE.search(combined):
+            return "ai"
     return "general"
 
 
@@ -218,9 +227,8 @@ def get_confirmed_pitch_focus(
 ) -> str:
     """Return tailored pitch focus built from confirmed candidate_kb.json facts.
 
-    ``language`` selects the framing sentence only ("ru" default keeps the
-    previous behaviour byte-for-byte); the proof facts are always the confirmed
-    English KB values, so nothing is invented in either language.
+    ``language`` selects the framing sentence and localized proof summary; when
+    ``language == 'en'`` the raw English KB bullet is preferred directly.
     """
     combined = f"{title} {description}".lower()
     domain = _detect_domain(combined)
@@ -228,7 +236,7 @@ def get_confirmed_pitch_focus(
 
     proof = tmpl["proof_en" if language == "en" else "proof_ru"]
     bullets: list[str] = []
-    if tmpl["query"]:
+    if tmpl["query"] and language == "en":
         facts = find_matching_kb_facts(tmpl["query"], limit=2, kb_path=kb_path)
         bullets = [f["value"] for f in facts if f["kind"] in ("duty", "project_bullet")]
     if bullets:

@@ -47,10 +47,13 @@ def generate_gig_pitch(
         from ai_assistant.gig.order_language import resolve_order_language
         language = resolve_order_language(title, description, source)
 
+    clean_title = re.sub(r"^[^\wА-Яа-яЁё]+", "", str(title or "")).strip()
+    clean_title = re.sub(r"\s+", " ", clean_title) or str(title or "").strip()
+
     try:
         from ai_assistant.gig.kb_loader import get_confirmed_pitch_focus
         focus = get_confirmed_pitch_focus(
-            title=title, description=description, language=language
+            title=clean_title, description=description, language=language
         )
     except Exception:
         if language == "en":
@@ -76,21 +79,21 @@ def generate_gig_pitch(
         budget_note = f" (budget guide: {budget})" if budget else ""
         if variant_id == "enterprise_proven":
             pitch = (
-                f'Hello! I can take on your project "{title}"{budget_note} with high reliability and clean delivery.\n\n'
+                f'Hello! I can take on your project "{clean_title}"{budget_note} with high reliability and clean delivery.\n\n'
                 f"{focus}\n\n"
                 f"Milestone-based delivery, transparent communication, payment on completion / escrow.\n\n"
                 f"{contact_block}"
             )
         elif variant_id == "speed_delivery":
             pitch = (
-                f'Hello! I can start on your task "{title}"{budget_note} right away today.\n\n'
+                f'Hello! I can start on your task "{clean_title}"{budget_note} right away today.\n\n'
                 f"{focus}\n\n"
                 f"Fast turnaround, direct execution, payment upon delivery / escrow.\n\n"
                 f"{contact_block}"
             )
         else:
             pitch = (
-                f'Hello! I can take on your task "{title}"{budget_note} promptly and reliably.\n\n'
+                f'Hello! I can take on your task "{clean_title}"{budget_note} promptly and reliably.\n\n'
                 f"{focus}\n\n"
                 f"I can start today. Payment on delivery / secure escrow.\n\n"
                 f"{contact_block}"
@@ -99,7 +102,7 @@ def generate_gig_pitch(
         budget_note = f" (ориентир по бюджету: {budget})" if budget else ""
         if variant_id == "enterprise_proven":
             pitch = (
-                f"Здравствуйте! Готов взять на себя задачу «{title}»{budget_note} с упором на надежность и качество.\n\n"
+                f"Здравствуйте! Готов взять на себя задачу «{clean_title}»{budget_note} с упором на надежность и качество.\n\n"
                 f"{focus}\n\n"
                 f"Поэтапная сдача, прозрачная коммуникация, оплата по факту / безопасная сделка.\n\n"
                 f"Для связи:\n"
@@ -109,7 +112,7 @@ def generate_gig_pitch(
             )
         elif variant_id == "speed_delivery":
             pitch = (
-                f"Здравствуйте! Готов приступить к задаче «{title}»{budget_note} прямо сегодня.\n\n"
+                f"Здравствуйте! Готов приступить к задаче «{clean_title}»{budget_note} прямо сегодня.\n\n"
                 f"{focus}\n\n"
                 f"Быстрый старт, минимальные сроки реализации, оплата по результату.\n\n"
                 f"Для связи:\n"
@@ -119,7 +122,7 @@ def generate_gig_pitch(
             )
         else:
             pitch = (
-                f"Здравствуйте! Готов оперативно и качественно закрыть вашу задачу «{title}»{budget_note}.\n\n"
+                f"Здравствуйте! Готов оперативно и качественно закрыть вашу задачу «{clean_title}»{budget_note}.\n\n"
                 f"{focus}\n\n"
                 f"Готов приступить сегодня. Оплата по факту выполнения / безопасная сделка.\n\n"
                 f"Для связи:\n"

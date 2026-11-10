@@ -301,11 +301,22 @@ def synthesize_contextual_chat_reply_with_llm(
 
 
 def synthesize_experience_cases(role: str, description: str = "") -> tuple[list[str], str]:
-    """Dynamically synthesize relevant experience bullets and a core strength pitch based on stack."""
+    """Dynamically synthesize relevant experience bullets and a core strength pitch based on stack.
+
+    Prioritizes domains matched in the vacancy role title first before falling back to description keywords.
+    """
+    role_low = (role or "").lower()
     combined = (role + " " + description).lower()
     matched_cases: list[str] = []
     matched_strengths: list[str] = []
 
+    # Pass 1: match primary domain from role title
+    for domain in DOMAIN_EXPERIENCE_PATTERNS:
+        if any(kw in role_low for kw in domain["keywords"]):
+            matched_cases.extend(domain["cases"][:2])
+            matched_strengths.append(domain["strengths"])
+
+    # Pass 2: enrich from full description
     for domain in DOMAIN_EXPERIENCE_PATTERNS:
         if any(kw in combined for kw in domain["keywords"]):
             matched_cases.extend(domain["cases"][:2])
@@ -319,6 +330,16 @@ def synthesize_experience_cases(role: str, description: str = "") -> tuple[list[
         strength = matched_strengths[0] if matched_strengths else "высокая ответственность и ориентация на результат"
 
     return matched_cases, strength
+
+
+def _format_company_target(company: str) -> str:
+    """Format company phrase so FIO / ИП names read grammatically in Russian."""
+    comp = (company or "").strip()
+    if not comp or comp == "Компания":
+        return "в вашу команду"
+    if comp.upper().startswith("ИП ") or re.match(r"^[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+$", comp):
+        return f"в команду ({comp})"
+    return f"в {comp}"
 
 
 COVER_LETTER_VARIANTS = ["direct_focus", "enterprise_proven", "speed_delivery"]
@@ -348,12 +369,12 @@ def generate_tailored_cover_letter(
     cases_block = "\n".join(f"• {c};" for c in cases)
     tech_note = f" (включая практический опыт работы с {', '.join(techs[:5])})" if techs else ""
 
-    comp_name = company if company and company != "Компания" else "вашу команду"
+    comp_target = _format_company_target(company)
 
     if variant_id == "enterprise_proven":
         letter = f"""Здравствуйте!
 
-Откликаюсь на позицию «{role}» в {comp_name}.
+Откликаюсь на позицию «{role}» {comp_target}.
 
 Мой профиль и 15+ лет практического enterprise-опыта в IT-инфраструктуре и автоматизации полностью закрывают задачи позиции:
 {cases_block}
@@ -375,7 +396,7 @@ def generate_tailored_cover_letter(
     if variant_id == "speed_delivery":
         letter = f"""Здравствуйте!
 
-Меня заинтересовала вакансия «{role}» в {comp_name}.
+Меня заинтересовала вакансия «{role}» {comp_target}.
 
 Готов быстро включиться в проект и закрывать задачи спринта с первых дней:
 {cases_block}
@@ -396,7 +417,7 @@ def generate_tailored_cover_letter(
 
     letter = f"""Здравствуйте!
 
-Меня заинтересовала вакансия «{role}» в {comp_name}. 
+Меня заинтересовала вакансия «{role}» {comp_target}. 
 
 Мой профиль и опыт решения профильных задач точно соответствуют вашим требованиям:
 {cases_block}
@@ -408,7 +429,7 @@ def generate_tailored_cover_letter(
 
 Готовность и условия:
 • Формат: 100% удаленная работа (РФ, часовой пояс UTC+7 / МСК+4, полностью готов к графику по Москве: 09:00–18:00 МСК, оформление по ТК РФ, ИП или Самозанятости).
-• Готов приступить к задачам в кратчайшие сроки и выполнить оплачиваемое тестовое задание или пройти техническое интервью.
+• Готов приступить к задачам в кратчайшие сроки, пройти техническое интервью и при необходимости выполнить профильное тестовое задание.
 
 Буду рад подробно обсудить проект и задачи на встрече!
 
