@@ -34,6 +34,12 @@ def global_test_isolation(monkeypatch, tmp_path):
     monkeypatch.setenv("VACANCIES_FILE", str(vacancies_file))
     monkeypatch.setenv("LOGS_DIR", str(logs_dir))
 
+    # Isolate SUBMIT_ALLOWED so tests do not inherit a disabled kill-switch from .env
+    monkeypatch.setattr(config, "_OPERATOR_SUBMIT_ALLOWED", None)
+    monkeypatch.setattr(config, "SUBMIT_ALLOWED", True)
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
+    monkeypatch.setenv("JOB_FETCHER_NO_REEXEC", "1")
+
     def blocked_urlopen(req, *args, **kwargs):
         url = req.full_url if hasattr(req, "full_url") else str(req)
         raise RuntimeError(

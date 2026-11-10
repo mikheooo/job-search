@@ -150,7 +150,10 @@ def bump_hh_resumes(session: HeadlessBrowserSession | None = None) -> dict[str, 
         return {"status": "ERROR", "error": str(e), "bumped": 0, "resumes": []}
     finally:
         if close_when_done:
-            session.stop()
+            if getattr(session, "started", False):
+                session.stop()
+            else:
+                session.close_all_owned_tabs()
 
 
 if __name__ == "__main__":

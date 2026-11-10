@@ -5,7 +5,9 @@ RootDir = fso.GetParentFolderName(WScript.ScriptFullName)
 Set WshEnv = WshShell.Environment("PROCESS")
 WshEnv("PYTHONPATH") = RootDir & "\.venv\Lib\site-packages;" & RootDir
 
-pythonPath = "C:\Users\Misha\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\pythonw.exe"
+pythonwPath = "C:\Users\Misha\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\pythonw.exe"
+scriptPath = RootDir & "\scripts\launch_dashboard.py"
 
 WshShell.CurrentDirectory = RootDir
-WshShell.Run """" & pythonPath & """ -m ai_assistant.cli ui --host 0.0.0.0 --port 8000", 0, False
+rc = WshShell.Run("""" & pythonwPath & """ """ & scriptPath & """", 0, False)
+WScript.Quit(rc)

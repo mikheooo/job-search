@@ -56,7 +56,7 @@ def generate_gig_pitch(
     contact_block = (
         "Contact:\n"
         "Telegram: @brokeassh\n"
-        "Phone / WhatsApp: +7 (993) 339-76-28\n"
+        "Email: mikhailthaiban@gmail.com\n"
         "Portfolio: https://github.com/mikheooo"
     )
 
@@ -76,7 +76,7 @@ def generate_gig_pitch(
             f"Готов приступить сегодня. Оплата по факту выполнения / безопасная сделка.\n\n"
             f"Для связи:\n"
             f"Telegram: @brokeassh\n"
-            f"Телефон / WhatsApp: +7 (993) 339-76-28\n"
+            f"Email: mikhailthaiban@gmail.com\n"
             f"Портфолио: https://github.com/mikheooo"
         )
     return pitch.strip()

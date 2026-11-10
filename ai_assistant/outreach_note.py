@@ -1,7 +1,10 @@
 import json
 import logging
 
-import config
+try:
+    from ai_assistant import config
+except ImportError:
+    import config
 from openai import OpenAI
 from pydantic import BaseModel, Field
 

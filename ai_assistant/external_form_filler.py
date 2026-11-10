@@ -18,6 +18,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Callable
 
+from ai_assistant.hh_browser_launcher import _NO_PROXY_OPENER
 from ai_assistant.hh_browser_provider import _ws_call
 
 logger = logging.getLogger("external_form_filler")
@@ -424,7 +425,7 @@ def try_auto_fill_external_form(
     tab_id = None
     try:
         req = urllib.request.Request(f"{base_cdp}/json/new?{form_url}", method="PUT")
-        with urllib.request.urlopen(req, timeout=10.0) as resp:
+        with _NO_PROXY_OPENER.open(req, timeout=10.0) as resp:
             tab_info = json.loads(resp.read().decode("utf-8"))
         tab_id = tab_info["id"]
         ws_url = tab_info["webSocketDebuggerUrl"]
@@ -479,7 +480,7 @@ def try_auto_fill_external_form(
         # Always clean up opened tab
         if tab_id:
             try:
-                urllib.request.urlopen(f"{base_cdp}/json/close/{tab_id}", timeout=5.0)
+                _NO_PROXY_OPENER.open(f"{base_cdp}/json/close/{tab_id}", timeout=5.0)
             except Exception:
                 pass
 

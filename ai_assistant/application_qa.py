@@ -411,7 +411,11 @@ class QuestionAnswerGenerator:
                             company=comp_name,
                             vacancy=vac_title,
                         )
-                    except Exception:
+                    except Exception as exc:
+                        logger.warning(
+                            "autonomous profile answer generation failed (%s)",
+                            type(exc).__name__,
+                        )
                         val = None
                     if not val:
                         val = "Имею профильный опыт и готов подтвердить факты на интервью"
@@ -481,8 +485,11 @@ class QuestionAnswerGenerator:
                         )
                         if opt_ans and opt_ans in question.options:
                             resolved = opt_ans
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning(
+                            "autonomous option answer generation failed (%s)",
+                            type(exc).__name__,
+                        )
                     if resolved is None:
                         pos_opts = [
                             o for o in question.options
@@ -609,8 +616,11 @@ class QuestionAnswerGenerator:
                         requires_review=False,
                         reason="Synthesized from candidate knowledge base and LLM",
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "autonomous free-text answer generation failed (%s)",
+                    type(exc).__name__,
+                )
 
         if self.llm is not None:
             try:

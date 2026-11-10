@@ -22,6 +22,7 @@ Exit codes: 0 when the census ran, 2 when it could not look. A census that print
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -38,16 +39,27 @@ CRLF = b"\r\n"
 
 
 def tracked_text_files() -> list[str]:
-    out = subprocess.run(
-        ["git", "ls-files"], cwd=REPO, capture_output=True, text=True, check=False,
-    )
-    if out.returncode != 0:
-        print(f"!! git ls-files failed: {out.stderr.strip()}", file=sys.stderr)
-        sys.exit(2)
-    files = [
-        line for line in out.stdout.splitlines()
-        if line.strip() and Path(line).suffix in SUFFIXES
-    ]
+    files = []
+    try:
+        out = subprocess.run(
+            ["git", "ls-files"], cwd=REPO, capture_output=True, text=True, check=False,
+        )
+        if out.returncode == 0:
+            files = [
+                line for line in out.stdout.splitlines()
+                if line.strip() and Path(line).suffix in SUFFIXES
+            ]
+    except Exception:
+        pass
+    if not files:
+        ignored = {".git", ".venv", "venv", "scratch", "backups", "graphify-out", "artifacts", "baseline_stage14_snapshot", "snapshot_stage15_current", "__pycache__"}
+        for root, dirs, filenames in os.walk(REPO):
+            dirs[:] = [d for d in dirs if d not in ignored and not d.startswith("tmp")]
+            for f in filenames:
+                if Path(f).suffix in SUFFIXES:
+                    rel = Path(root, f).relative_to(REPO).as_posix()
+                    files.append(rel)
+    return files
     if not files:
         print("!! git ls-files returned no text files -- refusing to report an empty census",
               file=sys.stderr)

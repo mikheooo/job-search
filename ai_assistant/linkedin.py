@@ -1,7 +1,10 @@
 import logging
 import time
 
-import config
+try:
+    from ai_assistant import config
+except ImportError:
+    import config
 import requests
 
 logger = logging.getLogger(__name__)

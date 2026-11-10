@@ -631,7 +631,11 @@ def scan_kwork_inbox_via_cdp(
         try:
             eval_nav = make_target_evaluate(cdp_url, kwork_tab["id"])
             eval_nav("window.location.href = 'https://kwork.ru/inbox'")
-            time.sleep(2.5)
+            for _ in range(16):
+                time.sleep(0.5)
+                st = eval_nav("document.readyState")
+                if st in ("complete", "interactive"):
+                    break
         except Exception as exc:
             logger.debug("Could not refresh the open Kwork inbox tab: %s", type(exc).__name__)
     else:
@@ -641,7 +645,11 @@ def scan_kwork_inbox_via_cdp(
             try:
                 eval_nav = make_target_evaluate(cdp_url, kwork_tab["id"])
                 eval_nav("window.location.href = 'https://kwork.ru/inbox'")
-                time.sleep(2.5)
+                for _ in range(16):
+                    time.sleep(0.5)
+                    st = eval_nav("document.readyState")
+                    if st in ("complete", "interactive"):
+                        break
             except Exception as exc:
                 logger.debug("Could not navigate an existing Kwork tab: %s", type(exc).__name__)
         else:

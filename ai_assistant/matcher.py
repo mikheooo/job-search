@@ -142,6 +142,7 @@ class MatchResult:
         preference_adjustment: float = 0.0,
         ranking_score: int | None = None,
         preference_reasons: list[str] | None = None,
+        search_stream: str = "REMOTE_GLOBAL",
     ) -> None:
         self.score = int(score)
         self.decision = str(decision)
@@ -156,6 +157,7 @@ class MatchResult:
         self.preference_adjustment = float(preference_adjustment)
         self.ranking_score = ranking_score if ranking_score is not None else int(max(0, min(100, round(self.score + self.preference_adjustment))))
         self.preference_reasons = preference_reasons or []
+        self.search_stream = search_stream
 
     def to_dict(self) -> dict[str, Any]:
         d = {
@@ -169,6 +171,7 @@ class MatchResult:
             "strengths": self.strengths,
             "gaps": self.gaps,
             "dimensions": self.dimensions,
+            "search_stream": self.search_stream,
         }
         if self.preference_adjustment != 0.0 or self.preference_reasons:
             d["preference_adjustment"] = self.preference_adjustment
@@ -683,18 +686,43 @@ def evaluate_hard_requirements(
         if re.search(cp, text):
             return HardRequirementStatus.INELIGIBLE, ["Mandatory security clearance / US citizenship required"]
 
+    # P1: Search Streams (REMOTE_GLOBAL, THAILAND_LOCAL, GIGS_FREELANCE)
+    from .shortlist_selection import SearchStream, resolve_search_stream
+    stream = resolve_search_stream(vacancy)
+
+    # 5.1 Legal & Employment restrictions for THAILAND_LOCAL
+    if stream == SearchStream.THAILAND_LOCAL:
+        thai_only_patterns = [
+            r"\b(?:thai\s+(?:nationals?|nationality|citizens?)\s+only|only\s+thai\s+(?:nationals?|citizens?)|thai\s+(?:nationals?|nationality|citizenship)\s+(?:required|mandatory))\b",
+            r"เฉพาะสัญชาติไทย",
+            r"สงวนสิทธิ์เฉพาะคนไทย",
+        ]
+        for top in thai_only_patterns:
+            if re.search(top, text, re.IGNORECASE):
+                return HardRequirementStatus.INELIGIBLE, [
+                    "THAILAND_LOCAL stream: employer requires Thai citizenship only; legal employment not possible without citizenship"
+                ]
+
     # 6. Remote requirement constraint
     if profile_dict.get("remote_required", False):
-        is_rem, rem_reason = is_strictly_remote(vacancy)
-        if not is_rem:
-            return HardRequirementStatus.INELIGIBLE, [f"Remote required but vacancy is not remote: {rem_reason}"]
+        if stream == SearchStream.THAILAND_LOCAL:
+            # Candidate physically resides in Thailand (Bangkok / Pattaya).
+            # On-site, hybrid, and remote positions in Thailand are acceptable.
+            pass
+        elif stream == SearchStream.GIGS_FREELANCE:
+            # Gigs and freelance orders are project-based and location-flexible.
+            pass
+        else:
+            is_rem, rem_reason = is_strictly_remote(vacancy)
+            if not is_rem:
+                return HardRequirementStatus.INELIGIBLE, [f"Remote required but vacancy is not remote: {rem_reason}"]
 
-        # Multi-dimensional Remote Eligibility Gate
-        from .eligibility import EligibilityStatus, assess_vacancy_eligibility
-        cand_country = profile_dict.get("candidate_country") or "TH"
-        assessment = assess_vacancy_eligibility(vacancy, candidate_country=cand_country)
-        if assessment.eligibility == EligibilityStatus.INELIGIBLE:
-            return HardRequirementStatus.INELIGIBLE, [f"Ineligible remote vacancy: {'; '.join(assessment.eligibility_reasons)}"]
+            # Multi-dimensional Remote Eligibility Gate
+            from .eligibility import EligibilityStatus, assess_vacancy_eligibility
+            cand_country = profile_dict.get("candidate_country") or "TH"
+            assessment = assess_vacancy_eligibility(vacancy, candidate_country=cand_country)
+            if assessment.eligibility == EligibilityStatus.INELIGIBLE:
+                return HardRequirementStatus.INELIGIBLE, [f"Ineligible remote vacancy: {'; '.join(assessment.eligibility_reasons)}"]
 
     # 7. Mandatory foreign language mismatch (e.g., Native Japanese / Fluent German)
     cand_langs = profile_dict.get("languages_lc", [])
@@ -1009,6 +1037,9 @@ class JobMatcher:
         # ---------------------------------------------------------------------
         # 5. REMOTE & LOCATION FIT (max 15 pts)
         # ---------------------------------------------------------------------
+        from .shortlist_selection import SearchStream, resolve_search_stream
+        stream = resolve_search_stream(vacancy)
+
         loc_score = 0
         loc_breakdown = ""
         allowed_locs = self._p.get("allowed_locations_lc", [])
@@ -1018,7 +1049,15 @@ class JobMatcher:
         tz_text = ", ".join(str(x) for x in (vacancy.timezone_restrictions or [])).lower()
         is_remote, _ = is_strictly_remote(vacancy)
 
-        if not remote_req and not allowed_locs and not allowed_tzs:
+        if stream == SearchStream.THAILAND_LOCAL:
+            loc_score = 15
+            strengths.append("THAILAND_LOCAL: position in Thailand matches candidate physical residence (Bangkok/Pattaya)")
+            loc_breakdown = "location:15/15 thailand_local"
+        elif stream == SearchStream.GIGS_FREELANCE:
+            loc_score = 15
+            strengths.append("GIGS_FREELANCE: project-based contract work")
+            loc_breakdown = "location:15/15 gig_freelance"
+        elif not remote_req and not allowed_locs and not allowed_tzs:
             loc_score = 15
             loc_breakdown = "location:15/15 neutral"
         else:
@@ -1286,6 +1325,7 @@ class JobMatcher:
             strengths=strengths,
             gaps=gaps,
             dimensions=dimensions,
+            search_stream=stream.value,
         )
 
 

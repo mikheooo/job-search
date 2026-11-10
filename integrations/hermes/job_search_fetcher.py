@@ -51,7 +51,7 @@ def _canonical_path(path) -> str:
     return os.path.normcase(os.path.realpath(path))
 
 
-if _PROJECT_PY.is_file() and _canonical_path(sys.executable) != _canonical_path(str(_PROJECT_PY)):
+if os.environ.get("JOB_FETCHER_NO_REEXEC") != "1" and _PROJECT_PY.is_file() and _canonical_path(sys.executable) != _canonical_path(str(_PROJECT_PY)):
     import subprocess
 
     # Hermes Cron runs this script under Hermes's own Python (3.14) with the

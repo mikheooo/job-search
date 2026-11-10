@@ -1018,6 +1018,56 @@ def has_prior_candidate_message(conversation_id: str) -> bool:
     return bool(row)
 
 
+def is_our_sent_message(conversation_id: str, text: str) -> bool:
+    """Check if the given message text matches an outgoing message previously sent by candidate (auto or manual)."""
+    if not conversation_id or not text:
+        return False
+    import re
+    norm_text = re.sub(r'[^\w\s]', '', text.lower()).strip()
+    if not norm_text or len(norm_text) < 10:
+        return False
+
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        # Check hh_message_events:
+        # reply_draft is our sent reply when status='MESSAGE_AUTO_REPLIED'.
+        # text is only our message when sender='candidate'.
+        cur.execute('''
+            SELECT reply_draft, CASE WHEN sender = 'candidate' THEN text ELSE NULL END
+            FROM hh_message_events
+            WHERE conversation_id = ? AND (sender = 'candidate' OR status = 'MESSAGE_AUTO_REPLIED')
+            ORDER BY rowid DESC LIMIT 15
+        ''', (str(conversation_id),))
+        for r_draft, r_cand_text in cur.fetchall():
+            for cand_cand in (r_draft, r_cand_text):
+                if cand_cand:
+                    norm_cand = re.sub(r'[^\w\s]', '', cand_cand.lower()).strip()
+                    if norm_cand and (norm_cand in norm_text or norm_text in norm_cand):
+                        conn.close()
+                        return True
+
+        # Check autonomous_conversation_audits
+        cur.execute('''
+            SELECT sent_reply, generated_reply FROM autonomous_conversation_audits
+            WHERE conversation_id = ? AND (status = 'SENT' OR (sent_reply IS NOT NULL AND sent_reply != ''))
+            ORDER BY id DESC LIMIT 15
+        ''', (str(conversation_id),))
+        for s_reply, g_reply in cur.fetchall():
+            for cand_cand in (s_reply, g_reply):
+                if cand_cand:
+                    norm_cand = re.sub(r'[^\w\s]', '', cand_cand.lower()).strip()
+                    if norm_cand and (norm_cand in norm_text or norm_text in norm_cand):
+                        conn.close()
+                        return True
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
+    return False
+
+
+
 # ---------------------------------------------------------------------------
 # Stage 34: HH Questionnaire DB Helpers
 # ---------------------------------------------------------------------------
@@ -1626,8 +1676,69 @@ def list_autonomous_notifications(limit: int = 50, unread_only: bool = False) ->
     return result
 
 
-def save_interview_event(data: dict[str, Any]) -> int:
-    """Save a detected interview event."""
+def _normalize_invitation_text(text: str) -> str:
+    """Normalize invitation text for idempotency and change detection."""
+    import re
+    if not text:
+        return ""
+    return re.sub(r"\s+", " ", str(text).strip()).lower()
+
+
+def get_latest_interview_event(conversation_id: str) -> dict[str, Any] | None:
+    """Get the most recent interview event for a conversation."""
+    cid = str(conversation_id or "").strip()
+    if not cid:
+        return None
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute('''
+        SELECT id, conversation_id, vacancy_stable_id, company, vacancy_title,
+               invitation_text, invitation_url, action_required, status,
+               detected_at, notified
+        FROM interview_events
+        WHERE conversation_id = ?
+        ORDER BY id DESC LIMIT 1
+    ''', (cid,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    cols = [
+        "id", "conversation_id", "vacancy_stable_id", "company", "vacancy_title",
+        "invitation_text", "invitation_url", "action_required", "status",
+        "detected_at", "notified",
+    ]
+    return dict(zip(cols, row))
+
+
+def record_interview_event(data: dict[str, Any]) -> dict[str, Any]:
+    """Record an interview event with deduplication and update tracking.
+
+    Returns dict with event_id, is_new, is_updated, is_duplicate, and status.
+    """
+    conversation_id = str(data.get("conversation_id", "")).strip()
+    invitation_text = str(data.get("invitation_text", "")).strip()
+    norm_incoming = _normalize_invitation_text(invitation_text)
+
+    latest = get_latest_interview_event(conversation_id)
+    if latest:
+        norm_latest = _normalize_invitation_text(latest.get("invitation_text", ""))
+        if norm_incoming == norm_latest:
+            return {
+                "event_id": latest["id"],
+                "is_new": False,
+                "is_updated": False,
+                "is_duplicate": True,
+                "status": "DEDUPLICATED",
+            }
+        is_new = False
+        is_updated = True
+        status = data.get("updated_status") or "RESCHEDULED"
+    else:
+        is_new = True
+        is_updated = False
+        status = data.get("status", "NEW")
+
     conn = get_connection()
     cur = conn.cursor()
     now = datetime.utcnow().isoformat()
@@ -1640,21 +1751,37 @@ def save_interview_event(data: dict[str, Any]) -> int:
             detected_at, notified
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
-        str(data.get("conversation_id", "")).strip(),
+        conversation_id,
         data.get("vacancy_stable_id"),
         str(data.get("company", "Unknown Employer")).strip(),
         str(data.get("vacancy_title", "Unknown Role")).strip(),
-        str(data.get("invitation_text", "")).strip(),
+        invitation_text,
         data.get("invitation_url"),
         data.get("action_required"),
-        data.get("status", "NEW"),
+        status,
         detected_at,
         1 if data.get("notified") else 0,
     ))
     event_id = cur.lastrowid or 0
     conn.commit()
     conn.close()
-    return event_id
+
+    return {
+        "event_id": event_id,
+        "is_new": is_new,
+        "is_updated": is_updated,
+        "is_duplicate": False,
+        "status": status,
+    }
+
+
+def save_interview_event(data: dict[str, Any]) -> int:
+    """Save a detected interview event with deduplication.
+
+    Preserves exact backward-compatible signature returning int event_id.
+    """
+    res = record_interview_event(data)
+    return res["event_id"]
 
 
 def list_interview_events(limit: int = 50) -> list[dict[str, Any]]:

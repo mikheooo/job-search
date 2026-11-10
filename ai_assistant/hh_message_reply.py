@@ -106,7 +106,8 @@ _NO_REPLY_MARKERS = (
     "подписка", "оплатите", "пополните", "верифицируйте",
     "поздравляем", "добро пожаловать в hh", "изменения в законодательстве",
     "безопасность вашего аккаунта", "служба поддержки hh", "hh.ru",
-    "пароль", "подтвердите номер", "двухфакторная",
+    "восстановление пароля", "подтвердите номер", "код подтверждения",
+    "двухфакторная аутентификация для входа", "введите пароль для входа",
 )
 
 # Sensitive facts that must NEVER be guessed: presence forces HUMAN_REVIEW.
@@ -142,6 +143,12 @@ def classify_message(dialog: HHDialog) -> MessageClassification:
     low = text.lower()
     if not text:
         return MessageClassification.NO_REPLY
+    # A direct question or prompt from the employer takes precedence over generic substring markers
+    if _REPLY_PROBE.search(text):
+        context = _context_texts(dialog)
+        if _SENSITIVE_RE.search(context):
+            return MessageClassification.HUMAN_REVIEW
+        return MessageClassification.REPLY_REQUIRED
     # system/notification messages are not candidate replies
     if any(m in low for m in _NO_REPLY_MARKERS):
         return MessageClassification.NO_REPLY
@@ -150,9 +157,6 @@ def classify_message(dialog: HHDialog) -> MessageClassification:
     context = _context_texts(dialog)
     if _SENSITIVE_RE.search(context):
         return MessageClassification.HUMAN_REVIEW
-    # a direct question from the employer (in the latest message) -> reply
-    if _REPLY_PROBE.search(text):
-        return MessageClassification.REPLY_REQUIRED
     # if an earlier employer message asked a direct question and the last
     # message is a follow-up/system line, keep it for the human (no guessing)
     if any(_REPLY_PROBE.search((m.text or "")) for m in (dialog.messages or [])):
@@ -296,6 +300,67 @@ _TECH_VOCAB = {
     "power bi": "Power BI", "metabase": "Metabase", "superset": "Superset",
     "looker": "Looker", "supabase": "Supabase", "firebase": "Firebase",
     "stripe": "Stripe",
+    # networking / vpn / security / infra
+    "vpn": "VPN", "впн": "VPN", "openvpn": "OpenVPN", "wireguard": "WireGuard",
+    "вайргард": "WireGuard", "опенвпн": "OpenVPN", "2fa": "2FA", "mfa": "MFA",
+    "мфа": "2FA", "двухфакторная": "2FA", "двухфакторную": "2FA",
+    "active directory": "Active Directory", "актив директори": "Active Directory",
+    # common russian tech terms
+    "докер": "Docker", "кубер": "Kubernetes", "кубернетес": "Kubernetes",
+    "постгрес": "PostgreSQL", "постгре": "PostgreSQL",
+    "битрикс": "Bitrix24", "битрикс24": "Bitrix24",
+    "амосрм": "AmoCRM", "амо": "AmoCRM",
+    "сисадмин": "System Administration",
+}
+
+# Maps colloquial and Russian technical phrases to canonical profile skills
+_SKILL_ALIASES: dict[str, str] = {
+    "впн": "vpn",
+    "vpn": "vpn",
+    "openvpn": "vpn",
+    "wireguard": "vpn",
+    "вайргард": "vpn",
+    "опенвпн": "vpn",
+    "двухфакторн": "vpn",
+    "двухфакторная": "vpn",
+    "двухфакторную": "vpn",
+    "2fa": "vpn",
+    "mfa": "vpn",
+    "мфа": "vpn",
+    "докер": "docker",
+    "docker": "docker",
+    "кубер": "kubernetes",
+    "кубернетес": "kubernetes",
+    "k8s": "kubernetes",
+    "kubernetes": "kubernetes",
+    "постгрес": "postgresql",
+    "постгре": "postgresql",
+    "postgres": "postgresql",
+    "postgresql": "postgresql",
+    "редис": "redis",
+    "redis": "redis",
+    "кафка": "kafka",
+    "kafka": "kafka",
+    "битрикс": "bitrix24",
+    "битрикс24": "bitrix24",
+    "bitrix": "bitrix24",
+    "bitrix24": "bitrix24",
+    "амо": "amocrm",
+    "амосрм": "amocrm",
+    "amocrm": "amocrm",
+    "актив директори": "active directory",
+    "активдиректори": "active directory",
+    "active directory": "active directory",
+    "н8н": "n8n",
+    "n8n": "n8n",
+    "питон": "python",
+    "пайтон": "python",
+    "python": "python",
+    "фастапи": "fastapi",
+    "сисадмин": "windows server",
+    "системное администрирование": "windows server",
+    "плайврайт": "playwright",
+    "плейрайт": "playwright",
 }
 
 # Guards the honest-absence branch. A technology merely *mentioned* in passing
@@ -303,8 +368,27 @@ _TECH_VOCAB = {
 # experience" non-sequitur. Only answer about a technology when the employer is
 # actually asking for experience with something.
 _TECH_ASK_CUE_RE = re.compile(
-    r"опыт|работал|знае|приходилос|использовал|стаж|владе|навык|уме|"
-    r"\bexperience\b|\bworked\b|\bused\b|\bfamiliar\b|\bskills?\b|know how",
+    r"работал[аи]?\s+с|знае(?:те|шь)|приходилос|использовал[аи]?|владее(?:те|шь)|умее(?:те|шь)\s+ли|"
+    r"есть\s+ли\s+опыт|какой\s+(?:у\s+вас\s+)?опыт|расскажите\s+об?\s+опыте|"
+    r"\bworked\s+with\b|\bhave\s+you\s+used\b|\bfamiliar\s+with\b|\bdo\s+you\s+know\b",
+    re.IGNORECASE,
+)
+
+_EXP_QUESTION_RE = re.compile(
+    r"(?:есть\s+ли|какой\s+(?:у\s+вас\s+)?|расскажите\s+про|расскажите\s+о|опишите|поделитесь|сколько\s+лет)\s+(?:ваш\w*\s+)?(?:коммерческ\w*\s+)?(?:опыт\w*|стаж\w*)"
+    r"|(?:опыт\w*|стаж\w*)\s+(?:работы\s+)?(?:с|в|на\b)?[^.?!\n]*[?]"
+    r"|\b(?:do\s+you\s+have|tell\s+us\s+about|describe\s+your|how\s+many\s+years\s+of)\s+experience\b",
+    re.IGNORECASE,
+)
+
+_ACK_ONLY_RE = re.compile(
+    r"(?:рассмотрим|рассмотрит|изучим|ознакомим\w*)\s+(?:ваше\s+)?резюме"
+    r"|если\s+(?:ваши\s+)?(?:навыки\s+и\s+)?опыт\s+подойд"
+    r"|если\s+(?:ваша\s+кандидатура|профиль|резюме)\s+подойд"
+    r"|(?:в\s+ближайшее\s+время|в\s+течение\s+\w+\s+дней|в\s+случае\s+положительного)\s+свяжемся"
+    r"|мы\s+свяжемся\s+с\s+вами"
+    r"|передали\s+(?:ваше\s+)?резюме"
+    r"|находится\s+на\s+рассмотрении",
     re.IGNORECASE,
 )
 
@@ -415,6 +499,12 @@ def classify_hh_conversation_detailed(
         }
 
     # Find employer and candidate messages
+    # Never treat candidate's own messages (even if missing 'you:' prefix) as employer messages!
+    from ai_assistant import db
+    for m in messages:
+        if m.sender != "candidate" and dialog.conversation_id and db.is_our_sent_message(dialog.conversation_id, m.text or ""):
+            m.sender = "candidate"
+
     employer_indices = [i for i, m in enumerate(messages) if m.sender != "candidate"]
     candidate_indices = [i for i, m in enumerate(messages) if m.sender == "candidate"]
 
@@ -473,16 +563,33 @@ def classify_hh_conversation_detailed(
             "status": "READ-ONLY",
         }
 
+    # 2b. Recruiter standard review / acknowledgment notice ("рассмотрим ваше резюме", "если навыки и опыт подойдут...")
+    if _ACK_ONLY_RE.search(last_emp_text) and not ("?" in last_emp_text or "？" in last_emp_text or bool(_EXP_QUESTION_RE.search(last_emp_text))):
+        has_prior = bool(candidate_indices) or (bool(dialog.conversation_id) and db.has_prior_candidate_message(dialog.conversation_id))
+        if has_prior:
+            return {
+                "conversation_id": dialog.conversation_id,
+                "classification": "NO_REPLY_NEEDED",
+                "confidence": 0.95,
+                "reason": "Recruiter sent standard profile review / acknowledgment notice; candidate has already acknowledged or messaged.",
+                "question": None,
+                "required_facts": [],
+                "available_facts": available_facts,
+                "missing_facts": [],
+                "context": context,
+                "prepared_reply": None,
+                "sources": [],
+                "status": "READ-ONLY",
+            }
+
     # 3. Check for substantive questions in employer messages
     question_emp_indices = [
         i for i in employer_indices
         if _REPLY_PROBE.search(messages[i].text or "")
         or "?" in (messages[i].text or "")
         or "？" in (messages[i].text or "")
-        or "опыт" in (messages[i].text or "").lower()
-        or "вопрос" in (messages[i].text or "").lower()
-        or "ответьте" in (messages[i].text or "").lower()
-        or "уточните" in (messages[i].text or "").lower()
+        or bool(_EXP_QUESTION_RE.search(messages[i].text or ""))
+        or any(k in (messages[i].text or "").lower() for k in ["вопрос", "ответьте", "уточните", "подскажите", "расскажите", "умеете ли", "напишите"])
     ]
 
     if question_emp_indices:
@@ -691,9 +798,11 @@ def classify_hh_conversation_detailed(
             "python", "fastapi", "asyncio", "postgres", "postgresql", "docker",
             "kubernetes", "k8s", "n8n", "ai agent", "llm", "mcp", "rest api", "grpc", "sql",
             "rag", "langchain", "llamaindex", "nginx", "микросервис", "стек", "пайплайн",
-            "bitrix", "bitrix24", "битрикс", "битрикс24", "amocrm", "crm"
+            "bitrix", "bitrix24", "битрикс", "битрикс24", "amocrm", "crm",
+            "vpn", "впн", "2fa", "mfa", "двухфакторн", "active directory", "актив директори",
+            "сисадмин", "докер", "постгрес"
         ]) and not has_unverified_tech
-        is_generic_exp_q = ("опыт" in q_text_low or "стаж" in q_text_low) and not has_unverified_tech
+        is_generic_exp_q = bool(_EXP_QUESTION_RE.search(core_q_text)) and not has_unverified_tech
         is_remote_q = any(k in q_text_low for k in ["удален", "remote", "формат работ", "локаци", "находит", "территориаль", "где вы", "город", "страна"])
         is_schedule_q = any(k in q_text_low for k in [
             "понедельник", "пятниц", "пн-пт", "пн по пт", "часов в день", "началом работы",
@@ -849,9 +958,20 @@ def classify_hh_conversation_detailed(
         for _s in declared_skills:
             _s_low = _s.lower().replace("ё", "е")
             if re.search(rf"(?<![a-zа-я0-9]){re.escape(_s_low)}(?![a-zа-я0-9])", q_text_low):
-                asked_skills.append(_s)
+                if _s not in asked_skills:
+                    asked_skills.append(_s)
             if len(asked_skills) >= 3:
                 break
+
+        if len(asked_skills) < 3:
+            for _alias, _canonical in _SKILL_ALIASES.items():
+                if _canonical in declared_low:
+                    if re.search(rf"(?<![a-zа-я0-9]){re.escape(_alias)}(?![a-zа-я0-9])", q_text_low):
+                        orig = next((s for s in declared_skills if s.lower().replace("ё", "е") == _canonical), _canonical)
+                        if orig not in asked_skills:
+                            asked_skills.append(orig)
+                if len(asked_skills) >= 3:
+                    break
 
         # Technologies the employer named that are NOT in the profile. Same
         # word-boundary rule; a token is skipped when a declared skill already
@@ -862,6 +982,9 @@ def classify_hh_conversation_detailed(
             if not re.search(_tok_re, q_text_low):
                 continue
             if any(re.search(_tok_re, _d) for _d in declared_low):
+                continue
+            _canonical_skill = _SKILL_ALIASES.get(_tok)
+            if _canonical_skill and _canonical_skill in declared_low:
                 continue
             if _disp not in unknown_techs:
                 unknown_techs.append(_disp)
@@ -915,7 +1038,31 @@ def classify_hh_conversation_detailed(
             unknown_str = _join_native(unknown_techs)
             tech_missing: list[str] = []
 
-            if asked_skills and asks_about_tech:
+            # Prioritize synthesizing a specific, contextual reply addressing the topic
+            from ai_assistant.smart_experience_generator import synthesize_contextual_chat_reply_with_llm
+            hist_lines = [f"{m.sender}: {m.text}" for m in messages[-6:] if m.text]
+            prior_cand = [m.text for m in messages if m.sender == "candidate" and m.text]
+            specialized = (
+                synthesize_contextual_chat_reply_with_llm(
+                    employer_message=q_text,
+                    vacancy_title=v_title or "",
+                    company_name=v_comp or "",
+                    conversation_history=hist_lines,
+                    avoid_replies=prior_cand,
+                )
+                if (lang == "ru" and not asks_about_tech)
+                else None
+            )
+
+            if specialized and lang == "ru":
+                has_prior = any(m.sender == "candidate" for m in messages)
+                if not has_prior and not specialized.lower().startswith("здравствуйте"):
+                    specialized = "Здравствуйте! " + specialized
+                reply_text = specialized
+                reason = "Employer asked a specific domain/technical question; drafted contextual answer addressing the exact topic."
+                tech_sources = sources + ["candidate_kb.json: contextual domain experience"]
+                tech_confidence = 0.94
+            elif asked_skills and asks_about_tech:
                 # Both halves: confirm what is verified, disclaim what is not.
                 if lang == "ru":
                     reply_text = (
@@ -982,7 +1129,6 @@ def classify_hh_conversation_detailed(
                 tech_missing = [f"{unknown_str} experience (absent from profile)"]
                 tech_confidence = 0.85
             else:
-                from ai_assistant.smart_experience_generator import synthesize_contextual_chat_reply_with_llm
                 hist_lines = [f"{m.sender}: {m.text}" for m in messages[-6:] if m.text]
                 prior_cand = [m.text for m in messages if m.sender == "candidate" and m.text]
                 specialized = synthesize_contextual_chat_reply_with_llm(
@@ -2084,8 +2230,8 @@ _CONVERSATION_JS = """() => {
         text = text.replace(/\\s+\\d{1,2}:\\d{2}\\s*$/, '').trim();
         if (!text) continue;
         const bcls = (bubble.className || '').toString();
-        const isMy = /message_my--/.test(cls);
-        const isOut = /chat-bubble_ou/.test(bcls) || /right-tail/.test(bcls);
+        const isMy = /message_my--/.test(cls) || /outgoing/i.test(cls);
+        const isOut = /chat-bubble_ou/.test(bcls) || /right-tail/.test(bcls) || /outgoing/i.test(bcls);
         let sender = null;
         const head = el.querySelector('[class*="author" i], [class*="sender" i], [class*="name" i]');
         if (head) sender = (head.innerText || '').trim() || null;
@@ -2144,12 +2290,15 @@ def fetch_hh_conversation_readonly(evaluate_fn: Callable[[str], str]) -> dict[st
 # Auto-safety sensitivity patterns strictly requiring HUMAN_REVIEW:
 # external links/forms/questionnaires, test tasks/projects, and final offer acceptance or interview slot scheduling.
 _AUTO_FORBIDDEN_RE = re.compile(
-    r"forms\.gle|docs\.google\.com/forms|"
+    r"тестов\w*\s+(?:задани|проект)|ссылк\w*\s+на\s+тестов|test\s+task|test\s+assignment|"
+    r"анкет\w*|опросник|questionnaire|forms\.gle|docs\.google\.com/forms|"
+    r"соглас\w*\s+время|удобн\w*\s+время|выбрать\s+слот|слот\s+для\s+интервью|"
     r"принять\s+оффер|принять\s+предложен|accept.*offer|подпис\w*\s+договор",
     re.IGNORECASE,
 )
 
-# Allowed probes: interest/relevance, stack/skills, experience, remote format, salary expectations, interview scheduling, test task acknowledgment
+# Allowed probes: interest, stack, experience, remote format, salary.
+# A test task, questionnaire, or interview slot still fails closed via _AUTO_FORBIDDEN_RE.
 _AUTO_ALLOWED_PROBE = re.compile(
     r"(интересн|заинтересован|interested|want to discuss|обсуд|готов|"
     r"можем ли|would you like|still interested|ещё интересует|по-прежнему|актуальн|рассматрива|"

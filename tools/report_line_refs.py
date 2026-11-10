@@ -70,6 +70,7 @@ FALSE_POSITIVE_CLASSES; they are the reason this stays a worklist, not a gate.
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -175,13 +176,24 @@ def declared_system(text: str) -> tuple[str | None, list[str]]:
 
 
 def tracked_py() -> dict[str, list[str]]:
-    out = subprocess.run(
-        ["git", "ls-files", "--", "*.py"], cwd=REPO,
-        capture_output=True, text=True, encoding="utf-8", check=False,
-    ).stdout.splitlines()
     by_base: dict[str, list[str]] = {}
-    for p in out:
-        by_base.setdefault(p.rsplit("/", 1)[-1], []).append(p)
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "--", "*.py"], cwd=REPO,
+            capture_output=True, text=True, encoding="utf-8", check=False,
+        ).stdout.splitlines()
+        for p in out:
+            by_base.setdefault(p.rsplit("/", 1)[-1], []).append(p)
+    except Exception:
+        pass
+    if not by_base:
+        ignored = {".git", ".venv", "venv", "scratch", "backups", "graphify-out", "artifacts", "baseline_stage14_snapshot", "snapshot_stage15_current", "__pycache__"}
+        for root, dirs, filenames in os.walk(REPO):
+            dirs[:] = [d for d in dirs if d not in ignored and not d.startswith("tmp")]
+            for f in filenames:
+                if f.endswith(".py"):
+                    rel = Path(root, f).relative_to(REPO).as_posix()
+                    by_base.setdefault(f, []).append(rel)
     return by_base
 
 
@@ -231,6 +243,12 @@ def symbol_worklist(
                 end = int(m.group(3)) if m.group(3) else start
                 base = path.rsplit("/", 1)[-1]
                 hits = by_base.get(base, [])
+                if len(hits) > 1 and "/" in path:
+                    hits = [h for h in hits if h == path or h.endswith("/" + path)]
+                if len(hits) > 1 and any(h.startswith("ai_assistant/") for h in hits):
+                    preferred = [h for h in hits if h == f"ai_assistant/{base}"]
+                    if len(preferred) == 1:
+                        hits = preferred
                 if len(hits) != 1:
                     continue
                 wanted = names - {Path(base).stem}
@@ -299,6 +317,12 @@ def main(argv: list[str]) -> int:
 
                 base = path.rsplit("/", 1)[-1]
                 hits = by_base.get(base, [])
+                if len(hits) > 1 and "/" in path:
+                    hits = [h for h in hits if h == path or h.endswith("/" + path)]
+                if len(hits) > 1 and any(h.startswith("ai_assistant/") for h in hits):
+                    preferred = [h for h in hits if h == f"ai_assistant/{base}"]
+                    if len(preferred) == 1:
+                        hits = preferred
                 if len(hits) != 1:
                     problems.append(f"{doc}:{n}  {path}:{num}  -> "
                                     f"{'no such file' if not hits else 'ambiguous'}")

@@ -31,6 +31,7 @@ from .candidate_profile import load_candidate_profile
 from .db import (
     get_hh_message_event,
     is_hh_message_processed,
+    is_our_sent_message,
     save_hh_message_event,
 )
 from .hh_message_reply import (
@@ -318,8 +319,9 @@ def run_message_watcher_cycle(
             if raw_msgs:
                 for idx, m in enumerate(raw_msgs):
                     direction = (m.get("direction") or "").upper()
-                    sender = "candidate" if direction == "OUTGOING" else "employer"
                     msg_text = (m.get("text") or "").strip()
+                    is_out = (direction == "OUTGOING") or (bool(cid) and is_our_sent_message(cid, msg_text))
+                    sender = "candidate" if is_out else "employer"
                     sent_at = m.get("sent_at") or m.get("time")
                     mid = str(m.get("message_id") or f"m{idx}")
                     dialog_msgs.append(
@@ -333,7 +335,12 @@ def run_message_watcher_cycle(
             elif c.get("snippet"):
                 snippet = (c.get("snippet") or "").replace("\xa0", " ").strip()
                 snippet_lower = snippet.lower()
-                sender = "candidate" if "отклик на вакансию" in snippet_lower else "employer"
+                is_cand = (
+                    "отклик на вакансию" in snippet_lower
+                    or snippet_lower.startswith(("вы:", "вы: ", "you:", "you: "))
+                    or (bool(cid) and is_our_sent_message(cid, snippet))
+                )
+                sender = "candidate" if is_cand else "employer"
                 dialog_msgs.append(
                     HHMessage(
                         message_id="m0",
@@ -352,7 +359,7 @@ def run_message_watcher_cycle(
             last_msg = dialog_msgs[-1]
 
             # Rule: Outgoing messages from user/candidate are NOT incoming messages
-            if last_msg.sender == "candidate":
+            if last_msg.sender == "candidate" or (bool(cid) and is_our_sent_message(cid, last_msg.text or "")):
                 continue
 
             # Compute stable fingerprint

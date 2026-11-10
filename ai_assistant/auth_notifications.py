@@ -18,7 +18,7 @@ from typing import Callable
 from ai_assistant import telegram_routing
 
 AUTH_FAILURE_MESSAGE = (
-    "⚠️ <b>HH Autopilot: подтверждена потеря авторизации</b>\n\n"
+    "⚠️ <b>HH Autopilot: подтверждена потеря авторизации (HH_AUTH_REQUIRED)</b>\n\n"
     "Диагностика: на странице hh.ru обнаружена форма входа (hhrole=anonymous / login card).\n"
     "Действие: требуется ручной вход в профиль JobSearchHeadless.\n"
     "Запустите artifacts\\headless-poc\\hh-login-once.cmd и подтвердите вход."

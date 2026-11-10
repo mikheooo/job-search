@@ -2,7 +2,10 @@ import json
 import logging
 import time
 
-import config
+try:
+    from ai_assistant import config
+except ImportError:
+    import config
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 

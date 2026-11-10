@@ -88,6 +88,14 @@ tools/*/state.db.before_*
 *state.db.before_*
 graphify-out/
 scratch_*
+/scratch/
+/backups/
+/pytest-of-*/
+/tmp/
+/.audit_tmp/
+/tmp*/
+*.egg-info/
+/.workbuddy-ai/
 
 
 # Disaster-recovery snapshots (local only, contain env/db copies)

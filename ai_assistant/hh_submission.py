@@ -162,6 +162,9 @@ def clear_submitted_reviews() -> None:
 def _stop_file_paths() -> list[str]:
     return [
         os.environ.get("STOP_SUBMITS_FILE"),
+        os.environ.get("STOP_OUTBOUNDS_FILE"),
+        "STOP_ALL_OUTBOUNDS",
+        "data/STOP_ALL_OUTBOUNDS",
         "data/STOP_SUBMITS",
         "STOP_SUBMITS",
     ]

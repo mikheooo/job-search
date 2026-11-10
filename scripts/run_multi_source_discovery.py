@@ -112,8 +112,15 @@ def send_telegram_alert(text: str, chat_id: str | int | None = None) -> bool:
 
 def is_target_role(title: str, description: str = "") -> bool:
     """Check if vacancy matches Mikhail's target roles and technical skills."""
+    import re
     combined = (title + " " + description).lower()
-    return any(kw in combined for kw in TARGET_KEYWORDS)
+    for kw in TARGET_KEYWORDS:
+        if len(kw) <= 2:
+            if re.search(r"\b" + re.escape(kw) + r"\b", combined):
+                return True
+        elif kw in combined:
+            return True
+    return False
 
 
 def is_acceptable_salary(vac: Vacancy) -> bool:

@@ -209,36 +209,13 @@ class NotificationDispatcher:
         conversation_id: str | None = None,
         action_required: str = "Review message and confirm available interview time slot.",
     ) -> dict[str, Any]:
-        """Dispatch high-priority interview notification to user."""
+        """Dispatch high-priority interview notification to user with deduplication."""
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        from .telegram_notifier import TelegramNotifier
-        notif_msg = TelegramNotifier.format_interview_invitation(
-            company=company,
-            vacancy=vacancy_title,
-            invitation_text=invitation_text,
-            invitation_url=invitation_url or "",
-        )
-        notif_data = {
-            "notification_type": NotificationType.INTERVIEW_INVITATION.value,
-            "priority": NotificationPriority.HIGH.value,
-            "title": f"INTERVIEW INVITATION: {company} - {vacancy_title}",
-            "message": notif_msg,
-            "company": company,
-            "vacancy_title": vacancy_title,
-            "vacancy_url": invitation_url,
-            "conversation_id": conversation_id,
-            "action_required": action_required,
-            "created_at": now,
-            "read": 0,
-        }
+        conv_id = str(conversation_id or "unknown").strip()
 
-        # Save to DB
-        notif_id = db.save_autonomous_notification(notif_data)
-        notif_data["id"] = notif_id
-
-        # Save Interview Event
-        db.save_interview_event({
-            "conversation_id": conversation_id or "unknown",
+        # Step 1: Record interview event through deduplicating tracker
+        event_res = db.record_interview_event({
+            "conversation_id": conv_id,
             "company": company,
             "vacancy_title": vacancy_title,
             "invitation_text": invitation_text,
@@ -249,9 +226,60 @@ class NotificationDispatcher:
             "notified": 1,
         })
 
+        if event_res.get("is_duplicate"):
+            logger.info(
+                "Duplicate interview invitation for conv %s suppressed from re-notifying (event #%s)",
+                conv_id,
+                event_res.get("event_id"),
+            )
+            return {
+                "id": event_res["event_id"],
+                "conversation_id": conv_id,
+                "status": "DUPLICATE_SUPPRESSED",
+                "notification_type": NotificationType.INTERVIEW_INVITATION.value,
+                "priority": NotificationPriority.HIGH.value,
+                "company": company,
+                "vacancy_title": vacancy_title,
+            }
+
+        is_updated = event_res.get("is_updated", False)
+        title_prefix = "🔄 UPDATED INTERVIEW INVITATION" if is_updated else "INTERVIEW INVITATION"
+        effective_action = "Review updated interview details / time slot." if is_updated else action_required
+
+        from .telegram_notifier import TelegramNotifier
+        notif_msg = TelegramNotifier.format_interview_invitation(
+            company=company,
+            vacancy=vacancy_title,
+            invitation_text=invitation_text,
+            invitation_url=invitation_url or "",
+        )
+        if is_updated:
+            notif_msg = f"🔄 *[UPDATED TIME / INVITATION]*\n\n" + notif_msg
+
+        notif_data = {
+            "notification_type": NotificationType.INTERVIEW_INVITATION.value,
+            "priority": NotificationPriority.HIGH.value,
+            "title": f"{title_prefix}: {company} - {vacancy_title}",
+            "message": notif_msg,
+            "company": company,
+            "vacancy_title": vacancy_title,
+            "vacancy_url": invitation_url,
+            "conversation_id": conv_id,
+            "action_required": effective_action,
+            "created_at": now,
+            "read": 0,
+        }
+
+        # Save to DB
+        notif_id = db.save_autonomous_notification(notif_data)
+        notif_data["id"] = notif_id
+
         # Deliver to Telegram
         try:
+            import hashlib
             from .telegram_notifier import get_telegram_notifier
+            text_hash = hashlib.sha256(invitation_text.encode("utf-8")).hexdigest()[:8]
+            deliv_key = f"interview_{conv_id}_{text_hash}"
             get_telegram_notifier().deliver_notification(
                 notif_type="INTERVIEW_INVITATION",
                 details={
@@ -259,13 +287,16 @@ class NotificationDispatcher:
                     "vacancy_title": vacancy_title,
                     "invitation_text": invitation_text,
                     "invitation_url": invitation_url,
-                    "conversation_id": conversation_id,
+                    "conversation_id": conv_id,
                     "created_at": now,
+                    "is_updated": is_updated,
                 },
-                delivery_key=f"interview_{conversation_id or now}",
+                delivery_key=deliv_key,
             )
         except Exception as e:
-            logger.debug(f"Telegram interview delivery exception: {e}")
+            logger.warning("Failed delivering interview notification to Telegram: %s", e)
+
+        return notif_data
 
         # Render terminal banner
         print("\n" + "=" * 70)
@@ -1408,10 +1439,12 @@ class AutonomousJobAgent:
                 if not msgs and it.get("snippet"):
                     snip_text = str(it.get("snippet") or "").strip()
                     snip_low = snip_text.lower()
+                    cid = str(it.get("conversation_id") or it.get("id") or "")
                     is_cand = (
                         bool(it.get("is_outgoing"))
                         or snip_low.startswith(("вы:", "вы: ", "вы:\xa0", "you:", "you: "))
                         or any(k in snip_low for k in ["отклик на вакансию", "отклик на\xa0вакансию"])
+                        or (bool(cid) and db.is_our_sent_message(cid, snip_text))
                     )
                     msgs.append(HHMessage(
                         message_id="m_snippet",
@@ -1505,10 +1538,14 @@ class AutonomousJobAgent:
                             real_msgs = []
                             for rm in conv_data.get("messages", []):
                                 r_dir = rm.get("direction")
-                                r_sender = "candidate" if r_dir == "OUTGOING" else "employer"
+                                r_text = str(rm.get("text") or "")
+                                is_outgoing = (r_dir == "OUTGOING") or (
+                                    bool(d.conversation_id) and db.is_our_sent_message(d.conversation_id, r_text)
+                                )
+                                r_sender = "candidate" if is_outgoing else "employer"
                                 real_msgs.append(HHMessage(
                                     message_id=f"m_{len(real_msgs)}",
-                                    text=str(rm.get("text") or ""),
+                                    text=r_text,
                                     sender=r_sender,
                                     sent_at=rm.get("timestamp"),
                                 ))
@@ -1520,6 +1557,8 @@ class AutonomousJobAgent:
 
             last_msg = d.last_message()
             if not last_msg or last_msg.sender == "candidate":
+                continue
+            if d.conversation_id and db.is_our_sent_message(d.conversation_id, last_msg.text or ""):
                 continue
 
             # CRITICAL DEFENSE: Never send an auto-reply blind based solely on an unresolved card snippet!
@@ -1874,9 +1913,32 @@ class AutonomousJobAgent:
                         d.conversation_id,
                         classification,
                     )
+                elif not __import__('ai_assistant.outbound_governor', fromlist=['check_outbound_allowed']).check_outbound_allowed(action=__import__('ai_assistant.outbound_governor', fromlist=['OutboundAction']).OutboundAction.CHAT_REPLY)[0]:
+                    from .outbound_governor import check_outbound_allowed, OutboundAction
+                    _, outbound_reason = check_outbound_allowed(action=OutboundAction.CHAT_REPLY)
+                    send_status = "BLOCKED_KILL_SWITCH"
+                    send_error = outbound_reason
+                    logger.warning(
+                        "Autonomous reply SUPPRESSED by outbound governor for conv %s (%s): %s",
+                        d.conversation_id,
+                        classification,
+                        outbound_reason,
+                    )
                 elif out["auto_replies_count"] < self.config.max_auto_replies_per_cycle:
                     try:
                         reply_snippet = reply_text[:30].strip()
+                        # Ensure we are actually on the target conversation before attempting to type and send
+                        curr_url = str(eval_fn("location.href") or "")
+                        if d.conversation_id and d.conversation_id not in curr_url:
+                            eval_fn(f"""(() => {{
+                                const targetConvId = {json.dumps(d.conversation_id)};
+                                const topicElem = document.querySelector(`[data-qa*="${{targetConvId}}"], a[href*="${{targetConvId}}"]`);
+                                if (topicElem) {{ topicElem.click(); return "clicked"; }}
+                                location.href = "https://hh.ru/chat/" + targetConvId;
+                                return "navigated";
+                            }})()""")
+                            time.sleep(2.5)
+
                         raw_send = eval_fn(f"""(() => {{
                             const targetConvId = {json.dumps(d.conversation_id)};
                             const topicElem = document.querySelector(`[data-qa*="${{targetConvId}}"], a[href*="${{targetConvId}}"]`);
@@ -1886,6 +1948,7 @@ class AutonomousJobAgent:
                             const input = document.querySelector('textarea[data-qa="text-input"], textarea[data-qa="chatik-new-message-text"], textarea[data-qa="chat-input-textarea"], textarea[data-qa*="message"], [data-qa*="chatik-new-message"], textarea');
                             if (!input) return JSON.stringify({{ ok: false, reason: 'Chat input textarea not found for conversation ' + targetConvId }});
                             
+                            input.focus();
                             const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
                                         || Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
                             if (setter) {{
@@ -1921,25 +1984,20 @@ class AutonomousJobAgent:
                             if explicit_verdict is not None:
                                 is_dom_confirmed = bool(explicit_verdict)
                             else:
-                                time.sleep(2)
+                                time.sleep(2.5)
                                 verify_js = f"""(() => {{
-                                    const ta = document.querySelector('textarea[data-qa="text-input"], textarea');
                                     const bubbles = Array.from(document.querySelectorAll('div[class*="message--"], [class*="chat-bubble"]'));
                                     const snippet = {json.dumps(reply_snippet)};
                                     const foundInDom = bubbles.some(b => (b.innerText || '').includes(snippet));
-                                    const inputCleared = !ta || !ta.value || !ta.value.includes(snippet);
-                                    return JSON.stringify({{ verified: foundInDom || inputCleared }});
+                                    return JSON.stringify({{ verified: foundInDom }});
                                 }})()"""
                                 try:
                                     raw_v = eval_fn(verify_js)
                                     verify_res = json.loads(raw_v) if isinstance(raw_v, str) else raw_v
-                                    is_dom_confirmed = bool(verify_res.get("verified", True))
+                                    is_dom_confirmed = bool(verify_res.get("verified", False))
                                 except Exception as e_verify:
-                                    # The probe itself failed. The send already said
-                                    # ok, so this stays permissive - the verdict the
-                                    # transport reports is the one that counts.
-                                    is_dom_confirmed = True
-                                    logger.debug(
+                                    is_dom_confirmed = False
+                                    logger.warning(
                                         "DOM verification unreadable for conv %s: %s",
                                         d.conversation_id, e_verify,
                                     )

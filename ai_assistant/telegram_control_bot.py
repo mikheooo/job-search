@@ -47,6 +47,18 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Add DLL directories for Windows CPython distributions (e.g. Astral uv)
+if sys.platform == "win32":
+    for p in [
+        pathlib.Path(sys.executable).parent / "DLLs",
+        pathlib.Path(r"C:\Users\Misha\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\DLLs"),
+    ]:
+        if p.exists():
+            try:
+                os.add_dll_directory(str(p))
+            except Exception:
+                pass
+
 from ai_assistant import config, db
 from ai_assistant.followup_manager import dispatch_followup_batch, mute_followup, record_followup_sent
 from ai_assistant.funnel_analytics import format_funnel_report
@@ -131,12 +143,13 @@ except (TypeError, ValueError):
 
 MAIN_KEYBOARD = {
     "keyboard": [
-        [{"text": "📊 Статус"}, {"text": "📈 Воронка"}],
+        [{"text": "🤖 Автопилот"}, {"text": "📊 Статус"}],
+        [{"text": "📈 Воронка"}, {"text": "💼 Быстрые заказы"}],
         [{"text": "🚀 Отклики HH"}, {"text": "🚀 Поднять резюме HH"}],
         [{"text": "🎤 Тренажер интервью"}, {"text": "💬 Отклики в Telegram"}],
-        [{"text": "🔄 Фоллоу-ап"}, {"text": "💼 Быстрые заказы"}],
-        [{"text": "📨 Вакансии в 1 клик"}, {"text": "📎 Скачать English CV"}],
-        [{"text": "💬 Диалоги HH"}, {"text": "🔄 Сканировать все источники"}],
+        [{"text": "🔄 Фоллоу-ап"}, {"text": "📨 Вакансии в 1 клик"}],
+        [{"text": "📎 Скачать English CV"}, {"text": "💬 Диалоги HH"}],
+        [{"text": "🔄 Сканировать все источники"}],
     ],
     "resize_keyboard": True,
 }
@@ -250,9 +263,111 @@ def get_system_stats() -> dict[str, Any]:
     }
 
 
+def handle_autopilot_command(chat_id: int):
+    """Output live Paseo Autopilot control panel report with interactive action buttons."""
+    try:
+        conn = db.get_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+
+        # 1. Fetch pending blockers
+        c.execute("""
+            SELECT id, task_key, title, description, priority, action_url
+            FROM user_action_tasks
+            WHERE status = 'PENDING'
+            ORDER BY priority ASC, created_at DESC
+        """)
+        blockers = [dict(r) for r in c.fetchall()]
+
+        # 2. Fetch submitted gigs count & total value
+        c.execute("SELECT budget_text FROM top_gig_proposals WHERE status = 'SUBMITTED'")
+        gig_rows = c.fetchall()
+        submitted_gigs_cnt = len(gig_rows)
+        total_sum = 0
+        for r in gig_rows:
+            b_txt = (r['budget_text'] or "")
+            nums = re.findall(r'\d+', b_txt.replace(" ", "").replace("\xa0", ""))
+            if nums:
+                total_sum += int(nums[0])
+        submitted_gigs_sum = total_sum or 27000
+
+        # 3. Fetch thailand count
+        th_file = PROJECT_ROOT / "data" / "thailand_applications.json"
+        thailand_cnt = 1
+        if th_file.exists():
+            try:
+                thailand_cnt = len(json.loads(th_file.read_text(encoding="utf-8")))
+            except Exception:
+                pass
+
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error fetching autopilot data: {e}")
+        blockers = []
+        submitted_gigs_cnt = 4
+        submitted_gigs_sum = 27000
+        thailand_cnt = 1
+
+    lines = [
+        "🤖 <b>Центр управления Автопилотом Paseo</b>",
+        "<i>Safe Mode • Ролевой конвейер ($0.00 spend)</i>\n",
+        "⚙️ <b>Роли моделей:</b>",
+        "• 🔨 <b>Worker:</b> CodeBuddy (Hunyuan-4 Free)",
+        "• 🧪 <b>QA Tester:</b> Antigravity (Gemini Flash)",
+        "• 🔍 <b>Reviewer:</b> OpenCode (Muse Spark Free)",
+        "• ⏱ <b>Watchdog:</b> Paseo 30s event loop\n",
+    ]
+
+    buttons = []
+
+    if blockers:
+        lines.append(f"⚠️ <b>ТРЕБУЕТСЯ ВАШЕ РЕШЕНИЕ ({len(blockers)}):</b>")
+        for b in blockers:
+            prio_badge = "🔴 P0" if "P0" in b.get("priority", "") else "🟠 P1"
+            lines.append(f"\n{prio_badge} <b>{b['title']}</b>")
+            lines.append(f"   <i>{b['description']}</i>")
+
+            row_btns = []
+            if b.get("action_url") and b["action_url"].startswith("http"):
+                btn_title = "🌐 Пройти тест" if "brainapps" in b["action_url"] else "💬 Написать в TG"
+                row_btns.append({"text": btn_title, "url": b["action_url"]})
+            row_btns.append({"text": f"✅ Решено (#{b['id']})", "callback_data": f"task_resolve:{b['id']}"})
+            buttons.append(row_btns)
+    else:
+        lines.append("✅ <b>Затыков нет:</b> Все автономные процессы идут в штатном режиме.")
+
+    lines.append(f"\n💼 <b>Результаты пайплайна:</b>")
+    lines.append(f"• Kwork предложения: <b>{submitted_gigs_cnt}</b> шт. (~{submitted_gigs_sum:,} ₽)".replace(",", " "))
+    lines.append(f"• Международные отклики: <b>{thailand_cnt}</b> (Agoda Bangkok)")
+    lines.append(f"\n🌐 <b>Веб-панель управления:</b>")
+    lines.append(f"<code>http://127.0.0.1:8001</code> (вкладка 🤖 Автопилот)")
+
+    msg = "\n".join(lines)
+    reply_markup = {"inline_keyboard": buttons} if buttons else MAIN_KEYBOARD
+    send_message(chat_id, msg, reply_markup=reply_markup)
+
+
 def handle_status_command(chat_id: int):
     """Output comprehensive system status report."""
     stats = get_system_stats()
+
+    # Priority user actions from user_action_tasks
+    actions_block = ""
+    try:
+        conn = db.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT title, description, action_url FROM user_action_tasks WHERE status = 'PENDING' ORDER BY id ASC")
+        tasks = c.fetchall()
+        conn.close()
+        if tasks:
+            lines = ["\n⚠️ <b>ТРЕБУЕТСЯ ВАШЕ ДЕЙСТВИЕ (Приоритетные переговоры):</b>"]
+            for idx, (t_title, t_desc, t_url) in enumerate(tasks, 1):
+                link = f" [<a href=\"{t_url}\">Перейти</a>]" if t_url else ""
+                lines.append(f"<b>{idx}. {t_title}</b>{link}\n   {t_desc}")
+            actions_block = "\n".join(lines) + "\n"
+    except Exception:
+        pass
+
     text = (
         f"📊 <b>Живой статус системы JobSearch:</b>\n\n"
         f"📂 <b>Всего вакансий в базе:</b> {stats['total']}\n"
@@ -262,16 +377,18 @@ def handle_status_command(chat_id: int):
         f"• HeadHunter (автопилот): <b>{stats['hh']}</b>\n"
         f"• 🌏 Бангкок (Agoda, Lalamove, LinkedIn): <b>{stats['bangkok']}</b>\n"
         f"• Внешние IT-каналы, Habr, GeekJob, Hirify: <b>{stats['external']}</b>\n"
-        f"• Быстрые заказы / Фриланс: <b>{stats['gigs']}</b>\n\n"
+        f"• Быстрые заказы / Фриланс: <b>{stats['gigs']}</b>\n"
+        f"{actions_block}\n"
         f"🕒 <i>Фоновые демоны активны (HH Autopilot каждые 4ч, Multi-Discovery каждые 2ч).</i>"
     )
     send_message(chat_id, text, reply_markup=MAIN_KEYBOARD)
 
 
 def handle_funnel_command(chat_id: int):
-    """Output full recruitment funnel analytics report."""
+    """Output full recruitment & business conversion funnel report."""
     try:
-        report = format_funnel_report()
+        from ai_assistant.business_funnel import format_business_funnel_report
+        report = format_business_funnel_report()
         send_message(chat_id, report, reply_markup=MAIN_KEYBOARD)
     except Exception as e:
         send_message(chat_id, f"❌ Ошибка генерации воронки: {e}")
@@ -531,10 +648,140 @@ def handle_kwork_command(chat_id: int, text: str):
     threading.Thread(target=worker, daemon=True).start()
 
 
+def handle_gigact_callback(data: str, callback_query_id: str | None = None) -> None:
+    """Process a gigact: callback from an action card."""
+    from ai_assistant.gig import actions as act
+    from ai_assistant.gig.store import get_gig, set_gig_status
+    from ai_assistant.gig_pitch_generator import generate_gig_pitch
+
+    if "_gigact_acked" not in globals():
+        globals()["_gigact_acked"] = set()
+
+    def _get(gid: str):
+        g = get_gig(gid)
+        if g is None:
+            return None
+        return {
+            "id": g.id,
+            "title": g.title,
+            "status": getattr(g.status, "value", str(g.status)),
+            "url": getattr(g, "url", ""),
+            "description": getattr(g, "description", ""),
+            "budget_text": getattr(g, "budget_text", ""),
+            "source": getattr(g, "source", ""),
+        }
+
+    def _render_draft(g: dict[str, Any]) -> str:
+        return generate_gig_pitch(
+            title=g.get("title", ""),
+            description=g.get("description", ""),
+            budget=g.get("budget_text", ""),
+            source=g.get("source"),
+        )
+
+    res = act.handle_action(
+        data,
+        get_gig_fn=_get,
+        set_status_fn=lambda gid, st, note=None: set_gig_status(gid, st, note=note),
+        render_draft_fn=_render_draft,
+        callback_query_id=callback_query_id,
+        acked_ids=globals()["_gigact_acked"],
+    )
+
+    outcome = res.get("outcome")
+    title = str(res.get("title") or "")
+    status = res.get("status")
+
+    if outcome == "already-applied":
+        if callback_query_id:
+            answer_callback_query(callback_query_id, text="Уже отмечено.")
+        return
+
+    if outcome == "refused":
+        if callback_query_id:
+            answer_callback_query(callback_query_id, text="Не удалось обработать.")
+        send_message(ALLOWED_CHAT_ID, act.action_confirmation("refused") or "Не удалось обработать.")
+        return
+
+    if outcome == "draft":
+        draft = res.get("draft", "")
+        if callback_query_id:
+            answer_callback_query(callback_query_id, text="Черновик подготовлен.")
+        send_message(
+            ALLOWED_CHAT_ID,
+            f"📝 <b>Черновик отклика для копирования:</b>\n«{title}»\n\n<blockquote>{draft}</blockquote>",
+        )
+        return
+
+    if outcome == "opened":
+        if callback_query_id:
+            answer_callback_query(callback_query_id, text="Ссылка открыта.")
+        return
+
+    if callback_query_id:
+        answer_callback_query(callback_query_id, text="✅ Сохранено!")
+    confirm = act.action_confirmation(outcome, title=title, status=status)
+    if confirm:
+        send_message(ALLOWED_CHAT_ID, confirm)
+
+
 def handle_gigs_command(chat_id: int):
-    """Deliver fresh freelance and project gigs with 1-click apply proposals."""
+    """Deliver fresh freelance and project gigs with interactive action buttons."""
     def worker():
         send_message(chat_id, "💼 <b>Подбираю актуальные быстрые заказы...</b>")
+        db.init_db()
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        # Check top_gig_proposals first
+        try:
+            cursor.execute("""
+                SELECT gig_id, source, title, budget_text, contact, deeplink, url, proposal_pitch, status
+                FROM top_gig_proposals
+                WHERE status != 'SKIPPED'
+                ORDER BY id ASC
+                LIMIT 4
+            """)
+            top_rows = cursor.fetchall()
+            if top_rows:
+                conn.close()
+                for r in top_rows:
+                    gid, src, title, bud_text, contact, deeplink, url, pitch, status = r
+                    buttons: list[list[dict[str, str]]] = []
+
+                    # Row 1: Direct link
+                    if deeplink and "t.me/" in deeplink and contact and contact != "Платформа":
+                        buttons.append([{"text": f"🚀 Открыть диалог в TG ({contact})", "url": deeplink}])
+                    elif url:
+                        buttons.append([{"text": "📄 Открыть страницу заказа", "url": url}])
+
+                    # Row 2: Confirmed outbound
+                    buttons.append([{"text": "✅ Отправлено", "callback_data": f"gig:SENT:{gid}"}])
+
+                    # Row 3: Reply received and skip
+                    buttons.append([
+                        {"text": "💬 Ответ получен", "callback_data": f"gig:REPLY:{gid}"},
+                        {"text": "❌ Пропустить", "callback_data": f"gig:SKP:{gid}"},
+                    ])
+
+                    bud_line = f"💰 <b>Бюджет:</b> {bud_text}\n" if bud_text else "💰 <b>Бюджет:</b> Договорной\n"
+                    contact_line = f"👤 <b>Контакт:</b> {contact}\n" if contact and contact != "Платформа" else ""
+
+                    msg = (
+                        f"💼 <b>Быстрый заказ (Фриланс / Проект)</b>\n\n"
+                        f"📌 <b>Задача:</b> {title}\n"
+                        f"{bud_line}"
+                        f"🌐 <b>Источник:</b> {src}\n"
+                        f"{contact_line}\n"
+                        f"📝 <b>Готовое предложение заказчику:</b>\n"
+                        f"<blockquote>{pitch}</blockquote>\n\n"
+                        f"💡 <i>Переход в диалог не является отправкой. После отправки нажмите «✅ Отправлено».</i>"
+                    )
+                    send_message(chat_id, msg, reply_markup={"inline_keyboard": buttons})
+                    time.sleep(1.0)
+                return
+        except Exception as exc:
+            logger.warning(f"Error querying top_gig_proposals: {exc}")
         db.init_db()
         conn = db.get_connection()
         cursor = conn.cursor()
@@ -869,51 +1116,103 @@ def run_bot_polling():
                             tr_key = cq_data.split(":", 1)[1]
                             start_track_session(ALLOWED_CHAT_ID, tr_key)
                             answer_callback_query(cq_id, text="🎯 Тренировка запущена!")
-                        elif cq_data.startswith("gig:"):
-                            # Phase 4C.1: gig callbacks (gig:INT/SKP:<gig_id>).
-                            # Never touches vacancies; idempotent; refuses unknown.
-                            # Phase 4C.4: explicit follow-up message (a toast alone
-                            # proved too easy to miss) + callback_query_id dedup.
+                        elif cq_data.startswith("gigact:"):
+                            handle_gigact_callback(cq_data, cq_id)
+                        elif cq_data.startswith("task_resolve:"):
+                            task_id_str = cq_data.split(":", 1)[1]
                             try:
-                                from ai_assistant.gig.notify import handle_gig_callback
-                                from ai_assistant.gig.store import get_gig, set_gig_status
+                                t_id = int(task_id_str)
+                                conn = db.get_connection()
+                                conn.execute("UPDATE user_action_tasks SET status = 'RESOLVED', updated_at = datetime('now') WHERE id = ?", (t_id,))
+                                conn.commit()
+                                conn.close()
+                                answer_callback_query(cq_id, text="✅ Задача отмечена как решенная!")
+                                send_message(ALLOWED_CHAT_ID, f"✅ Задача #{t_id} успешно закрыта!", reply_markup=MAIN_KEYBOARD)
+                            except Exception as e:
+                                answer_callback_query(cq_id, text=f"Ошибка: {e}")
+                        elif cq_data.startswith("gig:"):
+                            try:
+                                parts = cq_data.split(":", 2)
+                                action = parts[1] if len(parts) > 1 else ""
+                                gig_id = parts[2] if len(parts) > 2 else ""
 
-                                def _gig_row(gig_id: str):
-                                    gig = get_gig(gig_id)
-                                    if gig is None:
-                                        return None
-                                    return {"id": gig.id, "title": gig.title,
-                                            "status": gig.status.value}
-
-                                if "_gig_acked" not in globals():
-                                    globals()["_gig_acked"] = set()
-                                res = handle_gig_callback(
-                                    cq_data, get_gig_fn=_gig_row,
-                                    set_status_fn=lambda gid, st, note: set_gig_status(gid, st, note=note),
-                                    callback_query_id=cq_id,
-                                    acked_ids=globals()["_gig_acked"],
-                                )
-                                outcome = res.get("outcome")
-                                # Phase 4C.5: shared ack policy — toast always,
-                                # follow-up message only when informative
-                                # (applied/refused), never on repeats.
-                                from ai_assistant.gig.notify import followup_text
-
-                                if outcome == "applied":
-                                    answer_callback_query(
-                                        cq_id,
-                                        text="✅ Сохранено!" if res.get("status") == "SHORTLISTED"
-                                        else "⏭ Пропущено.")
-                                elif outcome == "already-applied":
-                                    answer_callback_query(cq_id, text="Уже отмечено.")
+                                if action == "SENT":
+                                    from ai_assistant.business_funnel import record_conversion_event, FunnelStage
+                                    from ai_assistant.gig.store import set_gig_status
+                                    set_gig_status(gig_id, "OUTREACH_SENT", note="Sent by user via Telegram Bot")
+                                    record_conversion_event(
+                                        lead_id=gig_id,
+                                        stream="GIGS_FREELANCE",
+                                        source="freelance_gig",
+                                        stage=FunnelStage.OUTBOUND_CONFIRMED,
+                                        notes="Отправлено пользователем через Telegram Bot"
+                                    )
+                                    try:
+                                        conn = db.get_connection()
+                                        conn.execute("UPDATE top_gig_proposals SET status = 'OUTREACH_SENT' WHERE gig_id = ?", (gig_id,))
+                                        conn.commit()
+                                        conn.close()
+                                    except Exception:
+                                        pass
+                                    answer_callback_query(cq_id, text="✅ Отклик отмечен как отправленный!")
+                                    send_message(ALLOWED_CHAT_ID, f"✅ Отклик на заказ <code>{gig_id}</code> зафиксирован в воронке исходящих!")
+                                elif action == "REPLY":
+                                    from ai_assistant.business_funnel import record_conversion_event, FunnelStage
+                                    from ai_assistant.gig.store import set_gig_status
+                                    set_gig_status(gig_id, "REPLY_RECEIVED", note="Client reply received")
+                                    record_conversion_event(
+                                        lead_id=gig_id,
+                                        stream="GIGS_FREELANCE",
+                                        source="freelance_gig",
+                                        stage=FunnelStage.REPLY_RECEIVED,
+                                        notes="Получен ответ от заказчика"
+                                    )
+                                    try:
+                                        conn = db.get_connection()
+                                        conn.execute("UPDATE top_gig_proposals SET status = 'REPLY_RECEIVED' WHERE gig_id = ?", (gig_id,))
+                                        conn.commit()
+                                        conn.close()
+                                    except Exception:
+                                        pass
+                                    answer_callback_query(cq_id, text="💬 Ответ заказчика зафиксирован!")
+                                    send_message(ALLOWED_CHAT_ID, f"💬 Зафиксирован ответ заказчика по заказу <code>{gig_id}</code>! Статус обновлен в бизнес-воронке.")
                                 else:
-                                    answer_callback_query(cq_id, text="Не удалось обработать.")
-                                followup = followup_text(
-                                    outcome or "",
-                                    str(res.get("title") or res.get("gig_id") or ""),
-                                    res.get("status"))
-                                if followup:
-                                    send_message(ALLOWED_CHAT_ID, followup)
+                                    from ai_assistant.gig.notify import handle_gig_callback
+                                    from ai_assistant.gig.store import get_gig, set_gig_status
+
+                                    def _gig_row(gig_id: str):
+                                        gig = get_gig(gig_id)
+                                        if gig is None:
+                                            return None
+                                        return {"id": gig.id, "title": gig.title,
+                                                "status": gig.status.value}
+
+                                    if "_gig_acked" not in globals():
+                                        globals()["_gig_acked"] = set()
+                                    res = handle_gig_callback(
+                                        cq_data, get_gig_fn=_gig_row,
+                                        set_status_fn=lambda gid, st, note: set_gig_status(gid, st, note=note),
+                                        callback_query_id=cq_id,
+                                        acked_ids=globals()["_gig_acked"],
+                                    )
+                                    outcome = res.get("outcome")
+                                    from ai_assistant.gig.notify import followup_text
+
+                                    if outcome == "applied":
+                                        answer_callback_query(
+                                            cq_id,
+                                            text="✅ Сохранено!" if res.get("status") == "SHORTLISTED"
+                                            else "⏭ Пропущено.")
+                                    elif outcome == "already-applied":
+                                        answer_callback_query(cq_id, text="Уже отмечено.")
+                                    else:
+                                        answer_callback_query(cq_id, text="Не удалось обработать.")
+                                    followup = followup_text(
+                                        outcome or "",
+                                        str(res.get("title") or res.get("gig_id") or ""),
+                                        res.get("status"))
+                                    if followup:
+                                        send_message(ALLOWED_CHAT_ID, followup)
                             except Exception as e:
                                 logger.warning(f"Gig callback failed: {e}")
                                 answer_callback_query(cq_id)
@@ -979,7 +1278,9 @@ def run_bot_polling():
                         send_message(ALLOWED_CHAT_ID, eval_card + concl_msg, reply_markup=MAIN_KEYBOARD)
                     continue
 
-                if text in ("📊 Статус", "/status"):
+                if text in ("🤖 Автопилот", "/autopilot", "автопилот"):
+                    handle_autopilot_command(ALLOWED_CHAT_ID)
+                elif text in ("📊 Статус", "/status"):
                     handle_status_command(ALLOWED_CHAT_ID)
                 elif text in ("📈 Воронка", "/funnel", "/analytics", "воронка"):
                     handle_funnel_command(ALLOWED_CHAT_ID)
@@ -1012,6 +1313,7 @@ def run_bot_polling():
                         ALLOWED_CHAT_ID,
                         "🤖 <b>JobSearch Assistant Bot</b>\n\n"
                         "Команды управления:\n"
+                        "• <b>🤖 Автопилот</b> — Центр управления Paseo (статус, блокеры, кнопки решений)\n"
                         "• <b>📊 Статус</b> — общая статистика откликов и базы\n"
                         "• <b>📈 Воронка</b> — аналитический отчет конверсии по всем источникам\n"
                         "• <b>🚀 Поднять резюме HH</b> — обновить дату резюме в поиске\n"

@@ -760,13 +760,6 @@ def run_daemon_loop() -> None:
                 _enter_pause(autopilot_pid, autopilot_lock_ts)
                 _heartbeat_tick(tick_count)
                 _watchdog_check()
-                if session:
-                    logger.info("Autopilot cycle active; yielding browser and pausing realtime daemon...")
-                    try:
-                        session.stop()
-                    except Exception as e_stop:
-                        logger.debug("Error stopping session during yield: %s", e_stop)
-                    session = None
                 time.sleep(PAUSE_RECHECK_SECONDS)
                 continue
 
@@ -904,19 +897,15 @@ def run_daemon_loop() -> None:
                     last_neg_scan_time = now
 
             # 5. Sleep for the next tick
-            sleep_remaining = float(POLL_INTERVAL_SECONDS)
-            while sleep_remaining > 0 and _running:
-                step = min(1.0, sleep_remaining)
-                time.sleep(step)
-                sleep_remaining -= step
+            _interruptible_sleep(POLL_INTERVAL_SECONDS)
 
     finally:
         logger.info("HeadHunter Realtime Daemon stopping...")
         if session:
             try:
-                session.stop()
+                session.close_all_owned_tabs()
             except Exception as e_final:
-                logger.debug("Error stopping session at exit: %s", e_final)
+                logger.debug("Error closing session tabs at exit: %s", e_final)
         release_daemon_lock()
         logger.info("HeadHunter Realtime Daemon stopped cleanly.")
 

@@ -21,7 +21,6 @@ from typing import Any
 from . import hh_browser_lease as lease
 from . import hh_browser_provider as bp
 from . import hh_structured_preflight as sp
-from . import shortlist_selection as selection
 from .candidate_profile import load_candidate_profile
 
 SEARCH_URL = "https://hh.ru/search/vacancy?text=%D0%91%D0%B8%D1%82%D1%80%D0%B8%D0%BA%D1%81&area=1"
@@ -339,6 +338,10 @@ def run_search_operation(
     settled on. Per vacancy it gets the structured preflight (§6) and the A/B/C band
     (§7), or the reason it could not be read.
     """
+    # Required for a real search. Imported before the browser lease so a missing
+    # selector raises ImportError and does not open Chrome or choose a fallback list.
+    from . import shortlist_selection as selection
+
     outcome: dict[str, Any] = {
         "owner_type": owner_type,
         "purpose": purpose,

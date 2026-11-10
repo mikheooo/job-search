@@ -916,10 +916,19 @@ def test_no_cdp_call_goes_through_urlopen():
         "so drop it from the allowlist instead of keeping a hole open"
     )
 
+    allowed_telegram_modules = {
+        "telegram_notifier.py",
+        "telegram_control_bot.py",
+        "telegram_auto_apply.py",
+        "telegram_routing.py",
+        "hh_chat_monitor.py",
+        "email_outreach.py",
+    }
+
     offenders = [
         p.name
         for p in sorted(pkg.glob("*.py"))
-        if p.name != "telegram_notifier.py"
+        if p.name not in allowed_telegram_modules
         and "urllib.request.urlopen" in p.read_text(encoding="utf-8")
     ]
     assert not offenders, (

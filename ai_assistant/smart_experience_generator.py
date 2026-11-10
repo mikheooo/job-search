@@ -197,6 +197,41 @@ def synthesize_contextual_chat_reply_with_llm(
         if not _is_reply_avoided(cand, avoid_replies):
             return cand
 
+    # 1d. VPN / 2FA / MFA / Remote Access & Network Security
+    if any(w in q_low for w in ["впн", "vpn", "openvpn", "wireguard"]) or any(
+        w in q_low for w in ["двухфакторн", "2fa", "mfa", "мфа", "аутентификац"]
+    ):
+        cand = (
+            "Да, умею и настраивал: в рамках инфраструктурных задач на Linux и Windows развёртывал "
+            "VPN-серверы (OpenVPN, WireGuard) и настраивал двухфакторную аутентификацию (2FA/MFA) — "
+            "как через TOTP (Google Authenticator), так и в связке с Active Directory и RADIUS. "
+            "Готов обсудить задачи на интервью."
+        )
+        if not _is_reply_avoided(cand, avoid_replies):
+            return cand
+
+    # 1e. System Administration / Active Directory / Windows Server / Linux
+    if any(w in q_low for w in ["active directory", "актив директори", "сисадмин", "системн администрирован", "windows server", "gpo", "домен"]) or (
+        "linux" in q_low and any(w in q_low for w in ["администрирован", "настройк", "сервер", "опыт"])
+    ):
+        cand = (
+            "Да, у меня более 15 лет общего опыта в IT, значительная часть которого — системное администрирование: "
+            "развёртывание и поддержка Active Directory, GPO, Windows Server, Linux-серверов, сетевых сервисов, "
+            "мониторинга и резервного копирования, а также автоматизация задач на Bash и PowerShell."
+        )
+        if not _is_reply_avoided(cand, avoid_replies):
+            return cand
+
+    # 1f. Bitrix24 / CRM Administration & Integrations
+    if any(w in q_low for w in ["битрикс", "bitrix", "битрикс24", "bitrix24", "bx24"]):
+        cand = (
+            "Да, работал с Битрикс24: администрировал self-hosted и облачные порталы, настраивал бизнес-процессы, "
+            "роботы, CRM, права доступа, а также делал интеграции со сторонними сервисами и мессенджерами "
+            "через REST API и вебхуки на Python и n8n."
+        )
+        if not _is_reply_avoided(cand, avoid_replies):
+            return cand
+
     # 2. Live LLM contextual generation (unless running inside pytest/offline)
     import os
     if not os.getenv("PYTEST_CURRENT_TEST") and os.getenv("EXTERNAL_FORM_FILLER_OFFLINE") != "1":

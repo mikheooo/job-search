@@ -30,6 +30,12 @@ if sys.stderr is not None:
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+_venv_site = PROJECT_ROOT / ".venv" / "Lib" / "site-packages"
+if _venv_site.exists() and str(_venv_site) not in sys.path:
+    sys.path.insert(0, str(_venv_site))
+_agent_site = pathlib.Path(r"C:\Users\Misha\.agent-reach-venv\Lib\site-packages")
+if _agent_site.exists() and str(_agent_site) not in sys.path:
+    sys.path.insert(0, str(_agent_site))
 
 try:
     from dotenv import load_dotenv

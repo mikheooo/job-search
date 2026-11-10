@@ -121,10 +121,16 @@ class TestAutoReplyFlagsAndGates:
         assert _auto_enabled({}) is False
 
     def test_autonomous_reply_enabled_with_both_var_names(self):
-        assert _autonomous_reply_enabled({"HH_AUTO_REPLY_ENABLED": "true"}) is True
+        # HH_AUTO_REPLY_ENABLED arms only the guarded reply pipeline.
+        # The ungated send stays off unless HH_AUTONOMOUS_REPLY_ENABLED is true.
+        assert _autonomous_reply_enabled({"HH_AUTO_REPLY_ENABLED": "true"}) is False
         assert _autonomous_reply_enabled({"HH_AUTONOMOUS_REPLY_ENABLED": "true"}) is True
         assert _autonomous_reply_enabled({"HH_AUTONOMOUS_REPLY_ENABLED": "false"}) is False
         assert _autonomous_reply_enabled({}) is False
+        assert _autonomous_reply_enabled({
+            "HH_AUTO_REPLY_ENABLED": "true",
+            "HH_AUTONOMOUS_REPLY_ENABLED": "false",
+        }) is False
 
     def test_auto_forbidden_re_strictly_matches_critical_topics(self):
         forbidden_samples = [

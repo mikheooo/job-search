@@ -571,6 +571,10 @@ def _ws_call(ws_url: str, method: str, params: dict[str, Any] | None = None,
     payload = {"id": 1, "method": method, "params": params or {}}
 
     async def _run() -> dict[str, Any]:
+        import sys
+        _p = r"C:\Users\Misha\.agent-reach-venv\Lib\site-packages"
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
         import websockets
 
         async with websockets.connect(

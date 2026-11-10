@@ -44,8 +44,8 @@ def _dashboard_cors_origins() -> list:
     raw = os.getenv("DASHBOARD_CORS_ORIGINS", "").strip()
     if raw:
         return [o.strip() for o in raw.split(",") if o.strip()]
-    # Same-origin dashboard needs no CORS; default allows only loopback.
-    return ["http://localhost:8000", "http://127.0.0.1:8000"]
+    # Same-origin dashboard needs no CORS; default allows loopback on 8000 and 8001.
+    return ["http://localhost:8000", "http://127.0.0.1:8000", "http://localhost:8001", "http://127.0.0.1:8001"]
 
 
 def _dashboard_token() -> str:
@@ -151,6 +151,115 @@ class CollectRequest(BaseModel):
     sources: list[str] | None = None
 
 
+class ResolveTaskRequest(BaseModel):
+    task_id: int
+    status: str = "RESOLVED"
+    note: str | None = None
+
+
+@app.get("/api/autopilot/status")
+def get_autopilot_status() -> dict[str, Any]:
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+
+    # 1. Blockers / Actions required from user
+    c.execute("""
+        SELECT id, task_key, priority, title, description, action_url, status, created_at, updated_at
+        FROM user_action_tasks
+        WHERE status = 'PENDING'
+        ORDER BY id DESC
+    """)
+    cols = ["id", "task_key", "priority", "title", "description", "action_url", "status", "created_at", "updated_at"]
+    blockers = [dict(zip(cols, r)) for r in c.fetchall()]
+
+    # 2. Submitted proposals (Kwork / freelance)
+    c.execute("""
+        SELECT id, gig_id, source, title, budget_text, proposal_pitch, status, updated_at
+        FROM top_gig_proposals
+        WHERE status = 'SUBMITTED'
+        ORDER BY updated_at DESC
+    """)
+    p_cols = ["id", "gig_id", "source", "title", "budget_text", "proposal_pitch", "status", "updated_at"]
+    submitted_gigs = [dict(zip(p_cols, r)) for r in c.fetchall()]
+
+    # 3. Thailand prepared applications
+    thailand_apps = []
+    root_dir = Path(__file__).resolve().parents[2]
+    th_file = root_dir / "data" / "thailand_applications.json"
+    if th_file.exists():
+        try:
+            thailand_apps = json.loads(th_file.read_text(encoding="utf-8"))
+        except Exception:
+            thailand_apps = []
+
+    # 4. Hot employer communications (HH)
+    hot_chats = []
+    try:
+        c.execute("""
+            SELECT conversation_id, sender, snippet, classification, status, created_at
+            FROM hh_message_events
+            WHERE classification IN ('NEEDS_REPLY', 'INTERVIEW_INVITATION', 'RECRUITER_QUESTION')
+            ORDER BY id DESC LIMIT 5
+        """)
+        m_cols = ["conversation_id", "sender", "snippet", "classification", "status", "created_at"]
+        hot_chats = [dict(zip(m_cols, r)) for r in c.fetchall()]
+    except Exception:
+        hot_chats = []
+
+    # 5. Model roles & Live queue tasks (from user_action_tasks)
+    roles = {
+        "worker": {"name": "CodeBuddy", "model": "hy4-preview (Tencent Hunyuan 4, Free)", "status": "READY"},
+        "qa": {"name": "Antigravity", "model": "gemini-3.8-flash-high", "status": "ACTIVE"},
+        "reviewer": {"name": "OpenCode", "model": "muse-spark-1.3 (Free)", "status": "READY"},
+        "manager": {"name": "Antigravity Lead", "model": "gemini-3.8-flash-high", "status": "ACTIVE"}
+    }
+
+    queue_tasks: list[dict[str, Any]] = []
+    try:
+        c.execute("""
+            SELECT id, task_key, priority, title, description, action_url, status, created_at, updated_at
+            FROM user_action_tasks
+            ORDER BY CASE status WHEN 'ACTIVE' THEN 1 WHEN 'IN_PROGRESS' THEN 2 WHEN 'QUEUED' THEN 3 ELSE 4 END, id DESC
+            LIMIT 20
+        """)
+        t_cols = ["id", "task_key", "priority", "title", "description", "action_url", "status", "created_at", "updated_at"]
+        db_tasks = [dict(zip(t_cols, r)) for r in c.fetchall()]
+        for t in db_tasks:
+            queue_tasks.append({
+                "id": str(t["id"]),
+                "title": t["title"] or t["task_key"] or f"Task #{t['id']}",
+                "status": t["status"] or "QUEUED",
+                "details": t["description"] or "",
+            })
+    except Exception:
+        queue_tasks = []
+
+    conn.close()
+
+    return {
+        "blockers": blockers,
+        "submitted_gigs": submitted_gigs,
+        "thailand_applications": thailand_apps,
+        "hot_chats": hot_chats,
+        "roles": roles,
+        "queue_tasks": queue_tasks
+    }
+
+
+@app.post("/api/autopilot/resolve-task")
+def resolve_autopilot_task(req: ResolveTaskRequest) -> dict[str, Any]:
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+    from datetime import datetime
+    now_iso = datetime.utcnow().isoformat()
+    c.execute("UPDATE user_action_tasks SET status = ?, updated_at = ? WHERE id = ?", (req.status, now_iso, req.task_id))
+    conn.commit()
+    conn.close()
+    return {"status": "success", "task_id": req.task_id, "new_status": req.status}
+
+
 @app.get("/api/stats")
 def get_stats() -> dict[str, Any]:
     init_db()
@@ -175,6 +284,13 @@ def get_stats() -> dict[str, Any]:
     cursor.execute("SELECT status, COUNT(*) FROM vacancy_eligibility GROUP BY status")
     by_eligibility = dict(cursor.fetchall())
 
+    bf_metrics = {}
+    try:
+        from ..business_funnel import get_business_funnel_metrics
+        bf_metrics = get_business_funnel_metrics()
+    except Exception:
+        pass
+
     return {
         "total_vacancies": total_vacancies,
         "by_source": by_source,
@@ -182,7 +298,30 @@ def get_stats() -> dict[str, Any]:
         "total_packages": total_packages,
         "tracking_status": by_tracking,
         "eligibility": by_eligibility,
+        "business_funnel": bf_metrics,
     }
+
+
+@app.get("/api/business-funnel")
+def get_business_funnel() -> dict[str, Any]:
+    from ..business_funnel import get_business_funnel_metrics
+    return get_business_funnel_metrics()
+
+
+@app.get("/api/top-gigs")
+def get_top_gigs() -> list[dict[str, Any]]:
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("""
+        SELECT gig_id, source, title, budget_text, contact, deeplink, url, proposal_pitch, status, created_at
+        FROM top_gig_proposals
+        ORDER BY id ASC
+    """)
+    rows = c.fetchall()
+    conn.close()
+    cols = ["gig_id", "source", "title", "budget_text", "contact", "deeplink", "url", "proposal_pitch", "status", "created_at"]
+    return [dict(zip(cols, r)) for r in rows]
 
 
 @app.get("/api/vacancies")
