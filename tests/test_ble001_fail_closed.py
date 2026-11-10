@@ -1669,7 +1669,7 @@ def _save_non_hh_vacancy(job_id: str) -> None:
             source_job_id=job_id,
             title="Python Developer",
             company="TestCo",
-            description="A perfectly ordinary remote job description",
+            description="A perfectly ordinary remote job description. Work from anywhere in the world (worldwide remote), candidates from Thailand are welcome.",
             job_url=url,
             location="Remote",
         )
@@ -2546,6 +2546,22 @@ def _watch_cycle(monkeypatch, ev):
         run_message_watcher_cycle,
     )
 
+    from contextlib import contextmanager
+    from ai_assistant import hh_browser_lease as _lease
+
+    class _FakeSession:
+        def start(self):
+            return {"ok": True}
+        def open_hh_page(self, url):
+            return True
+
+    @contextmanager
+    def _fake_op(*a, **k):
+        yield {"session": _FakeSession(), "release_on_exit": True}
+
+    from ai_assistant import hh_browser_provider as _bp
+    monkeypatch.setattr(_bp, "port_is_listening", lambda *a, **k: True)
+    monkeypatch.setattr(_lease, "hh_operation", _fake_op)
     monkeypatch.setattr(cli, "_resolve_hh_evaluate", lambda **kw: ev)
     monkeypatch.setattr(hbl, "ensure_hh_browser", lambda **kw: {"ok": True})
     cfg = HHMessageWatcherConfig(

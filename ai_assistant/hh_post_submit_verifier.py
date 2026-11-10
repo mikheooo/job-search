@@ -276,6 +276,9 @@ def verify_hh_submitted_application(
         # An explicit endpoint is honoured; the release refuses to close a
         # browser that turns out not to be ours (9110/BrowserOS).
         session_kwargs["cdp_url"] = cdp_url
+    else:
+        from .cli import _default_hh_cdp_url
+        session_kwargs["cdp_url"] = _default_hh_cdp_url()
 
     try:
         with lease.hh_operation(

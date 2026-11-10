@@ -32,13 +32,14 @@ from ai_assistant.db_schema import schema_fingerprint
 
 # Число DDL-операторов в apply_schema. Растёт только вместе с DDL, и тогда
 # растёт заодно и порог journal-циклов ниже.
-DDL_COUNT = 90
+DDL_COUNT = 92
 
 # Отпечаток исходного текста apply_schema. Правка DDL меняет его — это и есть
 # смысл отпечатка, поэтому при осознанном изменении схемы пин обновляют руками.
 # Здесь он доказывает, что правка границы транзакции DDL не тронула.
 # c00fdd4156b0a7e4 — добавление таблиц gigs/gig_events, followups, tracking, alerts.
-FINGERPRINT_PIN = "c00fdd4156b0a7e4"
+# e930e9a0e0c4f123 — добавление таблицы gig_events и индекса idx_gig_events_gig_id.
+FINGERPRINT_PIN = "e930e9a0e0c4f123"
 
 
 class _Injected(Exception):

@@ -567,6 +567,17 @@ def apply_schema(conn: sqlite3.Connection) -> None:
     ''')
     cursor.execute('''CREATE INDEX IF NOT EXISTS idx_gigs_status ON gigs(status)''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS gig_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            gig_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            detail_json TEXT,
+            created_at TEXT NOT NULL
+        )
+    ''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_gig_events_gig_id ON gig_events(gig_id)''')
+
     # Top gig proposals for freelance & direct orders
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS top_gig_proposals (

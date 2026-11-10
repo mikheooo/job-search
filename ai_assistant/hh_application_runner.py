@@ -319,6 +319,9 @@ def run_application(
         session_kwargs: dict = {"require_auth": False}
         if cdp_url:
             session_kwargs["cdp_url"] = cdp_url
+        else:
+            from .cli import _default_hh_cdp_url
+            session_kwargs["cdp_url"] = _default_hh_cdp_url()
         try:
             with lease.hh_operation(
                 lease.OWNER_CLI, purpose="application",
