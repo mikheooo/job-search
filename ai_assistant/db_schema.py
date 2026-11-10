@@ -493,6 +493,41 @@ def apply_schema(conn: sqlite3.Connection) -> None:
     cursor.execute('''CREATE INDEX IF NOT EXISTS idx_tg_feedback_action ON telegram_feedback_records(action)''')
     cursor.execute('''CREATE INDEX IF NOT EXISTS idx_tg_feedback_cb ON telegram_feedback_records(callback_query_id)''')
     cursor.execute('''CREATE INDEX IF NOT EXISTS idx_tg_feedback_created ON telegram_feedback_records(created_at)''')
+
+    # User action tasks for Autopilot Center & Dashboard
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_action_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_key TEXT NOT NULL UNIQUE,
+            priority TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            action_url TEXT,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    ''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_user_tasks_status ON user_action_tasks(status)''')
+
+    # Top gig proposals for freelance & direct orders
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS top_gig_proposals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            gig_id TEXT NOT NULL UNIQUE,
+            source TEXT,
+            title TEXT NOT NULL,
+            budget_text TEXT,
+            contact TEXT,
+            deeplink TEXT,
+            url TEXT,
+            proposal_pitch TEXT,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    ''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_top_gigs_status ON top_gig_proposals(status)''')
     conn.commit()
 
 _FINGERPRINT: str | None = None
