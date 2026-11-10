@@ -583,3 +583,20 @@ def serve_index() -> HTMLResponse:
     if not index_file.exists():
         return HTMLResponse("<h1>Job Search UI is loading...</h1>", status_code=200)
     return HTMLResponse(content=index_file.read_text(encoding="utf-8"))
+
+
+HUB_STATIC_FILE = Path(__file__).resolve().parent.parent / "hub" / "static" / "hub.html"
+
+
+@app.get("/hub", response_class=HTMLResponse)
+def serve_hub() -> HTMLResponse:
+    if not HUB_STATIC_FILE.exists():
+        return HTMLResponse("<h1>Job Search Hub is loading...</h1>", status_code=200)
+    return HTMLResponse(content=HUB_STATIC_FILE.read_text(encoding="utf-8"))
+
+
+# Wire Hub & Interview API routes
+from ..hub.api import router as hub_router
+
+app.include_router(hub_router)
+

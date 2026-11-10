@@ -744,3 +744,37 @@ def strip_repeated_greeting(text: str) -> str:
     if cleaned and cleaned[0].islower():
         cleaned = cleaned[0].upper() + cleaned[1:]
     return cleaned
+
+
+def _is_well_formed_reply(text: str) -> bool:
+    """Validate that a generated chat reply is grammatically complete, safe, and not truncated."""
+    if not text or not isinstance(text, str):
+        return False
+    cand = text.strip()
+    if len(cand) < 20 or len(cand) > 2500:
+        return False
+    words = re.findall(r"[а-яёa-z]+", cand.lower())
+    if not words:
+        return False
+    forbidden_tails = {
+        "в", "на", "с", "со", "и", "а", "но", "к", "ко", "о", "об", "обо", "от",
+        "по", "из", "у", "не", "для", "под", "над", "при", "через", "без", "до",
+        "за", "про", "также", "что", "как", "где", "или", "the", "a", "an", "in",
+        "on", "at", "to", "for", "with", "and", "or", "of",
+    }
+    if words[-1] in forbidden_tails:
+        return False
+    body = re.sub(
+        r"(\n+|^)(?:с\s+уважением|best\s+regards|telegram|тг|тел|phone|email|почта|контакт).*$",
+        "",
+        cand,
+        flags=re.IGNORECASE | re.DOTALL,
+    ).strip()
+    check_target = body if body else cand
+    valid_terminals = (".", "!", "?", "»", '"', ")", "…")
+    if check_target[-1] not in valid_terminals:
+        if re.search(r"(@[a-zA-Z0-9_]+|\d{4,}|github\.com/[^\s]+)$", cand):
+            return True
+        return False
+    return True
+

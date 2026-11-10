@@ -90,6 +90,9 @@ def _is_valid_transition(old: ApplicationStatus, new: ApplicationStatus) -> bool
     allowed = _ALLOWED.get(old, [])
     return new in allowed
 
+
+is_valid_transition = _is_valid_transition
+
 def _row_to_record(row: tuple) -> ApplicationRecord:
     # row order matches table columns
     return ApplicationRecord(

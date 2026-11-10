@@ -89,6 +89,8 @@ class HHDialog(BaseModel):
     vacancy_stable_id: str = ""  # hh:<id> when provable
     employer: str = ""
     messages: list[HHMessage] = Field(default_factory=list)
+    unread_count: int = 0
+    has_unread: bool = False
 
     model_config = {"extra": "forbid"}
 
@@ -2152,7 +2154,9 @@ def fetch_hh_conversations_list_readonly(
     except json.JSONDecodeError as exc:
         return {"error": str(exc), "conversations": []}
 
-    if not isinstance(first_res, dict):
+    if isinstance(first_res, list):
+        first_res = {"conversations": first_res}
+    elif not isinstance(first_res, dict):
         return {
             "error": f"dialog list evaluate returned {type(first_res).__name__}, not a payload",
             "conversations": [],

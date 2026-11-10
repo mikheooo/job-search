@@ -324,8 +324,8 @@ def test_automatic_recruiter_question_reply(clean_db):
     conv_id = "conv_question_999"
 
     def mock_cdp_q(script: str) -> str:
-        if "chatik-new-message-text" in script or "chat-input" in script or "input.value" in script:
-            return json.dumps({"ok": True})
+        if "sendBtn" in script or "input.focus()" in script or "setter.call" in script or ("chat-input" in script and "composer_present" not in script):
+            return json.dumps({"ok": True, "conversation_id": conv_id, "verified_in_hh": True})
         return json.dumps([{
             "conversation_id": conv_id,
             "vacancy_title": "Python Developer",

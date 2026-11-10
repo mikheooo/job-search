@@ -510,6 +510,63 @@ def apply_schema(conn: sqlite3.Connection) -> None:
     ''')
     cursor.execute('''CREATE INDEX IF NOT EXISTS idx_user_tasks_status ON user_action_tasks(status)''')
 
+    # Gigs store for freelance marketplaces
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS gigs (
+            id TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            url TEXT,
+            title TEXT NOT NULL,
+            description TEXT,
+            category TEXT,
+            skills_json TEXT,
+            budget_min REAL,
+            budget_max REAL,
+            currency TEXT,
+            budget_type TEXT NOT NULL DEFAULT 'unknown',
+            published_at TEXT,
+            client_name TEXT,
+            client_country TEXT,
+            client_rating REAL,
+            client_jobs_posted INTEGER,
+            client_hires INTEGER,
+            client_total_spent REAL,
+            competition INTEGER,
+            proposal_cost REAL,
+            payment_readiness TEXT NOT NULL DEFAULT 'unknown',
+            can_deliver TEXT NOT NULL DEFAULT 'unknown',
+            ai_automation_potential INTEGER,
+            estimated_effort_hours REAL,
+            effective_hourly_rate REAL,
+            client_quality REAL,
+            risk_level TEXT NOT NULL DEFAULT 'unknown',
+            risks_json TEXT,
+            match_score REAL,
+            opportunity_score REAL,
+            score_breakdown_json TEXT,
+            why_matched_json TEXT,
+            why_risky_json TEXT,
+            rejection_reasons_json TEXT,
+            status TEXT NOT NULL DEFAULT 'NEW',
+            content_hash TEXT,
+            raw_json TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            source_mode TEXT,
+            source_scope TEXT,
+            source_url TEXT,
+            fetched_at TEXT,
+            source_status TEXT,
+            first_seen_at TEXT,
+            last_seen_at TEXT,
+            platform_payment_options_json TEXT,
+            source_facts_json TEXT,
+            derived_fields_json TEXT
+        )
+    ''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_gigs_status ON gigs(status)''')
+
     # Top gig proposals for freelance & direct orders
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS top_gig_proposals (
