@@ -111,7 +111,8 @@ GENERIC_SKILL_LABELS: frozenset[str] = frozenset({
 FOREIGN_STACKS: tuple[str, ...] = (
     "salesforce", "hubspot", "monday.com", "zoho", "bitrix24", "shopify",
     "woocommerce", "wordpress", "laravel", "react native", "supabase", "firebase",
-    "kubernetes", "google cloud", "stripe",
+    "kubernetes", "google cloud", "stripe", "tilda", "тильда", "figma",
+    "3d modeling", "3d animation", "blender",
 )
 
 

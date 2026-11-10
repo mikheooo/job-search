@@ -558,6 +558,7 @@ NON_IT_DOMAIN_MARKERS: tuple[str, ...] = (
     "graphic design", "logo design", "illustration", "caricature", "print design",
     "content writing", "copywriting", "article writing", "creative writing",
     "seo writing", "translation", "proofreading", "copy editing",
+    "3d modeling", "3d rendering", "tilda",
 )
 
 

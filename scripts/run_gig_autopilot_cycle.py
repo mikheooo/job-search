@@ -430,13 +430,25 @@ def run_gig_cycle(
             except (ValueError, TypeError):
                 pass
 
-        # Filter out non-IT / content / design / sales jobs
+        # Filter out non-IT / content / design / sales / pure website layout jobs
         text_low = f"{gig.title} {gig.description}".lower()
+        title_low = (gig.title or "").lower()
+
+        # Hard exclusions based on title or primary scope (even if client casually adds '+ бот')
+        pure_design_web_markers = (
+            "тильд", "tilda", "3d график", "3d анимац", "3d модел", "3d-график",
+            "3d-анимац", "3d-модел", "дизайн сайт", "дизайн кухон", "дизайн интерьер",
+            "веб-дизайн", "верстка сайт", "верстка лендинг", "figma", "фигма",
+        )
+        if any(m in title_low for m in pure_design_web_markers):
+            continue
+
         non_it_markers = (
             "контент-менеджер", "копирайтер", "копирайтинг", "smm", "таргетолог",
             "видеомонтаж", "видеомонтажер", "дизайн логотип", "дизайнер интерьер",
             "графическ", "дизайн баннер", "рерайтинг", "написание статей", "переводчик", "озвучка",
-            "менеджер по продажам", "оператор колл", "холодные звонки", "тильда", "tilda",
+            "менеджер по продажам", "оператор колл", "холодные звонки", "тильд", "tilda",
+            "3d график", "3d анимац", "3d модел", "веб-дизайн",
         )
         if any(m in text_low for m in non_it_markers) and not any(k in text_low for k in ("python", "парс", "bot", "бот", "aiogram", "n8n", "linux", "bitrix", "битрикс")):
             continue

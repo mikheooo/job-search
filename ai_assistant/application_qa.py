@@ -491,11 +491,23 @@ class QuestionAnswerGenerator:
                             type(exc).__name__,
                         )
                     if resolved is None:
-                        pos_opts = [
-                            o for o in question.options
-                            if o and not any(neg in o.lower() for neg in ["нет", "не готов", "не согласен", "отказ", "не владею", "no", "свой вариант"])
-                        ]
-                        resolved = pos_opts[0] if pos_opts else question.options[0]
+                        # If question is asking about hardware/telecom equipment or unfamiliar niche technologies,
+                        # don't falsely claim multi-year experience!
+                        q_low = (question.label or "").lower()
+                        is_niche_hw = any(k in q_low for k in ("ran", "huawei", "ericsson", "zte", "базов", "bng", "bras", "dwdm", "волс", "оптоволокн"))
+                        if is_niche_hw:
+                            modest_opts = [
+                                o for o in question.options
+                                if o and any(m in o.lower() for m in ["нет", "менее 1 года", "до 1 года", "не работал", "не знаком", "нет опыта", "no"])
+                            ]
+                            if modest_opts:
+                                resolved = modest_opts[0]
+                        if resolved is None:
+                            pos_opts = [
+                                o for o in question.options
+                                if o and not any(neg in o.lower() for neg in ["нет", "не готов", "не согласен", "отказ", "не владею", "no", "свой вариант"])
+                            ]
+                            resolved = pos_opts[0] if pos_opts else question.options[0]
                 else:
                     resolved = "Да"
 

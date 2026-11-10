@@ -55,7 +55,8 @@ _ROLE_GATE_BLOCK_RE = re.compile(
     r"machine\s+learning|ml\s+engineer|data\s+scientist|исследовател\w*|"
     r"blockchain|blockчейн|sales|продаж\w*|маркетолог|seo\b|smm\b|"
     r"медицинск\w*|клиник\w*|стоматолог\w*|салон\w*|секретар\w*|ресепшн|"
-    r"офис-менеджер|call[- ]?центр|колл-центр)"
+    r"офис-менеджер|call[- ]?центр|колл-центр|"
+    r"базов\w*\s+станци\w*|\bran\b|bng\b|bras\b|dwdm\b|оптоволок\w*|монтажник|волс\b|радиорел\w*)"
 )
 _ROLE_GATE_POSITIVE_RE = re.compile(
     r"(?i)(поддержк\w*|администратор|администрир\w*|system\s+admin|sysadmin|"
