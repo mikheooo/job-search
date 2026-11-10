@@ -12,8 +12,7 @@ opt-in via environment kill-switches and never guess facts.
 ## 1. What it does
 
 - Collects vacancies from remote and tech job boards (habrcareer, remoteok,
-  weworkremotely, himalayas; plus Bangkok/international: geekjob, hirify,
-  bangkok_direct_careers, linkedin_bangkok, telegram_channels; legacy: linkedin, wellfound).
+  weworkremotely, himalayas; legacy: linkedin, wellfound).
 - Normalizes and deduplicates them into a canonical identity store.
 - Prefilters by stop-words / required words / minimum salary.
 - Scores vacancies against `candidate_profile.json` (hard constraints +

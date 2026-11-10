@@ -21,6 +21,16 @@ except Exception:
 
 ANALYZER_VERSION = "v1"
 
+#: Markers used to classify requirement lines in vacancy descriptions. Shared
+#: between job_analyzer.py and candidate/job_brief.py so the two cannot drift
+#: apart and start disagreeing about what counts as a requirement.
+#:
+#: Order matters. A segment carrying both a must marker and a nice marker is a
+#: must-have, which is why the must tuple is tested first -- the same precedence
+#: the inline lists had before they moved here.
+MUST_HAVE_MARKERS: tuple[str, ...] = ("must", "required", "треб", "обязат")
+NICE_TO_HAVE_MARKERS: tuple[str, ...] = ("nice", "plus", "желательно", "плюс")
+
 
 class DeepAnalysisResult(BaseModel):
     fit_score: int = Field(..., ge=0, le=100, description="0-100 fit score")
@@ -204,9 +214,9 @@ def _fallback_analysis(vacancy: Vacancy, profile: CandidateProfile, match: Match
     # very simple heuristic: extract bullet-like lines
     for line in (vacancy.description or "").splitlines():
         ll = line.strip().lower()
-        if any(k in ll for k in ["must", "required", "треб", "обязат"]):
+        if any(k in ll for k in MUST_HAVE_MARKERS):
             must.append(line.strip()[:120])
-        elif any(k in ll for k in ["nice", "plus", "желательно", "плюс"]):
+        elif any(k in ll for k in NICE_TO_HAVE_MARKERS):
             nice.append(line.strip()[:120])
     if not must:
         # fallback: first 3 short sentences as must

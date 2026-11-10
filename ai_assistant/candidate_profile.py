@@ -400,11 +400,9 @@ class CandidateProfile:
         return d
 
 
-# Default search locations (project root and ai_assistant folder)
+# Default search locations (project root)
 DEFAULT_PROFILE_PATHS = [
     Path("candidate_profile.json"),
-    Path("ai_assistant/candidate_profile.json"),
-    Path(__file__).parent / "candidate_profile.json",
 ]
 
 
