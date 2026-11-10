@@ -1,6 +1,8 @@
 import json
 import logging
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
@@ -84,6 +86,37 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+@contextmanager
+def db_session(*, commit: bool = True) -> Iterator[sqlite3.Connection]:
+    """Context manager for SQLite database operations.
+
+    Yields an active SQLite connection.
+    If commit=True (default), automatically commits on clean exit.
+    If an exception is raised, performs rollback before re-raising.
+    Guarantees connection closure in a finally block to eliminate leaks.
+    """
+    conn = get_connection()
+    try:
+        yield conn
+        if commit:
+            conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
+@contextmanager
+def db_cursor(*, commit: bool = True) -> Iterator[sqlite3.Cursor]:
+    """Context manager yielding a cursor from a managed db_session."""
+    with db_session(commit=commit) as conn:
+        yield conn.cursor()
+
+
 def _configure_sqlite_temp_storage(conn: sqlite3.Connection) -> None:
     """Keep SQLite temp b-trees in memory for this connection only.
 
@@ -103,11 +136,8 @@ def ensure_schema() -> None:
     143 вызова init_db() за прогон больше не прогоняют 84 DDL-оператора каждый:
     сверяется fingerprint схемы, и если он совпал — выходим сразу.
     """
-    conn = get_connection()
-    try:
+    with db_session(commit=False) as conn:
         _ensure_schema_on(conn)
-    finally:
-        conn.close()
 
 
 def _ensure_schema_on(conn: sqlite3.Connection) -> None:
@@ -139,11 +169,10 @@ def init_db() -> None:
 
 def is_processed(vacancy_id: str, current_hash: str) -> bool:
     """Проверяет, обрабатывалась ли вакансия с таким же хешем."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT content_hash FROM processed_vacancies WHERE id = ?', (str(vacancy_id),))
-    row = cursor.fetchone()
-    conn.close()
+    with db_session(commit=False) as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT content_hash FROM processed_vacancies WHERE id = ?', (str(vacancy_id),))
+        row = cursor.fetchone()
 
     if not row:
         return False
@@ -151,18 +180,16 @@ def is_processed(vacancy_id: str, current_hash: str) -> bool:
 
 
 def save_status(vacancy_id: str, status: str, content_hash: str = None):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO processed_vacancies (id, status, content_hash, processed_at)
-        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(id) DO UPDATE SET 
-            status=excluded.status, 
-            content_hash=excluded.content_hash,
-            processed_at=CURRENT_TIMESTAMP
-    ''', (str(vacancy_id), status, content_hash))
-    conn.commit()
-    conn.close()
+    with db_session() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO processed_vacancies (id, status, content_hash, processed_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(id) DO UPDATE SET 
+                status=excluded.status, 
+                content_hash=excluded.content_hash,
+                processed_at=CURRENT_TIMESTAMP
+        ''', (str(vacancy_id), status, content_hash))
 
 
 def save_vacancy(vacancy) -> str:
@@ -180,61 +207,98 @@ def save_vacancy(vacancy) -> str:
     from .vacancy_identity import normalize_url
     
     init_db()
-    conn = get_connection()
-    cursor = conn.cursor()
-    
     sid = vacancy.stable_id()
     raw_url = str(vacancy.job_url or "").strip()
     norm_url = normalize_url(raw_url) if raw_url else raw_url
     now_iso = _to_iso(vacancy.last_seen_at) or datetime.utcnow().isoformat()
     first_seen_iso = _to_iso(vacancy.first_seen_at) or now_iso
 
-    # 1. Lookup existing by stable_id or by job_url
-    cursor.execute('''
-        SELECT stable_id, job_url, title, company, description, location, 
-               salary_min, salary_max, salary_currency, employment_type,
-               first_seen_at, last_seen_at, state, match_score, match_decision,
-               match_reasons, match_strengths, match_gaps, raw_data
-        FROM vacancies
-        WHERE stable_id = ? OR job_url = ?
-    ''', (sid, norm_url))
-    rows = cursor.fetchall()
-    
-    if rows:
-        # Match found!
-        existing = rows[0]
-        ex_sid = existing[0]
-        ex_url = existing[1]
-        
-        # Check if metadata changed
-        meta_changed = (
-            (vacancy.title and vacancy.title != existing[2]) or
-            (vacancy.company and vacancy.company != existing[3]) or
-            (vacancy.description and vacancy.description != existing[4]) or
-            (vacancy.location and vacancy.location != existing[5]) or
-            (vacancy.salary_min is not None and vacancy.salary_min != existing[6]) or
-            (vacancy.salary_max is not None and vacancy.salary_max != existing[7]) or
-            (vacancy.salary_currency and vacancy.salary_currency != existing[8]) or
-            (vacancy.employment_type and vacancy.employment_type != existing[9])
-        )
-        
-        if meta_changed:
+    try:
+        with db_session() as conn:
+            cursor = conn.cursor()
+            
+            # 1. Lookup existing by stable_id or by job_url
             cursor.execute('''
-                UPDATE vacancies SET
-                    title = COALESCE(NULLIF(?, ''), title),
-                    company = COALESCE(NULLIF(?, ''), company),
-                    description = COALESCE(NULLIF(?, ''), description),
-                    location = COALESCE(NULLIF(?, ''), location),
-                    country_restrictions = ?,
-                    timezone_restrictions = ?,
-                    salary_min = COALESCE(?, salary_min),
-                    salary_max = COALESCE(?, salary_max),
-                    salary_currency = COALESCE(NULLIF(?, ''), salary_currency),
-                    employment_type = COALESCE(NULLIF(?, ''), employment_type),
-                    last_seen_at = ?,
-                    raw_data = ?
-                WHERE stable_id = ?
+                SELECT stable_id, job_url, title, company, description, location, 
+                       salary_min, salary_max, salary_currency, employment_type,
+                       first_seen_at, last_seen_at, state, match_score, match_decision,
+                       match_reasons, match_strengths, match_gaps, raw_data
+                FROM vacancies
+                WHERE stable_id = ? OR job_url = ?
+            ''', (sid, norm_url))
+            rows = cursor.fetchall()
+            
+            if rows:
+                # Match found!
+                existing = rows[0]
+                ex_sid = existing[0]
+                ex_url = existing[1]
+                
+                # Check if metadata changed
+                meta_changed = (
+                    (vacancy.title and vacancy.title != existing[2]) or
+                    (vacancy.company and vacancy.company != existing[3]) or
+                    (vacancy.description and vacancy.description != existing[4]) or
+                    (vacancy.location and vacancy.location != existing[5]) or
+                    (vacancy.salary_min is not None and vacancy.salary_min != existing[6]) or
+                    (vacancy.salary_max is not None and vacancy.salary_max != existing[7]) or
+                    (vacancy.salary_currency and vacancy.salary_currency != existing[8]) or
+                    (vacancy.employment_type and vacancy.employment_type != existing[9])
+                )
+                
+                if meta_changed:
+                    cursor.execute('''
+                        UPDATE vacancies SET
+                            title = COALESCE(NULLIF(?, ''), title),
+                            company = COALESCE(NULLIF(?, ''), company),
+                            description = COALESCE(NULLIF(?, ''), description),
+                            location = COALESCE(NULLIF(?, ''), location),
+                            country_restrictions = ?,
+                            timezone_restrictions = ?,
+                            salary_min = COALESCE(?, salary_min),
+                            salary_max = COALESCE(?, salary_max),
+                            salary_currency = COALESCE(NULLIF(?, ''), salary_currency),
+                            employment_type = COALESCE(NULLIF(?, ''), employment_type),
+                            last_seen_at = ?,
+                            raw_data = ?
+                        WHERE stable_id = ?
+                    ''', (
+                        vacancy.title,
+                        vacancy.company,
+                        vacancy.description,
+                        vacancy.location,
+                        ', '.join(vacancy.country_restrictions),
+                        ', '.join(str(x) for x in vacancy.timezone_restrictions),
+                        vacancy.salary_min,
+                        vacancy.salary_max,
+                        vacancy.salary_currency,
+                        vacancy.employment_type,
+                        now_iso,
+                        str(vacancy.raw_data),
+                        ex_sid,
+                    ))
+                    return "UPDATED"
+                else:
+                    # Metadata is identical -> refresh last_seen_at only
+                    cursor.execute('''
+                        UPDATE vacancies SET last_seen_at = ? WHERE stable_id = ?
+                    ''', (now_iso, ex_sid))
+                    return "UNCHANGED"
+                    
+            # 2. No existing record found -> Insert fresh vacancy
+            cursor.execute('''
+                INSERT INTO vacancies (
+                    stable_id, source, source_job_id, title, company, description, location,
+                    country_restrictions, timezone_restrictions, salary_min, salary_max, salary_currency,
+                    employment_type, job_url, application_url, published_at, first_seen_at, last_seen_at,
+                    state, raw_data, match_score, match_decision, match_reasons, match_strengths, match_gaps
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
             ''', (
+                sid,
+                vacancy.source,
+                vacancy.source_job_id,
                 vacancy.title,
                 vacancy.company,
                 vacancy.description,
@@ -245,76 +309,32 @@ def save_vacancy(vacancy) -> str:
                 vacancy.salary_max,
                 vacancy.salary_currency,
                 vacancy.employment_type,
+                norm_url,
+                vacancy.application_url,
+                _to_iso(vacancy.published_at),
+                first_seen_iso,
                 now_iso,
+                'NEW',
                 str(vacancy.raw_data),
-                ex_sid,
+                None,
+                None,
+                None,
+                None,
+                None,
             ))
-            conn.commit()
-            conn.close()
-            return "UPDATED"
-        else:
-            # Metadata is identical -> refresh last_seen_at only
-            cursor.execute('''
-                UPDATE vacancies SET last_seen_at = ? WHERE stable_id = ?
-            ''', (now_iso, ex_sid))
-            conn.commit()
-            conn.close()
-            return "UNCHANGED"
-            
-    # 2. No existing record found -> Insert fresh vacancy
-    try:
-        cursor.execute('''
-            INSERT INTO vacancies (
-                stable_id, source, source_job_id, title, company, description, location,
-                country_restrictions, timezone_restrictions, salary_min, salary_max, salary_currency,
-                employment_type, job_url, application_url, published_at, first_seen_at, last_seen_at,
-                state, raw_data, match_score, match_decision, match_reasons, match_strengths, match_gaps
-            ) VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-            )
-        ''', (
-            sid,
-            vacancy.source,
-            vacancy.source_job_id,
-            vacancy.title,
-            vacancy.company,
-            vacancy.description,
-            vacancy.location,
-            ', '.join(vacancy.country_restrictions),
-            ', '.join(str(x) for x in vacancy.timezone_restrictions),
-            vacancy.salary_min,
-            vacancy.salary_max,
-            vacancy.salary_currency,
-            vacancy.employment_type,
-            norm_url,
-            vacancy.application_url,
-            _to_iso(vacancy.published_at),
-            first_seen_iso,
-            now_iso,
-            'NEW',
-            str(vacancy.raw_data),
-            None,
-            None,
-            None,
-            None,
-            None,
-        ))
-        conn.commit()
-        conn.close()
-        
-        # Auto-assess eligibility
-        try:
-            from .eligibility import assess_vacancy_eligibility
-            assessment = assess_vacancy_eligibility(vacancy)
-            save_vacancy_eligibility(sid, assessment)
-        except Exception:
-            pass
-            
-        return "INSERTED"
     except sqlite3.IntegrityError:
         # Concurrent insertion race condition -> safe no-op
-        conn.close()
         return "UNCHANGED"
+
+    # Auto-assess eligibility
+    try:
+        from .eligibility import assess_vacancy_eligibility
+        assessment = assess_vacancy_eligibility(vacancy)
+        save_vacancy_eligibility(sid, assessment)
+    except Exception:
+        pass
+        
+    return "INSERTED"
 
 
 def save_vacancy_eligibility(vacancy_stable_id: str, assessment: Any, assessed_at: str | None = None) -> None:
@@ -324,8 +344,6 @@ def save_vacancy_eligibility(vacancy_stable_id: str, assessment: Any, assessed_a
     if assessed_at is None:
         assessed_at = _dt.datetime.utcnow().isoformat()
     init_db()
-    conn = get_connection()
-    cur = conn.cursor()
 
     status_val = assessment.eligibility.value if hasattr(getattr(assessment, 'eligibility', None), 'value') else str(getattr(assessment, 'eligibility', assessment))
     reasons_list = getattr(assessment, 'eligibility_reasons', []) or []
@@ -339,27 +357,26 @@ def save_vacancy_eligibility(vacancy_stable_id: str, assessment: Any, assessed_a
         assessment_dict = {"status": status_val, "reasons": reasons_list}
     assessment_str = json.dumps(assessment_dict, ensure_ascii=False)
 
-    cur.execute('''
-        INSERT INTO vacancy_eligibility (vacancy_stable_id, status, reasons_json, assessment_json, assessed_at)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(vacancy_stable_id) DO UPDATE SET
-            status=excluded.status,
-            reasons_json=excluded.reasons_json,
-            assessment_json=excluded.assessment_json,
-            assessed_at=excluded.assessed_at
-    ''', (vacancy_stable_id, status_val, reasons_str, assessment_str, assessed_at))
-    conn.commit()
-    conn.close()
+    with db_session() as conn:
+        conn.execute('''
+            INSERT INTO vacancy_eligibility (vacancy_stable_id, status, reasons_json, assessment_json, assessed_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(vacancy_stable_id) DO UPDATE SET
+                status=excluded.status,
+                reasons_json=excluded.reasons_json,
+                assessment_json=excluded.assessment_json,
+                assessed_at=excluded.assessed_at
+        ''', (vacancy_stable_id, status_val, reasons_str, assessment_str, assessed_at))
 
 
 def get_vacancy_eligibility(vacancy_stable_id: str) -> dict[str, Any] | None:
     """Retrieve saved eligibility assessment for a specific vacancy."""
     init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('SELECT vacancy_stable_id, status, reasons_json, assessment_json, assessed_at FROM vacancy_eligibility WHERE vacancy_stable_id = ?', (vacancy_stable_id,))
-    row = cur.fetchone()
-    conn.close()
+    with db_session(commit=False) as conn:
+        row = conn.execute(
+            'SELECT vacancy_stable_id, status, reasons_json, assessment_json, assessed_at FROM vacancy_eligibility WHERE vacancy_stable_id = ?',
+            (vacancy_stable_id,)
+        ).fetchone()
     if not row:
         return None
     import json
@@ -383,11 +400,8 @@ def get_vacancy_eligibility(vacancy_stable_id: str) -> dict[str, Any] | None:
 def get_all_vacancy_eligibilities() -> dict[str, dict[str, Any]]:
     """Retrieve all saved eligibility records as a mapping from stable_id to dict."""
     init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('SELECT vacancy_stable_id, status, reasons_json, assessment_json, assessed_at FROM vacancy_eligibility')
-    rows = cur.fetchall()
-    conn.close()
+    with db_session(commit=False) as conn:
+        rows = conn.execute('SELECT vacancy_stable_id, status, reasons_json, assessment_json, assessed_at FROM vacancy_eligibility').fetchall()
     import json
     result = {}
     for row in rows:
@@ -412,11 +426,8 @@ def get_all_vacancy_eligibilities() -> dict[str, dict[str, Any]]:
 def delete_queue_item(vacancy_stable_id: str) -> None:
     """Safely remove a specific vacancy from application_queue only (zero physical vacancy delete)."""
     init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('DELETE FROM application_queue WHERE vacancy_stable_id = ?', (vacancy_stable_id,))
-    conn.commit()
-    conn.close()
+    with db_session() as conn:
+        conn.execute('DELETE FROM application_queue WHERE vacancy_stable_id = ?', (vacancy_stable_id,))
 
 
 def _to_iso(value):
@@ -428,24 +439,15 @@ def _to_iso(value):
 
 
 def get_vacancy_by_id(stable_id: str):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM vacancies WHERE stable_id = ?', (stable_id,))
-    row = cursor.fetchone()
-    conn.close()
-    return row
+    with db_session(commit=False) as conn:
+        return conn.execute('SELECT * FROM vacancies WHERE stable_id = ?', (stable_id,)).fetchone()
 
 
 def list_vacancies(limit: int = 50, state: str | None = None):
-    conn = get_connection()
-    cursor = conn.cursor()
-    if state:
-        cursor.execute('SELECT * FROM vacancies WHERE state = ? ORDER BY first_seen_at DESC LIMIT ?', (state, limit))
-    else:
-        cursor.execute('SELECT * FROM vacancies ORDER BY first_seen_at DESC LIMIT ?', (limit,))
-    rows = cursor.fetchall()
-    conn.close()
-    return rows
+    with db_session(commit=False) as conn:
+        if state:
+            return conn.execute('SELECT * FROM vacancies WHERE state = ? ORDER BY first_seen_at DESC LIMIT ?', (state, limit)).fetchall()
+        return conn.execute('SELECT * FROM vacancies ORDER BY first_seen_at DESC LIMIT ?', (limit,)).fetchall()
 
 
 # --- Deep analysis persistence ---
@@ -453,32 +455,24 @@ def save_deep_analysis(vacancy_stable_id: str, analyzer_version: str, fit_score:
     import datetime as _dt
     if analyzed_at is None:
         analyzed_at = _dt.datetime.utcnow().isoformat()
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        INSERT INTO deep_analysis (vacancy_stable_id, analyzer_version, fit_score, recommendation, analysis_json, analyzed_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(vacancy_stable_id) DO UPDATE SET
-            analyzer_version=excluded.analyzer_version,
-            fit_score=excluded.fit_score,
-            recommendation=excluded.recommendation,
-            analysis_json=excluded.analysis_json,
-            analyzed_at=excluded.analyzed_at
-    ''', (vacancy_stable_id, analyzer_version, fit_score, recommendation, analysis_json, analyzed_at))
-    conn.commit()
-    conn.close()
+    with db_session() as conn:
+        conn.execute('''
+            INSERT INTO deep_analysis (vacancy_stable_id, analyzer_version, fit_score, recommendation, analysis_json, analyzed_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(vacancy_stable_id) DO UPDATE SET
+                analyzer_version=excluded.analyzer_version,
+                fit_score=excluded.fit_score,
+                recommendation=excluded.recommendation,
+                analysis_json=excluded.analysis_json,
+                analyzed_at=excluded.analyzed_at
+        ''', (vacancy_stable_id, analyzer_version, fit_score, recommendation, analysis_json, analyzed_at))
 
 
 def get_deep_analysis(vacancy_stable_id: str, analyzer_version: str | None = None):
-    conn = get_connection()
-    cur = conn.cursor()
-    if analyzer_version is not None:
-        cur.execute('SELECT vacancy_stable_id, analyzer_version, fit_score, recommendation, analysis_json, analyzed_at FROM deep_analysis WHERE vacancy_stable_id=? AND analyzer_version=?', (vacancy_stable_id, analyzer_version))
-    else:
-        cur.execute('SELECT vacancy_stable_id, analyzer_version, fit_score, recommendation, analysis_json, analyzed_at FROM deep_analysis WHERE vacancy_stable_id=?', (vacancy_stable_id,))
-    row = cur.fetchone()
-    conn.close()
-    return row
+    with db_session(commit=False) as conn:
+        if analyzer_version is not None:
+            return conn.execute('SELECT vacancy_stable_id, analyzer_version, fit_score, recommendation, analysis_json, analyzed_at FROM deep_analysis WHERE vacancy_stable_id=? AND analyzer_version=?', (vacancy_stable_id, analyzer_version)).fetchone()
+        return conn.execute('SELECT vacancy_stable_id, analyzer_version, fit_score, recommendation, analysis_json, analyzed_at FROM deep_analysis WHERE vacancy_stable_id=?', (vacancy_stable_id,)).fetchone()
 
 
 def is_deep_analyzed(vacancy_stable_id: str, analyzer_version: str) -> bool:
@@ -486,12 +480,8 @@ def is_deep_analyzed(vacancy_stable_id: str, analyzer_version: str) -> bool:
 
 
 def list_deep_analyses(limit: int = 50):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('SELECT vacancy_stable_id, analyzer_version, fit_score, recommendation, analysis_json, analyzed_at FROM deep_analysis ORDER BY analyzed_at DESC LIMIT ?', (limit,))
-    rows = cur.fetchall()
-    conn.close()
-    return rows
+    with db_session(commit=False) as conn:
+        return conn.execute('SELECT vacancy_stable_id, analyzer_version, fit_score, recommendation, analysis_json, analyzed_at FROM deep_analysis ORDER BY analyzed_at DESC LIMIT ?', (limit,)).fetchall()
 
 
 # --- Application packages persistence ---
@@ -499,30 +489,22 @@ def save_application_package(vacancy_stable_id: str, generator_version: str, pac
     import datetime as _dt
     if created_at is None:
         created_at = _dt.datetime.utcnow().isoformat()
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        INSERT INTO application_packages (vacancy_stable_id, generator_version, package_json, created_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(vacancy_stable_id) DO UPDATE SET
-            generator_version=excluded.generator_version,
-            package_json=excluded.package_json,
-            created_at=excluded.created_at
-    ''', (vacancy_stable_id, generator_version, package_json, created_at))
-    conn.commit()
-    conn.close()
+    with db_session() as conn:
+        conn.execute('''
+            INSERT INTO application_packages (vacancy_stable_id, generator_version, package_json, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(vacancy_stable_id) DO UPDATE SET
+                generator_version=excluded.generator_version,
+                package_json=excluded.package_json,
+                created_at=excluded.created_at
+        ''', (vacancy_stable_id, generator_version, package_json, created_at))
 
 
 def get_application_package(vacancy_stable_id: str, generator_version: str | None = None):
-    conn = get_connection()
-    cur = conn.cursor()
-    if generator_version is not None:
-        cur.execute('SELECT vacancy_stable_id, generator_version, package_json, created_at FROM application_packages WHERE vacancy_stable_id=? AND generator_version=?', (vacancy_stable_id, generator_version))
-    else:
-        cur.execute('SELECT vacancy_stable_id, generator_version, package_json, created_at FROM application_packages WHERE vacancy_stable_id=?', (vacancy_stable_id,))
-    row = cur.fetchone()
-    conn.close()
-    return row
+    with db_session(commit=False) as conn:
+        if generator_version is not None:
+            return conn.execute('SELECT vacancy_stable_id, generator_version, package_json, created_at FROM application_packages WHERE vacancy_stable_id=? AND generator_version=?', (vacancy_stable_id, generator_version)).fetchone()
+        return conn.execute('SELECT vacancy_stable_id, generator_version, package_json, created_at FROM application_packages WHERE vacancy_stable_id=?', (vacancy_stable_id,)).fetchone()
 
 
 def is_application_prepared(vacancy_stable_id: str, generator_version: str) -> bool:
@@ -530,12 +512,8 @@ def is_application_prepared(vacancy_stable_id: str, generator_version: str) -> b
 
 
 def list_application_packages(limit: int = 50):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('SELECT vacancy_stable_id, generator_version, package_json, created_at FROM application_packages ORDER BY created_at DESC LIMIT ?', (limit,))
-    rows = cur.fetchall()
-    conn.close()
-    return rows
+    with db_session(commit=False) as conn:
+        return conn.execute('SELECT vacancy_stable_id, generator_version, package_json, created_at FROM application_packages ORDER BY created_at DESC LIMIT ?', (limit,)).fetchall()
 
 
 # --- Application submissions persistence ---
@@ -566,19 +544,16 @@ def save_submission(vacancy_stable_id: str, submission_json: str, status: str, s
     if submission_id is None:
         submission_id = f"{vacancy_stable_id}_{_dt.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
 
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        INSERT INTO application_submissions (vacancy_stable_id, submission_id, executor_version, submission_json, status, submitted_at, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(vacancy_stable_id, submission_id, executor_version) DO UPDATE SET
-            submission_json=excluded.submission_json,
-            status=excluded.status,
-            submitted_at=excluded.submitted_at,
-            updated_at=excluded.updated_at
-    ''', (vacancy_stable_id, submission_id, executor_version, submission_json, status, submitted_at, created_at, updated_at))
-    conn.commit()
-    conn.close()
+    with db_session() as conn:
+        conn.execute('''
+            INSERT INTO application_submissions (vacancy_stable_id, submission_id, executor_version, submission_json, status, submitted_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(vacancy_stable_id, submission_id, executor_version) DO UPDATE SET
+                submission_json=excluded.submission_json,
+                status=excluded.status,
+                submitted_at=excluded.submitted_at,
+                updated_at=excluded.updated_at
+        ''', (vacancy_stable_id, submission_id, executor_version, submission_json, status, submitted_at, created_at, updated_at))
     return submission_id
 
 
@@ -586,19 +561,15 @@ def get_submission(vacancy_stable_id: str, submission_id: str | None = None, exe
     """
     Get a specific submission by submission_id, or the latest if not specified.
     """
-    conn = get_connection()
-    cur = conn.cursor()
-    if submission_id is not None and executor_version is not None:
-        cur.execute('SELECT vacancy_stable_id, submission_id, executor_version, submission_json, status, submitted_at, created_at, updated_at FROM application_submissions WHERE vacancy_stable_id=? AND submission_id=? AND executor_version=?', (vacancy_stable_id, submission_id, executor_version))
-    elif submission_id is not None:
-        cur.execute('SELECT vacancy_stable_id, submission_id, executor_version, submission_json, status, submitted_at, created_at, updated_at FROM application_submissions WHERE vacancy_stable_id=? AND submission_id=?', (vacancy_stable_id, submission_id))
-    elif executor_version is not None:
-        cur.execute('SELECT vacancy_stable_id, submission_id, executor_version, submission_json, status, submitted_at, created_at, updated_at FROM application_submissions WHERE vacancy_stable_id=? AND executor_version=? ORDER BY submitted_at DESC LIMIT 1', (vacancy_stable_id, executor_version))
-    else:
-        cur.execute('SELECT vacancy_stable_id, submission_id, executor_version, submission_json, status, submitted_at, created_at, updated_at FROM application_submissions WHERE vacancy_stable_id=? ORDER BY submitted_at DESC LIMIT 1', (vacancy_stable_id,))
-    row = cur.fetchone()
-    conn.close()
-    return row
+    with db_session(commit=False) as conn:
+        if submission_id is not None and executor_version is not None:
+            return conn.execute('SELECT vacancy_stable_id, submission_id, executor_version, submission_json, status, submitted_at, created_at, updated_at FROM application_submissions WHERE vacancy_stable_id=? AND submission_id=? AND executor_version=?', (vacancy_stable_id, submission_id, executor_version)).fetchone()
+        elif submission_id is not None:
+            return conn.execute('SELECT vacancy_stable_id, submission_id, executor_version, submission_json, status, submitted_at, created_at, updated_at FROM application_submissions WHERE vacancy_stable_id=? AND submission_id=?', (vacancy_stable_id, submission_id)).fetchone()
+        elif executor_version is not None:
+            return conn.execute('SELECT vacancy_stable_id, submission_id, executor_version, submission_json, status, submitted_at, created_at, updated_at FROM application_submissions WHERE vacancy_stable_id=? AND executor_version=? ORDER BY submitted_at DESC LIMIT 1', (vacancy_stable_id, executor_version)).fetchone()
+        else:
+            return conn.execute('SELECT vacancy_stable_id, submission_id, executor_version, submission_json, status, submitted_at, created_at, updated_at FROM application_submissions WHERE vacancy_stable_id=? ORDER BY submitted_at DESC LIMIT 1', (vacancy_stable_id,)).fetchone()
 
 
 def get_all_submissions(vacancy_stable_id: str, executor_version: str | None = None):
@@ -606,24 +577,15 @@ def get_all_submissions(vacancy_stable_id: str, executor_version: str | None = N
     Get all submission attempts for a vacancy (for audit).
     Returns list ordered by submitted_at ASC (chronological).
     """
-    conn = get_connection()
-    cur = conn.cursor()
-    if executor_version is not None:
-        cur.execute('SELECT vacancy_stable_id, submission_id, executor_version, submission_json, status, submitted_at, created_at, updated_at FROM application_submissions WHERE vacancy_stable_id=? AND executor_version=? ORDER BY submitted_at ASC', (vacancy_stable_id, executor_version))
-    else:
-        cur.execute('SELECT vacancy_stable_id, submission_id, executor_version, submission_json, status, submitted_at, created_at, updated_at FROM application_submissions WHERE vacancy_stable_id=? ORDER BY submitted_at ASC', (vacancy_stable_id,))
-    rows = cur.fetchall()
-    conn.close()
-    return rows
+    with db_session(commit=False) as conn:
+        if executor_version is not None:
+            return conn.execute('SELECT vacancy_stable_id, submission_id, executor_version, submission_json, status, submitted_at, created_at, updated_at FROM application_submissions WHERE vacancy_stable_id=? AND executor_version=? ORDER BY submitted_at ASC', (vacancy_stable_id, executor_version)).fetchall()
+        return conn.execute('SELECT vacancy_stable_id, submission_id, executor_version, submission_json, status, submitted_at, created_at, updated_at FROM application_submissions WHERE vacancy_stable_id=? ORDER BY submitted_at ASC', (vacancy_stable_id,)).fetchall()
 
 
 def list_submissions(limit: int = 50):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('SELECT vacancy_stable_id, submission_id, executor_version, submission_json, status, submitted_at, created_at, updated_at FROM application_submissions ORDER BY submitted_at DESC LIMIT ?', (limit,))
-    rows = cur.fetchall()
-    conn.close()
-    return rows
+    with db_session(commit=False) as conn:
+        return conn.execute('SELECT vacancy_stable_id, submission_id, executor_version, submission_json, status, submitted_at, created_at, updated_at FROM application_submissions ORDER BY submitted_at DESC LIMIT ?', (limit,)).fetchall()
 
 
 # --- Submission verifications persistence ---
@@ -679,30 +641,24 @@ def save_verification(vacancy_stable_id: str, submission_id: str, verification_v
         payload["verification_status"] = verification_status
         payload["verification_version"] = verification_version
     verification_json = _json.dumps(payload, ensure_ascii=False)
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        INSERT INTO submission_verifications (vacancy_stable_id, submission_id, verification_version, verification_status, verification_json, verified_at, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(vacancy_stable_id, submission_id, verification_version) DO UPDATE SET
-            verification_status=excluded.verification_status,
-            verification_json=excluded.verification_json,
-            verified_at=excluded.verified_at,
-            updated_at=excluded.updated_at
-    ''', (vacancy_stable_id, submission_id, verification_version, verification_status, verification_json, verified_at, created_at, updated_at))
-    conn.commit()
-    conn.close()
+    with db_session() as conn:
+        conn.execute('''
+            INSERT INTO submission_verifications (vacancy_stable_id, submission_id, verification_version, verification_status, verification_json, verified_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(vacancy_stable_id, submission_id, verification_version) DO UPDATE SET
+                verification_status=excluded.verification_status,
+                verification_json=excluded.verification_json,
+                verified_at=excluded.verified_at,
+                updated_at=excluded.updated_at
+        ''', (vacancy_stable_id, submission_id, verification_version, verification_status, verification_json, verified_at, created_at, updated_at))
 
 
 def get_verification(vacancy_stable_id: str, submission_id: str, verification_version: str | None = None):
-    conn = get_connection()
-    cur = conn.cursor()
-    if verification_version is not None:
-        cur.execute('SELECT vacancy_stable_id, submission_id, verification_version, verification_status, verification_json, verified_at, created_at, updated_at FROM submission_verifications WHERE vacancy_stable_id=? AND submission_id=? AND verification_version=?', (vacancy_stable_id, submission_id, verification_version))
-    else:
-        cur.execute('SELECT vacancy_stable_id, submission_id, verification_version, verification_status, verification_json, verified_at, created_at, updated_at FROM submission_verifications WHERE vacancy_stable_id=? AND submission_id=? ORDER BY verified_at DESC LIMIT 1', (vacancy_stable_id, submission_id))
-    row = cur.fetchone()
-    conn.close()
+    with db_session(commit=False) as conn:
+        if verification_version is not None:
+            row = conn.execute('SELECT vacancy_stable_id, submission_id, verification_version, verification_status, verification_json, verified_at, created_at, updated_at FROM submission_verifications WHERE vacancy_stable_id=? AND submission_id=? AND verification_version=?', (vacancy_stable_id, submission_id, verification_version)).fetchone()
+        else:
+            row = conn.execute('SELECT vacancy_stable_id, submission_id, verification_version, verification_status, verification_json, verified_at, created_at, updated_at FROM submission_verifications WHERE vacancy_stable_id=? AND submission_id=? ORDER BY verified_at DESC LIMIT 1', (vacancy_stable_id, submission_id)).fetchone()
     if not row:
         return None
     try:
@@ -728,12 +684,8 @@ def is_verified(vacancy_stable_id: str, submission_id: str, verification_version
 
 
 def list_verifications(limit: int = 50):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('SELECT vacancy_stable_id, submission_id, verification_version, verification_status, verification_json, verified_at, created_at, updated_at FROM submission_verifications ORDER BY verified_at DESC LIMIT ?', (limit,))
-    rows = cur.fetchall()
-    conn.close()
-    return rows
+    with db_session(commit=False) as conn:
+        return conn.execute('SELECT vacancy_stable_id, submission_id, verification_version, verification_status, verification_json, verified_at, created_at, updated_at FROM submission_verifications ORDER BY verified_at DESC LIMIT ?', (limit,)).fetchall()
 
 
 def _row_to_vacancy(row) -> Vacancy:
@@ -777,30 +729,27 @@ def save_hh_message_event(
     employer: str | None = None,
 ) -> None:
     seen_at = seen_at or datetime.utcnow().isoformat()
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        INSERT INTO hh_message_events (
+    with db_session() as conn:
+        conn.execute('''
+            INSERT INTO hh_message_events (
+                message_fingerprint, conversation_id, sender, text, sent_at,
+                seen_at, processed, classification, validation, reply_draft,
+                status, error, vacancy_stable_id, employer
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(message_fingerprint) DO UPDATE SET
+                processed = excluded.processed,
+                classification = COALESCE(excluded.classification, hh_message_events.classification),
+                validation = COALESCE(excluded.validation, hh_message_events.validation),
+                reply_draft = COALESCE(excluded.reply_draft, hh_message_events.reply_draft),
+                status = COALESCE(excluded.status, hh_message_events.status),
+                error = COALESCE(excluded.error, hh_message_events.error),
+                vacancy_stable_id = COALESCE(excluded.vacancy_stable_id, hh_message_events.vacancy_stable_id),
+                employer = COALESCE(excluded.employer, hh_message_events.employer)
+        ''', (
             message_fingerprint, conversation_id, sender, text, sent_at,
             seen_at, processed, classification, validation, reply_draft,
             status, error, vacancy_stable_id, employer
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(message_fingerprint) DO UPDATE SET
-            processed = excluded.processed,
-            classification = COALESCE(excluded.classification, hh_message_events.classification),
-            validation = COALESCE(excluded.validation, hh_message_events.validation),
-            reply_draft = COALESCE(excluded.reply_draft, hh_message_events.reply_draft),
-            status = COALESCE(excluded.status, hh_message_events.status),
-            error = COALESCE(excluded.error, hh_message_events.error),
-            vacancy_stable_id = COALESCE(excluded.vacancy_stable_id, hh_message_events.vacancy_stable_id),
-            employer = COALESCE(excluded.employer, hh_message_events.employer)
-    ''', (
-        message_fingerprint, conversation_id, sender, text, sent_at,
-        seen_at, processed, classification, validation, reply_draft,
-        status, error, vacancy_stable_id, employer
-    ))
-    conn.commit()
-    conn.close()
+        ))
 
 
 def backfill_hh_message_sent_at(
@@ -818,21 +767,17 @@ def backfill_hh_message_sent_at(
     известного времени: если сообщение потом придёт с настоящей меткой, бэкфилл
     её не перебьёт.
     """
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        UPDATE hh_message_events
-           SET sent_at = ?
-         WHERE message_fingerprint = ?
-           AND (sent_at IS NULL OR sent_at = '')
-        """,
-        (sent_at, message_fingerprint),
-    )
-    changed = cur.rowcount > 0
-    conn.commit()
-    conn.close()
-    return changed
+    with db_session() as conn:
+        cur = conn.execute(
+            """
+            UPDATE hh_message_events
+               SET sent_at = ?
+             WHERE message_fingerprint = ?
+               AND (sent_at IS NULL OR sent_at = '')
+            """,
+            (sent_at, message_fingerprint),
+        )
+        return cur.rowcount > 0
 
 
 def claim_hh_message_reply(message_fingerprint: str, conversation_id: str,
@@ -843,8 +788,7 @@ def claim_hh_message_reply(message_fingerprint: str, conversation_id: str,
     A crash leaves REPLY_SENDING processed and therefore blocked for manual
     reconciliation. The database primary key serializes competing workers.
     """
-    conn = get_connection()
-    try:
+    with db_session() as conn:
         conn.execute('BEGIN IMMEDIATE')
         cur = conn.execute('''
             INSERT INTO hh_message_events
@@ -858,38 +802,25 @@ def claim_hh_message_reply(message_fingerprint: str, conversation_id: str,
               AND COALESCE(hh_message_events.status, '') NOT IN
                   ('REPLY_SENDING', 'REPLY_AMBIGUOUS', 'MESSAGE_AUTO_REPLIED')
         ''', (message_fingerprint, conversation_id, sender, text, seen_at, reply_draft))
-        claimed = cur.rowcount == 1
-        conn.commit()
-        return claimed
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+        return cur.rowcount == 1
 
 
 def is_hh_message_processed(message_fingerprint: str) -> bool:
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('SELECT processed FROM hh_message_events WHERE message_fingerprint = ?', (message_fingerprint,))
-    row = cur.fetchone()
-    conn.close()
+    with db_session(commit=False) as conn:
+        row = conn.execute('SELECT processed FROM hh_message_events WHERE message_fingerprint = ?', (message_fingerprint,)).fetchone()
     if not row:
         return False
     return bool(row[0])
 
 
 def get_hh_message_event(message_fingerprint: str) -> dict[str, Any] | None:
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT message_fingerprint, conversation_id, sender, text, sent_at,
-               seen_at, processed, classification, validation, reply_draft,
-               status, error, vacancy_stable_id, employer
-        FROM hh_message_events WHERE message_fingerprint = ?
-    ''', (message_fingerprint,))
-    row = cur.fetchone()
-    conn.close()
+    with db_session(commit=False) as conn:
+        row = conn.execute('''
+            SELECT message_fingerprint, conversation_id, sender, text, sent_at,
+                   seen_at, processed, classification, validation, reply_draft,
+                   status, error, vacancy_stable_id, employer
+            FROM hh_message_events WHERE message_fingerprint = ?
+        ''', (message_fingerprint,)).fetchone()
     if not row:
         return None
     return {
@@ -911,24 +842,21 @@ def get_hh_message_event(message_fingerprint: str) -> dict[str, Any] | None:
 
 
 def list_hh_message_events(conversation_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
-    conn = get_connection()
-    cur = conn.cursor()
-    if conversation_id:
-        cur.execute('''
-            SELECT message_fingerprint, conversation_id, sender, text, sent_at,
-                   seen_at, processed, classification, validation, reply_draft,
-                   status, error, vacancy_stable_id, employer
-            FROM hh_message_events WHERE conversation_id = ? ORDER BY seen_at DESC LIMIT ?
-        ''', (conversation_id, limit))
-    else:
-        cur.execute('''
-            SELECT message_fingerprint, conversation_id, sender, text, sent_at,
-                   seen_at, processed, classification, validation, reply_draft,
-                   status, error, vacancy_stable_id, employer
-            FROM hh_message_events ORDER BY seen_at DESC LIMIT ?
-        ''', (limit,))
-    rows = cur.fetchall()
-    conn.close()
+    with db_session(commit=False) as conn:
+        if conversation_id:
+            rows = conn.execute('''
+                SELECT message_fingerprint, conversation_id, sender, text, sent_at,
+                       seen_at, processed, classification, validation, reply_draft,
+                       status, error, vacancy_stable_id, employer
+                FROM hh_message_events WHERE conversation_id = ? ORDER BY seen_at DESC LIMIT ?
+            ''', (conversation_id, limit)).fetchall()
+        else:
+            rows = conn.execute('''
+                SELECT message_fingerprint, conversation_id, sender, text, sent_at,
+                       seen_at, processed, classification, validation, reply_draft,
+                       status, error, vacancy_stable_id, employer
+                FROM hh_message_events ORDER BY seen_at DESC LIMIT ?
+            ''', (limit,)).fetchall()
     return [
         {
             "message_fingerprint": r[0],
@@ -954,15 +882,12 @@ def get_recent_sent_replies_for_conversation(conversation_id: str, limit: int = 
     """Retrieve the drafts of recent automated replies successfully sent to this conversation."""
     if not conversation_id:
         return []
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT reply_draft FROM hh_message_events
-        WHERE conversation_id = ? AND status = 'MESSAGE_AUTO_REPLIED' AND reply_draft IS NOT NULL
-        ORDER BY rowid DESC LIMIT ?
-    ''', (str(conversation_id), limit))
-    rows = cur.fetchall()
-    conn.close()
+    with db_session(commit=False) as conn:
+        rows = conn.execute('''
+            SELECT reply_draft FROM hh_message_events
+            WHERE conversation_id = ? AND status = 'MESSAGE_AUTO_REPLIED' AND reply_draft IS NOT NULL
+            ORDER BY rowid DESC LIMIT ?
+        ''', (str(conversation_id), limit)).fetchall()
     return [r[0] for r in rows if r and r[0]]
 
 
@@ -970,15 +895,12 @@ def count_recent_consecutive_auto_replies(conversation_id: str) -> int:
     """Count how many consecutive automated replies were sent to this conversation without human intervention."""
     if not conversation_id:
         return 0
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT status, sender FROM hh_message_events
-        WHERE conversation_id = ?
-        ORDER BY rowid DESC LIMIT 50
-    ''', (str(conversation_id),))
-    rows = cur.fetchall()
-    conn.close()
+    with db_session(commit=False) as conn:
+        rows = conn.execute('''
+            SELECT status, sender FROM hh_message_events
+            WHERE conversation_id = ?
+            ORDER BY rowid DESC LIMIT 50
+        ''', (str(conversation_id),)).fetchall()
     count = 0
     for status, sender in rows:
         if status == 'MESSAGE_AUTO_REPLIED':
@@ -993,28 +915,24 @@ def has_prior_candidate_message(conversation_id: str) -> bool:
     """Check if candidate (manual or auto-reply) has ever messaged in this conversation."""
     if not conversation_id:
         return False
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT 1 FROM hh_message_events
-        WHERE conversation_id = ? AND (sender = 'candidate' OR status = 'MESSAGE_AUTO_REPLIED')
-        LIMIT 1
-    ''', (str(conversation_id),))
-    row = cur.fetchone()
-    if not row:
-        # Fallback: a reply already sent to this dialog stays in the audit log
-        # even if message-event rows were pruned or reset.
-        try:
-            cur.execute('''
-                SELECT 1 FROM autonomous_conversation_audits
-                WHERE conversation_id = ?
-                  AND (status = 'SENT' OR (sent_reply IS NOT NULL AND sent_reply != ''))
-                LIMIT 1
-            ''', (str(conversation_id),))
-            row = cur.fetchone()
-        except sqlite3.Error:
-            row = None
-    conn.close()
+    with db_session(commit=False) as conn:
+        row = conn.execute('''
+            SELECT 1 FROM hh_message_events
+            WHERE conversation_id = ? AND (sender = 'candidate' OR status = 'MESSAGE_AUTO_REPLIED')
+            LIMIT 1
+        ''', (str(conversation_id),)).fetchone()
+        if not row:
+            # Fallback: a reply already sent to this dialog stays in the audit log
+            # even if message-event rows were pruned or reset.
+            try:
+                row = conn.execute('''
+                    SELECT 1 FROM autonomous_conversation_audits
+                    WHERE conversation_id = ?
+                      AND (status = 'SENT' OR (sent_reply IS NOT NULL AND sent_reply != ''))
+                    LIMIT 1
+                ''', (str(conversation_id),)).fetchone()
+            except sqlite3.Error:
+                row = None
     return bool(row)
 
 
@@ -1027,43 +945,38 @@ def is_our_sent_message(conversation_id: str, text: str) -> bool:
     if not norm_text or len(norm_text) < 10:
         return False
 
-    conn = get_connection()
-    cur = conn.cursor()
-    try:
-        # Check hh_message_events:
-        # reply_draft is our sent reply when status='MESSAGE_AUTO_REPLIED'.
-        # text is only our message when sender='candidate'.
-        cur.execute('''
-            SELECT reply_draft, CASE WHEN sender = 'candidate' THEN text ELSE NULL END
-            FROM hh_message_events
-            WHERE conversation_id = ? AND (sender = 'candidate' OR status = 'MESSAGE_AUTO_REPLIED')
-            ORDER BY rowid DESC LIMIT 15
-        ''', (str(conversation_id),))
-        for r_draft, r_cand_text in cur.fetchall():
-            for cand_cand in (r_draft, r_cand_text):
-                if cand_cand:
-                    norm_cand = re.sub(r'[^\w\s]', '', cand_cand.lower()).strip()
-                    if norm_cand and (norm_cand in norm_text or norm_text in norm_cand):
-                        conn.close()
-                        return True
+    with db_session(commit=False) as conn:
+        try:
+            # Check hh_message_events:
+            # reply_draft is our sent reply when status='MESSAGE_AUTO_REPLIED'.
+            # text is only our message when sender='candidate'.
+            rows_events = conn.execute('''
+                SELECT reply_draft, CASE WHEN sender = 'candidate' THEN text ELSE NULL END
+                FROM hh_message_events
+                WHERE conversation_id = ? AND (sender = 'candidate' OR status = 'MESSAGE_AUTO_REPLIED')
+                ORDER BY rowid DESC LIMIT 15
+            ''', (str(conversation_id),)).fetchall()
+            for r_draft, r_cand_text in rows_events:
+                for cand_cand in (r_draft, r_cand_text):
+                    if cand_cand:
+                        norm_cand = re.sub(r'[^\w\s]', '', cand_cand.lower()).strip()
+                        if norm_cand and (norm_cand in norm_text or norm_text in norm_cand):
+                            return True
 
-        # Check autonomous_conversation_audits
-        cur.execute('''
-            SELECT sent_reply, generated_reply FROM autonomous_conversation_audits
-            WHERE conversation_id = ? AND (status = 'SENT' OR (sent_reply IS NOT NULL AND sent_reply != ''))
-            ORDER BY id DESC LIMIT 15
-        ''', (str(conversation_id),))
-        for s_reply, g_reply in cur.fetchall():
-            for cand_cand in (s_reply, g_reply):
-                if cand_cand:
-                    norm_cand = re.sub(r'[^\w\s]', '', cand_cand.lower()).strip()
-                    if norm_cand and (norm_cand in norm_text or norm_text in norm_cand):
-                        conn.close()
-                        return True
-    except sqlite3.Error:
-        pass
-    finally:
-        conn.close()
+            # Check autonomous_conversation_audits
+            rows_audits = conn.execute('''
+                SELECT sent_reply, generated_reply FROM autonomous_conversation_audits
+                WHERE conversation_id = ? AND (status = 'SENT' OR (sent_reply IS NOT NULL AND sent_reply != ''))
+                ORDER BY id DESC LIMIT 15
+            ''', (str(conversation_id),)).fetchall()
+            for s_reply, g_reply in rows_audits:
+                for cand_cand in (s_reply, g_reply):
+                    if cand_cand:
+                        norm_cand = re.sub(r'[^\w\s]', '', cand_cand.lower()).strip()
+                        if norm_cand and (norm_cand in norm_text or norm_text in norm_cand):
+                            return True
+        except sqlite3.Error:
+            pass
     return False
 
 
@@ -1091,8 +1004,6 @@ def save_hh_questionnaire(data: dict[str, Any]) -> None:
     than at the seven callers because only the writer can see the stored status -
     the same boundary finding #63 chose one column over.
     """
-    conn = get_connection()
-    cur = conn.cursor()
     import json
     q_id = str(data["questionnaire_id"]).strip()
     questions_json = data.get("questions_json")
@@ -1104,40 +1015,39 @@ def save_hh_questionnaire(data: dict[str, Any]) -> None:
     created_at = data.get("created_at") or now
     updated_at = data.get("updated_at") or now
 
-    cur.execute('''
-        INSERT INTO hh_questionnaires (
-            questionnaire_id, vacancy_stable_id, conversation_id, title, employer,
-            fingerprint, questions_json, answers_json, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(questionnaire_id) DO UPDATE SET
-            vacancy_stable_id = COALESCE(excluded.vacancy_stable_id, hh_questionnaires.vacancy_stable_id),
-            conversation_id = COALESCE(excluded.conversation_id, hh_questionnaires.conversation_id),
-            title = COALESCE(excluded.title, hh_questionnaires.title),
-            employer = COALESCE(excluded.employer, hh_questionnaires.employer),
-            fingerprint = excluded.fingerprint,
-            questions_json = excluded.questions_json,
-            answers_json = COALESCE(excluded.answers_json, hh_questionnaires.answers_json),
-            status = CASE
-                WHEN excluded.status = ? THEN hh_questionnaires.status
-                ELSE excluded.status
-            END,
-            updated_at = excluded.updated_at
-    ''', (
-        q_id,
-        data.get("vacancy_stable_id"),
-        data.get("conversation_id"),
-        data.get("title"),
-        data.get("employer"),
-        data.get("fingerprint", ""),
-        questions_json,
-        answers_json,
-        data.get("status", "NEEDS_HUMAN_REVIEW"),
-        created_at,
-        updated_at,
-        _DISCOVERY_STATUS,
-    ))
-    conn.commit()
-    conn.close()
+    with db_session() as conn:
+        conn.execute('''
+            INSERT INTO hh_questionnaires (
+                questionnaire_id, vacancy_stable_id, conversation_id, title, employer,
+                fingerprint, questions_json, answers_json, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(questionnaire_id) DO UPDATE SET
+                vacancy_stable_id = COALESCE(excluded.vacancy_stable_id, hh_questionnaires.vacancy_stable_id),
+                conversation_id = COALESCE(excluded.conversation_id, hh_questionnaires.conversation_id),
+                title = COALESCE(excluded.title, hh_questionnaires.title),
+                employer = COALESCE(excluded.employer, hh_questionnaires.employer),
+                fingerprint = excluded.fingerprint,
+                questions_json = excluded.questions_json,
+                answers_json = COALESCE(excluded.answers_json, hh_questionnaires.answers_json),
+                status = CASE
+                    WHEN excluded.status = ? THEN hh_questionnaires.status
+                    ELSE excluded.status
+                END,
+                updated_at = excluded.updated_at
+        ''', (
+            q_id,
+            data.get("vacancy_stable_id"),
+            data.get("conversation_id"),
+            data.get("title"),
+            data.get("employer"),
+            data.get("fingerprint", ""),
+            questions_json,
+            answers_json,
+            data.get("status", "NEEDS_HUMAN_REVIEW"),
+            created_at,
+            updated_at,
+            _DISCOVERY_STATUS,
+        ))
 
 
 def _row_to_questionnaire(row: Any) -> dict[str, Any] | None:
@@ -1197,64 +1107,52 @@ def _row_to_questionnaire(row: Any) -> dict[str, Any] | None:
 
 def get_hh_questionnaire(questionnaire_id: str) -> dict[str, Any] | None:
     """Retrieve an HH questionnaire by its ID."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT questionnaire_id, vacancy_stable_id, conversation_id, title, employer,
-               fingerprint, questions_json, answers_json, status, created_at, updated_at
-        FROM hh_questionnaires WHERE questionnaire_id = ?
-    ''', (str(questionnaire_id).strip(),))
-    row = cur.fetchone()
-    conn.close()
+    with db_session(commit=False) as conn:
+        row = conn.execute('''
+            SELECT questionnaire_id, vacancy_stable_id, conversation_id, title, employer,
+                   fingerprint, questions_json, answers_json, status, created_at, updated_at
+            FROM hh_questionnaires WHERE questionnaire_id = ?
+        ''', (str(questionnaire_id).strip(),)).fetchone()
     return _row_to_questionnaire(row)
 
 
 def get_hh_questionnaire_by_vacancy(vacancy_stable_id: str) -> dict[str, Any] | None:
     """Retrieve the latest HH questionnaire for a given vacancy."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT questionnaire_id, vacancy_stable_id, conversation_id, title, employer,
-               fingerprint, questions_json, answers_json, status, created_at, updated_at
-        FROM hh_questionnaires WHERE vacancy_stable_id = ? ORDER BY updated_at DESC LIMIT 1
-    ''', (str(vacancy_stable_id).strip(),))
-    row = cur.fetchone()
-    conn.close()
+    with db_session(commit=False) as conn:
+        row = conn.execute('''
+            SELECT questionnaire_id, vacancy_stable_id, conversation_id, title, employer,
+                   fingerprint, questions_json, answers_json, status, created_at, updated_at
+            FROM hh_questionnaires WHERE vacancy_stable_id = ? ORDER BY updated_at DESC LIMIT 1
+        ''', (str(vacancy_stable_id).strip(),)).fetchone()
     return _row_to_questionnaire(row)
 
 
 def get_hh_questionnaire_by_conversation(conversation_id: str) -> dict[str, Any] | None:
     """Retrieve the latest HH questionnaire for a given conversation."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT questionnaire_id, vacancy_stable_id, conversation_id, title, employer,
-               fingerprint, questions_json, answers_json, status, created_at, updated_at
-        FROM hh_questionnaires WHERE conversation_id = ? ORDER BY updated_at DESC LIMIT 1
-    ''', (str(conversation_id).strip(),))
-    row = cur.fetchone()
-    conn.close()
+    with db_session(commit=False) as conn:
+        row = conn.execute('''
+            SELECT questionnaire_id, vacancy_stable_id, conversation_id, title, employer,
+                   fingerprint, questions_json, answers_json, status, created_at, updated_at
+            FROM hh_questionnaires WHERE conversation_id = ? ORDER BY updated_at DESC LIMIT 1
+        ''', (str(conversation_id).strip(),)).fetchone()
     return _row_to_questionnaire(row)
 
 
 def list_hh_questionnaires(status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
     """List stored HH questionnaires optionally filtered by status."""
-    conn = get_connection()
-    cur = conn.cursor()
-    if status:
-        cur.execute('''
-            SELECT questionnaire_id, vacancy_stable_id, conversation_id, title, employer,
-                   fingerprint, questions_json, answers_json, status, created_at, updated_at
-            FROM hh_questionnaires WHERE status = ? ORDER BY updated_at DESC LIMIT ?
-        ''', (status, limit))
-    else:
-        cur.execute('''
-            SELECT questionnaire_id, vacancy_stable_id, conversation_id, title, employer,
-                   fingerprint, questions_json, answers_json, status, created_at, updated_at
-            FROM hh_questionnaires ORDER BY updated_at DESC LIMIT ?
-        ''', (limit,))
-    rows = cur.fetchall()
-    conn.close()
+    with db_session(commit=False) as conn:
+        if status:
+            rows = conn.execute('''
+                SELECT questionnaire_id, vacancy_stable_id, conversation_id, title, employer,
+                       fingerprint, questions_json, answers_json, status, created_at, updated_at
+                FROM hh_questionnaires WHERE status = ? ORDER BY updated_at DESC LIMIT ?
+            ''', (status, limit)).fetchall()
+        else:
+            rows = conn.execute('''
+                SELECT questionnaire_id, vacancy_stable_id, conversation_id, title, employer,
+                       fingerprint, questions_json, answers_json, status, created_at, updated_at
+                FROM hh_questionnaires ORDER BY updated_at DESC LIMIT ?
+            ''', (limit,)).fetchall()
     return [_row_to_questionnaire(r) for r in rows if r is not None]
 
 
@@ -1306,46 +1204,41 @@ def update_hh_questionnaire_answers(
     before - that is how such a row is repaired.
     """
     import json
-    conn = get_connection()
-    cur = conn.cursor()
     qid = str(questionnaire_id).strip()
     now = datetime.utcnow().isoformat()
-    if not answers and _answers_json_is_unreadable(cur, qid):
+    with db_session() as conn:
+        cur = conn.cursor()
+        if not answers and _answers_json_is_unreadable(cur, qid):
+            if new_status:
+                cur.execute(
+                    '''
+                    UPDATE hh_questionnaires
+                    SET status = ?, updated_at = ?
+                    WHERE questionnaire_id = ?
+                    ''',
+                    (new_status, now, qid),
+                )
+                affected = cur.rowcount
+            else:
+                cur.execute(
+                    "SELECT 1 FROM hh_questionnaires WHERE questionnaire_id = ?", (qid,)
+                )
+                affected = 1 if cur.fetchone() else 0
+            return affected > 0
+        answers_json = json.dumps(answers, ensure_ascii=False)
         if new_status:
-            cur.execute(
-                '''
+            cur.execute('''
                 UPDATE hh_questionnaires
-                SET status = ?, updated_at = ?
+                SET answers_json = ?, status = ?, updated_at = ?
                 WHERE questionnaire_id = ?
-                ''',
-                (new_status, now, qid),
-            )
-            affected = cur.rowcount
+            ''', (answers_json, new_status, now, str(questionnaire_id).strip()))
         else:
-            cur.execute(
-                "SELECT 1 FROM hh_questionnaires WHERE questionnaire_id = ?", (qid,)
-            )
-            affected = 1 if cur.fetchone() else 0
-        conn.commit()
-        conn.close()
-        return affected > 0
-    answers_json = json.dumps(answers, ensure_ascii=False)
-    if new_status:
-        cur.execute('''
-            UPDATE hh_questionnaires
-            SET answers_json = ?, status = ?, updated_at = ?
-            WHERE questionnaire_id = ?
-        ''', (answers_json, new_status, now, str(questionnaire_id).strip()))
-    else:
-        cur.execute('''
-            UPDATE hh_questionnaires
-            SET answers_json = ?, updated_at = ?
-            WHERE questionnaire_id = ?
-        ''', (answers_json, now, str(questionnaire_id).strip()))
-    affected = cur.rowcount
-    conn.commit()
-    conn.close()
-    return affected > 0
+            cur.execute('''
+                UPDATE hh_questionnaires
+                SET answers_json = ?, updated_at = ?
+                WHERE questionnaire_id = ?
+            ''', (answers_json, now, str(questionnaire_id).strip()))
+        return cur.rowcount > 0
 
 
 # ---------------------------------------------------------------------------
@@ -1354,49 +1247,46 @@ def update_hh_questionnaire_answers(
 
 def save_hh_application(data: dict[str, Any]) -> None:
     """Save or update an HH application record in state.db."""
-    conn = get_connection()
-    cur = conn.cursor()
     app_id = str(data["application_id"]).strip()
     answers_json = _serialise_answers_json(data)
     now = datetime.utcnow().isoformat()
     created_at = data.get("created_at") or now
     updated_at = data.get("updated_at") or now
 
-    cur.execute('''
-        INSERT INTO hh_applications (
-            application_id, conversation_id, vacancy_stable_id, title, employer,
-            state, draft, questionnaire_id, answers_json, error,
-            last_transition_reason, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(application_id) DO UPDATE SET
-            conversation_id = COALESCE(excluded.conversation_id, hh_applications.conversation_id),
-            vacancy_stable_id = COALESCE(excluded.vacancy_stable_id, hh_applications.vacancy_stable_id),
-            title = COALESCE(excluded.title, hh_applications.title),
-            employer = COALESCE(excluded.employer, hh_applications.employer),
-            state = excluded.state,
-            draft = COALESCE(excluded.draft, hh_applications.draft),
-            questionnaire_id = COALESCE(excluded.questionnaire_id, hh_applications.questionnaire_id),
-            answers_json = COALESCE(excluded.answers_json, hh_applications.answers_json),
-            error = excluded.error,
-            last_transition_reason = excluded.last_transition_reason,
-            updated_at = excluded.updated_at
-    ''', (
-        app_id,
-        data.get("conversation_id"),
-        data.get("vacancy_stable_id"),
-        data.get("title"),
-        data.get("employer"),
-        data.get("state", "NEW"),
-        data.get("draft"),
-        data.get("questionnaire_id"),
-        answers_json,
-        data.get("error"),
-        data.get("last_transition_reason"),
-        created_at,
-        updated_at,
-    ))
-    conn.commit()
-    conn.close()
+    with db_session() as conn:
+        conn.execute('''
+            INSERT INTO hh_applications (
+                application_id, conversation_id, vacancy_stable_id, title, employer,
+                state, draft, questionnaire_id, answers_json, error,
+                last_transition_reason, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(application_id) DO UPDATE SET
+                conversation_id = COALESCE(excluded.conversation_id, hh_applications.conversation_id),
+                vacancy_stable_id = COALESCE(excluded.vacancy_stable_id, hh_applications.vacancy_stable_id),
+                title = COALESCE(excluded.title, hh_applications.title),
+                employer = COALESCE(excluded.employer, hh_applications.employer),
+                state = excluded.state,
+                draft = COALESCE(excluded.draft, hh_applications.draft),
+                questionnaire_id = COALESCE(excluded.questionnaire_id, hh_applications.questionnaire_id),
+                answers_json = COALESCE(excluded.answers_json, hh_applications.answers_json),
+                error = excluded.error,
+                last_transition_reason = excluded.last_transition_reason,
+                updated_at = excluded.updated_at
+        ''', (
+            app_id,
+            data.get("conversation_id"),
+            data.get("vacancy_stable_id"),
+            data.get("title"),
+            data.get("employer"),
+            data.get("state", "NEW"),
+            data.get("draft"),
+            data.get("questionnaire_id"),
+            answers_json,
+            data.get("error"),
+            data.get("last_transition_reason"),
+            created_at,
+            updated_at,
+        ))
 
 
 def set_hh_application_questionnaire(application_id: str, questionnaire_id: str) -> bool:
@@ -1415,18 +1305,13 @@ def set_hh_application_questionnaire(application_id: str, questionnaire_id: str)
     not a cosmetic difference. Pinned by
     test_binding_a_questionnaire_the_obvious_way_rewinds_the_state_machine.
     """
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute(
+    with db_session() as conn:
+        cur = conn.execute(
             "UPDATE hh_applications SET questionnaire_id = ?, updated_at = ?"
             " WHERE application_id = ?",
             (questionnaire_id, datetime.utcnow().isoformat(), str(application_id).strip()),
         )
-        conn.commit()
         return cur.rowcount > 0
-    finally:
-        conn.close()
 
 
 def _row_to_application(row: Any) -> dict[str, Any] | None:
@@ -1458,117 +1343,98 @@ def _row_to_application(row: Any) -> dict[str, Any] | None:
 
 def get_hh_application(application_id: str) -> dict[str, Any] | None:
     """Retrieve an HH application by its application_id."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT application_id, conversation_id, vacancy_stable_id, title, employer,
-               state, draft, questionnaire_id, answers_json, error,
-               last_transition_reason, created_at, updated_at
-        FROM hh_applications WHERE application_id = ?
-    ''', (str(application_id).strip(),))
-    row = cur.fetchone()
-    conn.close()
+    with db_session(commit=False) as conn:
+        row = conn.execute('''
+            SELECT application_id, conversation_id, vacancy_stable_id, title, employer,
+                   state, draft, questionnaire_id, answers_json, error,
+                   last_transition_reason, created_at, updated_at
+            FROM hh_applications WHERE application_id = ?
+        ''', (str(application_id).strip(),)).fetchone()
     return _row_to_application(row)
 
 
 def get_hh_application_by_conversation(conversation_id: str) -> dict[str, Any] | None:
     """Retrieve the latest HH application for a conversation."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT application_id, conversation_id, vacancy_stable_id, title, employer,
-               state, draft, questionnaire_id, answers_json, error,
-               last_transition_reason, created_at, updated_at
-        FROM hh_applications WHERE conversation_id = ? ORDER BY updated_at DESC LIMIT 1
-    ''', (str(conversation_id).strip(),))
-    row = cur.fetchone()
-    conn.close()
+    with db_session(commit=False) as conn:
+        row = conn.execute('''
+            SELECT application_id, conversation_id, vacancy_stable_id, title, employer,
+                   state, draft, questionnaire_id, answers_json, error,
+                   last_transition_reason, created_at, updated_at
+            FROM hh_applications WHERE conversation_id = ? ORDER BY updated_at DESC LIMIT 1
+        ''', (str(conversation_id).strip(),)).fetchone()
     return _row_to_application(row)
 
 
 def get_hh_application_by_vacancy(vacancy_stable_id: str) -> dict[str, Any] | None:
     """Retrieve the latest HH application for a vacancy."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT application_id, conversation_id, vacancy_stable_id, title, employer,
-               state, draft, questionnaire_id, answers_json, error,
-               last_transition_reason, created_at, updated_at
-        FROM hh_applications WHERE vacancy_stable_id = ? ORDER BY updated_at DESC LIMIT 1
-    ''', (str(vacancy_stable_id).strip(),))
-    row = cur.fetchone()
-    conn.close()
+    with db_session(commit=False) as conn:
+        row = conn.execute('''
+            SELECT application_id, conversation_id, vacancy_stable_id, title, employer,
+                   state, draft, questionnaire_id, answers_json, error,
+                   last_transition_reason, created_at, updated_at
+            FROM hh_applications WHERE vacancy_stable_id = ? ORDER BY updated_at DESC LIMIT 1
+        ''', (str(vacancy_stable_id).strip(),)).fetchone()
     return _row_to_application(row)
 
 
 def list_hh_applications(state: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
     """List stored HH applications, optionally filtered by state."""
-    conn = get_connection()
-    cur = conn.cursor()
-    if state:
-        cur.execute('''
-            SELECT application_id, conversation_id, vacancy_stable_id, title, employer,
-                   state, draft, questionnaire_id, answers_json, error,
-                   last_transition_reason, created_at, updated_at
-            FROM hh_applications WHERE state = ? ORDER BY updated_at DESC LIMIT ?
-        ''', (state, limit))
-    else:
-        cur.execute('''
-            SELECT application_id, conversation_id, vacancy_stable_id, title, employer,
-                   state, draft, questionnaire_id, answers_json, error,
-                   last_transition_reason, created_at, updated_at
-            FROM hh_applications ORDER BY updated_at DESC LIMIT ?
-        ''', (limit,))
-    rows = cur.fetchall()
-    conn.close()
+    with db_session(commit=False) as conn:
+        if state:
+            rows = conn.execute('''
+                SELECT application_id, conversation_id, vacancy_stable_id, title, employer,
+                       state, draft, questionnaire_id, answers_json, error,
+                       last_transition_reason, created_at, updated_at
+                FROM hh_applications WHERE state = ? ORDER BY updated_at DESC LIMIT ?
+            ''', (state, limit)).fetchall()
+        else:
+            rows = conn.execute('''
+                SELECT application_id, conversation_id, vacancy_stable_id, title, employer,
+                       state, draft, questionnaire_id, answers_json, error,
+                       last_transition_reason, created_at, updated_at
+                FROM hh_applications ORDER BY updated_at DESC LIMIT ?
+            ''', (limit,)).fetchall()
     return [_row_to_application(r) for r in rows if r is not None]
 
 
 def save_hh_application_transition(data: dict[str, Any]) -> int:
     """Save an audit record for an application state transition."""
     import json
-    conn = get_connection()
-    cur = conn.cursor()
     evidence_json = data.get("evidence_json")
     if evidence_json is None and data.get("evidence") is not None:
         evidence_json = json.dumps(data["evidence"], ensure_ascii=False)
     now = datetime.utcnow().isoformat()
     created_at = data.get("created_at") or now
 
-    cur.execute('''
-        INSERT INTO hh_application_transitions (
-            application_id, conversation_id, vacancy_stable_id,
-            state, previous_state, reason, evidence_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        str(data["application_id"]).strip(),
-        data.get("conversation_id"),
-        data.get("vacancy_stable_id"),
-        str(data["state"]).strip(),
-        data.get("previous_state"),
-        str(data["reason"]).strip(),
-        evidence_json,
-        created_at,
-    ))
-    trans_id = cur.lastrowid or 0
-    conn.commit()
-    conn.close()
-    return trans_id
+    with db_session() as conn:
+        cur = conn.execute('''
+            INSERT INTO hh_application_transitions (
+                application_id, conversation_id, vacancy_stable_id,
+                state, previous_state, reason, evidence_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            str(data["application_id"]).strip(),
+            data.get("conversation_id"),
+            data.get("vacancy_stable_id"),
+            str(data["state"]).strip(),
+            data.get("previous_state"),
+            str(data["reason"]).strip(),
+            evidence_json,
+            created_at,
+        ))
+        return cur.lastrowid or 0
 
 
 def list_hh_application_transitions(application_id: str, limit: int = 100) -> list[dict[str, Any]]:
     """List transition history for an application."""
     import json
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT id, application_id, conversation_id, vacancy_stable_id,
-               state, previous_state, reason, evidence_json, created_at
-        FROM hh_application_transitions
-        WHERE application_id = ? ORDER BY id ASC LIMIT ?
-    ''', (str(application_id).strip(), limit))
-    rows = cur.fetchall()
-    conn.close()
+    with db_session(commit=False) as conn:
+        rows = conn.execute('''
+            SELECT id, application_id, conversation_id, vacancy_stable_id,
+                   state, previous_state, reason, evidence_json, created_at
+            FROM hh_application_transitions
+            WHERE application_id = ? ORDER BY id ASC LIMIT ?
+        ''', (str(application_id).strip(), limit)).fetchall()
     result = []
     for r in rows:
         evidence = {}
@@ -1598,43 +1464,37 @@ def list_hh_application_transitions(application_id: str, limit: int = 100) -> li
 def save_autonomous_notification(data: dict[str, Any]) -> int:
     """Save an autonomous notification."""
     import json
-    conn = get_connection()
-    cur = conn.cursor()
     meta_json = json.dumps(data.get("metadata") or {}, ensure_ascii=False)
     now = datetime.utcnow().isoformat()
     created_at = data.get("created_at") or now
 
-    cur.execute('''
-        INSERT INTO autonomous_notifications (
-            notification_type, priority, title, message, company,
-            vacancy_title, vacancy_url, conversation_id, action_required,
-            metadata_json, created_at, read
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        str(data.get("notification_type", "GENERAL")).strip(),
-        str(data.get("priority", "NORMAL")).strip(),
-        str(data.get("title", "")).strip(),
-        str(data.get("message", "")).strip(),
-        data.get("company"),
-        data.get("vacancy_title"),
-        data.get("vacancy_url"),
-        data.get("conversation_id"),
-        data.get("action_required"),
-        meta_json,
-        created_at,
-        1 if data.get("read") else 0,
-    ))
-    notif_id = cur.lastrowid or 0
-    conn.commit()
-    conn.close()
-    return notif_id
+    with db_cursor(commit=True) as cur:
+        cur.execute('''
+            INSERT INTO autonomous_notifications (
+                notification_type, priority, title, message, company,
+                vacancy_title, vacancy_url, conversation_id, action_required,
+                metadata_json, created_at, read
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            str(data.get("notification_type", "GENERAL")).strip(),
+            str(data.get("priority", "NORMAL")).strip(),
+            str(data.get("title", "")).strip(),
+            str(data.get("message", "")).strip(),
+            data.get("company"),
+            data.get("vacancy_title"),
+            data.get("vacancy_url"),
+            data.get("conversation_id"),
+            data.get("action_required"),
+            meta_json,
+            created_at,
+            1 if data.get("read") else 0,
+        ))
+        return cur.lastrowid or 0
 
 
 def list_autonomous_notifications(limit: int = 50, unread_only: bool = False) -> list[dict[str, Any]]:
     """List recent autonomous notifications."""
     import json
-    conn = get_connection()
-    cur = conn.cursor()
     query = '''
         SELECT id, notification_type, priority, title, message, company,
                vacancy_title, vacancy_url, conversation_id, action_required,
@@ -1647,9 +1507,10 @@ def list_autonomous_notifications(limit: int = 50, unread_only: bool = False) ->
     query += " ORDER BY id DESC LIMIT ?"
     params.append(limit)
 
-    cur.execute(query, tuple(params))
-    rows = cur.fetchall()
-    conn.close()
+    with db_cursor(commit=False) as cur:
+        cur.execute(query, tuple(params))
+        rows = cur.fetchall()
+
     result = []
     for r in rows:
         meta = {}
@@ -1689,18 +1550,16 @@ def get_latest_interview_event(conversation_id: str) -> dict[str, Any] | None:
     cid = str(conversation_id or "").strip()
     if not cid:
         return None
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT id, conversation_id, vacancy_stable_id, company, vacancy_title,
-               invitation_text, invitation_url, action_required, status,
-               detected_at, notified
-        FROM interview_events
-        WHERE conversation_id = ?
-        ORDER BY id DESC LIMIT 1
-    ''', (cid,))
-    row = cur.fetchone()
-    conn.close()
+    with db_cursor(commit=False) as cur:
+        cur.execute('''
+            SELECT id, conversation_id, vacancy_stable_id, company, vacancy_title,
+                   invitation_text, invitation_url, action_required, status,
+                   detected_at, notified
+            FROM interview_events
+            WHERE conversation_id = ?
+            ORDER BY id DESC LIMIT 1
+        ''', (cid,))
+        row = cur.fetchone()
     if not row:
         return None
     cols = [
@@ -1739,32 +1598,29 @@ def record_interview_event(data: dict[str, Any]) -> dict[str, Any]:
         is_updated = False
         status = data.get("status", "NEW")
 
-    conn = get_connection()
-    cur = conn.cursor()
     now = datetime.utcnow().isoformat()
     detected_at = data.get("detected_at") or now
 
-    cur.execute('''
-        INSERT INTO interview_events (
-            conversation_id, vacancy_stable_id, company, vacancy_title,
-            invitation_text, invitation_url, action_required, status,
-            detected_at, notified
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        conversation_id,
-        data.get("vacancy_stable_id"),
-        str(data.get("company", "Unknown Employer")).strip(),
-        str(data.get("vacancy_title", "Unknown Role")).strip(),
-        invitation_text,
-        data.get("invitation_url"),
-        data.get("action_required"),
-        status,
-        detected_at,
-        1 if data.get("notified") else 0,
-    ))
-    event_id = cur.lastrowid or 0
-    conn.commit()
-    conn.close()
+    with db_cursor(commit=True) as cur:
+        cur.execute('''
+            INSERT INTO interview_events (
+                conversation_id, vacancy_stable_id, company, vacancy_title,
+                invitation_text, invitation_url, action_required, status,
+                detected_at, notified
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            conversation_id,
+            data.get("vacancy_stable_id"),
+            str(data.get("company", "Unknown Employer")).strip(),
+            str(data.get("vacancy_title", "Unknown Role")).strip(),
+            invitation_text,
+            data.get("invitation_url"),
+            data.get("action_required"),
+            status,
+            detected_at,
+            1 if data.get("notified") else 0,
+        ))
+        event_id = cur.lastrowid or 0
 
     return {
         "event_id": event_id,
@@ -1786,17 +1642,15 @@ def save_interview_event(data: dict[str, Any]) -> int:
 
 def list_interview_events(limit: int = 50) -> list[dict[str, Any]]:
     """List recent interview events."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT id, conversation_id, vacancy_stable_id, company, vacancy_title,
-               invitation_text, invitation_url, action_required, status,
-               detected_at, notified
-        FROM interview_events
-        ORDER BY id DESC LIMIT ?
-    ''', (limit,))
-    rows = cur.fetchall()
-    conn.close()
+    with db_cursor(commit=False) as cur:
+        cur.execute('''
+            SELECT id, conversation_id, vacancy_stable_id, company, vacancy_title,
+                   invitation_text, invitation_url, action_required, status,
+                   detected_at, notified
+            FROM interview_events
+            ORDER BY id DESC LIMIT ?
+        ''', (limit,))
+        rows = cur.fetchall()
     return [
         {
             "id": r[0],
@@ -1818,57 +1672,51 @@ def list_interview_events(limit: int = 50) -> list[dict[str, Any]]:
 def save_autonomous_cycle_run(data: dict[str, Any]) -> int:
     """Save an autonomous cycle execution summary."""
     import json
-    conn = get_connection()
-    cur = conn.cursor()
     log_json = json.dumps(data.get("log") or {}, ensure_ascii=False)
     now = datetime.utcnow().isoformat()
     started_at = data.get("started_at") or now
     completed_at = data.get("completed_at") or now
 
-    cur.execute('''
-        INSERT INTO autonomous_cycle_runs (
-            started_at, completed_at, status, discovered_count, matched_count,
-            applied_count, verified_count, messages_checked, auto_replies_count,
-            interviews_detected, rejections_count, unanswered_questions_count,
-            summary, log_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        started_at,
-        completed_at,
-        str(data.get("status", "SUCCESS")).strip(),
-        int(data.get("discovered_count", 0)),
-        int(data.get("matched_count", 0)),
-        int(data.get("applied_count", 0)),
-        int(data.get("verified_count", 0)),
-        int(data.get("messages_checked", 0)),
-        int(data.get("auto_replies_count", 0)),
-        int(data.get("interviews_detected", 0)),
-        int(data.get("rejections_count", 0)),
-        int(data.get("unanswered_questions_count", 0)),
-        data.get("summary", ""),
-        log_json,
-    ))
-    run_id = cur.lastrowid or 0
-    conn.commit()
-    conn.close()
-    return run_id
+    with db_cursor(commit=True) as cur:
+        cur.execute('''
+            INSERT INTO autonomous_cycle_runs (
+                started_at, completed_at, status, discovered_count, matched_count,
+                applied_count, verified_count, messages_checked, auto_replies_count,
+                interviews_detected, rejections_count, unanswered_questions_count,
+                summary, log_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            started_at,
+            completed_at,
+            str(data.get("status", "SUCCESS")).strip(),
+            int(data.get("discovered_count", 0)),
+            int(data.get("matched_count", 0)),
+            int(data.get("applied_count", 0)),
+            int(data.get("verified_count", 0)),
+            int(data.get("messages_checked", 0)),
+            int(data.get("auto_replies_count", 0)),
+            int(data.get("interviews_detected", 0)),
+            int(data.get("rejections_count", 0)),
+            int(data.get("unanswered_questions_count", 0)),
+            data.get("summary", ""),
+            log_json,
+        ))
+        return cur.lastrowid or 0
 
 
 def list_autonomous_cycle_runs(limit: int = 20) -> list[dict[str, Any]]:
     """List recent autonomous cycle runs."""
     import json
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT id, started_at, completed_at, status, discovered_count,
-               matched_count, applied_count, verified_count, messages_checked,
-               auto_replies_count, interviews_detected, rejections_count,
-               unanswered_questions_count, summary, log_json
-        FROM autonomous_cycle_runs
-        ORDER BY id DESC LIMIT ?
-    ''', (limit,))
-    rows = cur.fetchall()
-    conn.close()
+    with db_cursor(commit=False) as cur:
+        cur.execute('''
+            SELECT id, started_at, completed_at, status, discovered_count,
+                   matched_count, applied_count, verified_count, messages_checked,
+                   auto_replies_count, interviews_detected, rejections_count,
+                   unanswered_questions_count, summary, log_json
+            FROM autonomous_cycle_runs
+            ORDER BY id DESC LIMIT ?
+        ''', (limit,))
+        rows = cur.fetchall()
     result = []
     for r in rows:
         log_data = {}
@@ -1900,8 +1748,6 @@ def list_autonomous_cycle_runs(limit: int = 20) -> list[dict[str, Any]]:
 def save_conversation_audit(data: dict[str, Any]) -> int:
     """Save an autonomous conversation audit record."""
     import json
-    conn = get_connection()
-    cur = conn.cursor()
     facts = data.get("profile_facts_used")
     if isinstance(facts, (list, dict)):
         facts_str = json.dumps(facts, ensure_ascii=False)
@@ -1909,36 +1755,34 @@ def save_conversation_audit(data: dict[str, Any]) -> int:
         facts_str = str(facts or "")
 
     now = data.get("created_at") or datetime.utcnow().isoformat()
-    cur.execute('''
-        INSERT INTO autonomous_conversation_audits (
-            conversation_id, application_id, vacancy_id, vacancy_stable_id,
-            employer, incoming_message, incoming_message_timestamp,
-            message_classification, generated_reply, sent_reply,
-            sent_at, profile_facts_used, decision_reason, status,
-            error, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        data.get("conversation_id", ""),
-        data.get("application_id"),
-        data.get("vacancy_id"),
-        data.get("vacancy_stable_id"),
-        data.get("employer", ""),
-        data.get("incoming_message", ""),
-        data.get("incoming_message_timestamp"),
-        data.get("message_classification", "UNKNOWN"),
-        data.get("generated_reply"),
-        data.get("sent_reply"),
-        data.get("sent_at"),
-        facts_str,
-        data.get("decision_reason"),
-        data.get("status", "GENERATED"),
-        data.get("error"),
-        now,
-    ))
-    audit_id = cur.lastrowid or 0
-    conn.commit()
-    conn.close()
-    return audit_id
+    with db_cursor(commit=True) as cur:
+        cur.execute('''
+            INSERT INTO autonomous_conversation_audits (
+                conversation_id, application_id, vacancy_id, vacancy_stable_id,
+                employer, incoming_message, incoming_message_timestamp,
+                message_classification, generated_reply, sent_reply,
+                sent_at, profile_facts_used, decision_reason, status,
+                error, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            data.get("conversation_id", ""),
+            data.get("application_id"),
+            data.get("vacancy_id"),
+            data.get("vacancy_stable_id"),
+            data.get("employer", ""),
+            data.get("incoming_message", ""),
+            data.get("incoming_message_timestamp"),
+            data.get("message_classification", "UNKNOWN"),
+            data.get("generated_reply"),
+            data.get("sent_reply"),
+            data.get("sent_at"),
+            facts_str,
+            data.get("decision_reason"),
+            data.get("status", "GENERATED"),
+            data.get("error"),
+            now,
+        ))
+        return cur.lastrowid or 0
 
 
 def list_conversation_audits(
@@ -1949,8 +1793,6 @@ def list_conversation_audits(
 ) -> list[dict[str, Any]]:
     """List stored autonomous conversation audits with optional filtering."""
     import json
-    conn = get_connection()
-    cur = conn.cursor()
 
     query = '''
         SELECT id, conversation_id, application_id, vacancy_id, vacancy_stable_id,
@@ -1977,9 +1819,9 @@ def list_conversation_audits(
     query += " ORDER BY id DESC LIMIT ?"
     params.append(limit)
 
-    cur.execute(query, tuple(params))
-    rows = cur.fetchall()
-    conn.close()
+    with db_cursor(commit=False) as cur:
+        cur.execute(query, tuple(params))
+        rows = cur.fetchall()
 
     result = []
     for r in rows:
@@ -2014,18 +1856,16 @@ def list_conversation_audits(
 def get_conversation_audit(audit_id: int) -> dict[str, Any] | None:
     """Retrieve a single conversation audit by ID."""
     import json
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT id, conversation_id, application_id, vacancy_id, vacancy_stable_id,
-               employer, incoming_message, incoming_message_timestamp,
-               message_classification, generated_reply, sent_reply, sent_at,
-               profile_facts_used, decision_reason, status, error, created_at
-        FROM autonomous_conversation_audits
-        WHERE id = ?
-    ''', (audit_id,))
-    row = cur.fetchone()
-    conn.close()
+    with db_cursor(commit=False) as cur:
+        cur.execute('''
+            SELECT id, conversation_id, application_id, vacancy_id, vacancy_stable_id,
+                   employer, incoming_message, incoming_message_timestamp,
+                   message_classification, generated_reply, sent_reply, sent_at,
+                   profile_facts_used, decision_reason, status, error, created_at
+            FROM autonomous_conversation_audits
+            WHERE id = ?
+        ''', (audit_id,))
+        row = cur.fetchone()
     if not row:
         return None
     facts_val = row[12]
@@ -2059,11 +1899,9 @@ def is_telegram_delivered(delivery_key: str) -> bool:
     """Check if a notification or message event has already been delivered to Telegram."""
     if not delivery_key:
         return False
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT 1 FROM telegram_delivery_records WHERE delivery_key = ?", (str(delivery_key),))
-    row = cur.fetchone()
-    conn.close()
+    with db_cursor(commit=False) as cur:
+        cur.execute("SELECT 1 FROM telegram_delivery_records WHERE delivery_key = ?", (str(delivery_key),))
+        row = cur.fetchone()
     return bool(row)
 
 
@@ -2079,28 +1917,22 @@ def record_telegram_delivery(
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     payload_str = json.dumps(payload, ensure_ascii=False) if payload else None
 
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        INSERT INTO telegram_delivery_records
-            (delivery_key, notification_type, chat_id, delivered_at, status, payload)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(delivery_key) DO UPDATE SET
-            delivered_at = excluded.delivered_at,
-            status = excluded.status,
-            payload = excluded.payload
-    ''', (str(delivery_key), str(notification_type), str(chat_id), now_iso, str(status), payload_str))
-    record_id = cur.lastrowid
-    conn.commit()
-    conn.close()
-    return record_id
+    with db_cursor(commit=True) as cur:
+        cur.execute('''
+            INSERT INTO telegram_delivery_records
+                (delivery_key, notification_type, chat_id, delivered_at, status, payload)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(delivery_key) DO UPDATE SET
+                delivered_at = excluded.delivered_at,
+                status = excluded.status,
+                payload = excluded.payload
+        ''', (str(delivery_key), str(notification_type), str(chat_id), now_iso, str(status), payload_str))
+        return cur.lastrowid or 0
 
 
 def list_telegram_delivery_records(status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
     """List telegram delivery records from database."""
     import json
-    conn = get_connection()
-    cur = conn.cursor()
     query = "SELECT id, delivery_key, notification_type, chat_id, delivered_at, status, payload FROM telegram_delivery_records"
     params: list[Any] = []
     if status:
@@ -2108,9 +1940,10 @@ def list_telegram_delivery_records(status: str | None = None, limit: int = 100) 
         params.append(str(status).strip())
     query += " ORDER BY id DESC LIMIT ?"
     params.append(limit)
-    cur.execute(query, tuple(params))
-    rows = cur.fetchall()
-    conn.close()
+
+    with db_cursor(commit=False) as cur:
+        cur.execute(query, tuple(params))
+        rows = cur.fetchall()
 
     result = []
     for r in rows:
@@ -2135,26 +1968,22 @@ def list_telegram_delivery_records(status: str | None = None, limit: int = 100) 
 def update_telegram_delivery_status(record_id: int, status: str, payload_update: dict[str, Any] | None = None) -> bool:
     """Update status and payload for a telegram delivery record."""
     import json
-    conn = get_connection()
-    cur = conn.cursor()
-    if payload_update is not None:
-        cur.execute("SELECT payload FROM telegram_delivery_records WHERE id = ?", (record_id,))
-        row = cur.fetchone()
-        existing_payload = {}
-        if row and row[0]:
-            try:
-                existing_payload = json.loads(row[0])
-            except Exception:
-                existing_payload = {}
-        existing_payload.update(payload_update)
-        new_payload_str = json.dumps(existing_payload, ensure_ascii=False)
-        cur.execute("UPDATE telegram_delivery_records SET status = ?, payload = ? WHERE id = ?", (str(status).strip(), new_payload_str, record_id))
-    else:
-        cur.execute("UPDATE telegram_delivery_records SET status = ? WHERE id = ?", (str(status).strip(), record_id))
-    affected = cur.rowcount
-    conn.commit()
-    conn.close()
-    return affected > 0
+    with db_cursor(commit=True) as cur:
+        if payload_update is not None:
+            cur.execute("SELECT payload FROM telegram_delivery_records WHERE id = ?", (record_id,))
+            row = cur.fetchone()
+            existing_payload = {}
+            if row and row[0]:
+                try:
+                    existing_payload = json.loads(row[0])
+                except Exception:
+                    existing_payload = {}
+            existing_payload.update(payload_update)
+            new_payload_str = json.dumps(existing_payload, ensure_ascii=False)
+            cur.execute("UPDATE telegram_delivery_records SET status = ?, payload = ? WHERE id = ?", (str(status).strip(), new_payload_str, record_id))
+        else:
+            cur.execute("UPDATE telegram_delivery_records SET status = ? WHERE id = ?", (str(status).strip(), record_id))
+        return cur.rowcount > 0
 
 
 def is_digest_delivered(vacancy_stable_id: str, canonical_id: str | None = None) -> bool:
@@ -2166,12 +1995,10 @@ def is_digest_delivered(vacancy_stable_id: str, canonical_id: str | None = None)
         keys.append(f"digest:{canonical_id}")
     
     init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    placeholders = ",".join("?" for _ in keys)
-    cur.execute(f"SELECT 1 FROM telegram_delivery_records WHERE delivery_key IN ({placeholders}) AND status = 'DELIVERED'", tuple(keys))
-    row = cur.fetchone()
-    conn.close()
+    with db_cursor(commit=False) as cur:
+        placeholders = ",".join("?" for _ in keys)
+        cur.execute(f"SELECT 1 FROM telegram_delivery_records WHERE delivery_key IN ({placeholders}) AND status = 'DELIVERED'", tuple(keys))
+        row = cur.fetchone()
     return bool(row)
 
 is_vacancy_delivered_in_digest = is_digest_delivered
@@ -2199,71 +2026,66 @@ def record_digest_attempt(vacancy_ids: list[str], chat_id: str = "") -> str | No
     batch_key = compute_digest_batch_key(vacancy_ids)
     
     init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    
-    # Check if batch already exists in an active/non-failed state
-    cur.execute("SELECT status, payload FROM telegram_delivery_records WHERE delivery_key = ?", (batch_key,))
-    existing = cur.fetchone()
-    if existing:
-        curr_status = existing[0]
-        if curr_status in ("ATTEMPTING", "DELIVERED", "AMBIGUOUS"):
-            # Already in-flight or completed by another process -> DO NOT acquire duplicate permission
-            conn.close()
-            return None
-        # If FAILED, we are attempting a retry: atomically update
-        batch_payload = json.dumps({
-            "vacancies": vacancy_ids,
-            "chat_id": chat_id,
-            "attempted_at": now_iso,
-            "last_updated_at": now_iso,
-        })
-        cur.execute('''
-            UPDATE telegram_delivery_records
-            SET status = 'ATTEMPTING', delivered_at = ?, payload = ?
-            WHERE delivery_key = ? AND status = 'FAILED'
-        ''', (now_iso, batch_payload, batch_key))
-        if cur.rowcount == 0:
-            # Lost race with another worker
-            conn.close()
-            return None
-    else:
-        # First-time attempt: try to insert
-        batch_payload = json.dumps({
-            "vacancies": vacancy_ids,
-            "chat_id": chat_id,
-            "attempted_at": now_iso,
-            "last_updated_at": now_iso,
-        })
-        try:
+    with db_session(commit=True) as conn:
+        cur = conn.cursor()
+        
+        # Check if batch already exists in an active/non-failed state
+        cur.execute("SELECT status, payload FROM telegram_delivery_records WHERE delivery_key = ?", (batch_key,))
+        existing = cur.fetchone()
+        if existing:
+            curr_status = existing[0]
+            if curr_status in ("ATTEMPTING", "DELIVERED", "AMBIGUOUS"):
+                # Already in-flight or completed by another process -> DO NOT acquire duplicate permission
+                return None
+            # If FAILED, we are attempting a retry: atomically update
+            batch_payload = json.dumps({
+                "vacancies": vacancy_ids,
+                "chat_id": chat_id,
+                "attempted_at": now_iso,
+                "last_updated_at": now_iso,
+            })
+            cur.execute('''
+                UPDATE telegram_delivery_records
+                SET status = 'ATTEMPTING', delivered_at = ?, payload = ?
+                WHERE delivery_key = ? AND status = 'FAILED'
+            ''', (now_iso, batch_payload, batch_key))
+            if cur.rowcount == 0:
+                # Lost race with another worker
+                return None
+        else:
+            # First-time attempt: try to insert
+            batch_payload = json.dumps({
+                "vacancies": vacancy_ids,
+                "chat_id": chat_id,
+                "attempted_at": now_iso,
+                "last_updated_at": now_iso,
+            })
+            try:
+                cur.execute('''
+                    INSERT INTO telegram_delivery_records
+                        (delivery_key, notification_type, chat_id, delivered_at, status, payload)
+                    VALUES (?, 'digest_batch', ?, ?, 'ATTEMPTING', ?)
+                ''', (batch_key, str(chat_id), now_iso, batch_payload))
+            except sqlite3.IntegrityError:
+                # BLE001 #51: the race, and only it - see docs/ble001_triage.md.
+                return None
+
+        # Record vacancy-level in-flight attempts
+        for vid in vacancy_ids:
+            if not vid:
+                continue
+            deliv_key = f"digest:{vid}"
+            vac_payload = json.dumps({"batch_key": batch_key, "attempted_at": now_iso, "last_updated_at": now_iso})
             cur.execute('''
                 INSERT INTO telegram_delivery_records
                     (delivery_key, notification_type, chat_id, delivered_at, status, payload)
-                VALUES (?, 'digest_batch', ?, ?, 'ATTEMPTING', ?)
-            ''', (batch_key, str(chat_id), now_iso, batch_payload))
-        except sqlite3.IntegrityError:
-            # BLE001 #51: the race, and only it - see docs/ble001_triage.md.
-            conn.close()
-            return None
-
-    # Record vacancy-level in-flight attempts
-    for vid in vacancy_ids:
-        if not vid:
-            continue
-        deliv_key = f"digest:{vid}"
-        vac_payload = json.dumps({"batch_key": batch_key, "attempted_at": now_iso, "last_updated_at": now_iso})
-        cur.execute('''
-            INSERT INTO telegram_delivery_records
-                (delivery_key, notification_type, chat_id, delivered_at, status, payload)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(delivery_key) DO UPDATE SET
-                delivered_at = excluded.delivered_at,
-                status = 'ATTEMPTING',
-                payload = excluded.payload
-        ''', (deliv_key, "job_digest", str(chat_id), now_iso, "ATTEMPTING", vac_payload))
-        
-    conn.commit()
-    conn.close()
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(delivery_key) DO UPDATE SET
+                    delivered_at = excluded.delivered_at,
+                    status = 'ATTEMPTING',
+                    payload = excluded.payload
+            ''', (deliv_key, "job_digest", str(chat_id), now_iso, "ATTEMPTING", vac_payload))
+            
     return batch_key
 
 
@@ -2277,41 +2099,38 @@ def mark_digest_delivered(vacancy_ids: list[str], batch_key: str | None = None, 
         batch_key = compute_digest_batch_key(vacancy_ids)
 
     init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    count = 0
-    for vid in vacancy_ids:
-        if not vid:
-            continue
-        deliv_key = f"digest:{vid}"
-        vac_payload = json.dumps({"batch_key": batch_key, "delivered_at": now_iso, "last_updated_at": now_iso})
-        cur.execute('''
-            INSERT INTO telegram_delivery_records
-                (delivery_key, notification_type, chat_id, delivered_at, status, payload)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(delivery_key) DO UPDATE SET
-                delivered_at = excluded.delivered_at,
-                status = 'DELIVERED',
-                payload = excluded.payload
-        ''', (deliv_key, "job_digest", str(chat_id), now_iso, "DELIVERED", vac_payload))
-        count += 1
-        
-    # Mark batch DELIVERED
-    if batch_key:
-        batch_payload = json.dumps({"vacancies": vacancy_ids, "delivered_at": now_iso, "last_updated_at": now_iso})
-        cur.execute('''
-            INSERT INTO telegram_delivery_records
-                (delivery_key, notification_type, chat_id, delivered_at, status, payload)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(delivery_key) DO UPDATE SET
-                delivered_at = excluded.delivered_at,
-                status = 'DELIVERED',
-                payload = excluded.payload
-        ''', (batch_key, "digest_batch", str(chat_id), now_iso, "DELIVERED", batch_payload))
+    with db_cursor(commit=True) as cur:
+        count = 0
+        for vid in vacancy_ids:
+            if not vid:
+                continue
+            deliv_key = f"digest:{vid}"
+            vac_payload = json.dumps({"batch_key": batch_key, "delivered_at": now_iso, "last_updated_at": now_iso})
+            cur.execute('''
+                INSERT INTO telegram_delivery_records
+                    (delivery_key, notification_type, chat_id, delivered_at, status, payload)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(delivery_key) DO UPDATE SET
+                    delivered_at = excluded.delivered_at,
+                    status = 'DELIVERED',
+                    payload = excluded.payload
+            ''', (deliv_key, "job_digest", str(chat_id), now_iso, "DELIVERED", vac_payload))
+            count += 1
+            
+        # Mark batch DELIVERED
+        if batch_key:
+            batch_payload = json.dumps({"vacancies": vacancy_ids, "delivered_at": now_iso, "last_updated_at": now_iso})
+            cur.execute('''
+                INSERT INTO telegram_delivery_records
+                    (delivery_key, notification_type, chat_id, delivered_at, status, payload)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(delivery_key) DO UPDATE SET
+                    delivered_at = excluded.delivered_at,
+                    status = 'DELIVERED',
+                    payload = excluded.payload
+            ''', (batch_key, "digest_batch", str(chat_id), now_iso, "DELIVERED", batch_payload))
 
-    conn.commit()
-    conn.close()
-    return count
+        return count
 
 
 def record_digest_failed(vacancy_ids: list[str], batch_key: str | None = None, chat_id: str = "", error: str = "") -> int:
@@ -2324,40 +2143,37 @@ def record_digest_failed(vacancy_ids: list[str], batch_key: str | None = None, c
         batch_key = compute_digest_batch_key(vacancy_ids)
 
     init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    count = 0
-    err_payload = json.dumps({"batch_key": batch_key, "error": error, "failed_at": now_iso, "last_updated_at": now_iso})
-    for vid in vacancy_ids:
-        if not vid:
-            continue
-        deliv_key = f"digest:{vid}"
-        cur.execute('''
-            INSERT INTO telegram_delivery_records
-                (delivery_key, notification_type, chat_id, delivered_at, status, payload)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(delivery_key) DO UPDATE SET
-                delivered_at = excluded.delivered_at,
-                status = 'FAILED',
-                payload = excluded.payload
-        ''', (deliv_key, "job_digest", str(chat_id), now_iso, "FAILED", err_payload))
-        count += 1
+    with db_cursor(commit=True) as cur:
+        count = 0
+        err_payload = json.dumps({"batch_key": batch_key, "error": error, "failed_at": now_iso, "last_updated_at": now_iso})
+        for vid in vacancy_ids:
+            if not vid:
+                continue
+            deliv_key = f"digest:{vid}"
+            cur.execute('''
+                INSERT INTO telegram_delivery_records
+                    (delivery_key, notification_type, chat_id, delivered_at, status, payload)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(delivery_key) DO UPDATE SET
+                    delivered_at = excluded.delivered_at,
+                    status = 'FAILED',
+                    payload = excluded.payload
+            ''', (deliv_key, "job_digest", str(chat_id), now_iso, "FAILED", err_payload))
+            count += 1
 
-    if batch_key:
-        batch_err_payload = json.dumps({"vacancies": vacancy_ids, "error": error, "failed_at": now_iso, "last_updated_at": now_iso})
-        cur.execute('''
-            INSERT INTO telegram_delivery_records
-                (delivery_key, notification_type, chat_id, delivered_at, status, payload)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(delivery_key) DO UPDATE SET
-                delivered_at = excluded.delivered_at,
-                status = 'FAILED',
-                payload = excluded.payload
-        ''', (batch_key, "digest_batch", str(chat_id), now_iso, "FAILED", batch_err_payload))
+        if batch_key:
+            batch_err_payload = json.dumps({"vacancies": vacancy_ids, "error": error, "failed_at": now_iso, "last_updated_at": now_iso})
+            cur.execute('''
+                INSERT INTO telegram_delivery_records
+                    (delivery_key, notification_type, chat_id, delivered_at, status, payload)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(delivery_key) DO UPDATE SET
+                    delivered_at = excluded.delivered_at,
+                    status = 'FAILED',
+                    payload = excluded.payload
+            ''', (batch_key, "digest_batch", str(chat_id), now_iso, "FAILED", batch_err_payload))
 
-    conn.commit()
-    conn.close()
-    return count
+        return count
 
 
 def record_digest_ambiguous(vacancy_ids: list[str], batch_key: str | None = None, chat_id: str = "", reason: str = "") -> int:
@@ -2370,41 +2186,37 @@ def record_digest_ambiguous(vacancy_ids: list[str], batch_key: str | None = None
         batch_key = compute_digest_batch_key(vacancy_ids)
 
     init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    count = 0
-    amb_payload = json.dumps({"batch_key": batch_key, "reason": reason, "ambiguous_at": now_iso, "last_updated_at": now_iso})
-    for vid in vacancy_ids:
-        if not vid:
-            continue
-        deliv_key = f"digest:{vid}"
-        cur.execute('''
-            INSERT INTO telegram_delivery_records
-                (delivery_key, notification_type, chat_id, delivered_at, status, payload)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(delivery_key) DO UPDATE SET
-                delivered_at = excluded.delivered_at,
-                status = 'AMBIGUOUS',
-                payload = excluded.payload
-        ''', (deliv_key, "job_digest", str(chat_id), now_iso, "AMBIGUOUS", amb_payload))
-        count += 1
+    with db_cursor(commit=True) as cur:
+        count = 0
+        amb_payload = json.dumps({"batch_key": batch_key, "reason": reason, "ambiguous_at": now_iso, "last_updated_at": now_iso})
+        for vid in vacancy_ids:
+            if not vid:
+                continue
+            deliv_key = f"digest:{vid}"
+            cur.execute('''
+                INSERT INTO telegram_delivery_records
+                    (delivery_key, notification_type, chat_id, delivered_at, status, payload)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(delivery_key) DO UPDATE SET
+                    delivered_at = excluded.delivered_at,
+                    status = 'AMBIGUOUS',
+                    payload = excluded.payload
+            ''', (deliv_key, "job_digest", str(chat_id), now_iso, "AMBIGUOUS", amb_payload))
+            count += 1
 
-    if batch_key:
-        batch_amb_payload = json.dumps({"vacancies": vacancy_ids, "reason": reason, "ambiguous_at": now_iso, "last_updated_at": now_iso})
-        cur.execute('''
-            INSERT INTO telegram_delivery_records
-                (delivery_key, notification_type, chat_id, delivered_at, status, payload)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(delivery_key) DO UPDATE SET
-                delivered_at = excluded.delivered_at,
-                status = 'AMBIGUOUS',
-                payload = excluded.payload
-        ''', (batch_key, "digest_batch", str(chat_id), now_iso, "AMBIGUOUS", batch_amb_payload))
+        if batch_key:
+            batch_amb_payload = json.dumps({"vacancies": vacancy_ids, "reason": reason, "ambiguous_at": now_iso, "last_updated_at": now_iso})
+            cur.execute('''
+                INSERT INTO telegram_delivery_records
+                    (delivery_key, notification_type, chat_id, delivered_at, status, payload)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(delivery_key) DO UPDATE SET
+                    delivered_at = excluded.delivered_at,
+                    status = 'AMBIGUOUS',
+                    payload = excluded.payload
+            ''', (batch_key, "digest_batch", str(chat_id), now_iso, "AMBIGUOUS", batch_amb_payload))
 
-    conn.commit()
-    conn.close()
-    return count
-
+        return count
 
 def list_digest_attempts(limit: int = 50, now_dt: Any | None = None) -> list[dict[str, Any]]:
     """List digest delivery attempts from telegram_delivery_records with stale evaluation."""
@@ -2420,17 +2232,15 @@ def list_digest_attempts(limit: int = 50, now_dt: Any | None = None) -> list[dic
         now_dt = now_dt.replace(tzinfo=datetime.timezone.utc)
 
     init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT id, delivery_key, chat_id, delivered_at, status, payload
-        FROM telegram_delivery_records
-        WHERE notification_type = 'digest_batch'
-        ORDER BY id DESC
-        LIMIT ?
-    ''', (limit,))
-    rows = cur.fetchall()
-    conn.close()
+    with db_cursor(commit=False) as cur:
+        cur.execute('''
+            SELECT id, delivery_key, chat_id, delivered_at, status, payload
+            FROM telegram_delivery_records
+            WHERE notification_type = 'digest_batch'
+            ORDER BY id DESC
+            LIMIT ?
+        ''', (limit,))
+        rows = cur.fetchall()
     
     stale_threshold_seconds = max(1, DIGEST_ATTEMPT_STALE_MINUTES) * 60
     results = []
@@ -2512,81 +2322,74 @@ def reconcile_digest_attempt(batch_key: str, new_status: str, chat_id: str = "")
     if new_status not in ("DELIVERED", "FAILED", "AMBIGUOUS"):
         raise ValueError(f"Invalid status: {new_status}. Must be DELIVERED, FAILED, or AMBIGUOUS.")
     init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    
-    cur.execute("SELECT payload FROM telegram_delivery_records WHERE delivery_key = ? AND notification_type = 'digest_batch'", (batch_key,))
-    row = cur.fetchone()
-    if not row:
-        conn.close()
-        raise KeyError(f"Batch key '{batch_key}' not found in database.")
+    with db_session(commit=True) as conn:
+        cur = conn.cursor()
+        
+        cur.execute("SELECT payload FROM telegram_delivery_records WHERE delivery_key = ? AND notification_type = 'digest_batch'", (batch_key,))
+        row = cur.fetchone()
+        if not row:
+            raise KeyError(f"Batch key '{batch_key}' not found in database.")
 
-    vac_list = []
-    if row and row[0]:
-        try:
-            p = json.loads(row[0])
-            vac_list = p.get("vacancies", [])
-        except Exception as e:
-            # Fail closed. Continuing with an empty vac_list used to mark the
-            # batch reconciled AND overwrite its payload with an empty list -
-            # destroying the only record of which vacancies were in it, updating
-            # none of them, and still returning True.
-            # See docs/ble001_triage.md finding #3.
-            logger.exception(
-                "reconcile_digest_attempt: batch %s payload is not readable; "
-                "refusing to reconcile, no rows updated",
-                batch_key,
-            )
-            conn.close()
-            return False
+        vac_list = []
+        if row and row[0]:
+            try:
+                p = json.loads(row[0])
+                vac_list = p.get("vacancies", [])
+            except Exception as e:
+                # Fail closed. Continuing with an empty vac_list used to mark the
+                # batch reconciled AND overwrite its payload with an empty list -
+                # destroying the only record of which vacancies were in it, updating
+                # none of them, and still returning True.
+                # See docs/ble001_triage.md finding #3.
+                logger.exception(
+                    "reconcile_digest_attempt: batch %s payload is not readable; "
+                    "refusing to reconcile, no rows updated",
+                    batch_key,
+                )
+                return False
 
-    import datetime
-    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    
-    # Update batch
-    updated_payload = json.dumps({"vacancies": vac_list, "reconciled_to": new_status, "reconciled_at": now_iso, "last_updated_at": now_iso})
-    cur.execute('''
-        UPDATE telegram_delivery_records
-        SET status = ?, delivered_at = ?, payload = ?
-        WHERE delivery_key = ?
-    ''', (new_status, now_iso, updated_payload, batch_key))
-    
-    # Update individual vacancies
-    for vid in vac_list:
-        deliv_key = f"digest:{vid}"
-        vac_payload = json.dumps({"batch_key": batch_key, "reconciled_to": new_status, "reconciled_at": now_iso, "last_updated_at": now_iso})
+        import datetime
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        
+        # Update batch
+        updated_payload = json.dumps({"vacancies": vac_list, "reconciled_to": new_status, "reconciled_at": now_iso, "last_updated_at": now_iso})
         cur.execute('''
             UPDATE telegram_delivery_records
             SET status = ?, delivered_at = ?, payload = ?
             WHERE delivery_key = ?
-        ''', (new_status, now_iso, vac_payload, deliv_key))
+        ''', (new_status, now_iso, updated_payload, batch_key))
         
-    conn.commit()
-    conn.close()
-    return True
-
+        # Update individual vacancies
+        for vid in vac_list:
+            deliv_key = f"digest:{vid}"
+            vac_payload = json.dumps({"batch_key": batch_key, "reconciled_to": new_status, "reconciled_at": now_iso, "last_updated_at": now_iso})
+            cur.execute('''
+                UPDATE telegram_delivery_records
+                SET status = ?, delivered_at = ?, payload = ?
+                WHERE delivery_key = ?
+            ''', (new_status, now_iso, vac_payload, deliv_key))
+            
+        return True
 
 def list_undigested_vacancies(limit: int = 5000) -> list[Any]:
     """List fresh vacancies from state.db excluding legacy baseline and synthetic/test artifacts."""
     from .schema import is_genuine_production_vacancy
     init_db()
-    conn = get_connection()
-    _configure_sqlite_temp_storage(conn)
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT v.* FROM vacancies v
-        LEFT JOIN telegram_delivery_records t
-            ON t.delivery_key = 'digest:' || v.stable_id
-        WHERE v.source != 'vacancies_json'
-          AND (t.id IS NULL OR t.status = 'FAILED')
-        ORDER BY v.first_seen_at DESC
-        LIMIT ?
-    ''', (limit,))
-    rows = cur.fetchall()
-    conn.close()
+    with db_session(commit=False) as conn:
+        _configure_sqlite_temp_storage(conn)
+        cur = conn.cursor()
+        cur.execute('''
+            SELECT v.* FROM vacancies v
+            LEFT JOIN telegram_delivery_records t
+                ON t.delivery_key = 'digest:' || v.stable_id
+            WHERE v.source != 'vacancies_json'
+              AND (t.id IS NULL OR t.status = 'FAILED')
+            ORDER BY v.first_seen_at DESC
+            LIMIT ?
+        ''', (limit,))
+        rows = cur.fetchall()
     vacancies = [_row_to_vacancy(r) for r in rows if r]
     return [v for v in vacancies if is_genuine_production_vacancy(v)[0]]
-
 
 def get_production_health(now_dt: Any | None = None, storage_dir: str | None = None) -> dict[str, Any]:
     """Inspect production state and evaluate overall operational health (Stage 83)."""
@@ -2640,10 +2443,60 @@ def get_production_health(now_dt: Any | None = None, storage_dir: str | None = N
         # DDL-оператора ради проверки доступности незачем. SELECT 1 — настоящая
         # проба: sqlite3.connect ленивый и на отсутствующий файл не ругается.
         ensure_schema()
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT 1")
-        health_result["db_accessible"] = True
+        with db_session(commit=False) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            health_result["db_accessible"] = True
+
+            # 2. Query duplicate delivery keys
+            try:
+                cur.execute("SELECT delivery_key, COUNT(*) FROM telegram_delivery_records GROUP BY delivery_key HAVING COUNT(*) > 1")
+                dups = cur.fetchall()
+                health_result["metrics"]["duplicate_delivery_keys_count"] = len(dups)
+                if dups:
+                    health_result["health"] = "UNHEALTHY"
+                    health_result["alerts"].append({
+                        "severity": "CRITICAL",
+                        "message": f"Duplicate delivery keys detected ({len(dups)} duplicates).",
+                        "timestamp": now_iso,
+                        "diagnostics": [d[0] for d in dups[:5]],
+                    })
+            except Exception as dup_err:
+                # A health check that reports HEALTHY when its own query crashed is worse
+                # than no health check at all - it is the only duplicate-key guard we have.
+                # UNKNOWN is not HEALTHY, so cli.py exits non-zero on it.
+                # See docs/ble001_triage.md finding #4.
+                health_result["health"] = "UNKNOWN"
+                health_result["alerts"].append({
+                    "severity": "WARNING",
+                    "message": f"Duplicate delivery key check failed, result is inconclusive: {dup_err}",
+                    "timestamp": now_iso,
+                })
+
+            # 4. Total record counts
+            try:
+                cur.execute("SELECT COUNT(*) FROM telegram_delivery_records")
+                health_result["metrics"]["total_delivery_records"] = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM telegram_delivery_records WHERE notification_type = 'job_digest'")
+                health_result["metrics"]["job_digest_records"] = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM telegram_delivery_records WHERE notification_type = 'digest_batch'")
+                health_result["metrics"]["digest_batch_records"] = cur.fetchone()[0]
+            except Exception as counts_err:
+                # Same rule as block 2, applied to the numbers cli.py prints: a COUNT
+                # that crashed is not a count of zero. The metrics become None rather
+                # than 0, because 0 is a measurement and this is the absence of one.
+                # See docs/ble001_triage.md finding #47.
+                health_result["metrics"]["total_delivery_records"] = None
+                health_result["metrics"]["job_digest_records"] = None
+                health_result["metrics"]["digest_batch_records"] = None
+                health_result["metrics"]["record_counts_error"] = str(counts_err)
+                if health_result["health"] == "HEALTHY":
+                    health_result["health"] = "UNKNOWN"
+                health_result["alerts"].append({
+                    "severity": "WARNING",
+                    "message": f"Delivery record counts could not be read, totals are unknown: {counts_err}",
+                    "timestamp": now_iso,
+                })
     except Exception as db_err:
         health_result["health"] = "UNHEALTHY"
         health_result["alerts"].append({
@@ -2652,31 +2505,6 @@ def get_production_health(now_dt: Any | None = None, storage_dir: str | None = N
             "timestamp": now_iso,
         })
         return health_result
-
-    # 2. Query duplicate delivery keys
-    try:
-        cur.execute("SELECT delivery_key, COUNT(*) FROM telegram_delivery_records GROUP BY delivery_key HAVING COUNT(*) > 1")
-        dups = cur.fetchall()
-        health_result["metrics"]["duplicate_delivery_keys_count"] = len(dups)
-        if dups:
-            health_result["health"] = "UNHEALTHY"
-            health_result["alerts"].append({
-                "severity": "CRITICAL",
-                "message": f"Duplicate delivery keys detected ({len(dups)} duplicates).",
-                "timestamp": now_iso,
-                "diagnostics": [d[0] for d in dups[:5]],
-            })
-    except Exception as dup_err:
-        # A health check that reports HEALTHY when its own query crashed is worse
-        # than no health check at all - it is the only duplicate-key guard we have.
-        # UNKNOWN is not HEALTHY, so cli.py exits non-zero on it.
-        # See docs/ble001_triage.md finding #4.
-        health_result["health"] = "UNKNOWN"
-        health_result["alerts"].append({
-            "severity": "WARNING",
-            "message": f"Duplicate delivery key check failed, result is inconclusive: {dup_err}",
-            "timestamp": now_iso,
-        })
 
     # 3. Query attempt states
     # Stabilization 2026-10-13: historical FAILED must stay visible but must not
@@ -2750,31 +2578,6 @@ def get_production_health(now_dt: Any | None = None, storage_dir: str | None = N
     health_result["metrics"]["last_digest_attempt_at"] = last_attempt_ts
     health_result["metrics"]["last_successful_digest_at"] = last_delivered_ts
 
-    # 4. Total record counts
-    try:
-        cur.execute("SELECT COUNT(*) FROM telegram_delivery_records")
-        health_result["metrics"]["total_delivery_records"] = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM telegram_delivery_records WHERE notification_type = 'job_digest'")
-        health_result["metrics"]["job_digest_records"] = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM telegram_delivery_records WHERE notification_type = 'digest_batch'")
-        health_result["metrics"]["digest_batch_records"] = cur.fetchone()[0]
-    except Exception as counts_err:
-        # Same rule as block 2, applied to the numbers cli.py prints: a COUNT
-        # that crashed is not a count of zero. The metrics become None rather
-        # than 0, because 0 is a measurement and this is the absence of one.
-        # See docs/ble001_triage.md finding #47.
-        health_result["metrics"]["total_delivery_records"] = None
-        health_result["metrics"]["job_digest_records"] = None
-        health_result["metrics"]["digest_batch_records"] = None
-        health_result["metrics"]["record_counts_error"] = str(counts_err)
-        if health_result["health"] == "HEALTHY":
-            health_result["health"] = "UNKNOWN"
-        health_result["alerts"].append({
-            "severity": "WARNING",
-            "message": f"Delivery record counts could not be read, totals are unknown: {counts_err}",
-            "timestamp": now_iso,
-        })
-
     # 5. Pending undigested vacancies count
     try:
         undigested = list_undigested_vacancies(limit=1000)
@@ -2791,8 +2594,6 @@ def get_production_health(now_dt: Any | None = None, storage_dir: str | None = N
             "message": f"Pending undigested vacancies could not be listed, backlog size is unknown: {undigested_err}",
             "timestamp": now_iso,
         })
-
-    conn.close()
 
     # 6. Consecutive failures tracker
     from .runner import ConsecutiveFailureTracker
@@ -2921,53 +2722,46 @@ def record_telegram_feedback(
     if is_dry_run():
         return 0
     init_db()
-    conn = get_connection()
-    cur = conn.cursor()
     now_iso = created_at or datetime.utcnow().isoformat()
-    cur.execute('''
-        INSERT INTO telegram_feedback_records (
-            vacancy_stable_id, action, telegram_user_id, telegram_chat_id,
-            callback_query_id, previous_status, new_status, created_at, payload_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        vacancy_stable_id,
-        action,
-        str(telegram_user_id) if telegram_user_id is not None else None,
-        str(telegram_chat_id) if telegram_chat_id is not None else None,
-        str(callback_query_id) if callback_query_id is not None else None,
-        previous_status,
-        new_status,
-        now_iso,
-        payload_json,
-    ))
-    rec_id = cur.lastrowid
-    conn.commit()
-    conn.close()
-    return rec_id
-
+    with db_cursor(commit=True) as cur:
+        cur.execute('''
+            INSERT INTO telegram_feedback_records (
+                vacancy_stable_id, action, telegram_user_id, telegram_chat_id,
+                callback_query_id, previous_status, new_status, created_at, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            vacancy_stable_id,
+            action,
+            str(telegram_user_id) if telegram_user_id is not None else None,
+            str(telegram_chat_id) if telegram_chat_id is not None else None,
+            str(callback_query_id) if callback_query_id is not None else None,
+            previous_status,
+            new_status,
+            now_iso,
+            payload_json,
+        ))
+        return cur.lastrowid or 0
 
 def list_telegram_feedback(limit: int = 50, vacancy_stable_id: str | None = None) -> list[dict[str, Any]]:
     """List recent Telegram feedback records."""
     init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    if vacancy_stable_id:
-        cur.execute('''
-            SELECT id, vacancy_stable_id, action, telegram_user_id, telegram_chat_id,
-                   callback_query_id, previous_status, new_status, created_at, payload_json
-            FROM telegram_feedback_records
-            WHERE vacancy_stable_id = ?
-            ORDER BY id DESC LIMIT ?
-        ''', (vacancy_stable_id, limit))
-    else:
-        cur.execute('''
-            SELECT id, vacancy_stable_id, action, telegram_user_id, telegram_chat_id,
-                   callback_query_id, previous_status, new_status, created_at, payload_json
-            FROM telegram_feedback_records
-            ORDER BY id DESC LIMIT ?
-        ''', (limit,))
-    rows = cur.fetchall()
-    conn.close()
+    with db_cursor(commit=False) as cur:
+        if vacancy_stable_id:
+            cur.execute('''
+                SELECT id, vacancy_stable_id, action, telegram_user_id, telegram_chat_id,
+                       callback_query_id, previous_status, new_status, created_at, payload_json
+                FROM telegram_feedback_records
+                WHERE vacancy_stable_id = ?
+                ORDER BY id DESC LIMIT ?
+            ''', (vacancy_stable_id, limit))
+        else:
+            cur.execute('''
+                SELECT id, vacancy_stable_id, action, telegram_user_id, telegram_chat_id,
+                       callback_query_id, previous_status, new_status, created_at, payload_json
+                FROM telegram_feedback_records
+                ORDER BY id DESC LIMIT ?
+            ''', (limit,))
+        rows = cur.fetchall()
     results = []
     for r in rows:
         results.append({
@@ -2984,26 +2778,23 @@ def list_telegram_feedback(limit: int = 50, vacancy_stable_id: str | None = None
         })
     return results
 
-
 def get_telegram_feedback_summary() -> dict[str, Any]:
     """Produce read-only aggregation of recorded Telegram feedback (Stage 89)."""
     init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT action, COUNT(*) FROM telegram_feedback_records GROUP BY action
-    ''')
-    action_counts = {r[0]: r[1] for r in cur.fetchall()}
+    with db_cursor(commit=False) as cur:
+        cur.execute('''
+            SELECT action, COUNT(*) FROM telegram_feedback_records GROUP BY action
+        ''')
+        action_counts = {r[0]: r[1] for r in cur.fetchall()}
 
-    # Group by role_family / company / source by joining with vacancies
-    cur.execute('''
-        SELECT f.action, v.source, v.company, v.match_decision, COUNT(*)
-        FROM telegram_feedback_records f
-        LEFT JOIN vacancies v ON v.stable_id = f.vacancy_stable_id
-        GROUP BY f.action, v.source, v.company, v.match_decision
-    ''')
-    breakdown_rows = cur.fetchall()
-    conn.close()
+        # Group by role_family / company / source by joining with vacancies
+        cur.execute('''
+            SELECT f.action, v.source, v.company, v.match_decision, COUNT(*)
+            FROM telegram_feedback_records f
+            LEFT JOIN vacancies v ON v.stable_id = f.vacancy_stable_id
+            GROUP BY f.action, v.source, v.company, v.match_decision
+        ''')
+        breakdown_rows = cur.fetchall()
 
     return {
         "total_feedbacks": sum(action_counts.values()),
@@ -3025,7 +2816,6 @@ def get_telegram_feedback_summary() -> dict[str, Any]:
         ],
     }
 
-
 def resolve_vacancy_by_hash_prefix(hash_prefix: str) -> str | None:
     """Resolve a vacancy stable_id by its SHA256 hash prefix for compact Telegram callbacks.
     
@@ -3038,11 +2828,9 @@ def resolve_vacancy_by_hash_prefix(hash_prefix: str) -> str | None:
         return None
     import hashlib
     init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT stable_id FROM vacancies")
-    rows = cur.fetchall()
-    conn.close()
+    with db_cursor(commit=False) as cur:
+        cur.execute("SELECT stable_id FROM vacancies")
+        rows = cur.fetchall()
     
     matches = [
         sid for (sid,) in rows
@@ -3057,28 +2845,21 @@ get_vacancy = get_vacancy_by_id
 
 def get_system_setting(key: str, default: str | None = None) -> str | None:
     init_db()
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM system_settings WHERE key = ?", (key,))
-    row = cursor.fetchone()
-    conn.close()
+    with db_cursor(commit=False) as cursor:
+        cursor.execute("SELECT value FROM system_settings WHERE key = ?", (key,))
+        row = cursor.fetchone()
     if row:
         return row[0]
     return default
 
-
 def set_system_setting(key: str, value: str) -> None:
     init_db()
     now = datetime.now(timezone.utc).isoformat()
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)",
-        (key, value, now),
-    )
-    conn.commit()
-    conn.close()
-
+    with db_cursor(commit=True) as cursor:
+        cursor.execute(
+            "INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)",
+            (key, value, now),
+        )
 
 def is_submit_paused() -> bool:
     return get_system_setting("submit_paused") == "1"
@@ -3090,17 +2871,13 @@ def set_submit_paused(paused: bool) -> None:
 
 def count_submitted_transitions_since(since_iso: str) -> int:
     init_db()
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT COUNT(*) FROM hh_application_transitions WHERE state = 'SUBMITTED' AND created_at >= ?",
-        (since_iso,),
-    )
-    count = cursor.fetchone()[0]
-    conn.close()
-    return count
-
-
+    with db_cursor(commit=False) as cursor:
+        cursor.execute(
+            "SELECT COUNT(*) FROM hh_application_transitions WHERE state = 'SUBMITTED' AND created_at >= ?",
+            (since_iso,),
+        )
+        row = cursor.fetchone()
+    return row[0] if row else 0
 # --- Phase 2.1: Exclusive Submission Claims ---
 
 class SubmissionClaimStatus(str, Enum):
@@ -3134,115 +2911,111 @@ def acquire_submission_claim(
     cid = claim_id or f"claim_{_uuid.uuid4().hex[:12]}"
     d_json = json.dumps(details or {"worker_id": worker_id, "acquired_at": now})
 
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute("BEGIN IMMEDIATE")
+    with db_session(commit=False) as conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("BEGIN IMMEDIATE")
 
-        # 1. Kill-switch check
-        cur.execute("SELECT value FROM system_settings WHERE key = 'submit_paused'")
-        row = cur.fetchone()
-        if row and str(row[0]).strip() in ("1", "true", "True"):
+            # 1. Kill-switch check
+            cur.execute("SELECT value FROM system_settings WHERE key = 'submit_paused'")
+            row = cur.fetchone()
+            if row and str(row[0]).strip() in ("1", "true", "True"):
+                conn.rollback()
+                return False, "PAUSED_BY_KILL_SWITCH", None
+
+            # 2. Check existing claim
+            cur.execute(
+                "SELECT vacancy_stable_id, application_id, claim_id, status, worker_id, claimed_at, updated_at, details_json "
+                "FROM submission_claims WHERE vacancy_stable_id = ?",
+                (vacancy_stable_id,),
+            )
+            existing = cur.fetchone()
+            if existing:
+                ex_data = {
+                    "vacancy_stable_id": existing[0],
+                    "application_id": existing[1],
+                    "claim_id": existing[2],
+                    "status": existing[3],
+                    "worker_id": existing[4],
+                    "claimed_at": existing[5],
+                    "updated_at": existing[6],
+                    "details": json.loads(existing[7]) if existing[7] else {},
+                }
+                ex_status = existing[3]
+                if ex_status == SubmissionClaimStatus.SUBMITTED.value:
+                    conn.rollback()
+                    return False, "ALREADY_SUBMITTED", ex_data
+                elif ex_status == SubmissionClaimStatus.ATTEMPTING.value:
+                    conn.rollback()
+                    return False, "CONCURRENT_ATTEMPT_IN_PROGRESS", ex_data
+                elif ex_status == SubmissionClaimStatus.AMBIGUOUS.value:
+                    conn.rollback()
+                    return False, "AMBIGUOUS_OUTCOME_BLOCKED", ex_data
+                elif ex_status == SubmissionClaimStatus.FAILED_SAFE.value:
+                    if not allow_reclaim_failed_safe:
+                        conn.rollback()
+                        return False, "PREVIOUS_ATTEMPT_FAILED_SAFE", ex_data
+                    cur.execute(
+                        "UPDATE submission_claims SET claim_id = ?, status = ?, worker_id = ?, updated_at = ?, details_json = ? "
+                        "WHERE vacancy_stable_id = ?",
+                        (cid, SubmissionClaimStatus.ATTEMPTING.value, worker_id, now, d_json, vacancy_stable_id),
+                    )
+                    conn.commit()
+                    ex_data.update({
+                        "claim_id": cid,
+                        "status": SubmissionClaimStatus.ATTEMPTING.value,
+                        "worker_id": worker_id,
+                        "updated_at": now,
+                    })
+                    return True, "CLAIM_REACQUIRED", ex_data
+                else:
+                    conn.rollback()
+                    return False, f"CLAIM_BLOCKED_{ex_status}", ex_data
+
+            # 3. Check submission evidence in application_submissions
+            cur.execute(
+                "SELECT status FROM application_submissions WHERE vacancy_stable_id = ? "
+                "AND status IN ('SUBMITTED', 'CONFIRMED', 'AMBIGUOUS', 'AMBIGUOUS_POST_SUBMIT', 'VERIFIED', 'SUCCESS')",
+                (vacancy_stable_id,),
+            )
+            if cur.fetchone():
+                conn.rollback()
+                return False, "ALREADY_APPLIED_SUBMISSIONS", None
+
+            # 4. Insert new claim
+            cur.execute(
+                "INSERT INTO submission_claims (vacancy_stable_id, application_id, claim_id, status, worker_id, claimed_at, updated_at, details_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (vacancy_stable_id, application_id, cid, SubmissionClaimStatus.ATTEMPTING.value, worker_id, now, now, d_json),
+            )
+            conn.commit()
+            return True, "CLAIM_ACQUIRED", {
+                "vacancy_stable_id": vacancy_stable_id,
+                "application_id": application_id,
+                "claim_id": cid,
+                "status": SubmissionClaimStatus.ATTEMPTING.value,
+                "worker_id": worker_id,
+                "claimed_at": now,
+                "updated_at": now,
+            }
+        except sqlite3.IntegrityError:
             conn.rollback()
-            return False, "PAUSED_BY_KILL_SWITCH", None
+            return False, "CONCURRENT_CLAIM_CONFLICT", None
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Failed to acquire submission claim: {e}")
+            return False, f"CLAIM_ERROR: {e}", None
 
-        # 2. Check existing claim
+
+def get_submission_claim(vacancy_stable_id: str) -> dict[str, Any] | None:
+    init_db()
+    with db_cursor(commit=False) as cur:
         cur.execute(
             "SELECT vacancy_stable_id, application_id, claim_id, status, worker_id, claimed_at, updated_at, details_json "
             "FROM submission_claims WHERE vacancy_stable_id = ?",
             (vacancy_stable_id,),
         )
-        existing = cur.fetchone()
-        if existing:
-            ex_data = {
-                "vacancy_stable_id": existing[0],
-                "application_id": existing[1],
-                "claim_id": existing[2],
-                "status": existing[3],
-                "worker_id": existing[4],
-                "claimed_at": existing[5],
-                "updated_at": existing[6],
-                "details": json.loads(existing[7]) if existing[7] else {},
-            }
-            ex_status = existing[3]
-            if ex_status == SubmissionClaimStatus.SUBMITTED.value:
-                conn.rollback()
-                return False, "ALREADY_SUBMITTED", ex_data
-            elif ex_status == SubmissionClaimStatus.ATTEMPTING.value:
-                conn.rollback()
-                return False, "CONCURRENT_ATTEMPT_IN_PROGRESS", ex_data
-            elif ex_status == SubmissionClaimStatus.AMBIGUOUS.value:
-                conn.rollback()
-                return False, "AMBIGUOUS_OUTCOME_BLOCKED", ex_data
-            elif ex_status == SubmissionClaimStatus.FAILED_SAFE.value:
-                if not allow_reclaim_failed_safe:
-                    conn.rollback()
-                    return False, "PREVIOUS_ATTEMPT_FAILED_SAFE", ex_data
-                cur.execute(
-                    "UPDATE submission_claims SET claim_id = ?, status = ?, worker_id = ?, updated_at = ?, details_json = ? "
-                    "WHERE vacancy_stable_id = ?",
-                    (cid, SubmissionClaimStatus.ATTEMPTING.value, worker_id, now, d_json, vacancy_stable_id),
-                )
-                conn.commit()
-                ex_data.update({
-                    "claim_id": cid,
-                    "status": SubmissionClaimStatus.ATTEMPTING.value,
-                    "worker_id": worker_id,
-                    "updated_at": now,
-                })
-                return True, "CLAIM_REACQUIRED", ex_data
-            else:
-                conn.rollback()
-                return False, f"CLAIM_BLOCKED_{ex_status}", ex_data
-
-        # 3. Check submission evidence in application_submissions
-        cur.execute(
-            "SELECT status FROM application_submissions WHERE vacancy_stable_id = ? "
-            "AND status IN ('SUBMITTED', 'CONFIRMED', 'AMBIGUOUS', 'AMBIGUOUS_POST_SUBMIT', 'VERIFIED', 'SUCCESS')",
-            (vacancy_stable_id,),
-        )
-        if cur.fetchone():
-            conn.rollback()
-            return False, "ALREADY_APPLIED_SUBMISSIONS", None
-
-        # 4. Insert new claim
-        cur.execute(
-            "INSERT INTO submission_claims (vacancy_stable_id, application_id, claim_id, status, worker_id, claimed_at, updated_at, details_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (vacancy_stable_id, application_id, cid, SubmissionClaimStatus.ATTEMPTING.value, worker_id, now, now, d_json),
-        )
-        conn.commit()
-        return True, "CLAIM_ACQUIRED", {
-            "vacancy_stable_id": vacancy_stable_id,
-            "application_id": application_id,
-            "claim_id": cid,
-            "status": SubmissionClaimStatus.ATTEMPTING.value,
-            "worker_id": worker_id,
-            "claimed_at": now,
-            "updated_at": now,
-        }
-    except sqlite3.IntegrityError:
-        conn.rollback()
-        return False, "CONCURRENT_CLAIM_CONFLICT", None
-    except Exception as e:
-        conn.rollback()
-        logger.error(f"Failed to acquire submission claim: {e}")
-        return False, f"CLAIM_ERROR: {e}", None
-    finally:
-        conn.close()
-
-
-def get_submission_claim(vacancy_stable_id: str) -> dict[str, Any] | None:
-    init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT vacancy_stable_id, application_id, claim_id, status, worker_id, claimed_at, updated_at, details_json "
-        "FROM submission_claims WHERE vacancy_stable_id = ?",
-        (vacancy_stable_id,),
-    )
-    row = cur.fetchone()
-    conn.close()
+        row = cur.fetchone()
     if not row:
         return None
     return {
@@ -3256,7 +3029,6 @@ def get_submission_claim(vacancy_stable_id: str) -> dict[str, Any] | None:
         "details": json.loads(row[7]) if row[7] else {},
     }
 
-
 def update_submission_claim(
     vacancy_stable_id: str,
     status: str,
@@ -3265,71 +3037,67 @@ def update_submission_claim(
 ) -> bool:
     init_db()
     now = datetime.now(timezone.utc).isoformat()
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute("BEGIN IMMEDIATE")
-        if claim_id:
-            cur.execute(
-                "SELECT details_json FROM submission_claims WHERE vacancy_stable_id = ? AND claim_id = ?",
-                (vacancy_stable_id, claim_id),
-            )
-        else:
-            cur.execute(
-                "SELECT details_json FROM submission_claims WHERE vacancy_stable_id = ?",
-                (vacancy_stable_id,),
-            )
-        row = cur.fetchone()
-        if not row:
+    with db_session(commit=False) as conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("BEGIN IMMEDIATE")
+            if claim_id:
+                cur.execute(
+                    "SELECT details_json FROM submission_claims WHERE vacancy_stable_id = ? AND claim_id = ?",
+                    (vacancy_stable_id, claim_id),
+                )
+            else:
+                cur.execute(
+                    "SELECT details_json FROM submission_claims WHERE vacancy_stable_id = ?",
+                    (vacancy_stable_id,),
+                )
+            row = cur.fetchone()
+            if not row:
+                conn.rollback()
+                return False
+
+            merged_details = json.loads(row[0]) if row[0] else {}
+            if details:
+                merged_details.update(details)
+            merged_details["last_status_change"] = now
+            d_json = json.dumps(merged_details)
+
+            if claim_id:
+                cur.execute(
+                    "UPDATE submission_claims SET status = ?, updated_at = ?, details_json = ? "
+                    "WHERE vacancy_stable_id = ? AND claim_id = ?",
+                    (status, now, d_json, vacancy_stable_id, claim_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE submission_claims SET status = ?, updated_at = ?, details_json = ? "
+                    "WHERE vacancy_stable_id = ?",
+                    (status, now, d_json, vacancy_stable_id),
+                )
+            conn.commit()
+            return True
+        except Exception as e:
             conn.rollback()
+            logger.error(f"Failed to update submission claim for {vacancy_stable_id}: {e}")
             return False
-
-        merged_details = json.loads(row[0]) if row[0] else {}
-        if details:
-            merged_details.update(details)
-        merged_details["last_status_change"] = now
-        d_json = json.dumps(merged_details)
-
-        if claim_id:
-            cur.execute(
-                "UPDATE submission_claims SET status = ?, updated_at = ?, details_json = ? "
-                "WHERE vacancy_stable_id = ? AND claim_id = ?",
-                (status, now, d_json, vacancy_stable_id, claim_id),
-            )
-        else:
-            cur.execute(
-                "UPDATE submission_claims SET status = ?, updated_at = ?, details_json = ? "
-                "WHERE vacancy_stable_id = ?",
-                (status, now, d_json, vacancy_stable_id),
-            )
-        conn.commit()
-        return True
-    except Exception as e:
-        conn.rollback()
-        logger.error(f"Failed to update submission claim for {vacancy_stable_id}: {e}")
-        return False
-    finally:
-        conn.close()
 
 
 def list_submission_claims(status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
     init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    if status:
-        cur.execute(
-            "SELECT vacancy_stable_id, application_id, claim_id, status, worker_id, claimed_at, updated_at, details_json "
-            "FROM submission_claims WHERE status = ? ORDER BY updated_at DESC LIMIT ?",
-            (status, limit),
-        )
-    else:
-        cur.execute(
-            "SELECT vacancy_stable_id, application_id, claim_id, status, worker_id, claimed_at, updated_at, details_json "
-            "FROM submission_claims ORDER BY updated_at DESC LIMIT ?",
-            (limit,),
-        )
-    rows = cur.fetchall()
-    conn.close()
+    with db_cursor(commit=False) as cur:
+        if status:
+            cur.execute(
+                "SELECT vacancy_stable_id, application_id, claim_id, status, worker_id, claimed_at, updated_at, details_json "
+                "FROM submission_claims WHERE status = ? ORDER BY updated_at DESC LIMIT ?",
+                (status, limit),
+            )
+        else:
+            cur.execute(
+                "SELECT vacancy_stable_id, application_id, claim_id, status, worker_id, claimed_at, updated_at, details_json "
+                "FROM submission_claims ORDER BY updated_at DESC LIMIT ?",
+                (limit,),
+            )
+        rows = cur.fetchall()
     results = []
     for r in rows:
         results.append({
@@ -3343,7 +3111,6 @@ def list_submission_claims(status: str | None = None, limit: int = 100) -> list[
             "details": json.loads(r[7]) if r[7] else {},
         })
     return results
-
 
 def reconcile_submission_claim(
     vacancy_stable_id: str,

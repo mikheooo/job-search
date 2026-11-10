@@ -194,6 +194,11 @@ def sync_hermes_integration(base_dir: Path | None = None, dry_run: bool = False)
             # CRLF file -- including the ones the tests write on Windows.
             anchor = ADAPTER_HOOK_ANCHOR.rstrip("\n")
             idx_anchor = adapter_text.find(anchor)
+            if idx_anchor == -1:
+                legacy_anchor = "        # --- Update prompt callbacks ---"
+                if legacy_anchor in adapter_text:
+                    anchor = legacy_anchor
+                    idx_anchor = adapter_text.find(anchor)
             if idx_anchor != -1:
                 line_end = idx_anchor + len(anchor)
                 if adapter_text.startswith("\r\n", line_end):
