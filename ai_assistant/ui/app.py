@@ -335,6 +335,19 @@ def get_business_funnel() -> dict[str, Any]:
     return get_business_funnel_metrics()
 
 
+@app.get("/api/funnel-analytics")
+def get_detailed_funnel_analytics() -> dict[str, Any]:
+    from ..funnel_analytics import format_funnel_report, get_funnel_metrics
+    from ..business_funnel import get_business_funnel_metrics
+    metrics = get_funnel_metrics()
+    business_funnel = get_business_funnel_metrics()
+    return {
+        "metrics": metrics,
+        "business_funnel": business_funnel,
+        "formatted_report": format_funnel_report(),
+    }
+
+
 @app.get("/api/top-gigs")
 def get_top_gigs() -> list[dict[str, Any]]:
     init_db()

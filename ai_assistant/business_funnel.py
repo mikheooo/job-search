@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 from datetime import datetime, timezone
 from enum import Enum
@@ -116,6 +117,74 @@ def record_conversion_event(
     conn.commit()
     conn.close()
     return row_id
+
+
+def record_variant_outbound(
+    lead_id: str,
+    stream: SearchStream | str,
+    source: str,
+    variant_id: str,
+    notes: str = "",
+) -> int:
+    """Convenience helper to record outbound touch with A/B variant tracking."""
+    variant_note = f"variant:{variant_id}"
+    full_notes = f"{variant_note}; {notes}" if notes else variant_note
+    return record_conversion_event(
+        lead_id=lead_id,
+        stream=stream,
+        source=source,
+        stage=FunnelStage.OUTBOUND_CONFIRMED,
+        notes=full_notes,
+    )
+
+
+def get_ab_test_metrics(conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+    """Calculate conversion metrics segmented by prompt / pitch variant."""
+    close_after = False
+    if conn is None:
+        init_business_funnel_db()
+        conn = db.get_connection()
+        close_after = True
+
+    c = conn.cursor()
+    c.execute("""
+        SELECT lead_id, stage, notes
+        FROM business_conversion_events
+        WHERE notes LIKE '%variant:%'
+    """)
+    rows = c.fetchall()
+    if close_after:
+        conn.close()
+
+    variants_data: dict[str, dict[str, Any]] = {}
+    for lead_id, stage, notes in rows:
+        match = re.search(r"variant:([a-zA-Z0-9_\-]+)", notes or "")
+        if not match:
+            continue
+        v_id = match.group(1)
+        if v_id not in variants_data:
+            variants_data[v_id] = {
+                "outbounds": 0,
+                "replies": 0,
+                "negotiations": 0,
+                "deals": 0,
+                "reply_rate": 0.0,
+            }
+        stage_str = str(stage)
+        if stage_str in (FunnelStage.OUTBOUND_CONFIRMED.value, "OUTBOUND_CONFIRMED", "OUTBOUND_ATTEMPTED"):
+            variants_data[v_id]["outbounds"] += 1
+        elif stage_str in (FunnelStage.REPLY_RECEIVED.value, "REPLY_RECEIVED"):
+            variants_data[v_id]["replies"] += 1
+        elif stage_str in (FunnelStage.NEGOTIATION.value, "NEGOTIATION", FunnelStage.INTERVIEW.value, "INTERVIEW"):
+            variants_data[v_id]["negotiations"] += 1
+        elif stage_str in (FunnelStage.DEAL_AGREED.value, "DEAL_AGREED", FunnelStage.PAYMENT_RECEIVED.value, "PAYMENT_RECEIVED"):
+            variants_data[v_id]["deals"] += 1
+
+    for v_id, stats in variants_data.items():
+        if stats["outbounds"] > 0:
+            stats["reply_rate"] = round(stats["replies"] / stats["outbounds"], 4)
+
+    return variants_data
 
 
 def get_business_funnel_metrics() -> dict[str, Any]:
@@ -288,6 +357,7 @@ def get_business_funnel_metrics() -> dict[str, Any]:
         for r in c.fetchall()
     ]
 
+    ab_variants = get_ab_test_metrics(conn=conn)
     conn.close()
 
     return {
@@ -316,6 +386,7 @@ def get_business_funnel_metrics() -> dict[str, Any]:
             "payments_count": len(payments_ledger),
             "ledger": payments_ledger,
         },
+        "ab_variants": ab_variants,
     }
 
 

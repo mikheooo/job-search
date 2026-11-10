@@ -15,6 +15,16 @@ import re
 import urllib.parse
 from typing import Any
 
+GIG_PITCH_VARIANTS = ["direct_focus", "enterprise_proven", "speed_delivery"]
+
+
+def select_pitch_variant(lead_id: str | None = None) -> str:
+    """Deterministically select a variant based on lead_id hash or default."""
+    if not lead_id:
+        return "direct_focus"
+    idx = abs(hash(lead_id)) % len(GIG_PITCH_VARIANTS)
+    return GIG_PITCH_VARIANTS[idx]
+
 
 def generate_gig_pitch(
     title: str,
@@ -22,6 +32,7 @@ def generate_gig_pitch(
     budget: str = "",
     language: str | None = None,
     source: str | None = None,
+    variant_id: str | None = None,
 ) -> str:
     """Generate a crisp, ready-to-send proposal for a freelance gig.
 
@@ -30,6 +41,7 @@ def generate_gig_pitch(
     as a tie-breaker — so English orders (Freelancer.com, Contra) get an
     English reply instead of the old hardcoded Russian one. Only confirmed
     candidate KB facts are used; nothing is invented in either language.
+    ``variant_id`` selects an A/B tested pitch strategy (direct_focus, enterprise_proven, speed_delivery).
     """
     if language not in ("ru", "en"):
         from ai_assistant.gig.order_language import resolve_order_language
@@ -62,24 +74,82 @@ def generate_gig_pitch(
 
     if language == "en":
         budget_note = f" (budget guide: {budget})" if budget else ""
-        pitch = (
-            f'Hello! I can take on your task "{title}"{budget_note} promptly and reliably.\n\n'
-            f"{focus}\n\n"
-            f"I can start today. Payment on delivery / secure escrow.\n\n"
-            f"{contact_block}"
-        )
+        if variant_id == "enterprise_proven":
+            pitch = (
+                f'Hello! I can take on your project "{title}"{budget_note} with high reliability and clean delivery.\n\n'
+                f"{focus}\n\n"
+                f"Milestone-based delivery, transparent communication, payment on completion / escrow.\n\n"
+                f"{contact_block}"
+            )
+        elif variant_id == "speed_delivery":
+            pitch = (
+                f'Hello! I can start on your task "{title}"{budget_note} right away today.\n\n'
+                f"{focus}\n\n"
+                f"Fast turnaround, direct execution, payment upon delivery / escrow.\n\n"
+                f"{contact_block}"
+            )
+        else:
+            pitch = (
+                f'Hello! I can take on your task "{title}"{budget_note} promptly and reliably.\n\n'
+                f"{focus}\n\n"
+                f"I can start today. Payment on delivery / secure escrow.\n\n"
+                f"{contact_block}"
+            )
     else:
         budget_note = f" (ориентир по бюджету: {budget})" if budget else ""
-        pitch = (
-            f"Здравствуйте! Готов оперативно и качественно закрыть вашу задачу «{title}»{budget_note}.\n\n"
-            f"{focus}\n\n"
-            f"Готов приступить сегодня. Оплата по факту выполнения / безопасная сделка.\n\n"
-            f"Для связи:\n"
-            f"Telegram: @brokeassh\n"
-            f"Email: mikhailthaiban@gmail.com\n"
-            f"Портфолио: https://github.com/mikheooo"
-        )
+        if variant_id == "enterprise_proven":
+            pitch = (
+                f"Здравствуйте! Готов взять на себя задачу «{title}»{budget_note} с упором на надежность и качество.\n\n"
+                f"{focus}\n\n"
+                f"Поэтапная сдача, прозрачная коммуникация, оплата по факту / безопасная сделка.\n\n"
+                f"Для связи:\n"
+                f"Telegram: @brokeassh\n"
+                f"Email: mikhailthaiban@gmail.com\n"
+                f"Портфолио: https://github.com/mikheooo"
+            )
+        elif variant_id == "speed_delivery":
+            pitch = (
+                f"Здравствуйте! Готов приступить к задаче «{title}»{budget_note} прямо сегодня.\n\n"
+                f"{focus}\n\n"
+                f"Быстрый старт, минимальные сроки реализации, оплата по результату.\n\n"
+                f"Для связи:\n"
+                f"Telegram: @brokeassh\n"
+                f"Email: mikhailthaiban@gmail.com\n"
+                f"Портфолио: https://github.com/mikheooo"
+            )
+        else:
+            pitch = (
+                f"Здравствуйте! Готов оперативно и качественно закрыть вашу задачу «{title}»{budget_note}.\n\n"
+                f"{focus}\n\n"
+                f"Готов приступить сегодня. Оплата по факту выполнения / безопасная сделка.\n\n"
+                f"Для связи:\n"
+                f"Telegram: @brokeassh\n"
+                f"Email: mikhailthaiban@gmail.com\n"
+                f"Портфолио: https://github.com/mikheooo"
+            )
     return pitch.strip()
+
+
+def generate_gig_pitch_with_variant(
+    title: str,
+    description: str = "",
+    budget: str = "",
+    language: str | None = None,
+    source: str | None = None,
+    lead_id: str | None = None,
+    variant_id: str | None = None,
+) -> tuple[str, str]:
+    """Generate pitch and return tuple of (pitch_text, variant_id)."""
+    chosen = variant_id or select_pitch_variant(lead_id)
+    pitch = generate_gig_pitch(
+        title=title,
+        description=description,
+        budget=budget,
+        language=language,
+        source=source,
+        variant_id=chosen,
+    )
+    return pitch, chosen
 
 
 def build_gig_deeplink(username: str, pitch_text: str) -> str:

@@ -230,3 +230,87 @@ def test_outbound_governor_safety_maintained(tmp_path, monkeypatch):
     allowed_db, reason_db = check_outbound_allowed(action=OutboundAction.SUBMISSION)
     assert allowed_db is False
     assert "Database kill-switch active" in reason_db
+
+
+def test_ab_testing_and_variant_tracking(tmp_path):
+    from ai_assistant.smart_experience_generator import (
+        COVER_LETTER_VARIANTS,
+        generate_tailored_cover_letter,
+        generate_tailored_cover_letter_with_variant,
+        select_cover_letter_variant,
+    )
+    from ai_assistant.gig_pitch_generator import (
+        GIG_PITCH_VARIANTS,
+        generate_gig_pitch,
+        generate_gig_pitch_with_variant,
+        select_pitch_variant,
+    )
+    from ai_assistant.business_funnel import (
+        FunnelStage,
+        get_ab_test_metrics,
+        record_conversion_event,
+        record_variant_outbound,
+    )
+
+    # 1. Verify Cover Letter Variants
+    assert len(COVER_LETTER_VARIANTS) == 3
+    letters = {}
+    for var in COVER_LETTER_VARIANTS:
+        txt = generate_tailored_cover_letter("DevOps Engineer", "CloudTeam", "Docker, K8s, Linux", variant_id=var)
+        letters[var] = txt
+        assert "Михаил" in txt
+        assert "15" in txt
+        assert "https://github.com/mikheooo" in txt
+        assert "UTC+7" in txt
+
+    # Ensure all variants are distinct
+    assert letters["direct_focus"] != letters["enterprise_proven"]
+    assert letters["enterprise_proven"] != letters["speed_delivery"]
+
+    # Tuple variant helper
+    cand_letter, chosen_var = generate_tailored_cover_letter_with_variant("Sysadmin", "Company", lead_id="hh:123")
+    assert chosen_var in COVER_LETTER_VARIANTS
+    assert len(cand_letter) > 100
+
+    # 2. Verify Gig Pitch Variants (RU and EN)
+    assert len(GIG_PITCH_VARIANTS) == 3
+    for lang in ("ru", "en"):
+        pitches = {}
+        for var in GIG_PITCH_VARIANTS:
+            p = generate_gig_pitch("Telegram Bot", "Python developer", language=lang, variant_id=var)
+            pitches[var] = p
+            assert "@brokeassh" in p
+            assert "mikhailthaiban@gmail.com" in p
+            assert "339-76-28" not in p  # candidate truth invariant
+        assert pitches["direct_focus"] != pitches["enterprise_proven"]
+        assert pitches["enterprise_proven"] != pitches["speed_delivery"]
+
+    # 3. Verify Deterministic Variant Selection
+    v1 = select_pitch_variant("lead_abc")
+    v2 = select_pitch_variant("lead_abc")
+    assert v1 == v2
+    assert v1 in GIG_PITCH_VARIANTS
+
+    # 4. Verify A/B Conversion Event Recording & Ledger
+    db.init_db()
+    ev1 = record_variant_outbound("lead_ab_1", SearchStream.REMOTE_GLOBAL, "hh", "speed_delivery")
+    assert ev1 > 0
+
+    record_conversion_event(
+        lead_id="lead_ab_1",
+        stream=SearchStream.REMOTE_GLOBAL,
+        source="hh",
+        stage=FunnelStage.REPLY_RECEIVED,
+        notes="variant:speed_delivery; Recruiter replied with test task",
+    )
+
+    ev2 = record_variant_outbound("lead_ab_2", SearchStream.REMOTE_GLOBAL, "hh", "enterprise_proven")
+    assert ev2 > 0
+
+    ab_stats = get_ab_test_metrics()
+    assert "speed_delivery" in ab_stats
+    assert ab_stats["speed_delivery"]["outbounds"] >= 1
+    assert ab_stats["speed_delivery"]["replies"] >= 1
+    assert ab_stats["speed_delivery"]["reply_rate"] > 0
+    assert "enterprise_proven" in ab_stats
+

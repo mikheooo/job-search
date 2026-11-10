@@ -321,8 +321,27 @@ def synthesize_experience_cases(role: str, description: str = "") -> tuple[list[
     return matched_cases, strength
 
 
-def generate_tailored_cover_letter(role: str, company: str, description: str = "") -> str:
-    """Generate a highly persuasive Russian cover letter for remote jobs."""
+COVER_LETTER_VARIANTS = ["direct_focus", "enterprise_proven", "speed_delivery"]
+
+
+def select_cover_letter_variant(lead_id: str | None = None) -> str:
+    """Deterministically select cover letter variant based on lead_id or default."""
+    if not lead_id:
+        return "direct_focus"
+    idx = abs(hash(lead_id)) % len(COVER_LETTER_VARIANTS)
+    return COVER_LETTER_VARIANTS[idx]
+
+
+def generate_tailored_cover_letter(
+    role: str,
+    company: str,
+    description: str = "",
+    variant_id: str | None = None,
+) -> str:
+    """Generate a highly persuasive Russian cover letter for remote jobs.
+
+    Supports A/B testing variants: 'direct_focus' (default), 'enterprise_proven', 'speed_delivery'.
+    """
     cases, strength = synthesize_experience_cases(role, description)
     techs = extract_key_technologies(role + " " + description)
 
@@ -330,6 +349,50 @@ def generate_tailored_cover_letter(role: str, company: str, description: str = "
     tech_note = f" (включая практический опыт работы с {', '.join(techs[:5])})" if techs else ""
 
     comp_name = company if company and company != "Компания" else "вашу команду"
+
+    if variant_id == "enterprise_proven":
+        letter = f"""Здравствуйте!
+
+Откликаюсь на позицию «{role}» в {comp_name}.
+
+Мой профиль и 15+ лет практического enterprise-опыта в IT-инфраструктуре и автоматизации полностью закрывают задачи позиции:
+{cases_block}
+
+Ключевые преимущества{tech_note}:
+• системный подход к стабильности и отказоустойчивости сервисов (SLA, мониторинг, автоматизация);
+• {strength};
+• открытое портфолио с примерами архитектурных решений на GitHub: https://github.com/mikheooo.
+
+Формат и готовность:
+• 100% удаленная работа (РФ, часовой пояс UTC+7 / МСК+4, полный рабочий день по Москве: 09:00–18:00 МСК, оформление по ТК РФ, ИП или Самозанятости).
+• Готов пройти техническое интервью и подробно обсудить стек и процессы.
+
+Буду рад пообщаться на встрече!
+
+{CONTACTS_BLOCK}"""
+        return letter.strip()
+
+    if variant_id == "speed_delivery":
+        letter = f"""Здравствуйте!
+
+Меня заинтересовала вакансия «{role}» в {comp_name}.
+
+Готов быстро включиться в проект и закрывать задачи спринта с первых дней:
+{cases_block}
+
+Что привнесу в команду{tech_note}:
+• более 15 лет практического опыта в IT и быстрое погружение в кодовую базу;
+• {strength};
+• реальные проекты и код в публичном портфолио на GitHub: https://github.com/mikheooo.
+
+Готовность и формат:
+• 100% удаленка (РФ, часовой пояс UTC+7 / МСК+4, график по Москве: 09:00–18:00 МСК, оформление по ТК РФ, ИП или Самозанятости).
+• Готов оперативно выполнить тестовое задание и приступить к работе в кратчайшие сроки.
+
+Буду рад обсудить задачи на интервью!
+
+{CONTACTS_BLOCK}"""
+        return letter.strip()
 
     letter = f"""Здравствуйте!
 
@@ -352,6 +415,19 @@ def generate_tailored_cover_letter(role: str, company: str, description: str = "
 {CONTACTS_BLOCK}"""
 
     return letter.strip()
+
+
+def generate_tailored_cover_letter_with_variant(
+    role: str,
+    company: str,
+    description: str = "",
+    lead_id: str | None = None,
+    variant_id: str | None = None,
+) -> tuple[str, str]:
+    """Generate tailored cover letter and return tuple of (letter_text, variant_id)."""
+    chosen = variant_id or select_cover_letter_variant(lead_id)
+    letter = generate_tailored_cover_letter(role, company, description, variant_id=chosen)
+    return letter, chosen
 
 
 def strip_repeated_greeting(text: str) -> str:
