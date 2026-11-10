@@ -48,7 +48,7 @@ VALID_RESUMES = {
 # generalist and an ML researcher. The gate below is deliberately narrow:
 # a vacancy must look like one of the candidate's target role families, and
 # must not look like an explicitly excluded craft.
-AUTOPILOT_DAILY_CAP = int(os.getenv("HH_AUTOPILOT_DAILY_CAP", "12"))
+AUTOPILOT_DAILY_CAP = int(os.getenv("HH_AUTOPILOT_DAILY_CAP", "30"))
 _ROLE_GATE_BLOCK_RE = re.compile(
     r"(?i)(\b3\s*d\b|\b3д\b|3d-|game\s*dev|гейм\w*|художник|дизайнер|моушен|"
     r"анимат\w*|frontend|фронтенд|верстк\w*|mobile|мобильн\w*|ios|android|"
@@ -285,10 +285,16 @@ def _post_submit_confirmed(submit_data: dict[str, Any]) -> tuple[bool, str]:
 
 
 DEFAULT_AUTOPILOT_QUERIES = [
+    "AI Automation Engineer",
+    "Разработчик n8n",
     "AI Engineer",
     "Python Developer",
+    "Автоматизация бизнес-процессов",
+    "Разработчик Telegram-ботов",
     "Специалист по внедрению CRM",
+    "Интегратор CRM",
     "Администратор Bitrix24",
+    "Интегратор amoCRM",
     "DevOps инженер",
     "Системный администратор",
     "Инженер сопровождения",
@@ -302,7 +308,7 @@ def select_best_resume_for_vacancy(role: str, description: str = "") -> str:
     1. 'Специалист по внедрению и сопровождению CRM':
        - CRM, Bitrix24, Битрикс, amoCRM, 1C / ERP, интегратор, внедрение, бизнес-процессы.
     2. 'Ai engineer':
-       - AI, LLM, нейросети, Machine Learning, Python dev, n8n, prompt engineering, Whisper, RAG, ETL.
+       - AI, LLM, нейросети, Machine Learning, Python dev, n8n, prompt engineering, Whisper, RAG, ETL, боты, автоматизация.
     3. 'Инженер технической поддержки':
        - Системный администратор, техподдержка, L1/L2/L3, Helpdesk, сети, Cisco, Mikrotik,
          DevOps, Linux, Windows Server, инфраструктура, инженер сопровождения.
@@ -320,6 +326,7 @@ def select_best_resume_for_vacancy(role: str, description: str = "") -> str:
     if any(k in role_lower for k in [
         "ai", "ии", "llm", "нейросет", "python", "питон",
         "n8n", "prompt", "whisper", "rag", "машинн", "ml engineer",
+        "бот", "bot", "телеграм", "telegram", "автоматизац", "automation",
     ]):
         return "Ai engineer"
 
@@ -335,7 +342,7 @@ def select_best_resume_for_vacancy(role: str, description: str = "") -> str:
     if any(k in text_lower for k in ["битрикс24", "bitrix24", "внедрение crm", "настройка crm", "интегратор crm"]):
         return "Специалист по внедрению и сопровождению CRM"
 
-    if any(k in text_lower for k in ["ai engineer", "prompt engineering", "нейросети", "llm", "rag", "разработчик python", "python developer", "fastapi"]):
+    if any(k in text_lower for k in ["ai engineer", "prompt engineering", "нейросети", "llm", "rag", "разработчик python", "python developer", "fastapi", "ботов", "боты", "n8n"]):
         return "Ai engineer"
 
     return "Инженер технической поддержки"

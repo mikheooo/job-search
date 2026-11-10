@@ -224,6 +224,7 @@ _AUTOMATION_AI = _rx(
     r"\bai engineer\b", r"\bai developer\b", r"\bai agent\b", r"\bllm\b",
     r"\bml engineer\b", r"\bmachine learning\b",
     r"\bии\b", r"искусственн[а-я]* интеллект", r"\bai\b",
+    r"telegram", r"телеграм", r"ботов", r"\bbot\b", r"\bботы\b",
 )
 
 
