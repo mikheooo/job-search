@@ -18,7 +18,11 @@ logs/
 *.log
 *.lock
 *.sqlite
+*.sqlite-wal
+*.sqlite-shm
 *.db
+*.db-wal
+*.db-shm
 *.json
 !package.json
 !package-lock.json
