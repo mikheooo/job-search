@@ -397,6 +397,26 @@ def format_business_funnel_report() -> str:
     st = m["streams"]
     r = m["revenue"]
 
+    active_tasks_lines = []
+    try:
+        conn = db.get_connection()
+        c = conn.cursor()
+        c.execute("""
+            SELECT title, priority FROM user_action_tasks
+            WHERE status = 'PENDING'
+            ORDER BY priority, id LIMIT 5
+        """)
+        for t_title, t_prio in c.fetchall():
+            active_tasks_lines.append(f"• 📌 <b>[{t_prio}]</b> {t_title}")
+        conn.close()
+    except Exception:
+        pass
+
+    if not active_tasks_lines:
+        active_tasks_str = "• ✅ Все задачи согласованы и обработаны.\n"
+    else:
+        active_tasks_str = "\n".join(active_tasks_lines) + "\n"
+
     return (
         f"📊 <b>Сквозная бизнес-аналитика и воронка доходности (P1.1)</b>\n\n"
         f"<b>1. ЭТАПЫ СКВОЗНОЙ ВОРОНКИ:</b>\n"
@@ -413,8 +433,7 @@ def format_business_funnel_report() -> str:
         f"• 🌐 <code>REMOTE_GLOBAL</code>: <b>{st['REMOTE_GLOBAL']['leads']}</b> лидов (РФ и мир удаленка)\n"
         f"• 🌴 <code>THAILAND_LOCAL</code>: <b>{st['THAILAND_LOCAL']['leads']}</b> лидов (Бангкок и Паттайя, zero relocation)\n"
         f"• ⚡ <code>GIGS_FREELANCE</code>: <b>{st['GIGS_FREELANCE']['leads']}</b> лидов ({st['GIGS_FREELANCE']['proposals']} готовых питчей)\n\n"
-        f"<b>3. АКТУАЛЬНЫЕ ПЕРЕГОВОРЫ:</b>\n"
-        f"• 🏢 <b>Первый Бит:</b> черновик готов (согласие на 7:00 МСК / 11:00 местное, вилка 130–160 тыс. руб.)\n"
-        f"• 🏢 <b>AYITO Tech:</b> черновик подготовлен, ожидает прохождения теста скорости печати (brainapps.ru)\n\n"
+        f"<b>3. АКТУАЛЬНЫЕ ЗАДАЧИ И ПЕРЕГОВОРЫ:</b>\n"
+        f"{active_tasks_str}\n"
         f"💡 <i>Отправка каждого отклика и получение оплаты фиксируются с привязкой к лиду и источнику.</i>"
     )
