@@ -5,7 +5,7 @@
 `job-search` is an automated, production-grade, human-in-the-loop job search, qualification matching, digest delivery, and application management platform designed for Mikhail Kolesnikov's remote career search.
 
 - **Primary Repository:** `c:\Users\Misha\Documents\job-search`
-- **Active Branch:** `codex/production-stabilization-20260901`
+- **Active Branch:** `main` (stabilized via audit remediation, commit `9c8c321`)
 - **Primary Runtime:** Python 3.11+ / Windows Powershell / SQLite WAL Mode
 - **Operating Posture:** Fail-closed, truth-only, review-by-default, zero hallucinated claims, zero unauthorized external mutation.
 
@@ -22,6 +22,11 @@
 | `remoteok` | `RemoteOkAdapter` | `ACTIVE_PRODUCTION_SOURCE` | Automated Scraper | **YES** (with genuine provenance) |
 | `habrcareer` | `HabrCareerAdapter` | `ACTIVE_PRODUCTION_SOURCE` | Automated Scraper | **YES** (with genuine provenance) |
 | `hh` | HeadHunter API / CDP Tab | `ACTIVE_PRODUCTION_SOURCE` | Browser / Assisted | **YES** (with genuine provenance) |
+| `geekjob` | `GeekjobAdapter` | `ACTIVE_PRODUCTION_SOURCE` | Automated Scraper | **YES** (with genuine provenance) |
+| `hirify` | `HirifyAdapter` | `ACTIVE_PRODUCTION_SOURCE` | Automated Scraper | **YES** (with genuine provenance) |
+| `bangkok_direct_careers` | `BangkokDirectCareersAdapter` | `ACTIVE_PRODUCTION_SOURCE` | Direct Career Search | **YES** (with genuine provenance) |
+| `linkedin_bangkok` | `LinkedinBangkokAdapter` | `ACTIVE_PRODUCTION_SOURCE` | Geo Scraper | **YES** (with genuine provenance) |
+| `telegram_channels` | `TelegramChannelsAdapter` | `ACTIVE_PRODUCTION_SOURCE` | Channel Monitor | **YES** (with genuine provenance) |
 | `vacancies_json`| `vacancies.json` Benchmark | `LEGACY_IMPORT` / `CALIBRATION_DATA` | Historical Bootstrap | **NO (Isolated)** |
 | `x` | Test fixture | `TEST_FIXTURE_SOURCE` | Test artifact | **NO (Isolated)** |
 

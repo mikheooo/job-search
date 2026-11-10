@@ -12,7 +12,8 @@ opt-in via environment kill-switches and never guess facts.
 ## 1. What it does
 
 - Collects vacancies from remote and tech job boards (habrcareer, remoteok,
-  weworkremotely, himalayas; legacy: linkedin, wellfound).
+  weworkremotely, himalayas; plus Bangkok/international: geekjob, hirify,
+  bangkok_direct_careers, linkedin_bangkok, telegram_channels; legacy: linkedin, wellfound).
 - Normalizes and deduplicates them into a canonical identity store.
 - Prefilters by stop-words / required words / minimum salary.
 - Scores vacancies against `candidate_profile.json` (hard constraints +
@@ -21,14 +22,18 @@ opt-in via environment kill-switches and never guess facts.
 - Builds application packages (resume adaptation + cover letter), truth-only
   Q&A for screening questions.
 - Maintains a lifecycle state machine (DISCOVERED → ... → APPLIED) with a
-  priority queue and a dashboard.
+  priority queue and an interactive FastAPI web dashboard.
 - Extracts real HH application forms from the DOM (read-only).
 - Controlled application flow: plan → prefill → human review gate → single
   gated submit → read-only verification.
+- Local CDP isolation: all Chrome DevTools Protocol requests route through
+  `_NO_PROXY_OPENER` to prevent intercept or pollution by corporate/system proxies.
+- Dual Telegram streams: channel `@remotejobd` for validated vacancy digests,
+  personal chat for operator alerts and interactive control (`@jobsassistbot`).
 - HH messaging: read-only dialog discovery/reading, truth-only reply
-  generation, REVIEW by default, limited opt-in AUTO.
-- Email: read-only discovery + REVIEW-only reply previews (sending is
-  physically blocked in the current MVP); Gmail read-only connector.
+  generation, REVIEW by default, limited opt-in AUTO with anti-loop guards.
+- Email: bilingual cover letter and PDF resume generator with direct SMTP
+  and draft preview.
 
 ## 2. Architecture
 
