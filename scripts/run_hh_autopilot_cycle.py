@@ -466,8 +466,8 @@ def release_lock() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="HeadHunter Autonomous Application Cycle Runner")
-    parser.add_argument("--max-submits", type=int, default=8, help="Max applications to submit in one cycle (default 8)")
-    parser.add_argument("--read-limit", type=int, default=45, help="Number of vacancies to inspect (default 45)")
+    parser.add_argument("--max-submits", type=int, default=10, help="Max applications to submit in one cycle (default 10)")
+    parser.add_argument("--read-limit", type=int, default=60, help="Number of vacancies to inspect (default 60)")
     parser.add_argument("--query", action="append", default=None, help="Target search query (repeatable)")
     args = parser.parse_args()
 
