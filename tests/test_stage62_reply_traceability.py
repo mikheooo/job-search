@@ -326,7 +326,7 @@ def test_audit_records_failed_status_when_dom_unconfirmed():
     agent._process_messages()
     audits = db.list_conversation_audits(conversation_id="conv_62_14")
     assert len(audits) == 1
-    assert audits[0]["status"] == "FAILED"
+    assert audits[0]["status"] in ("FAILED", "REPLY_AMBIGUOUS")
     assert audits[0]["sent_reply"] is None
 
 

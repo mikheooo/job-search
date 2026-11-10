@@ -1820,19 +1820,17 @@ class AutonomousJobAgent:
                         conversation_id=d.conversation_id,
                         status=task_status,
                     )
-                    # ONLY notify owner if physically blocked (camera, mic, hard captcha)
-                    if is_physically_blocked:
-                        notif = NotificationDispatcher.notify_external_questionnaire(
-                            company=d.employer or "HeadHunter Employer",
-                            vacancy_title=d.vacancy_title or "Python Role",
-                            what_they_want=msg_text,
-                            url=target_url,
-                            questions=f"Форма физически заблокирована: {fill_res.blocked_reason}",
-                            action="REQUIRES REVIEW",
-                            conversation_id=d.conversation_id,
-                            application_id=app_id,
-                        )
-                        out["notifications_sent"].append(notif)
+                    notif = NotificationDispatcher.notify_external_questionnaire(
+                        company=d.employer or "HeadHunter Employer",
+                        vacancy_title=d.vacancy_title or "Python Role",
+                        what_they_want=msg_text,
+                        url=target_url,
+                        questions=f"Форма физически заблокирована: {fill_res.blocked_reason}" if is_physically_blocked else "Требуется заполнение внешней анкеты",
+                        action="REQUIRES REVIEW",
+                        conversation_id=d.conversation_id,
+                        application_id=app_id,
+                    )
+                    out["notifications_sent"].append(notif)
                     classification = "EXTERNAL_QUESTIONNAIRE"
                     reply_text = generate_questionnaire_acknowledgement(
                         company=d.employer or "HeadHunter Employer",
@@ -1854,6 +1852,16 @@ class AutonomousJobAgent:
                     conversation_id=d.conversation_id,
                     status="⏳ **В работе**",
                 )
+                notif = NotificationDispatcher.notify_test_task(
+                    company=d.employer or "HeadHunter Employer",
+                    vacancy_title=d.vacancy_title or "Python Role",
+                    task_description=msg_text,
+                    url=target_url or "",
+                    action="REQUIRES REVIEW",
+                    conversation_id=d.conversation_id,
+                    application_id=app_id,
+                )
+                out["notifications_sent"].append(notif)
                 classification = "TEST_TASK"
                 reply_text = generate_test_task_acknowledgement(
                     company=d.employer or "HeadHunter Employer",
@@ -1924,8 +1932,7 @@ class AutonomousJobAgent:
             sent_reply = None
 
             is_sendable = bool(reply_text and classification in (
-                "NEEDS_REPLY", "RECRUITER_QUESTION",
-                "TEST_TASK", "EXTERNAL_QUESTIONNAIRE", "EXTERNAL_QUESTIONNAIRE_SUBMITTED"
+                "NEEDS_REPLY", "RECRUITER_QUESTION", "EXTERNAL_QUESTIONNAIRE_SUBMITTED"
             ))
             if is_sendable:
                 if any(m.sender == "candidate" for m in d.messages) or db.has_prior_candidate_message(d.conversation_id):

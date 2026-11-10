@@ -1,0 +1,822 @@
+{
+  "_comment": "Fixture gig dataset for GIG-SEARCH-P1 (variant B). 28 realistic but SYNTHETIC freelance orders. Structure mirrors Upwork-like listing payloads. No real client personal data.",
+  "_license": "internal test fixture",
+  "gigs": [
+    {
+      "source_id": "fx-1001",
+      "url": "https://example-freelance.test/jobs/fx-1001-n8n-lead-enrichment",
+      "title": "n8n workflow to enrich inbound leads with company data",
+      "description": "We receive inbound leads via webhook from our website form. Need an n8n workflow that validates the email, enriches the company domain via an API (Clearbit or similar), writes the result to Google Sheets, and posts a summary to Slack. Must be documented and easy to extend. Please provide a working demo and a short Loom walkthrough. API documentation will be shared.",
+      "category": "Automation",
+      "skills": [
+        "n8n",
+        "Automation",
+        "REST API",
+        "Webhooks",
+        "Google Sheets"
+      ],
+      "budget": {
+        "min": 400,
+        "max": 700,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-24T09:15:00Z",
+      "client": {
+        "name": "Northwind Analytics",
+        "country": "Netherlands",
+        "rating": 4.9,
+        "jobs_posted": 42,
+        "hires": 35,
+        "total_spent": 48000
+      }
+    },
+    {
+      "source_id": "fx-1002",
+      "url": "https://example-freelance.test/jobs/fx-1002-python-scraper",
+      "title": "Python scraper for 12 supplier catalogues with CSV output",
+      "description": "Need a Python scraper that collects product name, SKU, price and stock status from 12 supplier websites and outputs a normalized CSV. Delivery includes unit tests and a README with instructions. Budget is fixed. Please state your approach and estimated timeline.",
+      "category": "Data Extraction",
+      "skills": [
+        "Python",
+        "Scraping",
+        "CSV",
+        "Unit Tests"
+      ],
+      "budget": {
+        "min": 600,
+        "max": 900,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-25T11:40:00Z",
+      "client": {
+        "name": "Halden Trade",
+        "country": "Germany",
+        "rating": 4.7,
+        "jobs_posted": 18,
+        "hires": 14,
+        "total_spent": 21500
+      },
+      "competition": 11
+    },
+    {
+      "source_id": "fx-1003",
+      "url": "https://example-freelance.test/jobs/fx-1003-telegram-bot-support",
+      "title": "Telegram bot for internal IT support triage",
+      "description": "Our service desk wants a Telegram bot where employees submit tickets. The bot must classify the request into categories using an LLM (we have an OpenAI key), create a ticket via our REST API, and reply with the ticket ID. Needs tests and documentation.",
+      "category": "Chatbots",
+      "skills": [
+        "Telegram",
+        "Python",
+        "LLM",
+        "REST API",
+        "Automation"
+      ],
+      "budget": {
+        "min": 500,
+        "max": 800,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-26T08:05:00Z",
+      "client": {
+        "name": "Meridian Services",
+        "country": "Cyprus",
+        "rating": 4.8,
+        "jobs_posted": 27,
+        "hires": 22,
+        "total_spent": 33000
+      }
+    },
+    {
+      "source_id": "fx-1004",
+      "url": "https://example-freelance.test/jobs/fx-1004-fastapi-webhook-service",
+      "title": "FastAPI webhook service with PostgreSQL persistence",
+      "description": "Build a small FastAPI service that receives webhooks from our payment provider, validates the signature, stores events in PostgreSQL, and exposes an endpoint for replay. Docker compose setup required. Acceptance criteria: passing pytest suite and docker compose up works from scratch.",
+      "category": "Backend Development",
+      "skills": [
+        "FastAPI",
+        "Python",
+        "PostgreSQL",
+        "Docker",
+        "Webhooks"
+      ],
+      "budget": {
+        "min": 700,
+        "max": 1100,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-27T14:20:00Z",
+      "client": {
+        "name": "Aurelia Payments",
+        "country": "Estonia",
+        "rating": 5.0,
+        "jobs_posted": 9,
+        "hires": 8,
+        "total_spent": 18000
+      },
+      "competition": 7
+    },
+    {
+      "source_id": "fx-1005",
+      "url": "https://example-freelance.test/jobs/fx-1005-hr-cold-calling",
+      "title": "Cold calling specialist to book 20 demos per week",
+      "description": "We need a sales representative to make outbound cold calls to US-based SMB owners and book demos. Must be available during US EST business hours daily for phone calls. Commission-based with a small base. No experience needed, earn daily.",
+      "category": "Sales",
+      "skills": [
+        "Cold Calling",
+        "Sales",
+        "Phone Calls"
+      ],
+      "budget": {
+        "min": 300,
+        "max": 500,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-22T10:00:00Z",
+      "client": {
+        "name": "GrowthLoop LLC",
+        "country": "United States",
+        "rating": 3.1,
+        "jobs_posted": 63,
+        "hires": 4,
+        "total_spent": 900
+      }
+    },
+    {
+      "source_id": "fx-1006",
+      "url": "https://example-freelance.test/jobs/fx-1006-eu-only-mlops",
+      "title": "MLOps engineer for model deployment pipeline",
+      "description": "We are looking for an MLOps engineer. This role is only open to EU-based residents due to data residency requirements. Must be based in the EU and have work authorization in the EU.",
+      "category": "DevOps",
+      "skills": [
+        "Kubernetes",
+        "Docker",
+        "Python",
+        "MLOps"
+      ],
+      "budget": {
+        "min": 3000,
+        "max": 5000,
+        "type": "fixed",
+        "currency": "EUR"
+      },
+      "published_at": "2026-09-21T07:30:00Z",
+      "client": {
+        "name": "Confidential",
+        "country": "Switzerland",
+        "rating": 4.4,
+        "jobs_posted": 12,
+        "hires": 9,
+        "total_spent": 67000
+      }
+    },
+    {
+      "source_id": "fx-1007",
+      "url": "https://example-freelance.test/jobs/fx-1007-equity-only-startup",
+      "title": "Full-stack developer for pre-revenue startup (equity only)",
+      "description": "Join our exciting startup at the ground floor. Compensation is equity only until we raise our seed round. We need someone to build our MVP with React and Node. Huge opportunity, paid in equity and exposure.",
+      "category": "Web Development",
+      "skills": [
+        "React",
+        "Node.js",
+        "JavaScript"
+      ],
+      "budget": {
+        "min": 0,
+        "max": 0,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-23T16:45:00Z",
+      "client": {
+        "name": "StealthCo",
+        "country": "United States",
+        "rating": 0,
+        "jobs_posted": 3,
+        "hires": 0,
+        "total_spent": 0
+      }
+    },
+    {
+      "source_id": "fx-1008",
+      "url": "https://example-freelance.test/jobs/fx-1008-airtable-invoice-automation",
+      "title": "Airtable automation to generate and email invoices",
+      "description": "We track our projects in Airtable. Need an automation that generates a PDF invoice from a record, emails it to the client via Gmail, and updates the record status. Must include documentation and a test plan with acceptance criteria.",
+      "category": "Automation",
+      "skills": [
+        "Airtable",
+        "Make.com",
+        "Automation",
+        "Google Sheets"
+      ],
+      "budget": {
+        "min": 250,
+        "max": 400,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-26T13:10:00Z",
+      "client": {
+        "name": "Bright Studio",
+        "country": "Portugal",
+        "rating": 4.6,
+        "jobs_posted": 15,
+        "hires": 12,
+        "total_spent": 9800
+      },
+      "competition": 4
+    },
+    {
+      "source_id": "fx-1009",
+      "url": "https://example-freelance.test/jobs/fx-1009-ios-app-fitness",
+      "title": "Senior iOS engineer for fitness tracking app",
+      "description": "We need a senior iOS engineer with deep Swift and mobile development experience to build a native fitness tracking application. Includes HealthKit integration and App Store submission. Must have a strong portfolio of shipped iOS apps.",
+      "category": "Mobile Development",
+      "skills": [
+        "iOS",
+        "Swift",
+        "Mobile Development"
+      ],
+      "budget": {
+        "min": 6000,
+        "max": 9000,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-20T09:00:00Z",
+      "client": {
+        "name": "FitCore Labs",
+        "country": "Canada",
+        "rating": 4.9,
+        "jobs_posted": 21,
+        "hires": 17,
+        "total_spent": 145000
+      }
+    },
+    {
+      "source_id": "fx-1010",
+      "url": "https://example-freelance.test/jobs/fx-1010-llm-doc-parser",
+      "title": "LLM pipeline to extract structured data from PDF contracts",
+      "description": "Build a Python pipeline that takes PDF contracts, extracts parties, dates, amounts and obligations, and returns structured JSON. Use an LLM with a validation layer. We will provide sample documents and a specification. Deliverable: working demo plus a repo with tests.",
+      "category": "AI & Machine Learning",
+      "skills": [
+        "Python",
+        "LLM",
+        "AI Agents",
+        "REST API",
+        "Pandas"
+      ],
+      "budget": {
+        "min": 1200,
+        "max": 1800,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-28T06:55:00Z",
+      "client": {
+        "name": "Vantage Legal",
+        "country": "United Kingdom",
+        "rating": 4.8,
+        "jobs_posted": 14,
+        "hires": 11,
+        "total_spent": 52000
+      },
+      "competition": 9
+    },
+    {
+      "source_id": "fx-1011",
+      "url": "https://example-freelance.test/jobs/fx-1011-hourly-consulting",
+      "title": "Hourly automation consulting for small business owners",
+      "description": "We need an experienced consulting partner for one-on-one strategy sessions with our clients about process automation. Requires live video calls and coaching. Ongoing long-term engagement, hourly rate negotiable.",
+      "category": "Consulting",
+      "skills": [
+        "Consulting",
+        "Automation",
+        "Strategy"
+      ],
+      "budget": {
+        "min": 45,
+        "max": 65,
+        "type": "hourly",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-25T15:30:00Z",
+      "client": {
+        "name": "Craftwell Consulting",
+        "country": "Australia",
+        "rating": 4.5,
+        "jobs_posted": 33,
+        "hires": 28,
+        "total_spent": 41000
+      },
+      "competition": 23
+    },
+    {
+      "source_id": "fx-1012",
+      "url": "https://example-freelance.test/jobs/fx-1012-data-entry-bulk",
+      "title": "Bulk data entry: 4500 records into CRM",
+      "description": "We have 4500 records in a spreadsheet that must be entered into our CRM with validation and deduplication. Repetitive bulk batch process, spreadsheet based. We will provide the CSV and the target schema. Deliverable is the updated CRM export.",
+      "category": "Data Entry",
+      "skills": [
+        "Data Entry",
+        "Excel",
+        "CSV"
+      ],
+      "budget": {
+        "min": 150,
+        "max": 250,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-27T08:25:00Z",
+      "client": {
+        "name": "Coastal Realty",
+        "country": "Spain",
+        "rating": 4.2,
+        "jobs_posted": 26,
+        "hires": 19,
+        "total_spent": 6400
+      },
+      "competition": 38
+    },
+    {
+      "source_id": "fx-1013",
+      "url": "https://example-freelance.test/jobs/fx-1013-scam-registration-fee",
+      "title": "Easy remote assistant — no experience needed, earn daily",
+      "description": "Simple online tasks, no experience needed. You can earn a guaranteed 300 USD per day working from home. There is a small registration fee to activate your account, then we assign tasks via WhatsApp only contact. Contact us immediately.",
+      "category": "Admin Support",
+      "skills": [
+        "Data Entry",
+        "Admin"
+      ],
+      "budget": {
+        "min": 0,
+        "max": 0,
+        "type": "unknown",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-19T12:00:00Z",
+      "client": {
+        "name": "QuickJobs",
+        "country": "India",
+        "rating": 0,
+        "jobs_posted": 1,
+        "hires": 0,
+        "total_spent": 0
+      }
+    },
+    {
+      "source_id": "fx-1014",
+      "url": "https://example-freelance.test/jobs/fx-1014-sql-reporting",
+      "title": "SQL reporting layer for operations dashboards",
+      "description": "We need help building a reporting layer: SQL views and scheduled queries that feed our operations dashboards. Must be documented with acceptance criteria and a spec. Postgres and Linux documented environment.",
+      "category": "Data Analysis",
+      "skills": [
+        "SQL",
+        "PostgreSQL",
+        "Linux",
+        "Documentation"
+      ],
+      "budget": {
+        "min": 800,
+        "max": 1200,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-26T17:40:00Z",
+      "client": {
+        "name": "Orbital Logistics",
+        "country": "Poland",
+        "rating": 4.7,
+        "jobs_posted": 19,
+        "hires": 16,
+        "total_spent": 39000
+      }
+    },
+    {
+      "source_id": "fx-1015",
+      "url": "https://example-freelance.test/jobs/fx-1015-webflow-design",
+      "title": "Website redesign in Webflow for SaaS landing page",
+      "description": "Redesign our SaaS landing page in Webflow. Requires strong graphic design and brand identity skills, a design system and pixel perfect execution. Portfolio of premium SaaS sites required. Unlimited revisions until happy.",
+      "category": "Design",
+      "skills": [
+        "Graphic Design",
+        "Webflow",
+        "Brand Identity"
+      ],
+      "budget": {
+        "min": 1500,
+        "max": 2500,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-24T11:15:00Z",
+      "client": {
+        "name": "Kite Software",
+        "country": "United States",
+        "rating": 4.3,
+        "jobs_posted": 11,
+        "hires": 6,
+        "total_spent": 27000
+      },
+      "competition": 61
+    },
+    {
+      "source_id": "fx-1016",
+      "url": "https://example-freelance.test/jobs/fx-1016-power-automate-migration",
+      "title": "Migrate 30 Power Automate flows to n8n",
+      "description": "We are moving off Microsoft Power Automate. Need an automation engineer to rebuild 30 flows in n8n with equivalent logic, add error handling, and provide documentation and a rollout checklist. API access and docs available.",
+      "category": "Automation",
+      "skills": [
+        "n8n",
+        "Automation",
+        "REST API",
+        "Documentation"
+      ],
+      "budget": {
+        "min": 900,
+        "max": 1400,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-28T10:35:00Z",
+      "client": {
+        "name": "Verity Group",
+        "country": "Ireland",
+        "rating": 4.9,
+        "jobs_posted": 8,
+        "hires": 7,
+        "total_spent": 31000
+      },
+      "competition": 6
+    },
+    {
+      "source_id": "fx-1017",
+      "url": "https://example-freelance.test/jobs/fx-1017-transcription-batch",
+      "title": "Transcribe and summarise 40 hours of interview audio",
+      "description": "We have roughly 40 hours of research interviews in audio format. Need accurate transcription and per-interview summaries in a structured document. Batch processing preferred, we are flexible on tools. Whisper or similar accepted.",
+      "category": "Transcription",
+      "skills": [
+        "Transcription",
+        "Whisper",
+        "Summarization",
+        "Python"
+      ],
+      "budget": {
+        "min": 300,
+        "max": 450,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-27T19:05:00Z",
+      "client": {
+        "name": "Fieldwork Research",
+        "country": "Cyprus",
+        "rating": 4.6,
+        "jobs_posted": 22,
+        "hires": 20,
+        "total_spent": 15600
+      },
+      "competition": 29
+    },
+    {
+      "source_id": "fx-1018",
+      "url": "https://example-freelance.test/jobs/fx-1018-k8s-platform-engineer",
+      "title": "Kubernetes platform engineer for production cluster",
+      "description": "Looking for a senior Kubernetes platform engineer who has run large scale production Kubernetes clusters with Terraform and Go. Must have deep experience with C++ based load balancers and Rust tooling. Long-term role.",
+      "category": "DevOps",
+      "skills": [
+        "Kubernetes",
+        "Terraform",
+        "Go",
+        "C++",
+        "Rust",
+        "Linux"
+      ],
+      "budget": {
+        "min": 60,
+        "max": 95,
+        "type": "hourly",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-22T14:50:00Z",
+      "client": {
+        "name": "Ironstack",
+        "country": "Germany",
+        "rating": 4.5,
+        "jobs_posted": 17,
+        "hires": 12,
+        "total_spent": 88000
+      },
+      "competition": 34
+    },
+    {
+      "source_id": "fx-1019",
+      "url": "https://example-freelance.test/jobs/fx-1019-shopify-sync",
+      "title": "Shopify to warehouse inventory sync automation",
+      "description": "Build an automation that syncs inventory levels between Shopify and our warehouse API every 15 minutes, with conflict resolution and alerting via webhook. Documentation and a test plan required.",
+      "category": "Automation",
+      "skills": [
+        "Shopify",
+        "Python",
+        "REST API",
+        "Webhooks",
+        "Automation"
+      ],
+      "budget": {
+        "min": 600,
+        "max": 950,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-25T07:45:00Z",
+      "client": {
+        "name": "Northbay Supply",
+        "country": "United Kingdom",
+        "rating": 4.8,
+        "jobs_posted": 31,
+        "hires": 27,
+        "total_spent": 61000
+      },
+      "competition": 14
+    },
+    {
+      "source_id": "fx-1020",
+      "url": "https://example-freelance.test/jobs/fx-1020-no-budget-published",
+      "title": "Internal tooling — scope to be discussed",
+      "description": "We have some internal tooling work coming up. Scope and terms to be discussed later with the right candidate. Please apply with your portfolio.",
+      "category": "Software Development",
+      "skills": [
+        "Python",
+        "Automation"
+      ],
+      "published_at": "2026-09-23T09:30:00Z",
+      "client": {
+        "name": "Unclear Ventures",
+        "country": "Netherlands",
+        "rating": 4.0,
+        "jobs_posted": 5,
+        "hires": 3,
+        "total_spent": 2200
+      }
+    },
+    {
+      "source_id": "fx-1021",
+      "url": "https://example-freelance.test/jobs/fx-1021-invite-only-platform",
+      "title": "Onboarding engineer — invite only program",
+      "description": "This engagement is invite-only for our existing partner network. Closed to new freelancers. We are looking for a technical onboarding engineer to help enterprise customers integrate our API.",
+      "category": "Technical Support",
+      "skills": [
+        "REST API",
+        "Troubleshooting",
+        "SQL"
+      ],
+      "budget": {
+        "min": 55,
+        "max": 70,
+        "type": "hourly",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-21T13:20:00Z",
+      "client": {
+        "name": "Closedloop SaaS",
+        "country": "United States",
+        "rating": 4.9,
+        "jobs_posted": 4,
+        "hires": 4,
+        "total_spent": 128000
+      }
+    },
+    {
+      "source_id": "fx-1022",
+      "url": "https://example-freelance.test/jobs/fx-1022-google-sheets-integration",
+      "title": "Google Sheets to REST API two-way sync",
+      "description": "Need a reliable two-way sync between a Google Sheet and our internal REST API, including retries and logging. Provide documentation and a spreadsheet based test plan with acceptance criteria. Python or Apps Script welcome.",
+      "category": "Automation",
+      "skills": [
+        "Google Sheets",
+        "REST API",
+        "Python",
+        "Automation"
+      ],
+      "budget": {
+        "min": 350,
+        "max": 550,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-27T06:10:00Z",
+      "client": {
+        "name": "Lumen Ops",
+        "country": "Georgia",
+        "rating": 4.7,
+        "jobs_posted": 16,
+        "hires": 14,
+        "total_spent": 12400
+      },
+      "competition": 13
+    },
+    {
+      "source_id": "fx-1023",
+      "url": "https://example-freelance.test/jobs/fx-1023-wordpress-maintenance",
+      "title": "WordPress maintenance and security hardening",
+      "description": "Ongoing WordPress maintenance: plugin updates, backup verification, security hardening and uptime monitoring across 6 sites. Requires Linux server administration experience. Monthly retainer.",
+      "category": "Web Development",
+      "skills": [
+        "WordPress",
+        "Linux",
+        "Networking",
+        "Troubleshooting"
+      ],
+      "budget": {
+        "min": 400,
+        "max": 600,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-24T18:25:00Z",
+      "client": {
+        "name": "Palmer Media",
+        "country": "Australia",
+        "rating": 4.4,
+        "jobs_posted": 44,
+        "hires": 38,
+        "total_spent": 29500
+      }
+    },
+    {
+      "source_id": "fx-1024",
+      "url": "https://example-freelance.test/jobs/fx-1024-prompt-engineering",
+      "title": "Prompt engineering for customer support GPT assistant",
+      "description": "We need prompt engineering and orchestration work for a GPT-based support assistant: system prompts, evaluation harness, regression tests on a fixed question set, and documentation. LLM API access provided.",
+      "category": "AI & Machine Learning",
+      "skills": [
+        "Prompt Engineering",
+        "LLM",
+        "AI Agents",
+        "Python",
+        "Documentation"
+      ],
+      "budget": {
+        "min": 700,
+        "max": 1100,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-28T12:00:00Z",
+      "client": {
+        "name": "Helpdesk Cloud",
+        "country": "Georgia",
+        "rating": 4.8,
+        "jobs_posted": 13,
+        "hires": 12,
+        "total_spent": 44000
+      },
+      "competition": 17
+    },
+    {
+      "source_id": "fx-1025",
+      "url": "https://example-freelance.test/jobs/fx-1025-unpaid-trial",
+      "title": "Senior automation engineer — 20 hour unpaid test task required",
+      "description": "Before engagement you must complete an unpaid test task of 20 hours building a full n8n integration. Payment only after full delivery of the entire engagement, no escrow. Multiple rounds of free revisions expected.",
+      "category": "Automation",
+      "skills": [
+        "n8n",
+        "Automation",
+        "Python"
+      ],
+      "budget": {
+        "min": 800,
+        "max": 800,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-23T21:10:00Z",
+      "client": {
+        "name": "RapidScale Ops",
+        "country": "United States",
+        "rating": 3.4,
+        "jobs_posted": 58,
+        "hires": 2,
+        "total_spent": 400
+      }
+    },
+    {
+      "source_id": "fx-1026",
+      "url": "https://example-freelance.test/jobs/fx-1026-vpn-itsm-support",
+      "title": "Tier 2 application support engineer (hourly, ongoing)",
+      "description": "We need a Tier 2 application support engineer for ongoing hourly work: troubleshooting API integration issues, investigating incidents via SQL queries, and documenting resolution steps. ITSM process, VPN access and Linux servers. Documentation and ticket based work.",
+      "category": "Technical Support",
+      "skills": [
+        "Troubleshooting",
+        "SQL",
+        "REST API",
+        "Linux",
+        "ITSM",
+        "VPN"
+      ],
+      "budget": {
+        "min": 20,
+        "max": 30,
+        "type": "hourly",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-26T20:15:00Z",
+      "client": {
+        "name": "Sentinel Apps",
+        "country": "Thailand",
+        "rating": 4.6,
+        "jobs_posted": 25,
+        "hires": 21,
+        "total_spent": 18000
+      },
+      "competition": 19
+    },
+    {
+      "source_id": "fx-1027",
+      "url": "https://example-freelance.test/jobs/fx-1027-duplicate-of-1001",
+      "title": "n8n workflow to enrich inbound leads with company data",
+      "description": "We receive inbound leads via webhook from our website form. Need an n8n workflow that validates the email, enriches the company domain via an API (Clearbit or similar), writes the result to Google Sheets, and posts a summary to Slack. Must be documented and easy to extend. Please provide a working demo and a short Loom walkthrough. API documentation will be shared.",
+      "category": "Automation",
+      "skills": [
+        "n8n",
+        "Automation",
+        "REST API",
+        "Webhooks",
+        "Google Sheets"
+      ],
+      "budget": {
+        "min": 400,
+        "max": 700,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-28T08:00:00Z",
+      "client": {
+        "name": "Northwind Analytics",
+        "country": "Netherlands",
+        "rating": 4.9,
+        "jobs_posted": 43,
+        "hires": 36,
+        "total_spent": 49000
+      }
+    },
+    {
+      "source_id": "fx-1028",
+      "url": "https://example-freelance.test/jobs/fx-1028-crypto-only-payment",
+      "title": "Build a trading dashboard — payment in USDT only",
+      "description": "Need a dashboard built. Payment in crypto only (USDT), no escrow, paid upon full delivery. Immediate start expected today. Budget is negotiable after the first deliverable.",
+      "category": "Web Development",
+      "skills": [
+        "Python",
+        "REST API",
+        "Data Analysis"
+      ],
+      "budget": {
+        "min": 900,
+        "max": 1400,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-22T05:40:00Z",
+      "client": {
+        "name": "Blockwave",
+        "country": "United Arab Emirates",
+        "rating": 3.8,
+        "jobs_posted": 37,
+        "hires": 5,
+        "total_spent": 1500
+      }
+    },
+    {
+      "source_id": "fx-1029",
+      "url": "https://example-freelance.test/jobs/fx-1029-onsite-required",
+      "title": "Local inventory robot operator and on-site tech support",
+      "description": "Must operate our warehouse robot. Physical presence required daily at our Berlin warehouse; on-site work mandatory, no remote option. Budget: USD 800 via escrow.",
+      "category": "Physical Operations",
+      "skills": [
+        "Hardware",
+        "Troubleshooting"
+      ],
+      "budget": {
+        "min": 800,
+        "max": 800,
+        "type": "fixed",
+        "currency": "USD"
+      },
+      "published_at": "2026-09-22T08:00:00Z",
+      "client": {
+        "name": "Musterlogistik",
+        "country": "Germany",
+        "rating": 4.4,
+        "jobs_posted": 12,
+        "hires": 9,
+        "total_spent": 42000
+      }
+    }
+  ]
+}

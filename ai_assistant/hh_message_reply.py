@@ -555,6 +555,29 @@ def classify_hh_conversation_detailed(
 
         lang = detect_language(q_text)
 
+        # 0. Check for unverified technologies / languages not in candidate profile
+        unverified_techs = [
+            "haskell", "elm", "1c", "1с", "php", "ruby", "c++", "c#", "golang", "go developer",
+            "swift", "kotlin", "rust", "scala", "java ", "java/", "java,", "java."
+        ]
+        q_text_low_early = q_text.lower().replace("ё", "е")
+        has_unverified_tech_early = any(u in q_text_low_early for u in unverified_techs)
+        if has_unverified_tech_early:
+            return {
+                "conversation_id": dialog.conversation_id,
+                "classification": "HUMAN_REVIEW",
+                "confidence": 0.95,
+                "reason": "Employer asked about unverified technology not in candidate profile; escalating for human review.",
+                "question": q_text,
+                "required_facts": ["unverified tech experience"],
+                "available_facts": available_facts,
+                "missing_facts": [u for u in unverified_techs if u in q_text_low_early],
+                "context": context,
+                "prepared_reply": None,
+                "sources": sources,
+                "status": "READ-ONLY",
+            }
+
         # 1. Salary questions: answer with confirmed expectation range
         if re.search(r"зарплат|оплат|оклад|salary|ставк|уровень дохода|денег", q_text, re.IGNORECASE):
             if lang == "ru":

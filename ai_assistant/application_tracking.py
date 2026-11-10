@@ -24,6 +24,7 @@ class ApplicationStatus(str, Enum):
     INTERVIEW = "INTERVIEW"
     OFFER = "OFFER"
     WITHDRAWN = "WITHDRAWN"
+    AMBIGUOUS = "AMBIGUOUS"
 
 # Single source of truth mappings
 STATUS_TO_VACANCY_STATE: dict[ApplicationStatus, str] = {
@@ -38,6 +39,7 @@ STATUS_TO_VACANCY_STATE: dict[ApplicationStatus, str] = {
     ApplicationStatus.REJECTED: "REJECTED",
     ApplicationStatus.WITHDRAWN: "ARCHIVED",
     ApplicationStatus.ANALYSIS_FAILED: "ANALYSIS_FAILED",
+    ApplicationStatus.AMBIGUOUS: "DISCOVERED",
 }
 
 STATUS_TO_HH_STATE: dict[ApplicationStatus, str] = {

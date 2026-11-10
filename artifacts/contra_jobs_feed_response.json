@@ -1,0 +1,246 @@
+{
+ "data": {
+  "jobFeed": {
+   "count": 233,
+   "edges": [
+    {
+     "cursor": "YXJyYXljb25uZWN0aW9uOjE=",
+     "node": {
+      "id": "WyJKb2JGZWVkRW50cnkiLDk4MDQ5XQ==",
+      "visitorDidApply": false,
+      "visitorDidBookmark": false,
+      "visitorDidDismiss": false,
+      "visitorDidView": true,
+      "visitorWasMatched": false,
+      "job": {
+       "id": "WyJKb2IiLDk4MDQ5XQ==",
+       "contraLabsCategory": null,
+       "title": "UI/UX Designer for a Retro-Style Personal Growth App (Mobile, Figma)",
+       "slug": "leM662gl-uiux-designer-for-a-retro-style-personal-growth-app-mobile-figma",
+       "createdAt": "2026-09-28T23:27:37.566Z",
+       "timezoneOffsetTolerance": 2,
+       "timezonePrimaryUtcOffset": -7,
+       "organization": {
+        "name": "Nexuscai",
+        "logoImage": {
+         "uid": "yvvu6ger1qozo00lgbkh",
+         "id": "WyJDb250cmFJbWFnZSIsMjQzMTc4MzIyXQ=="
+        },
+        "isVerified": false,
+        "id": "WyJPcmdhbml6YXRpb24iLDc2OTY2MDJd"
+       },
+       "owner": null,
+       "budget": {
+        "__typename": "FixedPriceJobBudget",
+        "feeMax": "USD:3000.00000000",
+        "feeMin": "USD:2000.00000000"
+       },
+       "duration": {
+        "amount": 2,
+        "interval": "WEEK"
+       },
+       "roles": {
+        "edges": [
+         {
+          "node": {
+           "id": "WyJSb2xlIiw2OTIyNF0=",
+           "name": "UI Designer"
+          }
+         },
+         {
+          "node": {
+           "id": "WyJSb2xlIiw2OTEyOF0=",
+           "name": "Prototyper"
+          }
+         },
+         {
+          "node": {
+           "id": "WyJSb2xlIiw2OTMwMl0=",
+           "name": "Design Systems Specialist"
+          }
+         }
+        ]
+       },
+       "tools": {
+        "edges": [
+         {
+          "node": {
+           "id": "WyJUb29sIiwzOV0=",
+           "name": "Figma",
+           "logoImage": {
+            "uid": "tools/figma_hipfv8",
+            "id": "WyJDb250cmFJbWFnZSIsMjQwMTIyMDM5XQ=="
+           }
+          }
+         }
+        ]
+       },
+       "jobPosting": {
+        "approvedAt": "2026-09-29T00:26:24.761Z",
+        "id": "WyJKb2JQb3N0aW5nIiw0NDg3MzQ0XQ=="
+       }
+      },
+      "__typename": "JobFeedEntry",
+      "ad": null
+     }
+    },
+    {
+     "cursor": "YXJyYXljb25uZWN0aW9uOjI=",
+     "node": {
+      "id": "WyJKb2JGZWVkRW50cnkiLDk3OTc2XQ==",
+      "visitorDidApply": false,
+      "visitorDidBookmark": false,
+      "visitorDidDismiss": false,
+      "visitorDidView": true,
+      "visitorWasMatched": false,
+      "job": {
+       "id": "WyJKb2IiLDk3OTc2XQ==",
+       "contraLabsCategory": null,
+       "title": "Kajabi Retreat Landing Page Specialist",
+       "slug": "gYEPFAXF-kajabi-retreat-landing-page-specialist",
+       "createdAt": "2026-09-28T12:01:36.915Z",
+       "timezoneOffsetTolerance": null,
+       "timezonePrimaryUtcOffset": null,
+       "organization": {
+        "name": "Delve Deep LTD",
+        "logoImage": {
+         "uid": "l7ehyhtyok1kkn2asaku",
+         "id": "WyJDb250cmFJbWFnZSIsMjQ0MjI4NDg3XQ=="
+        },
+        "isVerified": false,
+        "id": "WyJPcmdhbml6YXRpb24iLDgxMjYzMjJd"
+       },
+       "owner": null,
+       "budget": {
+        "__typename": "FixedPriceJobBudget",
+        "feeMax": "USD:600.00000000",
+        "feeMin": "USD:600.00000000"
+       },
+       "duration": {
+        "amount": 1,
+        "interval": "WEEK"
+       },
+       "roles": {
+        "edges": [
+         {
+          "node": {
+           "id": "WyJSb2xlIiw2ODM4NF0=",
+           "name": "Web Designer"
+          }
+         }
+        ]
+       },
+       "tools": {
+        "edges": [
+         {
+          "node": {
+           "id": "WyJUb29sIiw5NTQzXQ==",
+           "name": "Kajabi",
+           "logoImage": {
+            "uid": "xhdwjwyvbiz34fhbrlkm",
+            "id": "WyJDb250cmFJbWFnZSIsMjE3NjgzMDczXQ=="
+           }
+          }
+         }
+        ]
+       },
+       "jobPosting": {
+        "approvedAt": "2026-09-28T15:59:22.563Z",
+        "id": "WyJKb2JQb3N0aW5nIiw0NDg3MjcyXQ=="
+       }
+      },
+      "__typename": "JobFeedEntry",
+      "ad": null
+     }
+    },
+    {
+     "cursor": "YXJyYXljb25uZWN0aW9uOjM=",
+     "node": {
+      "id": "WyJKb2JGZWVkRW50cnkiLDk3OTkzXQ==",
+      "visitorDidApply": false,
+      "visitorDidBookmark": false,
+      "visitorDidDismiss": false,
+      "visitorDidView": true,
+      "visitorWasMatched": false,
+      "job": {
+       "id": "WyJKb2IiLDk3OTkzXQ==",
+       "contraLabsCategory": null,
+       "title": "Website Designer",
+       "slug": "LLQcBvbr-website-designer",
+       "createdAt": "2026-09-28T14:32:31.318Z",
+       "timezoneOffsetTolerance": null,
+       "timezonePrimaryUtcOffset": null,
+       "organization": {
+        "name": "Boxem",
+        "logoImage": {
+         "uid": "px4k9h6eonii7ojk7tua",
+         "id": "WyJDb250cmFJbWFnZSIsMjQ0MjMxNzI1XQ=="
+        },
+        "isVerified": false,
+        "id": "WyJPcmdhbml6YXRpb24iLDY5NTkwOTVd"
+       },
+       "owner": null,
+       "budget": {
+        "__typename": "FixedPriceJobBudget",
+        "feeMax": "USD:6000.00000000",
+        "feeMin": "USD:3000.00000000"
+       },
+       "duration": {
+        "amount": 3,
+        "interval": "WEEK"
+       },
+       "roles": {
+        "edges": [
+         {
+          "node": {
+           "id": "WyJSb2xlIiw2OTIyNF0=",
+           "name": "UI Designer"
+          }
+         },
+         {
+          "node": {
+           "id": "WyJSb2xlIiw2ODM4NF0=",
+           "name": "Web Designer"
+          }
+         },
+         {
+          "node": {
+           "id": "WyJSb2xlIiw2ODI1NF0=",
+           "name": "Graphic Designer"
+          }
+         }
+        ]
+       },
+       "tools": {
+        "edges": [
+         {
+          "node": {
+           "id": "WyJUb29sIiwzOV0=",
+           "name": "Figma",
+           "logoImage": {
+            "uid": "tools/figma_hipfv8",
+            "id": "WyJDb250cmFJbWFnZSIsMjQwMTIyMDM5XQ=="
+           }
+          }
+         }
+        ]
+       },
+       "jobPosting": {
+        "approvedAt": "2026-09-28T14:38:01.100Z",
+        "id": "WyJKb2JQb3N0aW5nIiw0NDg3Mjg5XQ=="
+       }
+      },
+      "__typename": "JobFeedEntry",
+      "ad": null
+     }
+    }
+   ],
+   "pageInfo": {
+    "hasNextPage": false,
+    "hasPreviousPage": false,
+    "startCursor": "YXJyYXljb25uZWN0aW9uOjE=",
+    "endCursor": "YXJyYXljb25uZWN0aW9uOjM="
+   }
+  }
+ }
+}
