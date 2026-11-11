@@ -585,30 +585,20 @@ def classify_hh_conversation_detailed(
                 "status": "READ-ONLY",
             }
 
-        # 1. Salary questions: answer with confirmed expectation range
+        # 1. Salary questions: require human review (fail-closed, never auto-negotiate or state salary)
         if re.search(r"зарплат|оплат|оклад|salary|ставк|уровень дохода|денег", q_text, re.IGNORECASE):
-            if lang == "ru":
-                sal_reply = (
-                    "Здравствуйте! Мой ориентир по заработной плате — от 100 000 руб. на руки. "
-                    "При этом я полностью открыт к обсуждению и готов гибко согласовать комфортную сумму под бюджет компании и задачи проекта (главное — быстро и продуктивно включиться в работу)."
-                )
-            else:
-                sal_reply = (
-                    "Hello! My target compensation starts from 100,000 RUB net per month (approx. $1,100–$1,300). "
-                    "I am completely open to discussing and aligning with your company's budget and project scope."
-                )
             return {
                 "conversation_id": dialog.conversation_id,
-                "classification": "NEEDS_REPLY",
-                "confidence": 0.90,
-                "reason": "Employer asked about salary expectations; answered with candidate's confirmed target range.",
+                "classification": "HUMAN_REVIEW",
+                "confidence": 0.95,
+                "reason": "Employer asked about salary expectations; escalating for human review.",
                 "question": q_text,
                 "required_facts": ["salary expectation"],
-                "available_facts": available_facts + ["salary floor: от 100 000 RUB"],
-                "missing_facts": [],
+                "available_facts": available_facts,
+                "missing_facts": ["exact salary negotiation"],
                 "context": context,
-                "prepared_reply": sal_reply,
-                "sources": sources + ["candidate_profile.json: minimum_salary"],
+                "prepared_reply": None,
+                "sources": sources,
                 "status": "READ-ONLY",
             }
 
@@ -649,44 +639,7 @@ def classify_hh_conversation_detailed(
                 "status": "READ-ONLY",
             }
 
-        # 3. Grounded Company Experience: Sayama Travel, Avantis Med, Freelance, Early IT, Infrastructure, Domains
-        _ELABORATE_RE = re.compile(
-            r"подробнее|расскаж\w+\s+о|продолж\w+\s+рассказ|опыт\w*\s+с|какой\s+опыт|сколько\s+лет",
-            re.IGNORECASE,
-        )
-        is_elaborate_q = bool(_ELABORATE_RE.search((q_text or "").lower()))
-
-        q_low_check = (q_text or "").lower()
-        if any(k in q_low_check for k in [
-            "где вы работали", "где работал", "места работы", "компании", "предыдущ",
-            "sayama", "саяма", "avantis", "авантис", "фриланс", "расскажите о себе",
-            "расскажите про опыт", "опыт работы", "работали ли вы", "работал ли",
-            "работали в", "в каких компаниях", "агентств", "студи",
-            "дизайн", "design", "арт", "стаж",
-            "портфолио", "portfolio", "кейсы", "кейс", "сайт", "пример",
-            "vmware", "vsphere", "esxi", "nsx", "airflow", "spark", "kafka",
-            "igaming", "гейминг", "продолжить рассказ", "подробнее", "опыте с", "опыт с"
-        ]) or is_elaborate_q:
-            from ai_assistant.smart_experience_generator import generate_employer_chat_reply
-            has_prior = any(m.sender == "candidate" for m in messages)
-            exp_res = generate_employer_chat_reply(q_text, v_title, v_comp, has_prior_interaction=has_prior)
-            exp_reply = exp_res.get("reply_text", "")
-            return {
-                "conversation_id": dialog.conversation_id,
-                "classification": "NEEDS_REPLY",
-                "confidence": 0.98,
-                "reason": f"Employer asked about candidate experience/companies; answered with verified candidate_kb.json history ({exp_res.get('intent')}).",
-                "question": q_text,
-                "required_facts": ["experience history"],
-                "available_facts": available_facts + ["Sayama Travel (2022-2026)", "Avantis Med (2021-2022)", "Freelance (2026-present)"],
-                "missing_facts": [],
-                "context": context,
-                "prepared_reply": exp_reply,
-                "sources": sources + ["candidate_kb.json: confirmed roles and duties"],
-                "status": "READ-ONLY",
-            }
-
-        # Domain experience: E-commerce / Marketplaces (Ozon/WB)
+        # 3. Domain experience: E-commerce / Marketplaces (Ozon/WB)
         if re.search(r"e-commerce|маркетплейс|ozon|wildberries|wb", q_text, re.IGNORECASE):
             required_facts.append("e-commerce / marketplace experience (Ozon/WB)")
             # Check if candidate profile has confirmed Ozon/WB
@@ -732,6 +685,43 @@ def classify_hh_conversation_detailed(
                 "context": context,
                 "prepared_reply": reply_text,
                 "sources": sources,
+                "status": "READ-ONLY",
+            }
+
+        # 4. Grounded Company Experience: Sayama Travel, Avantis Med, Freelance, Early IT, Infrastructure, Domains
+        _ELABORATE_RE = re.compile(
+            r"подробнее|расскаж\w+\s+о|продолж\w+\s+рассказ|опыт\w*\s+с|какой\s+опыт|сколько\s+лет",
+            re.IGNORECASE,
+        )
+        is_elaborate_q = bool(_ELABORATE_RE.search((q_text or "").lower()))
+
+        q_low_check = (q_text or "").lower()
+        if any(k in q_low_check for k in [
+            "где вы работали", "где работал", "места работы", "компании", "предыдущ",
+            "sayama", "саяма", "avantis", "авантис", "фриланс", "расскажите о себе",
+            "расскажите про опыт", "опыт работы", "работали ли вы", "работал ли",
+            "работали в", "в каких компаниях", "агентств", "студи",
+            "дизайн", "design", "арт", "стаж",
+            "портфолио", "portfolio", "кейсы", "кейс", "сайт", "пример",
+            "vmware", "vsphere", "esxi", "nsx", "airflow", "spark", "kafka",
+            "igaming", "гейминг", "продолжить рассказ", "подробнее", "опыте с", "опыт с"
+        ]) or is_elaborate_q:
+            from ai_assistant.smart_experience_generator import generate_employer_chat_reply
+            has_prior = any(m.sender == "candidate" for m in messages)
+            exp_res = generate_employer_chat_reply(q_text, v_title, v_comp, has_prior_interaction=has_prior)
+            exp_reply = exp_res.get("reply_text", "")
+            return {
+                "conversation_id": dialog.conversation_id,
+                "classification": "NEEDS_REPLY",
+                "confidence": 0.98,
+                "reason": f"Employer asked about candidate experience/companies; answered with verified candidate_kb.json history ({exp_res.get('intent')}).",
+                "question": q_text,
+                "required_facts": ["experience history"],
+                "available_facts": available_facts + ["Sayama Travel (2022-2026)", "Avantis Med (2021-2022)", "Freelance (2026-present)"],
+                "missing_facts": [],
+                "context": context,
+                "prepared_reply": exp_reply,
+                "sources": sources + ["candidate_kb.json: confirmed roles and duties"],
                 "status": "READ-ONLY",
             }
 
