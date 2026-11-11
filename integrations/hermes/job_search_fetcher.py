@@ -63,27 +63,29 @@ def _canonical_path(path) -> str:
     return os.path.normcase(os.path.realpath(path))
 
 
-if os.environ.get("JOB_FETCHER_NO_REEXEC") != "1" and _PROJECT_PY.is_file() and _canonical_path(sys.executable) != _canonical_path(str(_PROJECT_PY)):
-    import subprocess
+def _maybe_reexec():
+    if os.environ.get("JOB_FETCHER_NO_REEXEC") != "1" and _PROJECT_PY.is_file() and _canonical_path(sys.executable) != _canonical_path(str(_PROJECT_PY)):
+        import subprocess
 
-    # Hermes Cron runs this script under Hermes's own Python (3.14) with the
-    # Hermes venv's site-packages exported in PYTHONPATH. A normal venv puts
-    # its own site-packages first, but an inherited PYTHONPATH env var wins
-    # over it, so the project venv (3.11) would import the 3.14-compiled
-    # pydantic_core and crash with ModuleNotFoundError. Neutralize the leak
-    # for the child so only the project venv's deps are used.
-    # Adopted from the deployed runtime copy on 2026-10-03 and folded back into
-    # the canonical source on 2026-10-05 so that `hermes sync` cannot regress it.
-    _child_env = dict(os.environ)
-    for _leaked in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"):
-        _child_env.pop(_leaked, None)
+        # Hermes Cron runs this script under Hermes's own Python (3.14) with the
+        # Hermes venv's site-packages exported in PYTHONPATH. A normal venv puts
+        # its own site-packages first, but an inherited PYTHONPATH env var wins
+        # over it, so the project venv (3.11) would import the 3.14-compiled
+        # pydantic_core and crash with ModuleNotFoundError. Neutralize the leak
+        # for the child so only the project venv's deps are used.
+        # Adopted from the deployed runtime copy on 2026-10-03 and folded back into
+        # the canonical source on 2026-10-05 so that `hermes sync` cannot regress it.
+        _child_env = dict(os.environ)
+        for _leaked in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"):
+            _child_env.pop(_leaked, None)
 
-    _handover = subprocess.run(
-        [str(_PROJECT_PY), os.path.abspath(__file__), *sys.argv[1:]],
-        check=False,  # the child's status is propagated by hand on the next line
-        env=_child_env,
-    )
-    sys.exit(_handover.returncode)
+        _handover = subprocess.run(
+            [str(_PROJECT_PY), os.path.abspath(__file__), *sys.argv[1:]],
+            check=False,  # the child's status is propagated by hand on the next line
+            env=_child_env,
+        )
+        sys.exit(_handover.returncode)
+
 
 try:
     from ai_assistant import config
@@ -653,4 +655,5 @@ def _run_discovery_and_deliver(dry_run: bool) -> None:
 
 
 if __name__ == "__main__":
+    _maybe_reexec()
     main()
