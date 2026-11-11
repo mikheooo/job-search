@@ -503,6 +503,14 @@ def main() -> int:
             except Exception as me:
                 logger.warning(f"Message-agent cycle failed (non-fatal): {me}")
 
+        # 4. Multi-source direct outreach (Telegram recruiters, Email with CV, ATS links)
+        try:
+            from scripts.run_telegram_outreach import dispatch_outreach_batch
+            outreach_res = dispatch_outreach_batch(limit=3)
+            logger.info(f"Multi-source outreach cycle finished with result: {outreach_res}")
+        except Exception as oe:
+            logger.warning(f"Multi-source outreach cycle failed (non-fatal): {oe}")
+
         # An ERROR result must not masquerade as success (exit 0).
         # Confirmed auth loss uses the auth alert. Every other failure uses
         # the operational alert (cooldown + recovery) on the same route.
