@@ -16,7 +16,7 @@ import re
 import urllib.request
 import urllib.parse
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 JOB_SEARCH_ROOT = Path(r"C:\Users\Misha\Documents\job-search")
 if str(JOB_SEARCH_ROOT) not in sys.path:
@@ -127,7 +127,7 @@ def save_vacancies(new_items: list):
     """Legacy helper maintained for backward-compatibility with tests."""
     current = load_vacancies()
     max_id = max((v["id"] for v in current if isinstance(v.get("id"), int)), default=0)
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     for v in new_items:
         max_id += 1
@@ -511,7 +511,7 @@ def run_canonical_discovery_and_export(limit: int = 5, min_score: float = 60.0, 
 
 
 def main():
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting Unified Hermes Job Search Dispatcher (Stage 75/81)...")
+    print(f"[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}] Starting Unified Hermes Job Search Dispatcher (Stage 75/81)...")
     dry_run = bool(os.environ.get("JOB_SEARCH_DRY_RUN"))
 
     # Operational audit: surface any unresolved / stale digest attempts

@@ -1249,7 +1249,7 @@ def save_hh_application(data: dict[str, Any]) -> None:
     """Save or update an HH application record in state.db."""
     app_id = str(data["application_id"]).strip()
     answers_json = _serialise_answers_json(data)
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     created_at = data.get("created_at") or now
     updated_at = data.get("updated_at") or now
 
@@ -1403,7 +1403,7 @@ def save_hh_application_transition(data: dict[str, Any]) -> int:
     evidence_json = data.get("evidence_json")
     if evidence_json is None and data.get("evidence") is not None:
         evidence_json = json.dumps(data["evidence"], ensure_ascii=False)
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     created_at = data.get("created_at") or now
 
     with db_session() as conn:
@@ -2870,14 +2870,47 @@ def set_submit_paused(paused: bool) -> None:
 
 
 def count_submitted_transitions_since(since_iso: str) -> int:
+    """Count SUBMITTED transitions created at or after since_iso, handling timezone offsets accurately."""
     init_db()
     with db_cursor(commit=False) as cursor:
         cursor.execute(
-            "SELECT COUNT(*) FROM hh_application_transitions WHERE state = 'SUBMITTED' AND created_at >= ?",
-            (since_iso,),
+            "SELECT created_at FROM hh_application_transitions WHERE state = 'SUBMITTED'"
         )
-        row = cursor.fetchone()
-    return row[0] if row else 0
+        rows = cursor.fetchall()
+    if not rows:
+        return 0
+
+    try:
+        since_dt = datetime.fromisoformat(since_iso)
+        if since_dt.tzinfo is None:
+            since_dt = since_dt.replace(tzinfo=timezone.utc)
+        else:
+            since_dt = since_dt.astimezone(timezone.utc)
+    except Exception:
+        with db_cursor(commit=False) as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM hh_application_transitions WHERE state = 'SUBMITTED' AND created_at >= ?",
+                (since_iso,),
+            )
+            row = cursor.fetchone()
+            return row[0] if row else 0
+
+    count = 0
+    for (created_at_raw,) in rows:
+        if not created_at_raw:
+            continue
+        try:
+            row_dt = datetime.fromisoformat(created_at_raw)
+            if row_dt.tzinfo is None:
+                row_dt = row_dt.replace(tzinfo=timezone.utc)
+            else:
+                row_dt = row_dt.astimezone(timezone.utc)
+            if row_dt >= since_dt:
+                count += 1
+        except Exception:
+            if created_at_raw >= since_iso:
+                count += 1
+    return count
 # --- Phase 2.1: Exclusive Submission Claims ---
 
 class SubmissionClaimStatus(str, Enum):

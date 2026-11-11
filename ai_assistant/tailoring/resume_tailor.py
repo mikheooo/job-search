@@ -587,7 +587,7 @@ def generate_tailored_resume_html(analysis: VacancyAnalysis) -> str:
 
 def generate_tailored_cover_letter(analysis: VacancyAnalysis) -> str:
     """Generate bespoke cover letter addressing the employer's specific points."""
-    today = datetime.datetime.now().strftime("%d %B %Y")
+    today = datetime.datetime.now(datetime.timezone.utc).strftime("%d %B %Y")
 
     resp_bullets = ""
     if analysis.key_responsibilities:

@@ -18,7 +18,7 @@ def generate_australian_cover_letter(
     job_reference: str = "",
 ) -> str:
     """Generate tailored, professional Australian cover letter."""
-    today_str = datetime.datetime.now().strftime("%d %B %Y")
+    today_str = datetime.datetime.now(datetime.timezone.utc).strftime("%d %B %Y")
     ref_line = f"\nRe: Application for {role_title} (Ref: {job_reference})" if job_reference else f"\nRe: Application for {role_title}"
 
     skills_highlight = ""

@@ -2411,7 +2411,7 @@ def start_autonomous_daemon(config: AutonomousConfig | None = None) -> None:
     try:
         while True:
             res = agent.run_cycle()
-            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {res.summary}")
+            print(f"[{datetime.datetime.now(datetime.timezone.utc).strftime('%H:%M:%S')}] {res.summary}")
             time.sleep(poll_sec)
     except KeyboardInterrupt:
         print("\n Autonomous Agent stopped by user.")
