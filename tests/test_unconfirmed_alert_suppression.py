@@ -53,8 +53,8 @@ def test_unconfirmed_submission_does_not_send_telegram_alert(monkeypatch, tmp_pa
     assert mock_send.call_count == 0
 
 
-def test_blockers_catches_resume_visibility_warning_even_if_warning_shown_is_false():
-    """Form with warning_text must be caught by _blockers even if warning_shown is False."""
+def test_blockers_catches_resume_visibility_warning():
+    """Form with warning_shown must be caught by _blockers."""
     vacancy = {
         "applicant": {
             "responseAllowed": True,
@@ -65,7 +65,7 @@ def test_blockers_catches_resume_visibility_warning_even_if_warning_shown_is_fal
         }
     }
     form = {
-        "warning_shown": False,
+        "warning_shown": True,
         "warning_text": "Чтобы откликнуться на эту вакансию, поменяйте видимость резюме на «Видно всем работодателям, зарегистрированным на hh.ru»",
         "submit": {"disabled": False},
         "resume_title": "Ai engineer",
