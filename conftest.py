@@ -9,6 +9,9 @@ REPO_ROOT = Path(__file__).resolve().parent
 ai_assistant_dir = REPO_ROOT / "ai_assistant"
 if str(ai_assistant_dir) not in sys.path:
     sys.path.insert(0, str(ai_assistant_dir))
+hermes_dir = REPO_ROOT / "integrations" / "hermes"
+if str(hermes_dir) not in sys.path:
+    sys.path.insert(0, str(hermes_dir))
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
