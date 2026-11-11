@@ -11,9 +11,9 @@
 - **Исходный baseline падений:** 154 теста
 - **Устранено на этапах SEC-001, SEC-002, BUG-001, TEST-A, TEST-B, TEST-C, TEST-D:** 89 тестов
 - **Текущее состояние:**
-  - Успешно пройдено: **4 225** тестов (98.5%)
+  - Успешно пройдено: **4 227** тестов (98.5%)
   - Пропущено (skip): **14** тестов
-  - Падений в текущем прогоне: **65** тестов
+  - Падений в текущем прогоне: **63** теста
 
 Все 65 падений классифицированы по трем стандартным категориям аудита:
 1. `[LEGACY_MOCK]` — моки или сигнатуры вызовов в тестах отстали от актуального боевого кода.
@@ -160,7 +160,7 @@
 
 ---
 
-### Группа 8: Outbound Safety, аудит ответов и дедупликация (14 тестов)
+### Группа 8: Outbound Safety, аудит ответов и дедупликация (12 тестов)
 **Категория:** `[REAL_BEHAVIOR_CHANGE]` / `[LEGACY_MOCK]`  
 **Корневая причина:** Механизмы дедупликации нотификаций и статусы ответов (`REPLY_AMBIGUOUS` vs `FAILED`, `DUPLICATE_SUPPRESSED`).
 
@@ -174,8 +174,6 @@
 7. `tests/test_stage53_reply_visibility.py::test_failed_reply_does_not_create_sent_notification`
 8. `tests/test_stage55_selection_limits_routing.py::test_stage55_recruiter_routing_to_exact_conversation`
 9. `tests/test_stage80_digest_crash_consistency.py::test_confirmed_failure_remains_retryable`
-10. `tests/test_outbound_safety_all_paths.py::TestOutboundSafetyAllPaths::test_path3_realtime_daemon_autonomous_reply_disabled_flag`
-11. `tests/test_outbound_safety_all_paths.py::TestOutboundSafetyAllPaths::test_path3_realtime_daemon_autonomous_reply_governor_guard`
 
 **План устранения:**
 - Выверить соответствие статусов `REPLY_AMBIGUOUS` и `FAILED` в контракте forensic audit.

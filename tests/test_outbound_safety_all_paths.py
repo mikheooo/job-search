@@ -36,16 +36,18 @@ class TestOutboundSafetyAllPaths(unittest.TestCase):
 
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
+        os.environ["STOP_OUTBOUNDS_DIR"] = self.temp_dir.name
         self.db_path = pathlib.Path(self.temp_dir.name) / "test_safety.db"
         self._orig_db_path = config.DB_FILE
         config.DB_FILE = str(self.db_path)
         db.init_db()
 
-        # Ensure stop files are clear in worktree root initially
+        # Ensure stop files are clear initially
         self._clean_stop_files()
 
     def tearDown(self) -> None:
         self._clean_stop_files()
+        os.environ.pop("STOP_OUTBOUNDS_DIR", None)
         config.DB_FILE = self._orig_db_path
         try:
             self.temp_dir.cleanup()
@@ -53,6 +55,14 @@ class TestOutboundSafetyAllPaths(unittest.TestCase):
             pass
 
     def _clean_stop_files(self) -> None:
+        if hasattr(self, "temp_dir"):
+            for fname in ["STOP_ALL_OUTBOUNDS", "STOP_SUBMITS", "data/STOP_ALL_OUTBOUNDS", "data/STOP_SUBMITS"]:
+                p = pathlib.Path(self.temp_dir.name) / fname
+                if p.exists():
+                    try:
+                        p.unlink()
+                    except Exception:
+                        pass
         for fname in ["STOP_ALL_OUTBOUNDS", "STOP_SUBMITS", "data/STOP_ALL_OUTBOUNDS", "data/STOP_SUBMITS"]:
             p = pathlib.Path(fname)
             if p.exists():
@@ -61,13 +71,18 @@ class TestOutboundSafetyAllPaths(unittest.TestCase):
                 except Exception:
                     pass
 
+    def _make_stop_file(self, fname: str = "STOP_ALL_OUTBOUNDS") -> pathlib.Path:
+        p = pathlib.Path(self.temp_dir.name) / fname
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch()
+        return p
+
     # =========================================================================
     # PATH 1: HH Submission Authority (submission_halt_reason & preflight)
     # =========================================================================
     def test_path1_submission_halt_reason_stop_all_outbounds(self) -> None:
         """Creating STOP_ALL_OUTBOUNDS must halt submission_halt_reason immediately."""
-        p = pathlib.Path("STOP_ALL_OUTBOUNDS")
-        p.touch()
+        p = self._make_stop_file("STOP_ALL_OUTBOUNDS")
         try:
             reason = submission_halt_reason(include_submit_allowed=True)
             self.assertIsNotNone(reason)
@@ -91,10 +106,7 @@ class TestOutboundSafetyAllPaths(unittest.TestCase):
 
     def test_path1_submission_halt_reason_data_stop_submits(self) -> None:
         """Creating data/STOP_SUBMITS must halt submission."""
-        data_dir = pathlib.Path("data")
-        data_dir.mkdir(exist_ok=True)
-        stop_file = data_dir / "STOP_SUBMITS"
-        stop_file.touch()
+        stop_file = self._make_stop_file("data/STOP_SUBMITS")
         try:
             reason = submission_halt_reason(include_submit_allowed=True)
             self.assertIsNotNone(reason)
@@ -132,8 +144,7 @@ class TestOutboundSafetyAllPaths(unittest.TestCase):
         from ai_assistant import hh_cdp_submit
         import argparse
 
-        stop_file = pathlib.Path("STOP_ALL_OUTBOUNDS")
-        stop_file.touch()
+        stop_file = self._make_stop_file("STOP_ALL_OUTBOUNDS")
 
         # Temporary letter file
         letter_file = pathlib.Path(self.temp_dir.name) / "test_letter.txt"
@@ -168,8 +179,7 @@ class TestOutboundSafetyAllPaths(unittest.TestCase):
         agent = AutonomousJobAgent(AutonomousConfig(mode="FULL"))
 
         # Case A: STOP_ALL_OUTBOUNDS active -> BLOCKED_KILL_SWITCH
-        stop_file = pathlib.Path("STOP_ALL_OUTBOUNDS")
-        stop_file.touch()
+        stop_file = self._make_stop_file("STOP_ALL_OUTBOUNDS")
         try:
             d = HHDialog(
                 conversation_id="conv_safety_123",
@@ -223,7 +233,7 @@ class TestOutboundSafetyAllPaths(unittest.TestCase):
             messages=[
                 HHMessage(
                     message_id="m2",
-                    text="Добрый день! Подскажите ваши зарплатные ожидания?",
+                    text="Добрый день! Вы работаете удаленно?",
                     sender="employer",
                 )
             ],
@@ -257,8 +267,7 @@ class TestOutboundSafetyAllPaths(unittest.TestCase):
         """submit_application_in_browser must block when kill switch is on."""
         from ai_assistant.browser_executor import submit_application_in_browser
 
-        stop_file = pathlib.Path("STOP_ALL_OUTBOUNDS")
-        stop_file.touch()
+        stop_file = self._make_stop_file("STOP_ALL_OUTBOUNDS")
         try:
             res = submit_application_in_browser(
                 vacancy_stable_id="hh:99999999",
@@ -301,8 +310,7 @@ class TestOutboundSafetyAllPaths(unittest.TestCase):
         self.assertIsNone(reason)
 
         # 2. Touch STOP_ALL_OUTBOUNDS on disk -> immediately blocked even for dry-run
-        stop_file = pathlib.Path("STOP_ALL_OUTBOUNDS")
-        stop_file.touch()
+        stop_file = self._make_stop_file("STOP_ALL_OUTBOUNDS")
         try:
             allowed, reason = check_outbound_allowed(action=OutboundAction.SUBMISSION, dry_run=True)
             self.assertFalse(allowed)

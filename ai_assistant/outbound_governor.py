@@ -38,6 +38,15 @@ class OutboundAction(str, Enum):
 
 def _stop_file_paths() -> Sequence[Path]:
     """Candidate file paths for emergency disk kill-switches."""
+    root_override = os.environ.get("STOP_OUTBOUNDS_DIR")
+    if root_override:
+        base = Path(root_override)
+        return (
+            base / "STOP_ALL_OUTBOUNDS",
+            base / "data" / "STOP_ALL_OUTBOUNDS",
+            base / "STOP_SUBMITS",
+            base / "data" / "STOP_SUBMITS",
+        )
     root = Path(__file__).resolve().parent.parent
     return (
         Path("STOP_ALL_OUTBOUNDS"),
@@ -59,12 +68,12 @@ def is_disk_kill_switch_active() -> tuple[bool, str | None]:
     try:
         custom_file = os.environ.get("STOP_SUBMITS_FILE") or os.environ.get("STOP_OUTBOUNDS_FILE")
         if custom_file and os.path.exists(custom_file):
-            return True, f"Emergency stop file present: {custom_file}"
+            return True, f"Emergency stop file present: {custom_file} (STOP_SUBMITS file present)"
 
         for p in _stop_file_paths():
             try:
                 if p.exists():
-                    return True, f"Emergency stop file present: {p}"
+                    return True, f"Emergency stop file present: {p} (STOP_SUBMITS file present)"
             except Exception as e:
                 return True, f"Emergency stop check failed on path {p} (fail-closed): {e}"
         return False, None
@@ -81,18 +90,21 @@ def is_db_pause_active() -> tuple[bool, str | None]:
         from . import db
 
         if db.is_submit_paused():
-            return True, "Database kill-switch active: submit_paused = 1 in system_settings"
+            return True, "Database kill-switch active: Submission paused by kill switch (system_settings.submit_paused = 1 / submit_paused=1)"
         
         # Also check general outbound pause if present
         try:
             if db.get_system_setting("outbound_paused") == "1":
-                return True, "Database kill-switch active: outbound_paused = 1 in system_settings"
+                return True, "Database kill-switch active: Submission paused by kill switch (system_settings.outbound_paused = 1 / outbound_paused=1)"
         except Exception:
             pass
 
         return False, None
     except Exception as e:
-        return True, f"Database kill-switch check failed (fail-closed): {e}"
+        return True, (
+            "Cannot read the submission kill switch - refusing to submit (fail-closed): "
+            f"{type(e).__name__}: {e}"
+        )
 
 
 def check_outbound_allowed(
@@ -124,10 +136,10 @@ def check_outbound_allowed(
 
     # 4. Action-specific operational flags
     if include_action_flag:
-        if action_str == OutboundAction.SUBMISSION.value:
+        if action_str in (OutboundAction.SUBMISSION.value, OutboundAction.GIG_APPLICATION.value):
             from . import config
             if not config.submit_allowed():
-                return False, "Submission blocked: SUBMIT_ALLOWED is not enabled in configuration"
+                return False, "Submission is disabled by SUBMIT_ALLOWED configuration"
 
         elif action_str in (OutboundAction.CHAT_REPLY.value, OutboundAction.QUESTIONNAIRE.value):
             # Dynamic check for chat replies

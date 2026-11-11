@@ -33,15 +33,7 @@ _target_kb = REPO_ROOT / "candidate_kb.json"
 if _fixture_kb.exists() and not _target_kb.exists():
     _target_kb.write_text(_fixture_kb.read_text(encoding="utf-8"), encoding="utf-8")
 
-_target_db = REPO_ROOT / "state.db"
-if not _target_db.exists():
-    try:
-        from ai_assistant import db
-        db.init_db()
-    except Exception:
-        pass
-
-# Ensure CANDIDATE_PROJECTS_ROOT allows projects.py to find Documents/job-search
+# Ensure CANDIDATE_PROJECTS_ROOT allows projects.py to find Documents/job-search and fixture projects
 _doc_root = REPO_ROOT / ".doc_root"
 _doc_link = _doc_root / "Documents" / "job-search"
 if not (_doc_link / "README.md").exists():
@@ -49,6 +41,19 @@ if not (_doc_link / "README.md").exists():
     _orig_readme = REPO_ROOT / "README.md"
     if _orig_readme.exists():
         (_doc_link / "README.md").write_text(_orig_readme.read_text(encoding="utf-8"), encoding="utf-8")
+
+_fixture_projects = REPO_ROOT / "tests" / "fixtures" / "candidate_projects"
+if _fixture_projects.exists():
+    import shutil
+    for root_dir, _, files in os.walk(_fixture_projects):
+        rel = Path(root_dir).relative_to(_fixture_projects)
+        target_dir = _doc_root / rel
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for f in files:
+            target_file = target_dir / f
+            if not target_file.exists():
+                shutil.copy2(Path(root_dir) / f, target_file)
+
 os.environ.setdefault("CANDIDATE_PROJECTS_ROOT", str(_doc_root))
 
 _SUBMIT_KILL_SWITCH_BASELINE: tuple | None = None

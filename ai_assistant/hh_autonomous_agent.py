@@ -1958,7 +1958,18 @@ class AutonomousJobAgent:
                 is_duplicate = any(re.sub(r'[^\w\s]', '', (r or '').lower()).strip() == norm_target for r in recent_sent)
                 consecutive_count = db.count_recent_consecutive_auto_replies(d.conversation_id)
 
-                if is_duplicate:
+                from ai_assistant.outbound_governor import is_disk_kill_switch_active, is_db_pause_active
+                disk_halted, disk_reason = is_disk_kill_switch_active()
+                db_halted, db_reason = is_db_pause_active()
+                if disk_halted:
+                    send_status = "BLOCKED_KILL_SWITCH"
+                    send_error = disk_reason or "Emergency kill-switch active (STOP_ALL_OUTBOUNDS)"
+                    logger.warning("Autonomous reply SUPPRESSED by disk kill-switch for %s: %s", d.conversation_id, send_error)
+                elif db_halted:
+                    send_status = "BLOCKED_KILL_SWITCH"
+                    send_error = db_reason or "Database kill-switch active (submit_paused=1)"
+                    logger.warning("Autonomous reply SUPPRESSED by DB kill-switch for %s: %s", d.conversation_id, send_error)
+                elif is_duplicate:
                     send_status = "LOOP_PREVENTED"
                     send_error = f"Anti-loop guard: identical reply text was already sent to conversation {d.conversation_id}"
                     logger.warning("Anti-loop guard blocked duplicate reply for conv %s: %s", d.conversation_id, reply_text)

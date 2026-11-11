@@ -890,6 +890,7 @@ def test_a_project_sync_does_not_touch_resume_or_interview_claims() -> None:
     before = {
         claim_id: (record.status, record.in_source, json.dumps(record.evidence, sort_keys=True))
         for claim_id, record in kb.claims.items()
+        if record.evidence.get("source_file") in {"resume.md", "interview"}
     }
     kb.sync_project_claims(extract_project_claims())
 

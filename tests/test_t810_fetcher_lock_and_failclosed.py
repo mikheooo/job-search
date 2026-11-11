@@ -296,6 +296,7 @@ def _install_send_outcomes(monkeypatch, jsf, outcomes):
 def _fake_token(monkeypatch, jsf):
     """Pin a fake token so the sender's file lookups never touch real secrets."""
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "000000000:TEST_TOKEN")
+    monkeypatch.setenv("TELEGRAM_CHANNEL_ID", "-1000000000000")
     # The fetcher prefers the Hermes profile .env when it exists; force the
     # environment path so these tests do not depend on the machine's real file.
     monkeypatch.setattr(jsf.Path, "exists", lambda _self: False, raising=True)

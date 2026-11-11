@@ -12,6 +12,7 @@ __pycache__/
 venv/
 node_modules/
 .worktrees/
+.doc_root/
 
 # Logs & Data
 logs/
