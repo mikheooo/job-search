@@ -52,8 +52,19 @@ def is_pid_running(pid: int) -> bool:
             return exit_code.value == STILL_ACTIVE
         except Exception:
             try:
-                out = subprocess.check_output(f"tasklist /FI \"PID eq {pid}\"", shell=True, text=True, errors="replace")
-                return str(pid) in out
+                import csv
+                import io
+
+                out = subprocess.check_output(
+                    ["tasklist", "/FI", f"PID eq {int(pid)}", "/FO", "CSV", "/NH"],
+                    text=True,
+                    errors="replace",
+                )
+                reader = csv.reader(io.StringIO(out))
+                for row in reader:
+                    if len(row) >= 2 and row[1].strip() == str(int(pid)):
+                        return True
+                return False
             except Exception:
                 return False
     else:
