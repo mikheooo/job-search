@@ -67,7 +67,12 @@ STATUS_TO_HH_STATE: dict[ApplicationStatus, str] = {
 }
 
 
-def sync_vacancy_lifecycle(conn, vacancy_stable_id: str, new_status: ApplicationStatus | str) -> None:
+def sync_vacancy_lifecycle(
+    conn,
+    vacancy_stable_id: str,
+    new_status: ApplicationStatus | str,
+    sync_hh_state: bool = True,
+) -> None:
     """Propagate application_tracking status to vacancies.state and hh_applications.state."""
     if isinstance(new_status, str):
         try:
@@ -80,12 +85,13 @@ def sync_vacancy_lifecycle(conn, vacancy_stable_id: str, new_status: Application
             "UPDATE vacancies SET state = ? WHERE stable_id = ?",
             (vac_state, vacancy_stable_id),
         )
-    hh_state = STATUS_TO_HH_STATE.get(new_status)
-    if hh_state:
-        conn.execute(
-            "UPDATE hh_applications SET state = ? WHERE vacancy_stable_id = ?",
-            (hh_state, vacancy_stable_id),
-        )
+    if sync_hh_state:
+        hh_state = STATUS_TO_HH_STATE.get(new_status)
+        if hh_state:
+            conn.execute(
+                "UPDATE hh_applications SET state = ? WHERE vacancy_stable_id = ?",
+                (hh_state, vacancy_stable_id),
+            )
 
 
 _sync_vacancy_lifecycle = sync_vacancy_lifecycle
@@ -209,6 +215,7 @@ def set_application_status(
     match_score: float | None = None,
     deep_score: float | None = None,
     notes: str | None = None,
+    sync_hh_state: bool = True,
     # allow passing vacancy object like dict? we handle caller
 ) -> ApplicationRecord:
     # Direct set without validation (for sync). Creates or updates.
@@ -268,7 +275,7 @@ def set_application_status(
                 "INSERT INTO application_status_history (vacancy_stable_id, old_status, new_status, changed_at, note) VALUES (?, ?, ?, ?, ?)",
                 (vacancy_stable_id, None, status.value, now, notes),
             )
-        _sync_vacancy_lifecycle(conn, vacancy_stable_id, status)
+        _sync_vacancy_lifecycle(conn, vacancy_stable_id, status, sync_hh_state=sync_hh_state)
 
     if status == ApplicationStatus.APPLIED:
         try:
@@ -288,6 +295,7 @@ def transition_application(
     vacancy_url: str | None = None,
     match_score: float | None = None,
     deep_score: float | None = None,
+    sync_hh_state: bool = True,
 ) -> ApplicationRecord:
     if isinstance(new_status, str):
         try:
@@ -336,7 +344,7 @@ def transition_application(
             "INSERT INTO application_status_history (vacancy_stable_id, old_status, new_status, changed_at, note) VALUES (?, ?, ?, ?, ?)",
             (vacancy_stable_id, old_status.value, new_status.value, now, note),
         )
-        _sync_vacancy_lifecycle(conn, vacancy_stable_id, new_status)
+        _sync_vacancy_lifecycle(conn, vacancy_stable_id, new_status, sync_hh_state=sync_hh_state)
 
     if new_status == ApplicationStatus.APPLIED:
         try:

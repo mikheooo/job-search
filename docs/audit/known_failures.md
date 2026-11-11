@@ -9,11 +9,11 @@
 ## 1. Сводка (Executive Summary)
 
 - **Исходный baseline падений:** 154 теста
-- **Устранено на этапах SEC-001, SEC-002, BUG-001, TEST-A..TEST-D, SAFE-001, NET-001, PORT-002, CFG-001, CFG-002, TEST-MOCK-001, TEST-DAEMON-001:** 107 тестов
+- **Устранено на этапах SEC-001, SEC-002, BUG-001, TEST-A..TEST-D, SAFE-001, NET-001, PORT-002, CFG-001, CFG-002, TEST-MOCK-001, TEST-DAEMON-001, TEST-STATE-001:** 109 тестов
 - **Текущее состояние:**
-  - Успешно пройдено: **4 243** теста
+  - Успешно пройдено: **4 245** тестов
   - Пропущено (skip): **14** тестов
-  - Падений в текущем прогоне: **47** тестов
+  - Падений в текущем прогоне: **45** тестов
 
 Все 65 падений классифицированы по трем стандартным категориям аудита:
 1. `[LEGACY_MOCK]` — моки или сигнатуры вызовов в тестах отстали от актуального боевого кода.
@@ -87,16 +87,11 @@
 
 ---
 
-### Группа 5: Переходы состояний в State Machine Cleanup (2 теста)
+### Группа 5: Переходы состояний в State Machine Cleanup (2 теста) — [УСТРАНЕНО]
 **Категория:** `[REAL_BEHAVIOR_CHANGE]`  
-**Корневая причина:** Метод `save_hh_application` при начальном создании заявки фиксирует событие инициализации перехода (`None -> READY_TO_SUBMIT`), после чего выполнение раннера фиксирует второй переход (`READY_TO_SUBMIT -> SUBMITTED`). Ассерты `assert len(transitions) == 1` не учитывали запись начального перехода.
-
-**Затронутые тесты:**
-1. `tests/test_stage46_application_runner.py::test_autonomous_mock_cycle_new_to_submitted_zero_human_confirm`
-2. `tests/test_stage47_state_machine_cleanup.py::test_successful_runner_flow_transitions_cleanly_to_submitted`
-
-**План устранения:**
-- Проверить контракт аудита переходов `list_hh_application_transitions`: отфильтровать или учесть начальный транзит `from_state is None`.
+**Статус:** **Полностью устранено в коммите TEST-STATE-001**.
+**Корневая причина:** При вызове `execute_hh_submission(..., sync_hh_application=False)` из раннера выполнялась внутренняя синхронизация `set_application_status()`, которая через `_sync_vacancy_lifecycle()` безусловно выполняла `UPDATE hh_applications SET state = 'SUBMITTED'`. Это нарушало заявленный инвариант раннера (строгий переход через `transition_application()` с аудитом) и приводило к тому, что верификатор `verify_hh_submitted_application()` видел уже SUBMITTED заявку и сохранял транзит `SUBMITTED -> SUBMITTED (post_submit_verification_passed)`, после чего раннер повторно писал `SUBMITTED -> SUBMITTED (autonomous_policy_submit_confirmed)`.
+**Результат устранения:** В `ai_assistant/application_tracking.py` добавлен параметр `sync_hh_state: bool = True` в `sync_vacancy_lifecycle`, `set_application_status` и `transition_application`. В `execute_hh_submission` синхронизация `hh_applications` теперь строго уважает флаг `sync_hh_application`. Все 23 теста раннера и state machine проходят с ровно 1 каноническим транзитом `READY_TO_SUBMIT -> SUBMITTED`.
 
 ---
 

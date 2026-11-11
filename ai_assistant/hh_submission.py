@@ -1198,12 +1198,19 @@ def execute_hh_submission(
     if not live_result.is_ok:
         if live_result.already_applied or live_result.error_reason == "ALREADY_APPLIED":
             # Synchronize state: already applied on HH
-            set_application_status(vacancy_stable_id, ApplicationStatus.SUBMITTED)
-            app = get_hh_application(vacancy_stable_id) or get_hh_application_by_vacancy(vacancy_stable_id)
-            if app:
-                app_dict = dict(app)
-                app_dict["state"] = "SUBMITTED"
-                save_hh_application(app_dict)
+            if sync_hh_application:
+                set_application_status(vacancy_stable_id, ApplicationStatus.SUBMITTED)
+                app = get_hh_application(vacancy_stable_id) or get_hh_application_by_vacancy(vacancy_stable_id)
+                if app:
+                    app_dict = dict(app)
+                    app_dict["state"] = "SUBMITTED"
+                    save_hh_application(app_dict)
+            else:
+                set_application_status(
+                    vacancy_stable_id,
+                    ApplicationStatus.SUBMITTED,
+                    sync_hh_state=False,
+                )
             return SubmissionExecutionResult(
                 ok=False,
                 status="ALREADY_APPLIED",
@@ -1547,6 +1554,7 @@ def execute_hh_submission(
         set_application_status(
             vacancy_stable_id,
             ApplicationStatus.SUBMITTED,
+            sync_hh_state=sync_hh_application,
         )
 
     if sync_hh_application:
