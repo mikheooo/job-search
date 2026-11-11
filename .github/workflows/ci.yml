@@ -34,14 +34,26 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+          pip install -r requirements.lock
           pip install ruff pip-audit pytest-xdist pytest-cov
 
-      - name: Gitleaks scan
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: false
+      - name: Install Gitleaks
+        run: |
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.24.0/gitleaks_8.24.0_linux_x64.tar.gz | sudo tar -xz -C /usr/local/bin gitleaks
+
+      - name: Gitleaks scan (Branch / PR diff)
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch origin ${{ github.base_ref }} --depth=1
+            gitleaks git --log-opts "origin/${{ github.base_ref }}..HEAD" --verbose --redact --config .gitleaks.toml
+          else
+            git fetch origin main --depth=50 || true
+            if git rev-parse --verify origin/main >/dev/null 2>&1; then
+              gitleaks git --log-opts "origin/main..HEAD" --verbose --redact --config .gitleaks.toml
+            else
+              gitleaks git --log-opts "HEAD~1..HEAD" --verbose --redact --config .gitleaks.toml
+            fi
+          fi
 
       - name: Ruff blocking rules check
         run: |
@@ -85,7 +97,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+          pip install -r requirements.lock
           pip install pytest-xdist pytest-cov
 
       - name: Run Full Test Suite with Coverage

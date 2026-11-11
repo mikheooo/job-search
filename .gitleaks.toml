@@ -1,12 +1,10 @@
-title = "Gitleaks configuration"
+[extend]
+useDefault = true
 
 [allowlist]
-description = "Repository allowlists for tests, baselines, and virtual environments"
+description = "Repository allowlists for static HTML fixtures and audit baselines"
 paths = [
-    '''^\.venv/''',
-    '''^node_modules/''',
     '''^artifacts/.*\.html$''',
-    '''^scratch/''',
+    '''^tools/\.t9/.*\.html$''',
     '''^docs/audit/baseline/''',
-    '''^\.system_generated/''',
 ]
