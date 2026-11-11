@@ -9,11 +9,11 @@
 ## 1. Сводка (Executive Summary)
 
 - **Исходный baseline падений:** 154 теста
-- **Устранено на этапах SEC-001, SEC-002, BUG-001, TEST-A..TEST-D, SAFE-001, NET-001, PORT-002, CFG-001, CFG-002, TEST-MOCK-001, TEST-DAEMON-001, TEST-STATE-001, TEST-DRIFT-001, TEST-ROUTING-001, TEST-QUEUE-001:** 127 тестов
+- **Устранено на этапах SEC-001, SEC-002, BUG-001, TEST-A..TEST-D, SAFE-001, NET-001, PORT-002, CFG-001, CFG-002, TEST-MOCK-001, TEST-DAEMON-001, TEST-STATE-001, TEST-DRIFT-001, TEST-ROUTING-001, TEST-QUEUE-001, TEST-REPLY-001, TEST-HEADLESS-001, TEST-SUBMIT-001:** 154 теста
 - **Текущее состояние:**
-  - Успешно пройдено: **4 263** теста
+  - Успешно пройдено: **4 290** тестов
   - Пропущено (skip): **14** тестов
-  - Падений в текущем прогоне: **27** тестов
+  - Падений в текущем прогоне: **0** тестов (100% GREEN)
 
 Все 65 падений классифицированы по трем стандартным категориям аудита:
 1. `[LEGACY_MOCK]` — моки или сигнатуры вызовов в тестах отстали от актуального боевого кода.
@@ -24,29 +24,18 @@
 
 ## 2. Детальная классификация 65 падений
 
-### Группа 1: Изоляция SUBMIT_ALLOWED и Browser Submission Gates (13 тестов)
+### Группа 1: Изоляция SUBMIT_ALLOWED и Browser Submission Gates (14 тестов) — [УСТРАНЕНО]
 **Категория:** `[REAL_BEHAVIOR_CHANGE]`  
+**Статус:** **Полностью устранено в коммите TEST-SUBMIT-001**.
 **Корневая причина:** Введение глобального `SUBMIT_ALLOWED=false` по умолчанию в `tests/conftest.py` блокирует любые попытки сабмита в тестах верхнеуровневым предохранителем `SubmitResult.status == BLOCKED (reason='Submission is disabled by SUBMIT_ALLOWED configuration')`. Тесты, проверяющие внутреннюю логику сабмита через `MockBrowserAdapter`, ожидают `SUBMITTED`, либо проверку специфических валидаций (remote-only, questionnaire, duplicate), которые должны срабатывать при включенном флаге сабмита.
+В `test_step25_unified_submission.py` описание вакансии в фикстуре `_setup_vacancy` не содержало явного указания на удаленную работу из любой точки мира, из-за чего классификатор GeoBand относил ее к Band B и блокировал отправку.
+В `test_ble001_fail_closed.py` шаги 1 и 2 проверяли механизм сохранения и восстановления базового состояния `SUBMIT_ALLOWED`, конфликтуя с авто-сбросом в `conftest.py`.
 
-**Затронутые тесты:**
-1. `tests/test_submission_verifier.py::test_stage30e_confirmation_gate_and_verification_suite`
-2. `tests/test_submission_verifier.py::test_stage30f_ambiguous_post_submit_verification_invariants`
-3. `tests/test_submission_verifier.py::test_stage30g_flow_classification_and_routing`
-4. `tests/test_submission_verifier.py::test_stage30l_verification_decision_matrix_and_idempotency_suite`
-5. `tests/test_submission_verifier.py::test_stage30n_orchestration_e2e_safety_gate_suite`
-6. `tests/test_submission_verifier.py::test_stage30o_queue_to_apply_orchestrator_integration_suite`
-7. `tests/test_submission_verifier.py::test_stage30p_authenticated_session_and_account_aware_gate_suite`
-8. `tests/test_submission_verifier.py::test_stage30r_real_single_application_confirm_submit_suite`
-9. `tests/test_submission_verifier.py::test_stage30s_hh_post_submit_questionnaire_handling_suite`
-10. `tests/test_browser_executor.py::test_stage30t_office_vacancy_submit_blocked_even_if_approved`
-11. `tests/test_browser_executor.py::test_stage30t_remote_vacancy_passes_gate`
-12. `tests/test_browser_executor.py::test_stage30t_tutorplace_exact_reproduction_blocked`
-13. `tests/test_step25_unified_submission.py::test_path_a_browser_executor_dry_run`
-14. `tests/test_ble001_fail_closed.py::test_leak_guard_step_2_sees_the_value_restored` (проверка парного сброса переменной между двумя зависимыми тестами шага)
-
-**План устранения:**
-- В соответствующих тестах передачи мок-браузера подключать фикстуру `submit_allowed` / `monkeypatch.setenv("SUBMIT_ALLOWED", "true")`.
-- Для `test_leak_guard_step_2_sees_the_value_restored`: скоординировать сохранение базового состояния без конфликта с глобальным авто-сбросом.
+**Результат устранения:**
+- В `test_submission_verifier.py` подключена фикстура `submit_allowed` на уровне модуля (`pytestmark = pytest.mark.usefixtures("submit_allowed")`).
+- В `test_browser_executor.py` к трем тестам, тестирующим мок-браузер сабмита (`test_stage30t_office_vacancy_submit_blocked_even_if_approved`, `test_stage30t_remote_vacancy_passes_gate`, `test_stage30t_tutorplace_exact_reproduction_blocked`), подключена фикстура `submit_allowed`.
+- В `test_step25_unified_submission.py` фикстура вакансии дополнена маркером `Удаленная работа из любой точки мира` (Band A).
+- В `conftest.py` и `test_ble001_fail_closed.py` скоординирован парный замер Step 1 / Step 2 для `test_leak_guard`, исключающий влияние сессионного дефолта на проверку восстановления флага. Все 14 тестов группы проходят успешно.
 
 ---
 

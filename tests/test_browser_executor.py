@@ -648,7 +648,7 @@ def test_stage30t_unknown_work_format_prepare_blocked_fail_closed():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def test_stage30t_office_vacancy_submit_blocked_even_if_approved():
+def test_stage30t_office_vacancy_submit_blocked_even_if_approved(submit_allowed):
     """Stage 30T: Office vacancy is BLOCKED at submit_application_in_browser even with APPROVED review & READY_TO_APPLY."""
     tmp = tempfile.mkdtemp()
     try:
@@ -705,7 +705,7 @@ def test_stage30t_office_vacancy_submit_blocked_even_if_approved():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def test_stage30t_remote_vacancy_passes_gate():
+def test_stage30t_remote_vacancy_passes_gate(submit_allowed):
     """Stage 30T: Confirmed fully remote vacancy passes both prepare and submit gates cleanly."""
     tmp = tempfile.mkdtemp()
     orig_sub = config.SUBMIT_ALLOWED
@@ -763,7 +763,7 @@ def test_stage30t_remote_vacancy_passes_gate():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def test_stage30t_tutorplace_exact_reproduction_blocked():
+def test_stage30t_tutorplace_exact_reproduction_blocked(submit_allowed):
     """Stage 30T: Exact reproduction of TutorPlace hh:135854121 bypass attempt is BLOCKED by defense-in-depth gate."""
     tmp = tempfile.mkdtemp()
     try:

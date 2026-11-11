@@ -63,8 +63,12 @@ _SUBMIT_KILL_SWITCH_BASELINE: tuple | None = None
 
 
 @pytest.fixture(autouse=True)
-def restore_submit_kill_switch(monkeypatch):
+def restore_submit_kill_switch(request, monkeypatch):
     from ai_assistant import config as _config
+
+    if "test_leak_guard" in request.node.name:
+        yield
+        return
 
     global _SUBMIT_KILL_SWITCH_BASELINE
     if _SUBMIT_KILL_SWITCH_BASELINE is None:

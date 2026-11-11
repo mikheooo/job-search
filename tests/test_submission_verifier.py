@@ -9,6 +9,8 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("submit_allowed")
+
 import ai_assistant.config as config
 from ai_assistant.schema import Vacancy
 from ai_assistant.candidate_profile import CandidateProfile
