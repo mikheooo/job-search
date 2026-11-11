@@ -1133,7 +1133,7 @@ async def _fill_gas_async(ws_url: str, company: str, vacancy: str) -> FormFillRe
             if msg.get("id") == 200:
                 break
 
-        time.sleep(2.0)
+        await asyncio.sleep(2.0)
 
         # Click submit inside userHtmlFrame
         sub_gas_js = """(() => {
@@ -1152,7 +1152,7 @@ async def _fill_gas_async(ws_url: str, company: str, vacancy: str) -> FormFillRe
             if msg.get("id") == 201:
                 break
 
-        time.sleep(5.0)
+        await asyncio.sleep(5.0)
 
         # Verify confirmation
         ver_gas_js = """(() => {
