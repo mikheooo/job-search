@@ -1859,10 +1859,13 @@ def test_triage_never_calls_send_primitive(monkeypatch):
 
 def test_triage_security_forbid_list():
     """71. Stage 30D.9: Ensure triage is strictly READ-ONLY."""
+    import ast
     with open(cli.__file__, encoding="utf-8") as f:
         src = f.read()
-    # Check that in hh_message_triage definition, no mutations occur
-    triage_src = src.split("def hh_message_triage(")[1].split("def email_classify(")[0]
+    tree = ast.parse(src)
+    func_node = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "hh_message_triage"), None)
+    assert func_node is not None, "hh_message_triage function definition not found in cli.py"
+    triage_src = ast.get_source_segment(src, func_node) or ""
     assert "send_confirmed_hh_reply" not in triage_src
     assert "Page.navigate" not in triage_src
     assert "localStorage" not in triage_src

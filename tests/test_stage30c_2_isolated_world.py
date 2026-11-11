@@ -237,7 +237,12 @@ def test_preview_classify_do_not_reach_submit_or_auto_send_modules(monkeypatch):
     # The AUTO/send entry points were never invoked:
     # reaching them requires HH_AUTO_REPLY_ENABLED + live evaluate; the
     # monkeypatched _boom above can only fire if the handler calls them.
-    # Explicitly assert the handler source never calls them:
+    # Explicitly assert the handler source never calls them via AST inspection:
+    import ast
     with open(cli.__file__, encoding="utf-8") as f:
         p_src = f.read()
-    assert "send_auto_reply(" not in p_src.split("def hh_message_preview")[1].split("def email_list")[0]
+    tree = ast.parse(p_src)
+    func_node = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "hh_message_preview"), None)
+    assert func_node is not None, "hh_message_preview function definition not found in cli.py"
+    prev_src = ast.get_source_segment(p_src, func_node) or ""
+    assert "send_auto_reply(" not in prev_src

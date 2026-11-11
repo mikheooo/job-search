@@ -681,6 +681,11 @@ def test_the_t722_submit_tool_has_a_configurable_resume_and_one_click():
     assert "resolve_browser_endpoint" in src, "the address must come from the mode"
     assert "9110" not in src, "the headless submit path must not name BrowserOS"
     assert src.count("_click_at(") == 1, "one click site only"
-    assert "for _ in range" not in src.split("def _click_at")[1].split("def ")[0], (
+    import ast
+    tree = ast.parse(src)
+    click_node = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_click_at"), None)
+    assert click_node is not None, "_click_at not found in headless submit path"
+    click_src = ast.get_source_segment(src, click_node) or ""
+    assert "for _ in range" not in click_src, (
         "the click itself must not loop"
     )

@@ -217,7 +217,11 @@ def test_module_has_no_send_or_browser_mutation_apis():
     # REVIEW entry point (process_incoming_message) itself must never send:
     # no mutation primitive inside its body (the AUTO send lives in the
     # separate send_auto_reply function, which is not part of this function).
-    pm = src.split("def process_incoming_message")[-1].split("def fetch_hh_dialogs_readonly")[0]
+    import ast
+    tree = ast.parse(src)
+    pm_node = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "process_incoming_message"), None)
+    assert pm_node is not None, "process_incoming_message not found in cli.py"
+    pm = ast.get_source_segment(src, pm_node) or ""
     assert ".click(" not in pm and "send.click()" not in pm
     assert "new Event('input'" not in pm and "new Event('change'" not in pm
 
