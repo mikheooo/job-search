@@ -15,6 +15,9 @@ if str(hermes_dir) not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# Prevent job_search_fetcher module-level interpreter handover from exiting test runners
+os.environ["JOB_FETCHER_NO_REEXEC"] = "1"
+
 # Ensure required fixture documents are populated in isolated CI environments
 _fixture_resume = REPO_ROOT / "tests" / "fixtures" / "resume.md"
 _target_resume = REPO_ROOT / "resume.md"

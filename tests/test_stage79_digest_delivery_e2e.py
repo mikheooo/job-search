@@ -71,7 +71,7 @@ def test_successful_delivery_marks_digest_items_delivered(isolated_env, monkeypa
     send_call_count = 0
     captured_payload = []
 
-    def mock_send_to_telegram(text: str) -> bool:
+    def mock_send_to_telegram(text: str, reply_markup=None, **kwargs) -> bool:
         nonlocal send_call_count
         send_call_count += 1
         captured_payload.append(text)
@@ -112,7 +112,7 @@ def test_failed_delivery_does_not_mark_anything_delivered(isolated_env, monkeypa
     db.save_vacancy(v2)
     db.save_vacancy(v3)
 
-    monkeypatch.setattr(jsf, "send_to_telegram", lambda text: False)
+    monkeypatch.setattr(jsf, "send_to_telegram", lambda text, **kw: False)
     monkeypatch.delenv("JOB_SEARCH_DRY_RUN", raising=False)
 
     with pytest.raises(SystemExit) as exc_info:
@@ -167,7 +167,7 @@ def test_retry_after_failure_returns_same_vacancies(isolated_env, monkeypatch):
     monkeypatch.delenv("JOB_SEARCH_DRY_RUN", raising=False)
 
     # 1. Run 1: Failure
-    monkeypatch.setattr(jsf, "send_to_telegram", lambda text: False)
+    monkeypatch.setattr(jsf, "send_to_telegram", lambda text, **kw: False)
     with pytest.raises(SystemExit):
         jsf.main()
     assert not db.is_digest_delivered(v1.stable_id())
@@ -175,7 +175,7 @@ def test_retry_after_failure_returns_same_vacancies(isolated_env, monkeypatch):
 
     # 2. Run 2: Retry succeeds
     delivered_batches = []
-    def mock_success(text: str) -> bool:
+    def mock_success(text: str, reply_markup=None, **kwargs) -> bool:
         delivered_batches.append(text)
         return True
 
@@ -231,7 +231,7 @@ def test_partial_batch_failure_does_not_create_false_delivery_state(isolated_env
     db.save_vacancy(v1)
     db.save_vacancy(v2)
 
-    monkeypatch.setattr(jsf, "send_to_telegram", lambda text: False)
+    monkeypatch.setattr(jsf, "send_to_telegram", lambda text, **kw: False)
     monkeypatch.delenv("JOB_SEARCH_DRY_RUN", raising=False)
 
     with pytest.raises(SystemExit):
@@ -276,7 +276,7 @@ def test_legacy_vacancies_never_enter_delivery_batch(isolated_env, monkeypatch):
     db.save_vacancy(v_legacy)
 
     sent_texts = []
-    def mock_send(text: str) -> bool:
+    def mock_send(text: str, reply_markup=None, **kwargs) -> bool:
         sent_texts.append(text)
         return True
 

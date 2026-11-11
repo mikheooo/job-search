@@ -9,11 +9,11 @@
 ## 1. Сводка (Executive Summary)
 
 - **Исходный baseline падений:** 154 теста
-- **Устранено на этапах SEC-001, SEC-002, BUG-001, TEST-A, TEST-B, TEST-C, TEST-D:** 89 тестов
+- **Устранено на этапах SEC-001, SEC-002, BUG-001, TEST-A..TEST-D, SAFE-001, NET-001, PORT-002, CFG-001, CFG-002, TEST-MOCK-001:** 100 тестов
 - **Текущее состояние:**
-  - Успешно пройдено: **4 227** тестов (98.5%)
+  - Успешно пройдено: **4 236** тестов
   - Пропущено (skip): **14** тестов
-  - Падений в текущем прогоне: **63** теста
+  - Падений в текущем прогоне: **54** теста
 
 Все 65 падений классифицированы по трем стандартным категориям аудита:
 1. `[LEGACY_MOCK]` — моки или сигнатуры вызовов в тестах отстали от актуального боевого кода.
@@ -50,22 +50,11 @@
 
 ---
 
-### Группа 2: Сигнатуры Telegram моков (reply_markup) в дайджестах (8 тестов)
+### Группа 2: Сигнатуры Telegram моков (reply_markup) в дайджестах (8 тестов) — [УСТРАНЕНО]
 **Категория:** `[LEGACY_MOCK]`  
-**Корневая причина:** Боевая функция `send_to_telegram` была расширена параметром `reply_markup` для инлайн-кнопок одобрения/отклонения. Локальные вспомогательные функции `mock_send` / `mock_send_to_telegram` в этих тестовых файлах были объявлены без `reply_markup=None` или `**kwargs`, что вызывает `TypeError: got an unexpected keyword argument 'reply_markup'`.
-
-**Затронутые тесты:**
-1. `tests/test_stage79_digest_delivery_e2e.py::test_successful_delivery_marks_digest_items_delivered`
-2. `tests/test_stage79_digest_delivery_e2e.py::test_failed_delivery_does_not_mark_anything_delivered`
-3. `tests/test_stage79_digest_delivery_e2e.py::test_retry_after_failure_returns_same_vacancies`
-4. `tests/test_stage80_digest_crash_consistency.py::test_attempt_is_persisted_before_telegram_send`
-5. `tests/test_stage80_digest_crash_consistency.py::test_confirmed_success_transitions_attempt_to_delivered`
-6. `tests/test_stage80_digest_crash_consistency.py::test_post_send_db_failure_does_not_allow_blind_resend`
-7. `tests/test_stage81_stale_digest_attempts.py::test_stale_attempt_does_not_block_unrelated_new_vacancies`
-8. `tests/test_stage81_stale_digest_attempts.py::test_concurrent_workers_exact_single_telegram_send`
-
-**План устранения:**
-- Добавить `reply_markup=None, **kwargs` в сигнатуры локальных тестовых моков `mock_send` / `mock_send_to_telegram` в файлах `test_stage79_digest_delivery_e2e.py`, `test_stage80_digest_crash_consistency.py`, `test_stage81_stale_digest_attempts.py`.
+**Статус:** **Полностью устранено в коммите TEST-MOCK-001**.
+**Корневая причина:** Боевая функция `send_to_telegram` была расширена параметром `reply_markup` для инлайн-кнопок одобрения/отклонения. Локальные вспомогательные функции `mock_send` / `mock_send_to_telegram` в этих тестовых файлах были объявлены без `reply_markup=None` или `**kwargs`, что вызывало `TypeError: got an unexpected keyword argument 'reply_markup'`.
+**Результат устранения:** Сигнатуры обновлены в `test_stage79_digest_delivery_e2e.py`, `test_stage80_digest_crash_consistency.py`, `test_stage81_stale_digest_attempts.py`. Добавлен guard `JOB_FETCHER_NO_REEXEC=1` в `conftest.py`. Все 31 тест в этих файлах проходят успешно (100% green).
 
 ---
 

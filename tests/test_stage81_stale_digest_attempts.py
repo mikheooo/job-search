@@ -132,7 +132,7 @@ def test_stale_attempt_does_not_trigger_telegram_send(isolated_env, monkeypatch)
     db.record_digest_attempt([v.stable_id()], chat_id="-1004399255305")
 
     send_call_count = 0
-    def mock_send(text: str) -> bool:
+    def mock_send(text: str, reply_markup=None, **kwargs) -> bool:
         nonlocal send_call_count
         send_call_count += 1
         return True
@@ -167,7 +167,7 @@ def test_stale_attempt_does_not_block_unrelated_new_vacancies(isolated_env, monk
     db.save_vacancy(ve)
 
     captured_texts = []
-    def mock_send(text: str) -> bool:
+    def mock_send(text: str, reply_markup=None, **kwargs) -> bool:
         captured_texts.append(text)
         return True
 
@@ -348,7 +348,7 @@ def test_concurrent_workers_exact_single_telegram_send(isolated_env, monkeypatch
     db.save_vacancy(v2)
 
     telegram_call_count = 0
-    def mock_send(text: str) -> bool:
+    def mock_send(text: str, reply_markup=None, **kwargs) -> bool:
         nonlocal telegram_call_count
         telegram_call_count += 1
         return True
