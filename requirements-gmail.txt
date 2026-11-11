@@ -2,3 +2,4 @@
 #   pip install -r requirements.txt -r requirements-gmail.txt
 google-auth>=2,<3
 google-api-python-client>=2,<3
+pyasn1>=0.6.5

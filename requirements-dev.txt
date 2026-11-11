@@ -6,3 +6,9 @@
 #   - tests/stage28/29, gmail_readonly_connector -> [gmail]
 -r requirements-browser.txt
 -r requirements-gmail.txt
+
+# Audit and security tooling constraints
+filelock>=4.2.1
+pip>=26.0
+pyasn1>=0.6.5
+setuptools>=84.1.0
