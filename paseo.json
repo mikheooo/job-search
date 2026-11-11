@@ -1,0 +1,18 @@
+{
+  "$schema": "https://paseo.dev/schema.json",
+  "worktree": {
+    "setup": [
+      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/setup_worktree.ps1"
+    ]
+  },
+  "scripts": {
+    "test": {
+      "command": ".\\.venv\\Scripts\\pytest.exe tests -q"
+    },
+    "ui": {
+      "type": "service",
+      "command": ".\\.venv\\Scripts\\python.exe -m ai_assistant.cli ui --host 0.0.0.0 --port 8000",
+      "port": 8000
+    }
+  }
+}

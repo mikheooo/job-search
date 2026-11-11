@@ -21,10 +21,35 @@ _target_resume = REPO_ROOT / "resume.md"
 if _fixture_resume.exists() and not _target_resume.exists():
     _target_resume.write_text(_fixture_resume.read_text(encoding="utf-8"), encoding="utf-8")
 
-_fixture_profile = REPO_ROOT / "candidate_profile.example.json"
+_fixture_profile = REPO_ROOT / "tests" / "fixtures" / "candidate_profile.json"
+if not _fixture_profile.exists():
+    _fixture_profile = REPO_ROOT / "candidate_profile.example.json"
 _target_profile = REPO_ROOT / "candidate_profile.json"
 if _fixture_profile.exists() and not _target_profile.exists():
     _target_profile.write_text(_fixture_profile.read_text(encoding="utf-8"), encoding="utf-8")
+
+_fixture_kb = REPO_ROOT / "tests" / "fixtures" / "candidate_kb.json"
+_target_kb = REPO_ROOT / "candidate_kb.json"
+if _fixture_kb.exists() and not _target_kb.exists():
+    _target_kb.write_text(_fixture_kb.read_text(encoding="utf-8"), encoding="utf-8")
+
+_target_db = REPO_ROOT / "state.db"
+if not _target_db.exists():
+    try:
+        from ai_assistant import db
+        db.init_db()
+    except Exception:
+        pass
+
+# Ensure CANDIDATE_PROJECTS_ROOT allows projects.py to find Documents/job-search
+_doc_root = REPO_ROOT / ".doc_root"
+_doc_link = _doc_root / "Documents" / "job-search"
+if not (_doc_link / "README.md").exists():
+    _doc_link.mkdir(parents=True, exist_ok=True)
+    _orig_readme = REPO_ROOT / "README.md"
+    if _orig_readme.exists():
+        (_doc_link / "README.md").write_text(_orig_readme.read_text(encoding="utf-8"), encoding="utf-8")
+os.environ.setdefault("CANDIDATE_PROJECTS_ROOT", str(_doc_root))
 
 _SUBMIT_KILL_SWITCH_BASELINE: tuple | None = None
 
