@@ -1,6 +1,7 @@
 """Production execution runner, single-instance lock, log management, and failure tracking (Stage 83)."""
 import datetime
 import json
+import logging
 import os
 import re
 import subprocess
@@ -9,6 +10,8 @@ import time
 from typing import Any
 
 from . import config
+
+logger = logging.getLogger(__name__)
 
 ADAPTER_FAILURE_RE = re.compile(r"Adapter\s+([^\r\n:]+)\s+fetch error:\s*([^\r\n]+)", re.IGNORECASE)
 PRODUCTION_CIRCUIT_OPEN_EXIT_CODE = 5
@@ -38,6 +41,8 @@ def is_pid_running(pid: int) -> bool:
     """Check whether a given PID is currently active on the host OS."""
     if pid <= 0:
         return False
+    if pid == os.getpid():
+        return True
     if sys.platform == "win32":
         try:
             import ctypes
@@ -79,11 +84,15 @@ def mask_secrets(text: str) -> str:
     """Sanitize secrets, tokens, and credentials from log text."""
     if not text:
         return ""
-    import re
-    # Mask bot tokens e.g. bot123456:ABC-DEF...
-    masked = re.sub(r'bot\d+:[A-Za-z0-9_-]{25,}', 'bot<MASKED_TELEGRAM_TOKEN>', text)
-    masked = re.sub(r'TELEGRAM_BOT_TOKEN=[^\s\r\n]+', 'TELEGRAM_BOT_TOKEN=<MASKED>', masked)
-    masked = re.sub(r'Bearer\s+[A-Za-z0-9_\-\.]{20,}', 'Bearer <MASKED_TOKEN>', masked)
+    # Mask bot tokens e.g. bot123456:ABC-DEF... or raw 12345678:AA...
+    masked = re.sub(r"bot\d+:[A-Za-z0-9_-]{25,}", "bot<MASKED_TELEGRAM_TOKEN>", text)
+    masked = re.sub(r"\b\d{8,11}:[A-Za-z0-9_-]{30,}\b", "<MASKED_TELEGRAM_TOKEN>", masked)
+    masked = re.sub(r"TELEGRAM_BOT_TOKEN=[^\s\r\n]+", "TELEGRAM_BOT_TOKEN=<MASKED>", masked)
+    masked = re.sub(r"DASHBOARD_TOKEN=[^\s\r\n]+", "DASHBOARD_TOKEN=<MASKED>", masked)
+    masked = re.sub(r"LLM_API_KEY=[^\s\r\n]+", "LLM_API_KEY=<MASKED>", masked)
+    masked = re.sub(r"Bearer\s+[A-Za-z0-9_\-\.]{20,}", "Bearer <MASKED_TOKEN>", masked)
+    masked = re.sub(r"\bsk-[A-Za-z0-9_-]{20,}\b", "sk-<MASKED_API_KEY>", masked)
+    masked = re.sub(r"\bAIzaSy[A-Za-z0-9_-]{33}\b", "AIzaSy<MASKED_GOOGLE_KEY>", masked)
     return masked
 
 
@@ -118,9 +127,9 @@ class SingleInstanceLock:
                     return False, f"SKIPPED_ALREADY_RUNNING: Active PID {locked_pid} owns lock (started at {locked_at_str})."
                 
                 # If PID is dead -> stale lock recovery
-                print(f"[STAGE 83] Stale lock detected (dead PID {locked_pid}). Recovering lock file.", file=sys.stderr)
+                logger.warning("[STAGE 83] Stale lock detected (dead PID %s). Recovering lock file.", locked_pid)
             except Exception as e:
-                print(f"[STAGE 83] Corrupted lock file encountered ({e}). Overwriting.", file=sys.stderr)
+                logger.warning("[STAGE 83] Corrupted lock file encountered (%s). Overwriting.", e)
 
         # Write current PID and timestamp
         lock_info = {
@@ -262,7 +271,7 @@ def run_production_pipeline(
     lock = SingleInstanceLock(lock_dir=target_logs_dir)
     acquired, msg = lock.acquire()
     if not acquired:
-        print(f"[INFO] {msg}")
+        logger.info("[INFO] %s", msg)
         return 0  # SKIPPED_ALREADY_RUNNING is a safe no-op for scheduler
 
     script_path = fetcher_script or os.path.expanduser(r"~\AppData\Local\hermes\profiles\jobs\scripts\job_search_fetcher.py")
@@ -368,5 +377,5 @@ def run_production_pipeline(
 
     lock.release()
     print(sanitized_output, end="")
-    print(f"[STAGE 83] Production run completed (exit_code: {exit_code}, duration: {duration}s).")
+    logger.info("[STAGE 83] Production run completed (exit_code: %s, duration: %ss).", exit_code, duration)
     return exit_code
