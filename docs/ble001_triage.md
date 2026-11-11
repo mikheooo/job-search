@@ -344,7 +344,7 @@
 >   `_row_to_questionnaire`, которому №46 такую пометку дала. Пропущенная пометка
 >   вредна только если потребители различают два случая, а оба потребителя кладут
 >   ответы в **тело** цикла по вопросам анкеты. В гейте 5 это
->   `answers` (`hh_submit_policy.py:320`); в раннере —
+>   `answers` (`hh_submit_policy.py:342`); в раннере —
 >   `human_answers` (`hh_application_runner.py:531`). Замер пробой
 >   `tools/ble001_app_answers_probe.py`: нечитаемая колонка, `NULL` и пустой
 >   словарь дают читателю `{}`, гейт 5 отказывает, валидатор отказывает с **той же**
@@ -1165,7 +1165,7 @@ Sublime, Notepad++) считают переводом строки, а `grep -n`
 Заодно перемерена перепись `cli.py` (6101 → 6111), см. раздел №47.
 
 Раздел №48 добавил три адреса — 125 → **128**. Первый — конструктор
-`SubmitApproval` на `hh_submit_policy.py:447`. Второй — улики перехода: на
+`SubmitApproval` на `hh_submit_policy.py:466`. Второй — улики перехода: на
 `hh_application_runner.py:697` стоит `submit_approval`. Третий — кандидат из гейта 6,
 `hh_submit_policy.py:351 (было)`, строка `except Exception`. Диапазонная проверка — 0
 проблем, ссылок, названных символом, 91; единственный `S110` в файле был тот самый
@@ -5096,7 +5096,7 @@ M3 выжил не по недосмотру, и это надо назвать 
 ответов делает каждый обязательный вопрос неотвеченным, то есть **закрывает** гейт,
 а не открывает.
 
-В гейте 5 это `answers` (`hh_submit_policy.py:320`); в раннере —
+В гейте 5 это `answers` (`hh_submit_policy.py:342`); в раннере —
 `human_answers` (`hh_application_runner.py:531`). Приоритет у них, кстати,
 противоположный: гейт предпочитает ответы приложения, раннер — ответы анкеты,
 поэтому раннер заглядывает в эту колонку только тогда, когда у анкеты своих
@@ -7228,7 +7228,7 @@ not depend on the wording». То есть проект уже договори�
 
 | пометка | кто её читает |
 |---|---|
-| `questions_error` | `validate_human_answers` (`hh_questionnaire.py:473`), `audit_questionnaire` (`hh_questionnaire_audit.py:123`), гейт 5 (`hh_submit_policy.py:316`) |
+| `questions_error` | `validate_human_answers` (`hh_questionnaire.py:473`), `audit_questionnaire` (`hh_questionnaire_audit.py:123`), гейт 5 (`hh_submit_policy.py:338`) |
 | `answers_error` | **никто** |
 
 Замер: `grep -rn "answers_error" --include=*.py .` даёт поле модели, комментарии, тесты и
@@ -7288,7 +7288,7 @@ not depend on the wording». То есть проект уже договори�
   ответы → `NEEDS_HUMAN_REVIEW` с названием колонки. Отказ узкий по той же причине: он
   срабатывает только когда предъявлять нечего (`not human_answers`), иначе ответы человека или
   CLI — настоящий источник, и отказ на них сделал бы строку неремонтируемой.
-* `hh_submit_policy.py:321` — гейт 5 называет колонку (`questionnaire_<id>_answers_unreadable`)
+* `hh_submit_policy.py:358` — гейт 5 называет колонку (`questionnaire_<id>_answers_unreadable`)
   вместо `missing_answer_for_*`, и только когда испорченная колонка и есть источник: ответы
   приложения — настоящий источник, и при них гейт не валится (контроль в пинах).
 * `hh_questionnaire_audit.py:151` — аудит отказывает до цикла, одним пунктом с
