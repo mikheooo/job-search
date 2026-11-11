@@ -8,7 +8,7 @@ from ai_assistant.gig.first_money import build_shortlist
 from ai_assistant.gig.grounded import analyze
 from ai_assistant.gig.jit import apply_verification, is_open_status, verify_gig
 from ai_assistant.gig.tracker import SubmissionRecord, SubmissionTracker
-from tests.gig.test_first_money import NOW, make_gig, verified, entry_for, confidences
+from tests.gig.test_first_money import NOW, make_gig, verified, entry_for
 
 
 @pytest.mark.parametrize("status", ["", "UNKNOWN", "pending", None, "CLOSED", "AWARDED"])

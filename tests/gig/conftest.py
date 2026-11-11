@@ -60,3 +60,18 @@ def profile_file(tmp_path: Path) -> Path:
     path = tmp_path / "candidate_profile.json"
     path.write_text(json.dumps(profile), encoding="utf-8")
     return path
+
+
+@pytest.fixture(scope="module")
+def confidences():
+    """Default skill confidences from candidate profile."""
+    from ai_assistant.gig.assessment import skill_confidences
+    profile_path = PROJECT_ROOT / "candidate_profile.json"
+    if not profile_path.exists():
+        profile_path = PROJECT_ROOT / "candidate_profile.example.json"
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    return skill_confidences(profile), {
+        k.lower(): str(v).upper() for k, v in (profile.get("skill_confidence") or {}).items()
+    }
+
+

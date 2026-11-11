@@ -6,7 +6,7 @@ from ai_assistant.gig.application import economics,sendable_batch
 from ai_assistant.gig.first_money import build_shortlist
 from ai_assistant.gig.submission_cli import run_tracking_command
 from ai_assistant.gig.tracker import SubmissionRecord,SubmissionTracker
-from tests.gig.test_first_money import NOW,make_gig,verified,entry_for,confidences
+from tests.gig.test_first_money import NOW,make_gig,verified,entry_for
 
 
 def test_fixed_net_economics_and_minimum_fee_are_used():

@@ -353,7 +353,7 @@ def test_captcha_login_produces_warning_block():
         assert result.status == be.BrowserStatus.BLOCKED or str(result.status) == "BLOCKED"
         assert any("CAPTCHA" in w for w in result.warnings)
         # Ensure not submitted
-        assert result.status != be.BrowserStatus.COMPLETED or True
+        assert result.status != be.BrowserStatus.COMPLETED
         mock2 = be.MockBrowserAdapter(simulate={"login_required": True, "fields": ["name"]})
         result2 = be.prepare_application_in_browser(vac.stable_id(), adapter=mock2, force=True)
         assert any("Login" in w for w in result2.warnings)

@@ -449,8 +449,18 @@ def generate_tailored_cover_letter_with_variant(
 
 
 def strip_repeated_greeting(text: str) -> str:
-    """Strip repeated greeting (Здравствуйте/Добрый день/Hello) from subsequent chat replies."""
-    return re.sub(r"^(Здравствуйте!?|Добрый день!?|Приветствую!?|Hello!?|Hi!?)\s*", "", text, flags=re.IGNORECASE).strip()
+    """Strip leading greeting phrases if a conversation already has prior messages."""
+    if not text:
+        return ""
+    cleaned = re.sub(
+        r"^(?:здравствуйте[!,.]*|добрый (?:день|вечер|утр[оа])[!,.]*|приветствую[!,.]*|привет[!,.]*|hello[!,.]*|hi[!,.]*)\s*",
+        "",
+        text.strip(),
+        flags=re.IGNORECASE,
+    )
+    if cleaned and cleaned[0].islower():
+        cleaned = cleaned[0].upper() + cleaned[1:]
+    return cleaned
 
 
 def generate_employer_chat_reply(
@@ -885,21 +895,6 @@ def generate_english_cover_letter_with_variant(
         variant_id=chosen,
     )
     return letter, chosen
-
-
-def strip_repeated_greeting(text: str) -> str:
-    """Strip leading greeting phrases if a conversation already has prior messages."""
-    if not text:
-        return ""
-    cleaned = re.sub(
-        r"^(?:здравствуйте[!,.]*|добрый (?:день|вечер|утр[оа])[!,.]*|приветствую[!,.]*|привет[!,.]*|hello[!,.]*|hi[!,.]*)\s*",
-        "",
-        text.strip(),
-        flags=re.IGNORECASE,
-    )
-    if cleaned and cleaned[0].islower():
-        cleaned = cleaned[0].upper() + cleaned[1:]
-    return cleaned
 
 
 def _is_well_formed_reply(text: str) -> bool:

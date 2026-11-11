@@ -24,7 +24,6 @@ from ai_assistant.submission_recovery import (
     get_submission_audit,
 )
 from ai_assistant.submission_verifier import VerificationStatus, save_verification
-from ai_assistant.application_tracking import transition_application
 
 
 def _vac(**kwargs):
@@ -84,7 +83,6 @@ def _setup_tracking(vacancy_stable_id: str, status: ApplicationStatus,
                      company: str = "TestCo", title: str = "Test Title",
                      source: str = "test", vacancy_url: str = "https://example.com/1"):
     """Helper to create tracking record in a specific status."""
-    from ai_assistant.application_tracking import set_application_status, transition_application
     if status == ApplicationStatus.DISCOVERED:
         return set_application_status(vacancy_stable_id, status, company=company, title=title, source=source, vacancy_url=vacancy_url)
     elif status == ApplicationStatus.ANALYZED:
