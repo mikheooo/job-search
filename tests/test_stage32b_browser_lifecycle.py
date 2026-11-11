@@ -184,7 +184,9 @@ def test_unauthenticated_session_detection():
 def test_watcher_stops_if_browser_fails_launch(clean_db, monkeypatch):
     """Watcher records clear BLOCKED reason if browser cannot be launched."""
     monkeypatch.setenv("HH_CDP_URL", "http://127.0.0.1:9222")
-    with patch("ai_assistant.hh_browser_launcher.ensure_hh_browser", return_value={"ok": False, "error": "Chrome executable not found"}):
+    failed_launch = {"ok": False, "error": "Chrome executable not found"}
+    with patch("ai_assistant.hh_browser_launcher.ensure_hh_browser", return_value=failed_launch), \
+         patch("ai_assistant.hh_browser_provider.launch_headless", return_value=failed_launch):
         cfg = HHMessageWatcherConfig(
             profile_path=clean_db["profile_path"],
             auto_start_browser=True,

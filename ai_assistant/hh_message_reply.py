@@ -1867,13 +1867,36 @@ def _conversations_list_js() -> str:
     )
 
 
-def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> dict[str, Any]:
+def fetch_hh_conversations_list_readonly(
+    evaluate_fn: Callable[[str], str],
+    timeout_seconds: float = 30.0,
+) -> dict[str, Any]:
     """Stage 30D.9: Read-only enumeration of all visible conversations in HH chat interface.
     Uses internal chatik API first (100% reliable, direct participant & message metadata),
     with robust DOM fallback.
     Returns:
         conversations: List[Dict[str, Any]] (conversation_id, url, title, employer, snippet, is_selected, is_outgoing)
     """
+    import concurrent.futures
+
+    deadline = time.monotonic() + timeout_seconds
+
+    def _eval(expr: str) -> str:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"timed out after {timeout_seconds}s")
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(evaluate_fn, expr)
+        try:
+            return future.result(timeout=max(remaining, 0.001))
+        except Exception as err:
+            executor.shutdown(wait=False, cancel_futures=True)
+            if not future.done():
+                raise TimeoutError(f"timed out after {timeout_seconds}s") from None
+            raise
+        else:
+            executor.shutdown(wait=False)
+
     # 1. Native Chatik API fetch inside browser context
     chatik_api_js = """(async () => {
         try {
@@ -1931,11 +1954,14 @@ def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> d
     })()"""
 
     try:
-        api_raw = evaluate_fn(chatik_api_js)
+        api_raw = _eval(chatik_api_js)
         if api_raw and api_raw != "{}":
             api_res = json.loads(api_raw)
             if isinstance(api_res, dict) and api_res.get("conversations"):
                 return api_res
+    except TimeoutError as exc:
+        err_msg = str(exc) if "TimeoutError" in str(exc) else f"TimeoutError: {exc}"
+        return {"error": err_msg, "conversations": []}
     except Exception:
         pass
 
@@ -1943,14 +1969,28 @@ def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> d
     expr = _conversations_list_js()
     if expr.lstrip().startswith("() =>"):
         expr = "(" + expr + ")()"
-    raw = evaluate_fn(expr)
+    try:
+        raw = _eval(expr)
+    except TimeoutError as exc:
+        err_msg = str(exc) if "TimeoutError" in str(exc) else f"TimeoutError: {exc}"
+        return {"error": err_msg, "conversations": []}
+    except Exception as exc:
+        return {"error": str(exc), "conversations": []}
+
     try:
         first_res = json.loads(raw)
     except Exception as e:
         return {"error": str(e), "conversations": []}
 
-    if not isinstance(first_res, dict) or "conversations" not in first_res:
+    if not isinstance(first_res, dict):
+        return {"error": "unrecognized response format", "conversations": []}
+
+    if "error" in first_res:
+        first_res.setdefault("conversations", [])
         return first_res
+
+    if "conversations" not in first_res:
+        return {"error": "empty payload from CDP evaluate", "conversations": []}
 
     convs_by_id = {c.get("conversation_id"): c for c in first_res.get("conversations", []) if c.get("conversation_id")}
 
@@ -1965,12 +2005,14 @@ def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> d
 
     try:
         for _ in range(15):
-            sc_raw = evaluate_fn(scroll_check_js)
+            if time.monotonic() >= deadline:
+                break
+            sc_raw = _eval(scroll_check_js)
             sc_res = json.loads(sc_raw) if isinstance(sc_raw, str) else {}
             if not sc_res.get("found") or sc_res.get("at_bottom"):
                 break
-            time.sleep(0.2)
-            step_raw = evaluate_fn(expr)
+            time.sleep(0.1)
+            step_raw = _eval(expr)
             step_res = json.loads(step_raw) if isinstance(step_raw, str) else {}
             for c in step_res.get("conversations", []):
                 cid = c.get("conversation_id")
@@ -1978,10 +2020,11 @@ def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> d
                     convs_by_id[cid] = c
 
         # Restore scroll to top
-        evaluate_fn("""(() => {
-            const sc = document.querySelector('[class*="chats--"], [class*="magritte-scroll-container"]');
-            if (sc) sc.scrollTop = 0;
-        })()""")
+        if time.monotonic() < deadline:
+            _eval("""(() => {
+                const sc = document.querySelector('[class*="chats--"], [class*="magritte-scroll-container"]');
+                if (sc) sc.scrollTop = 0;
+            })()""")
     except Exception:
         pass
 

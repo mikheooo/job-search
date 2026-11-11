@@ -9,11 +9,11 @@
 ## 1. Сводка (Executive Summary)
 
 - **Исходный baseline падений:** 154 теста
-- **Устранено на этапах SEC-001, SEC-002, BUG-001, TEST-A..TEST-D, SAFE-001, NET-001, PORT-002, CFG-001, CFG-002, TEST-MOCK-001:** 100 тестов
+- **Устранено на этапах SEC-001, SEC-002, BUG-001, TEST-A..TEST-D, SAFE-001, NET-001, PORT-002, CFG-001, CFG-002, TEST-MOCK-001, TEST-DAEMON-001:** 107 тестов
 - **Текущее состояние:**
-  - Успешно пройдено: **4 236** тестов
+  - Успешно пройдено: **4 243** теста
   - Пропущено (skip): **14** тестов
-  - Падений в текущем прогоне: **54** теста
+  - Падений в текущем прогоне: **47** тестов
 
 Все 65 падений классифицированы по трем стандартным категориям аудита:
 1. `[LEGACY_MOCK]` — моки или сигнатуры вызовов в тестах отстали от актуального боевого кода.
@@ -76,25 +76,14 @@
 
 ---
 
-### Группа 4: Watchdog и сигнатуры демона сообщений HH (6 тестов)
+### Группа 4: Watchdog и сигнатуры демона сообщений HH (7 тестов) — [УСТРАНЕНО]
 **Категория:** `[LEGACY_MOCK]` / `[REAL_BEHAVIOR_CHANGE]`  
+**Статус:** **Полностью устранено в коммите TEST-DAEMON-001**.
 **Корневая причина:** 
-1. Функция `fetch_hh_conversations_list_readonly` вызывается в `test_hh_realtime_daemon_watchdog.py` с аргументом `timeout_seconds=...`, отсутствующим в сигнатуре метода.
-2. `test_stage32b_browser_lifecycle.py::test_watcher_stops_if_browser_fails_launch` пытается открыть сокет `('127.0.0.1', 9111)`, перехватываемый сокетным предохранителем в `conftest.py`.
-3. `test_process_messages_empty_cdp_payload_is_an_error`: ожидает `'ERROR'`, возвращает `'BLOCKED'`.
-
-**Затронутые тесты:**
-1. `tests/test_hh_realtime_daemon_watchdog.py::test_fetch_timeout_is_an_error_and_does_not_fall_through`
-2. `tests/test_hh_realtime_daemon_watchdog.py::test_fetch_outer_timeout_does_not_wait_out_a_hung_evaluate`
-3. `tests/test_hh_realtime_daemon_watchdog.py::test_fetch_empty_cdp_payload_is_not_an_empty_inbox`
-4. `tests/test_hh_realtime_daemon_watchdog.py::test_fetch_chatik_list_still_returns_conversations`
-5. `tests/test_hh_realtime_daemon_watchdog.py::test_fetch_non_transport_chatik_failure_falls_back_to_dom`
-6. `tests/test_hh_realtime_daemon_watchdog.py::test_process_messages_empty_cdp_payload_is_an_error`
-7. `tests/test_stage32b_browser_lifecycle.py::test_watcher_stops_if_browser_fails_launch`
-
-**План устранения:**
-- Привести сигнатуру `fetch_hh_conversations_list_readonly` к поддержке параметра `timeout_seconds` (или обновить вызовы в тестах).
-- Замокировать сетевой вызов проверки порта в `test_stage32b_browser_lifecycle.py`.
+1. Функция `fetch_hh_conversations_list_readonly` вызывалась в `test_hh_realtime_daemon_watchdog.py` с аргументом `timeout_seconds=...`, отсутствовавшим в сигнатуре метода. Кроме того, требовалось ограничение времени вычисления через `ThreadPoolExecutor` без зависания при контекстном выходе.
+2. `test_stage32b_browser_lifecycle.py::test_watcher_stops_if_browser_fails_launch` пытался открыть сокет `('127.0.0.1', 9111)`, перехватываемый сокетным предохранителем в `conftest.py`.
+3. `test_process_messages_empty_cdp_payload_is_an_error`: пустой CDP payload `"{}"` трактовался как пустой инбокс, а не ошибка парсинга.
+**Результат устранения:** В `ai_assistant/hh_message_reply.py` поддержан таймаут `timeout_seconds: float = 30.0` с неблокирующим прерыванием `shutdown(wait=False, cancel_futures=True)`, пустой payload распознается как ошибка `"empty payload from CDP evaluate"`. В `hh_message_watcher.py` обнаружение ошибки приводит к инкременту `result.blocked += 1` (fail-closed). В `test_stage32b_browser_lifecycle.py` замокирован `launch_headless`. Все 103 теста демона сообщений и жизненного цикла браузера проходят успешно.
 
 ---
 
