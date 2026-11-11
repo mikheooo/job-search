@@ -19,7 +19,7 @@ _SUBMIT_KILL_SWITCH_BASELINE: tuple | None = None
 
 
 @pytest.fixture(autouse=True)
-def restore_submit_kill_switch():
+def restore_submit_kill_switch(monkeypatch):
     from ai_assistant import config as _config
 
     global _SUBMIT_KILL_SWITCH_BASELINE
@@ -29,6 +29,12 @@ def restore_submit_kill_switch():
             getattr(_config, "_OPERATOR_SUBMIT_ALLOWED", None),
             getattr(_config, "SUBMIT_ALLOWED", None),
         )
+    # Default SUBMIT_ALLOWED is false in every test; clear _OPERATOR_SUBMIT_ALLOWED
+    # so per-test monkeypatch.setenv("SUBMIT_ALLOWED", "true") can take effect.
+    monkeypatch.setenv("SUBMIT_ALLOWED", "false")
+    monkeypatch.setattr(_config, "_OPERATOR_SUBMIT_ALLOWED", None)
+    monkeypatch.setattr(_config, "SUBMIT_ALLOWED", False)
+
     yield
     saved_env, saved_operator, saved_flag = _SUBMIT_KILL_SWITCH_BASELINE
     if saved_env is None:
@@ -37,6 +43,17 @@ def restore_submit_kill_switch():
         os.environ["SUBMIT_ALLOWED"] = saved_env
     _config._OPERATOR_SUBMIT_ALLOWED = saved_operator
     _config.SUBMIT_ALLOWED = saved_flag
+
+
+@pytest.fixture
+def submit_allowed(monkeypatch):
+    """Explicitly enable submit_allowed for tests requesting this fixture."""
+    from ai_assistant import config as _config
+    monkeypatch.setenv("SUBMIT_ALLOWED", "true")
+    monkeypatch.setattr(_config, "_OPERATOR_SUBMIT_ALLOWED", None)
+    monkeypatch.setattr(_config, "SUBMIT_ALLOWED", True)
+
+
 
 
 @pytest.fixture(autouse=True)
