@@ -7,22 +7,39 @@ logger = logging.getLogger(__name__)
 # working directory never changes which database is used (cron, CLI, agents).
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Kill-switch snapshot, taken BEFORE load_dotenv(..., override=True) below.
-# That call overwrites a real environment variable with the value from .env, so
-# `SUBMIT_ALLOWED=false python -m ai_assistant.cli ...` used to be silently
-# re-armed by a stale `SUBMIT_ALLOWED=true` sitting in .env (BLE001 finding #8).
-_OPERATOR_SUBMIT_ALLOWED = os.getenv("SUBMIT_ALLOWED")
+OPERATOR_SAFETY_VARS = (
+    "SUBMIT_ALLOWED",
+    "HH_AUTO_SUBMIT",
+    "HH_AUTONOMOUS_REPLY_ENABLED",
+    "KWORK_AUTO_APPLY",
+    "BROWSER_REAL",
+    "HH_DRY_RUN",
+    "EMAIL_DRY_RUN",
+    "STOP_SUBMITS_FILE",
+    "STOP_OUTBOUNDS_FILE",
+)
+
+# Kill-switch & safety flag snapshot, taken BEFORE load_dotenv below.
+# Dotenv must not overwrite real environment variables set by an operator in their shell
+# (BLE001 finding #8 & CFG-001 audit remediation).
+_OPERATOR_FLAGS = {k: os.getenv(k) for k in OPERATOR_SAFETY_VARS}
+_OPERATOR_SUBMIT_ALLOWED = _OPERATOR_FLAGS.get("SUBMIT_ALLOWED")
 
 try:
     from dotenv import load_dotenv
 
-    load_dotenv(os.path.join(PROJECT_ROOT, ".env"), override=True)
+    load_dotenv(os.path.join(PROJECT_ROOT, ".env"), override=False)
     if not os.getenv("TELEGRAM_BOT_TOKEN"):
         hermes_env = os.path.expanduser(r"~\AppData\Local\hermes\.env")
         if os.path.exists(hermes_env):
-            load_dotenv(hermes_env)
+            load_dotenv(hermes_env, override=False)
 except (ImportError, OSError, ValueError) as exc:
     logger.warning("Could not load .env (%s: %s)", type(exc).__name__, exc)
+
+# Re-apply operator safety flags in case any external loader mutated them.
+for _var, _val in _OPERATOR_FLAGS.items():
+    if _val is not None:
+        os.environ[_var] = _val
 
 VACANCIES_FILE = os.getenv("VACANCIES_FILE") or os.path.join(PROJECT_ROOT, "vacancies.json")
 DB_FILE = os.getenv("DB_FILE") or os.path.join(PROJECT_ROOT, "state.db")
