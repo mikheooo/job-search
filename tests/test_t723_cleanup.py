@@ -500,7 +500,7 @@ def test_terminate_pid_opens_one_handle_for_one_pid(monkeypatch):
             return 1
 
     monkeypatch.setattr(bp, "os", type("_OS", (), {"name": "nt"})())
-    monkeypatch.setattr(bp.ctypes, "windll", type("_W", (), {"kernel32": _Kernel()})())
+    monkeypatch.setattr(bp.ctypes, "windll", type("_W", (), {"kernel32": _Kernel()})(), raising=False)
     monkeypatch.setattr(bp, "pid_alive", lambda pid: False)
 
     assert bp.terminate_pid(4242) is True

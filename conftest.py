@@ -36,6 +36,12 @@ _target_kb = REPO_ROOT / "candidate_kb.json"
 if _fixture_kb.exists() and not _target_kb.exists():
     _target_kb.write_text(_fixture_kb.read_text(encoding="utf-8"), encoding="utf-8")
 
+_target_db = REPO_ROOT / "state.db"
+if not _target_db.exists():
+    import sqlite3
+    _conn = sqlite3.connect(str(_target_db))
+    _conn.close()
+
 # Ensure CANDIDATE_PROJECTS_ROOT allows projects.py to find Documents/job-search and fixture projects
 _doc_root = REPO_ROOT / ".doc_root"
 _doc_link = _doc_root / "Documents" / "job-search"
@@ -138,6 +144,20 @@ def global_test_isolation(monkeypatch, tmp_path):
     monkeypatch.setattr(_lease, "LEASE_FILE", headless_dir / "browser-lease.json")
 
     monkeypatch.setenv("HH_CDP_URL", "http://127.0.0.1:9222")
+
+    for var, default_val in [
+        ("TELEGRAM_BOT_TOKEN", "1234567890:mock_token_for_ci_tests"),
+        ("TELEGRAM_CHANNEL_ID", "-1001234567890"),
+        ("TELEGRAM_CHAT_ID", "-1001234567890"),
+        ("TELEGRAM_OWNER_ID", "123456789"),
+        ("HH_TELEGRAM_BOT_TOKEN", "1234567890:mock_token_for_ci_tests"),
+        ("HH_TELEGRAM_CHAT_ID", "-1001234567890"),
+        ("DASHBOARD_TOKEN", "mock_dashboard_token_for_tests"),
+    ]:
+        val = os.getenv(var) or default_val
+        monkeypatch.setenv(var, val)
+        if hasattr(config, var):
+            monkeypatch.setattr(config, var, val)
 
     def blocked_urlopen(req, *args, **kwargs):
         url = req.full_url if hasattr(req, "full_url") else str(req)
