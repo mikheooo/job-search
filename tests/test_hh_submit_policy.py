@@ -98,7 +98,7 @@ def _insert_vacancy(
         conn.close()
 
 
-def test_policy_all_checks_pass(clean_db):
+def test_policy_all_checks_pass(clean_db, submit_allowed):
     """When all gates are satisfied, policy approves and returns SubmitApproval."""
     sid = "hh:136704137"
     pkg, fp, letter = _create_valid_package_and_review(sid)
@@ -650,7 +650,7 @@ def test_policy_still_records_a_real_fingerprint_match(clean_db):
     assert "fingerprint_not_compared" not in decision.checks_passed
 
 
-def test_the_fingerprint_record_change_does_not_change_the_verdict(clean_db):
+def test_the_fingerprint_record_change_does_not_change_the_verdict(clean_db, submit_allowed):
     """Finding #37's doctrine: the record stops lying, the verdict does not move.
 
     Two things have to stay true, and each guards a different wrong "fix": the

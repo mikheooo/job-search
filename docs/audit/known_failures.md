@@ -9,11 +9,11 @@
 ## 1. Сводка (Executive Summary)
 
 - **Исходный baseline падений:** 154 теста
-- **Устранено на этапах SEC-001, SEC-002, BUG-001, TEST-A..TEST-D, SAFE-001, NET-001, PORT-002, CFG-001, CFG-002, TEST-MOCK-001, TEST-DAEMON-001, TEST-STATE-001, TEST-DRIFT-001, TEST-ROUTING-001:** 120 тестов
+- **Устранено на этапах SEC-001, SEC-002, BUG-001, TEST-A..TEST-D, SAFE-001, NET-001, PORT-002, CFG-001, CFG-002, TEST-MOCK-001, TEST-DAEMON-001, TEST-STATE-001, TEST-DRIFT-001, TEST-ROUTING-001, TEST-QUEUE-001:** 127 тестов
 - **Текущее состояние:**
-  - Успешно пройдено: **4 256** тестов
+  - Успешно пройдено: **4 263** теста
   - Пропущено (skip): **14** тестов
-  - Падений в текущем прогоне: **34** теста
+  - Падений в текущем прогоне: **27** тестов
 
 Все 65 падений классифицированы по трем стандартным категориям аудита:
 1. `[LEGACY_MOCK]` — моки или сигнатуры вызовов в тестах отстали от актуального боевого кода.
@@ -95,26 +95,15 @@
 
 ---
 
-### Группа 7: Политика сабмита, очередь заявок и адаптеры вакансий (7 тестов)
+### Группа 7: Политика сабмита, очередь заявок и адаптеры вакансий (7 тестов) — [УСТРАНЕНО]
 **Категория:** `[REAL_BEHAVIOR_CHANGE]` / `[LEGACY_MOCK]`  
+**Статус:** **Полностью устранено в коммите TEST-QUEUE-001**.
 **Корневая причина:** 
-1. `test_hh_submit_policy.py`: глобальное состояние паузы или неинициализированный профиль возвращает `reasons=['paused']`.
-2. `test_application_queue.py`: генерация очереди с валидацией зарплат и фильтрацией статусов.
-3. `test_adapter_habr_career.py`: мок `feedparser.parse` возвращает 0 вакансий из-за структуры словарей RSS.
-4. `test_stage86_match_quality.py::test_negative_evidence_in_gaps`.
-
-**Затронутые тесты:**
-1. `tests/test_application_queue.py::test_unknown_salary_doesnt_invent_value`
-2. `tests/test_application_queue.py::test_only_ready_to_apply_enters_queue`
-3. `tests/test_application_queue.py::test_repeated_generation_is_idempotent`
-4. `tests/test_hh_submit_policy.py::test_policy_all_checks_pass`
-5. `tests/test_hh_submit_policy.py::test_the_fingerprint_record_change_does_not_change_the_verdict`
-6. `tests/test_adapter_habr_career.py::test_habr_career_adapter_fetches_and_parses`
-7. `tests/test_stage86_match_quality.py::test_negative_evidence_in_gaps`
-
-**План устранения:**
-- Сбросить флаг паузы перед тестами политики сабмита.
-- Скорректировать структуру фикстуры `SAMPLE_HABR_RSS` / мока `feedparser`.
+1. `test_hh_submit_policy.py`: тесты `test_policy_all_checks_pass` и `test_the_fingerprint_record_change_does_not_change_the_verdict` не подключали фикстуру `submit_allowed`, из-за чего проверка kill switch завершалась с `reasons=['paused']`.
+2. `test_application_queue.py`: моковые вакансии в фикстуре `_vac` не содержали явного `country_restrictions=["Worldwide"]`, из-за чего строгая классификация GeoBand (T7.4) относила их к Band B (неподтвержденная география) и `generate_queue()` отфильтровывал их. Тест `test_unknown_salary_doesnt_invent_value` ожидал старую оценку 0 вместо нейтральных 50 баллов по контракту правдивости T7.3.
+3. `test_adapter_habr_career.py`: боевой адаптер `HabrCareerAdapter` использует стандартную библиотеку `urllib.request` и `xml.etree.ElementTree`, а тест мокировал неиспользуемый `feedparser.parse`.
+4. `test_stage86_match_quality.py::test_negative_evidence_in_gaps`: в `_base_candidate_profile()` отсутствовал словарь `domain_years`, необходимый для строгого расчета штрафов за опыт по семейству ролей.
+**Результат устранения:** Подключена фикстура `submit_allowed` в тестах политики сабмита. В `_vac` установлен дефолтный `country_restrictions=["Worldwide"]`, тест зарплат приведен к контракту T7.3 (50 баллов). Адаптер Хабра мокируется через `urllib.request.urlopen`. В тестовый профиль добавлен `domain_years`. Все 56 тестов в 4 тестовых модулях проходят со 100% успехом.
 
 ---
 
