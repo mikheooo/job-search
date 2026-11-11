@@ -109,7 +109,7 @@ pygments==2.21.0
 pyparsing==3.3.3
     # via httplib2
 pytest==9.2.0
-    # via -r requirements.txt
+    # via -r requirements-dev.txt
 python-dotenv==1.2.4
     # via -r requirements.txt
 requests==2.34.2
