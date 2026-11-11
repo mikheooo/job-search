@@ -151,7 +151,7 @@ def send_australian_job_telegram(job: dict[str, Any]) -> bool:
     """Send formatted job alert card to Telegram."""
     text, buttons = format_australian_job_card(job)
     try:
-        sent = send_job_message(text=text, inline_keyboard=buttons)
+        sent = send_job_message(text=text, reply_markup={"inline_keyboard": buttons}, parse_mode="Markdown")
         if sent:
             record_sent_alert(str(job.get("id")))
         return bool(sent)
