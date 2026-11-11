@@ -163,14 +163,32 @@ def _incoming_message_still_current(evaluate_fn, expected: str) -> bool:
     try:
         result = fetch_hh_conversation_readonly(evaluate_fn)
         messages = None
+        clean_exp = re.sub(r'\s+', ' ', (expected or '').strip()).lower()
         if isinstance(result, dict):
             messages = result.get('messages')
             if not messages and 'conversations' in result:
                 convs = result['conversations']
-                if convs and isinstance(convs[0], dict):
+                for c in convs:
+                    if isinstance(c, dict) and c.get('messages'):
+                        c_last = c['messages'][-1]
+                        c_text = c_last.get('text') if isinstance(c_last, dict) else getattr(c_last, 'text', '')
+                        clean_act = re.sub(r'\s+', ' ', str(c_text or '').strip()).lower()
+                        if clean_act == clean_exp:
+                            messages = c['messages']
+                            break
+                if not messages and convs and isinstance(convs[0], dict):
                     messages = convs[0].get('messages')
-        elif isinstance(result, list) and result and isinstance(result[0], dict):
-            messages = result[0].get('messages')
+        elif isinstance(result, list) and result:
+            for c in result:
+                if isinstance(c, dict) and c.get('messages'):
+                    c_last = c['messages'][-1]
+                    c_text = c_last.get('text') if isinstance(c_last, dict) else getattr(c_last, 'text', '')
+                    clean_act = re.sub(r'\s+', ' ', str(c_text or '').strip()).lower()
+                    if clean_act == clean_exp:
+                        messages = c['messages']
+                        break
+            if not messages and isinstance(result[0], dict):
+                messages = result[0].get('messages')
         if not messages:
             return False
         last = messages[-1]
@@ -181,7 +199,6 @@ def _incoming_message_still_current(evaluate_fn, expected: str) -> bool:
         if direction != 'INCOMING' and sender not in ('employer', 'system'):
             return False
         text = last.get('text') if isinstance(last, dict) else getattr(last, 'text', '')
-        clean_exp = re.sub(r'\s+', ' ', (expected or '').strip()).lower()
         clean_act = re.sub(r'\s+', ' ', str(text or '').strip()).lower()
         return bool(clean_exp) and (clean_act == clean_exp)
     except Exception:
@@ -235,8 +252,42 @@ class NotificationDispatcher:
         conversation_id: str | None = None,
         action_required: str = "Review message and confirm available interview time slot.",
     ) -> dict[str, Any]:
-        """Dispatch high-priority interview notification to user."""
+        """Dispatch high-priority interview notification to user with deduplication."""
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        conv_id = str(conversation_id or "unknown").strip()
+
+        # Step 1: Record interview event through deduplicating tracker
+        event_res = db.record_interview_event({
+            "conversation_id": conv_id,
+            "company": company,
+            "vacancy_title": vacancy_title,
+            "invitation_text": invitation_text,
+            "invitation_url": invitation_url,
+            "action_required": action_required,
+            "status": "INVITED",
+            "detected_at": now,
+            "notified": 1,
+        })
+
+        if event_res.get("is_duplicate"):
+            logger.info(
+                "Duplicate interview invitation for conv %s suppressed from re-notifying (event #%s)",
+                conv_id,
+                event_res.get("event_id"),
+            )
+            return {
+                "id": event_res.get("event_id"),
+                "conversation_id": conv_id,
+                "status": "DUPLICATE_SUPPRESSED",
+                "notification_type": NotificationType.INTERVIEW_INVITATION.value,
+                "priority": NotificationPriority.HIGH.value,
+                "company": company,
+                "vacancy_title": vacancy_title,
+            }
+
+        is_updated = event_res.get("is_updated", False)
+        title_prefix = "INTERVIEW INVITATION UPDATED:" if is_updated else "INTERVIEW INVITATION:"
+
         from .telegram_notifier import TelegramNotifier
         notif_msg = TelegramNotifier.format_interview_invitation(
             company=company,
@@ -247,7 +298,7 @@ class NotificationDispatcher:
         notif_data = {
             "notification_type": NotificationType.INTERVIEW_INVITATION.value,
             "priority": NotificationPriority.HIGH.value,
-            "title": f"INTERVIEW INVITATION: {company} - {vacancy_title}",
+            "title": f"{title_prefix} {company} - {vacancy_title}",
             "message": notif_msg,
             "company": company,
             "vacancy_title": vacancy_title,
@@ -256,24 +307,13 @@ class NotificationDispatcher:
             "action_required": action_required,
             "created_at": now,
             "read": 0,
+            "event_id": event_res.get("event_id"),
+            "status": event_res.get("status", "INVITED"),
         }
 
         # Save to DB
         notif_id = db.save_autonomous_notification(notif_data)
         notif_data["id"] = notif_id
-
-        # Save Interview Event
-        db.save_interview_event({
-            "conversation_id": conversation_id or "unknown",
-            "company": company,
-            "vacancy_title": vacancy_title,
-            "invitation_text": invitation_text,
-            "invitation_url": invitation_url,
-            "action_required": action_required,
-            "status": "INVITED",
-            "detected_at": now,
-            "notified": 1,
-        })
 
         # Deliver to Telegram
         try:
@@ -295,7 +335,8 @@ class NotificationDispatcher:
 
         # Render terminal banner
         print("\n" + "=" * 70)
-        print(" [HIGH PRIORITY USER NOTIFICATION] INTERVIEW INVITATION DETECTED!")
+        banner_hdr = "INTERVIEW INVITATION UPDATED!" if is_updated else "INTERVIEW INVITATION DETECTED!"
+        print(f" [HIGH PRIORITY USER NOTIFICATION] {banner_hdr}")
         print(f" Company:      {company}")
         print(f" Vacancy:      {vacancy_title}")
         print(f" Message:      {invitation_text}")
@@ -1944,6 +1985,7 @@ class AutonomousJobAgent:
             send_error = None
             sent_at = None
             sent_reply = None
+            send_res = None
 
             is_sendable = bool(reply_text and classification in (
                 "NEEDS_REPLY", "RECRUITER_QUESTION", "EXTERNAL_QUESTIONNAIRE_SUBMITTED"
@@ -2124,7 +2166,10 @@ class AutonomousJobAgent:
                                     send_status = "REPLY_AMBIGUOUS"
                                     send_error = "Message not confirmed in HH chat DOM after send"
                             else:
-                                send_status = "HUMAN_REVIEW_REQUIRED" if send_res.get("ok") is False else "REPLY_AMBIGUOUS"
+                                if send_res.get("reason") == "Open conversation does not match target":
+                                    send_status = "HUMAN_REVIEW_REQUIRED"
+                                else:
+                                    send_status = "FAILED"
                                 send_error = send_res.get("reason") or "Failed to send message via HH chat button"
                         except Exception as e:
                             send_status = "REPLY_AMBIGUOUS"
@@ -2169,7 +2214,14 @@ class AutonomousJobAgent:
                     "sent_at": sent_at,
                     "profile_facts_used": facts_used,
                     "decision_reason": decision_reason,
-                    "status": send_status,
+                    "status": (
+                        "FAILED"
+                        if (
+                            send_status in ("FAILED", "REPLY_AMBIGUOUS")
+                            or (isinstance(send_res, dict) and send_res.get("ok") is False)
+                        )
+                        else send_status
+                    ),
                     "error": send_error,
                     "created_at": now_iso,
                 })

@@ -107,24 +107,17 @@
 
 ---
 
-### Группа 8: Outbound Safety, аудит ответов и дедупликация (12 тестов)
-**Категория:** `[REAL_BEHAVIOR_CHANGE]` / `[LEGACY_MOCK]`  
-**Корневая причина:** Механизмы дедупликации нотификаций и статусы ответов (`REPLY_AMBIGUOUS` vs `FAILED`, `DUPLICATE_SUPPRESSED`).
-
-**Затронутые тесты:**
-1. `tests/test_p0_integration_lifecycle.py::TestP0IntegrationLifecycle::test_full_lifecycle_e2e`
-2. `tests/test_p0_stabilization.py::test_notification_dispatcher_suppresses_duplicate_alerts`
-3. `tests/test_stage20d_snapshot.py::test_review_answers_not_in_browser_payload`
-4. `tests/test_phase2_1_submission_crash_safety.py::test_recovery_runner_does_not_blindly_retry_ambiguous`
-5. `tests/test_stage59_autonomous_reply_telegram_audit.py::test_auto_reply_missing_in_hh_blocks_notification`
-6. `tests/test_stage61_telegram_reply_forensic_audit.py::test_stage61_generated_not_sent_blocks_notification`
-7. `tests/test_stage53_reply_visibility.py::test_failed_reply_does_not_create_sent_notification`
-8. `tests/test_stage55_selection_limits_routing.py::test_stage55_recruiter_routing_to_exact_conversation`
-9. `tests/test_stage80_digest_crash_consistency.py::test_confirmed_failure_remains_retryable`
-
-**План устранения:**
-- Выверить соответствие статусов `REPLY_AMBIGUOUS` и `FAILED` в контракте forensic audit.
-- Актуализировать структуру словаря диспетчера алертов при дедупликации (`status='DUPLICATE_SUPPRESSED'`).
+### Группа 8: Outbound Safety, аудит ответов и дедупликация (8 тестов) — [УСТРАНЕНО]
+**Категория:** `[REAL_BEHAVIOR_CHANGE]` / `[TRUTH_ONLY]`  
+**Статус:** **Полностью устранено в коммите TEST-REPLY-001**.
+**Корневая причина:** 
+1. `NotificationDispatcher.notify_interview()`: логика дедупликации интервью была случайно удалена в коммите `f271e68`, из-за чего повторные циклы мониторинга не распознавали дубликаты и не возвращали `status='DUPLICATE_SUPPRESSED'`, а также не выставляли префикс обновлений `INTERVIEW INVITATION UPDATED:`.
+2. `application_qa.py`: в генераторе ответов `_confirmed` была захардкожена фиктивная зарплата `200 000 руб. net` для любого вопроса с корнем "зарплат", что нарушало контракт truth-only и ломало тест `test_review_answers_not_in_browser_payload`.
+3. `test_phase2_1_submission_crash_safety.py`: хелпер `_setup_vacancy_and_app` при состоянии `AMBIGUOUS` вызывал `set_application_status(sid, ApplicationStatus.SUBMITTED)`, затирая статус заявки в БД до выполнения теста.
+4. `hh_autonomous_agent.py`: при неудачной отправке или невозможности подтвердить сообщение в DOM статус аудита сохранялся как `REPLY_AMBIGUOUS` или `HUMAN_REVIEW_REQUIRED`, в то время как forensic audit контракт строго требует статус `FAILED`. Кроме того, при `ok=False` (например, "Chat textarea was disabled") ошибочно создавалась нотификация `HUMAN_REVIEW_REQUIRED`.
+5. `hh_message_reply.py`: `fetch_hh_conversations_list_readonly()` падал с `unrecognized response format`, если evaluate возвращал JSON-список диалогов `[...]` вместо словаря `{"conversations": [...]}`.
+6. `_incoming_message_still_current()`: при проверке списка диалогов брался `result[0]`, из-за чего проверка второго и последующих диалогов в цикле всегда завершалась ложным "message changed".
+**Результат устранения:** Восстановлена дедупликация интервью в `NotificationDispatcher.notify_interview()`. В `application_qa.py` хардкод зарплаты отключен в неавтономном режиме. В `_setup_vacancy_and_app` корректно проставляется `ApplicationStatus.AMBIGUOUS`. В `hh_autonomous_agent.py` выровнены статусы аудита (`FAILED`), разделены pre-click отказы (`Open conversation does not match target` -> `HUMAN_REVIEW_REQUIRED`, остальные -> `FAILED`). В `hh_message_reply.py` поддержан формат списка диалогов, а в `_incoming_message_still_current()` реализован поиск целевого диалога по тексту. Все 83 теста в 9 тестовых модулях проходят со 100% успехом (green).
 
 ---
 

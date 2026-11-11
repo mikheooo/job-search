@@ -132,9 +132,14 @@ def _setup_vacancy_and_app(
         "draft": letter_text,
         "state": state,
     })
+    status_map = {
+        "READY_TO_SUBMIT": ApplicationStatus.READY_TO_APPLY,
+        "AMBIGUOUS": ApplicationStatus.AMBIGUOUS,
+        "SUBMITTED": ApplicationStatus.SUBMITTED,
+    }
     set_application_status(
         sid,
-        ApplicationStatus.READY_TO_APPLY if state == "READY_TO_SUBMIT" else ApplicationStatus.SUBMITTED,
+        status_map.get(state, ApplicationStatus.SUBMITTED),
     )
     return sid, app_id
 

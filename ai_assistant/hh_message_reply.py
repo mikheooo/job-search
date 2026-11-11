@@ -1957,6 +1957,8 @@ def fetch_hh_conversations_list_readonly(
         api_raw = _eval(chatik_api_js)
         if api_raw and api_raw != "{}":
             api_res = json.loads(api_raw)
+            if isinstance(api_res, list):
+                return {"conversations": api_res}
             if isinstance(api_res, dict) and api_res.get("conversations"):
                 return api_res
     except TimeoutError as exc:
@@ -1982,7 +1984,9 @@ def fetch_hh_conversations_list_readonly(
     except Exception as e:
         return {"error": str(e), "conversations": []}
 
-    if not isinstance(first_res, dict):
+    if isinstance(first_res, list):
+        first_res = {"conversations": first_res}
+    elif not isinstance(first_res, dict):
         return {"error": "unrecognized response format", "conversations": []}
 
     if "error" in first_res:
