@@ -13,8 +13,11 @@ def test_unconfirmed_submission_does_not_send_telegram_alert(monkeypatch, tmp_pa
     monkeypatch.setattr(ha, "send_telegram_alert", mock_send)
     monkeypatch.setattr(ha, "PROJECT_ROOT", tmp_path)
 
-    import ai_assistant.hh_submission as hs
-    monkeypatch.setattr(hs, "submission_halt_reason", lambda: None)
+    import sys
+    import types
+    mock_hs = types.ModuleType("ai_assistant.hh_submission")
+    mock_hs.submission_halt_reason = lambda: None
+    monkeypatch.setitem(sys.modules, "ai_assistant.hh_submission", mock_hs)
     monkeypatch.setattr(ha, "_prepare_standing_auth_review", lambda *a, **k: None)
     monkeypatch.setattr(ha, "_persist_vacancy_snapshot", lambda *a, **k: None)
     monkeypatch.setattr(ha, "brief_vacancy", lambda *a, **k: None)
