@@ -262,7 +262,7 @@ def test_gate_no_unknown_questions(monkeypatch):
     assert res.failed_gate == GateName.GATE_NO_UNKNOWN_QUESTIONS
 
 
-def test_gate_not_already_applied_whitelist(monkeypatch):
+def test_gate_not_already_applied_whitelist(submit_allowed, monkeypatch):
     monkeypatch.setenv("SUBMIT_ALLOWED", "true")
     sid = _setup_valid_vacancy("999", fp="fp_999")
     url = "https://hh.ru/vacancy/999"
