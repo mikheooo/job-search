@@ -44,7 +44,9 @@ jobs:
       - name: Verify Gitleaks detection active (Non-vacuous check)
         run: |
           # Prove that Gitleaks actively catches leaks and exits with code 1 under current config
-          echo 'synthetic_leak: "c0389f35b05ae96d6e688d5aacad26bb"' > /tmp/synthetic_secret.txt
+          K1="c0389f35b05ae96d"
+          K2="6e688d5aacad26bb"
+          echo "api_key: \"${K1}${K2}\"" > /tmp/synthetic_secret.txt
           if gitleaks dir /tmp/synthetic_secret.txt --config .gitleaks.toml --verbose; then
             echo "ERROR: Gitleaks failed to detect synthetic secret!" >&2
             exit 1
