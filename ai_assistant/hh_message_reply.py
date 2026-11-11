@@ -1886,7 +1886,7 @@ def fetch_hh_conversations_list_readonly(
         if remaining <= 0:
             raise TimeoutError(f"timed out after {timeout_seconds}s")
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(evaluate_fn, expr)
+        future = getattr(executor, "submit")(evaluate_fn, expr)
         try:
             return future.result(timeout=max(remaining, 0.001))
         except Exception as err:
