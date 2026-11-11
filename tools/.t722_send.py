@@ -1,4 +1,4 @@
-﻿"""Shim: CDP submit lives in ai_assistant.hh_cdp_submit.
+"""Shim: CDP submit lives in ai_assistant.hh_cdp_submit.
 
 Kept so CLI invocations and older tests that load tools/.t722_send.py still work.
 Production (hh_autopilot) imports ai_assistant.hh_cdp_submit directly.

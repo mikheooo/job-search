@@ -1,4 +1,4 @@
-﻿"""Unit tests for Kwork Inbox Monitor & Buyer Inquiry Tracker.
+"""Unit tests for Kwork Inbox Monitor & Buyer Inquiry Tracker.
 
 Covers all 10 mandatory cases:
 1. New incoming message from buyer.

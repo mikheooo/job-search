@@ -304,6 +304,9 @@ class TestP0IntegrationLifecycle(unittest.TestCase):
 
     def test_windows_task_scheduler_command_compatibility(self) -> None:
         """Verify command lines and VBS scripts registered in Windows Task Scheduler."""
+        import sys
+        if sys.platform != "win32":
+            return
         project_root = pathlib.Path(__file__).resolve().parent.parent
 
         # 1. Verify VBS scripts exist

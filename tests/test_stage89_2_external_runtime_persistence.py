@@ -44,7 +44,7 @@ def isolated_hermes_env(tmp_path):
     fake_adapter_dir.mkdir(parents=True, exist_ok=True)
 
     # Deploy initial valid files
-    canonical_fetcher = Path(r"C:\Users\Misha\Documents\job-search\integrations\hermes\job_search_fetcher.py")
+    canonical_fetcher = Path(__file__).resolve().parents[1] / "integrations" / "hermes" / "job_search_fetcher.py"
     fetcher_dest = fake_fetcher_dir / "job_search_fetcher.py"
     fetcher_dest.write_bytes(canonical_fetcher.read_bytes())
 
@@ -167,7 +167,7 @@ def test_sync_operation_is_idempotent(isolated_hermes_env):
 # 6. .env is Git ignored and not tracked
 # ---------------------------------------------------------------------------
 def test_env_is_git_ignored():
-    gitignore_path = Path(r"C:\Users\Misha\Documents\job-search\.gitignore")
+    gitignore_path = Path(__file__).resolve().parents[1] / ".gitignore"
     assert gitignore_path.exists()
     content = gitignore_path.read_text(encoding="utf-8")
     lines = [line.strip() for line in content.splitlines()]
