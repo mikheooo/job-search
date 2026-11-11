@@ -41,6 +41,18 @@ jobs:
         run: |
           curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.24.0/gitleaks_8.24.0_linux_x64.tar.gz | sudo tar -xz -C /usr/local/bin gitleaks
 
+      - name: Verify Gitleaks detection active (Non-vacuous check)
+        run: |
+          # Prove that Gitleaks actively catches leaks and exits with code 1 under current config
+          echo 'synthetic_leak: "c0389f35b05ae96d6e688d5aacad26bb"' > /tmp/synthetic_secret.txt
+          if gitleaks dir /tmp/synthetic_secret.txt --config .gitleaks.toml --verbose; then
+            echo "ERROR: Gitleaks failed to detect synthetic secret!" >&2
+            exit 1
+          else
+            echo "SUCCESS: Gitleaks actively detected synthetic secret (exit code 1)."
+          fi
+          rm -f /tmp/synthetic_secret.txt
+
       - name: Gitleaks scan (Branch / PR diff)
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -65,16 +77,7 @@ jobs:
 
       - name: Run Green Subset Tests
         run: |
-          python -m pytest -q -n auto \
-            --ignore=tests/test_submission_verifier.py \
-            --ignore=tests/test_stage79_digest_delivery_e2e.py \
-            --ignore=tests/test_stage80_digest_crash_consistency.py \
-            --ignore=tests/test_stage81_stale_digest_attempts.py \
-            --ignore=tests/test_candidate_resume_parser.py \
-            --ignore=tests/test_candidate_interview.py \
-            --ignore=tests/test_hh_realtime_daemon_watchdog.py \
-            --ignore=tests/test_t721_headless_provider.py \
-            --ignore=tests/test_application_queue.py
+          python -m pytest -q -n auto --deselect-known-failures
 
   full-test-run:
     name: "Full Test Suite (Informational / Non-blocking)"
