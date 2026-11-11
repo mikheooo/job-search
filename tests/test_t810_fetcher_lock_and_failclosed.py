@@ -413,7 +413,7 @@ def test_auth_classifier_covers_401_403_and_text_matches(jsf):
     assert not jsf._is_auth_error(ValueError("boom"))
 
 
-def test_ambiguous_send_is_recorded_and_never_resent(monkeypatch, jsf):
+def test_ambiguous_send_is_recorded_and_never_resent(monkeypatch, jsf, _fake_token):
     """The caller must record AMBIGUOUS and stop: a raise from the sender means
     the message may already be in the channel."""
     import socket

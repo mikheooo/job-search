@@ -1070,6 +1070,11 @@ def test_loading_a_missing_vacancy_raises() -> None:
 
 REAL_DB = REPO_ROOT / "state.db"
 
+
+def _has_real_db() -> bool:
+    return REAL_DB.is_file() and REAL_DB.stat().st_size > 0
+
+
 REAL_CASES = {
     "it-support": "weworkremotely:porkbun-live-technical-support-representative-full-time-40-000-year-benefits-sat-sun-required-location-remote",
     "sysadmin": "himalayas:https://himalayas.app/companies/dmi/jobs/senior-cyber-systems-administrator",
@@ -1088,7 +1093,7 @@ def real_vacancy(stable_id: str) -> jb.VacancyInput:
     """
     import sqlite3
 
-    if not REAL_DB.is_file():
+    if not _has_real_db():
         pytest.skip("state.db is not present in this checkout")
     conn = sqlite3.connect(f"file:{REAL_DB}?mode=ro", uri=True)
     try:

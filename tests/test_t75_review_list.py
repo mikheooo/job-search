@@ -44,6 +44,10 @@ STATE_DB = REPO_ROOT / "state.db"
 MODULE_PATH = REPO_ROOT / "ai_assistant" / "eligibility_review.py"
 
 
+def _has_state_db() -> bool:
+    return STATE_DB.exists() and STATE_DB.stat().st_size > 0
+
+
 def build_review_list(*, db_path=None, **kwargs):
     """The review list, read from the real database.
 
@@ -52,7 +56,7 @@ def build_review_list(*, db_path=None, **kwargs):
     to create a database it cannot find -- so a test that wants the live set has
     to name the file. Tests that want a specific database pass ``db_path``.
     """
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
     return _build_review_list(db_path=db_path or STATE_DB, **kwargs)
 
@@ -88,7 +92,7 @@ def _vac(
 
 def test_band_c_is_absent_from_the_review_list_by_default():
     """Band C must not appear in the list of suitable vacancies."""
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     items = build_review_list(limit=500)
@@ -102,7 +106,7 @@ def test_the_exclusion_is_a_real_filter_and_not_an_empty_rule():
     Without this, the previous test would pass even if the review list were
     empty, or if every record happened to be A or B for unrelated reasons.
     """
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     with_c = build_review_list(limit=500, include_band_c_foreign=True)
@@ -115,7 +119,7 @@ def test_the_exclusion_is_a_real_filter_and_not_an_empty_rule():
 
 def test_band_c_is_never_auto_queue_allowed_even_when_included():
     """The escape hatch is for tests only, and still never grants the queue."""
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     for item in build_review_list(limit=500, include_band_c_foreign=True):
@@ -126,7 +130,7 @@ def test_band_c_is_never_auto_queue_allowed_even_when_included():
 # --- band B is visible, and explicitly not queued ---------------------------
 
 def test_band_b_is_visible_and_marked_for_manual_review():
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     items = build_review_list(limit=500)
@@ -150,7 +154,7 @@ def test_review_bands_exclude_c_by_construction():
 
 
 def test_band_b_asks_the_geography_question_and_does_not_assume_an_answer():
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     for item in build_review_list(limit=500):
@@ -163,7 +167,7 @@ def test_band_b_asks_the_geography_question_and_does_not_assume_an_answer():
 
 def test_a_missing_salary_is_reported_as_a_question_not_as_a_match():
     """An absent figure is an open question, never a confirmed condition."""
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     items = build_review_list(limit=500)
@@ -210,7 +214,7 @@ def test_building_the_review_list_does_not_touch_the_queue():
     The configured database is the one under test here, so the copy is named
     explicitly -- reading the live ``state.db`` would prove nothing about writes.
     """
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     tmp = tempfile.mkdtemp()
@@ -225,7 +229,7 @@ def test_building_the_review_list_does_not_touch_the_queue():
 
 def test_the_configured_database_is_the_default_source(monkeypatch):
     """With no ``db_path`` the module reads ``config.DB_FILE`` and nothing else."""
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     tmp = tempfile.mkdtemp()
@@ -280,7 +284,7 @@ def test_a_thailand_scoped_posting_is_local():
 def test_the_local_category_is_never_auto_queued():
     """A Thai posting is not a free pass either: workplace, language and permit
     still need checking, and the employer is not assumed to arrange the permit."""
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     local = build_review_list(limit=500, categories=(CATEGORY_LOCAL_THAILAND,))
@@ -292,7 +296,7 @@ def test_the_local_category_is_never_auto_queued():
 
 
 def test_the_local_category_is_kept_apart_from_the_remote_categories():
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     items = build_review_list(limit=500)
@@ -309,7 +313,7 @@ def test_a_body_only_match_does_not_enter_the_list_by_default():
     A "Building Maintenance Technician" whose blurb says "troubleshoot" is not a
     support vacancy, so the default list reads titles only.
     """
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     strict = build_review_list(limit=500, title_only=True)
@@ -334,7 +338,7 @@ def test_only_the_local_category_may_match_without_a_title_hit():
     without a title match would mean body matching had leaked back in, which is
     what produced 113 false hits out of 131.
     """
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     items = build_review_list(limit=500, title_only=True)
@@ -390,7 +394,7 @@ def test_crm_administration_is_not_swept_out_with_salesforce_development():
 
 def test_management_roles_are_not_offered_as_support():
     """A "Head of" posting is not a CRM Support vacancy just because it says CRM."""
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     for item in build_review_list(limit=500):
@@ -410,7 +414,7 @@ def live_dashboard(monkeypatch):
     ``init_db`` for its other routes, which would open the production database for
     writing -- a test must not migrate it, so that call is replaced.
     """
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     fastapi = pytest.importorskip("fastapi.testclient")
@@ -565,7 +569,7 @@ def test_it_support_outranks_customer_support():
 
 def test_the_dropped_rows_are_counted_rather_than_disappearing():
     """A list that silently omits rows looks exactly like a list with nothing in it."""
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     stats: dict[str, int] = {}
@@ -577,7 +581,7 @@ def test_the_dropped_rows_are_counted_rather_than_disappearing():
 
 
 def test_no_band_c_row_reaches_the_default_list_even_with_the_exclusions_on():
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     items = build_review_list(limit=500)
@@ -589,7 +593,7 @@ def test_no_band_c_row_reaches_the_default_list_even_with_the_exclusions_on():
 # --- summarise ---------------------------------------------------------------
 
 def test_summarise_counts_what_the_list_contains():
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     items = build_review_list(limit=50)

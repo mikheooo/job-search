@@ -20,7 +20,7 @@ import pytest
 from ai_assistant import hh_browser_provider as bp
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
-PROFILE = r"C:\Users\Misha\AppData\Local\JobSearchHeadless\User Data"
+PROFILE = str(bp.headless_profile_dir())
 
 CHECKPOINTS = ("after_search", "after_vacancy_read", "after_form_open", "before_submit")
 

@@ -150,6 +150,10 @@ def test_outreach_and_pitch_generators_grounded_in_candidate_truth():
 
 
 def test_priority_negotiations_in_db():
+    import pathlib
+    state_db = pathlib.Path("state.db")
+    if not (state_db.is_file() and state_db.stat().st_size > 0):
+        pytest.skip("state.db is not present in this checkout")
     conn = sqlite3.connect("state.db")
     c = conn.cursor()
 
