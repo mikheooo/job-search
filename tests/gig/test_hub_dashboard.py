@@ -222,9 +222,14 @@ def test_08c_default_hides_test_rows():
 def test_09_no_server_needed():
     import socket
 
+    # Grab an unbound ephemeral port to verify API works without an HTTP server
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        free_port = s.getsockname()[1]
+
     with socket.socket() as sock:
         sock.settimeout(2)
-        assert sock.connect_ex(("127.0.0.1", 8001)) != 0
+        assert sock.connect_ex(("127.0.0.1", free_port)) != 0
     from ai_assistant.hub.api import hub_overview
 
     assert isinstance(hub_overview()["gigs_total"], int)
