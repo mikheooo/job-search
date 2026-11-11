@@ -9,11 +9,11 @@
 ## 1. Сводка (Executive Summary)
 
 - **Исходный baseline падений:** 154 теста
-- **Устранено на этапах SEC-001, SEC-002, BUG-001, TEST-A..TEST-D, SAFE-001, NET-001, PORT-002, CFG-001, CFG-002, TEST-MOCK-001, TEST-DAEMON-001, TEST-STATE-001:** 109 тестов
+- **Устранено на этапах SEC-001, SEC-002, BUG-001, TEST-A..TEST-D, SAFE-001, NET-001, PORT-002, CFG-001, CFG-002, TEST-MOCK-001, TEST-DAEMON-001, TEST-STATE-001, TEST-DRIFT-001:** 116 тестов
 - **Текущее состояние:**
-  - Успешно пройдено: **4 245** тестов
+  - Успешно пройдено: **4 252** теста
   - Пропущено (skip): **14** тестов
-  - Падений в текущем прогоне: **45** тестов
+  - Падений в текущем прогоне: **38** тестов
 
 Все 65 падений классифицированы по трем стандартным категориям аудита:
 1. `[LEGACY_MOCK]` — моки или сигнатуры вызовов в тестах отстали от актуального боевого кода.
@@ -58,21 +58,11 @@
 
 ---
 
-### Группа 3: Дрифт базы знаний кандидата и резюме (7 тестов)
+### Группа 3: Дрифт базы знаний кандидата и резюме (7 тестов) — [УСТРАНЕНО]
 **Категория:** `[DRIFT_FIXTURE]`  
-**Корневая причина:** Файлы `resume.md` и профиль кандидата обновлялись в ходе разработки (добавлена 1 обязанность в роль Avantis, добавлены телеком-исключения `['базовые станции', 'инженер ran', 'bng/bras']` в профиль). Тесты проверяли фиксированные константы (123 claims вместо 124; 18 duties вместо 19; 2 обязанности в Avantis вместо 3).
-
-**Затронутые тесты:**
-1. `tests/test_candidate_interview.py::test_a_full_interview_leaves_every_resume_claim_untouched` (124 vs 123)
-2. `tests/test_candidate_interview.py::test_a_resume_merge_still_refreshes_every_resume_claim` (124 vs 123)
-3. `tests/test_candidate_resume_parser.py::test_avantis_role_pin` (3 vs 2)
-4. `tests/test_candidate_resume_parser.py::test_every_duty_is_bound_to_a_real_role` (19 vs 18)
-5. `tests/test_candidate_resume_parser.py::test_todays_measured_totals` (124 vs 123)
-6. `tests/test_candidate_resume_parser.py::test_known_line_numbers_are_exact` (KeyError заголовка/номеров строк)
-7. `tests/test_profile_render.py::test_the_live_kb_reproduces_the_live_profile` (несовпадение списка `excluded_roles`)
-
-**План устранения:**
-- Синхронизировать константы счетчиков и эталонные срезы в тестах парсера резюме с актуальным состоянием `resume.md`.
+**Статус:** **Полностью устранено в коммите TEST-DRIFT-001**.
+**Корневая причина:** Файлы `resume.md` и профиль кандидата обновлялись в ходе разработки (добавлена 1 обязанность в роль Avantis, добавлены телеком-исключения `['базовые станции', 'инженер ran', 'bng/bras']` в профиль). Тесты проверяли устаревшие фиксированные константы (123 claims вместо 124; 18 duties вместо 19; 2 обязанности в Avantis вместо 3; старый заголовок и сдвинутые номера строк 49-50). В `candidate_kb.json` отсутствовали 3 добавленных исключения ролей из `candidate_profile.json`.
+**Результат устранения:** Синхронизированы `preferences.excluded_roles` в `candidate_kb.json` с `candidate_profile.json`. В тестах парсера резюме и интервью обновлены константы (124 клейма, 19 обязанностей, 3 обязанности в Avantis, актуализированная строка заголовка и номера строк 49-50). Все 185 тестов в трех тестовых модулях проходят успешно (100% green).
 
 ---
 
