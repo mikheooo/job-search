@@ -307,6 +307,7 @@ def run_production_pipeline(
     try:
         proc = subprocess.run(
             [python_exe, script_path],
+            check=False,
             cwd=config.PROJECT_ROOT,
             env=env,
             stdout=subprocess.PIPE,

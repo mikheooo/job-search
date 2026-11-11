@@ -118,7 +118,7 @@ def _pipe_report(tmp_path):
     (tmp_path / "pipe.js").write_text(block + "\nmodule.exports = { createPipe };\n",
                                       encoding="utf-8")
     (tmp_path / "run.js").write_text(HARNESS_JS, encoding="utf-8")
-    proc = subprocess.run([NODE, "run.js"], cwd=str(tmp_path), capture_output=True,
+    proc = subprocess.run([NODE, "run.js"], check=False, cwd=str(tmp_path), capture_output=True,
                           text=True, timeout=60)
     assert proc.returncode == 0, f"node harness failed: {proc.stderr[-2000:]}"
     return json.loads(proc.stdout.strip().splitlines()[-1])

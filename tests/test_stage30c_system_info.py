@@ -45,6 +45,7 @@ def test_system_info_cli_dispatch(monkeypatch):
 def test_system_info_subprocess_returns_readonly_platform_python():
     r = subprocess.run(
         [sys.executable, "-m", "ai_assistant.cli", "system-info"],
+        check=False,
         capture_output=True, text=True, cwd=".",
     )
     assert r.returncode == 0, f"stderr: {r.stderr}\nstdout: {r.stdout}"

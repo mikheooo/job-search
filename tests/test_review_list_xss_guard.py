@@ -200,6 +200,7 @@ def _node_report(tmp_path, js: str) -> dict:
     with out_path.open("w", encoding="utf-8") as out, err_path.open("w", encoding="utf-8") as err:
         proc = subprocess.run(
             [NODE, str(script)],
+            check=False,
             cwd=str(tmp_path), stdout=out, stderr=err, timeout=60,
         )
     assert proc.returncode == 0, f"node failed: {err_path.read_text(encoding='utf-8', errors='replace')[-3000:]}"

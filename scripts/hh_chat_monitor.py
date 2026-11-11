@@ -52,6 +52,7 @@ def _run_google_api(args: List[str]) -> tuple[int, str]:
     try:
         proc = subprocess.run(
             cmd,
+            check=False,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -201,6 +202,7 @@ def send_telegram_notification(
     try:
         proc = subprocess.run(
             cmd,
+            check=False,
             input=text,
             capture_output=True,
             text=True,

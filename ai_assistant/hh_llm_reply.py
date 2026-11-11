@@ -33,7 +33,7 @@ def antigravity_complete(*, messages: list[dict[str, str]], **_kwargs: Any) -> A
     args = [str(executable), '--input-format', 'stream-json', '--output-format', 'stream-json',
             '--model', 'gemini-3.8-flash-low', '--agent', 'hh-response-only',
             '--settings', json.dumps(settings), '--sandbox', '--print-timeout', '45s', '--print=']
-    proc = subprocess.run(args, input=request, capture_output=True, encoding='utf-8',
+    proc = subprocess.run(args, check=False, input=request, capture_output=True, encoding='utf-8',
                           errors='replace', timeout=55, cwd=config.PROJECT_ROOT,
                           creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     final = None
