@@ -2444,15 +2444,15 @@ def submit_application_in_browser(
     # All three stops now come from hh_submission.submission_halt_reason(),
     # so a new stop is added in one place and reaches every click path.
     if not dry_run:
-        from .hh_submission import submission_halt_reason
+        from .outbound_governor import OutboundAction, check_outbound_allowed
 
-        _halt = submission_halt_reason()
-        if _halt:
+        _allowed, _halt = check_outbound_allowed(action=OutboundAction.SUBMISSION, dry_run=dry_run)
+        if not _allowed:
             return SubmitResult(
                 vacancy_stable_id=vacancy_stable_id,
                 submission_id="",
                 status="BLOCKED",
-                error=_halt,
+                error=_halt or "Outbound submission halted by safety policy",
                 executor_version="v1",
             )
     
@@ -2980,7 +2980,19 @@ def submit_application_in_browser(
     except Exception as exc:
         _note_failure("pre-submit screenshot", exc)
 
-    # Submit
+    # Submit: check outbound governor directly before physical adapter submit_application
+    from .outbound_governor import OutboundAction, check_outbound_allowed
+    _sub_allowed, _sub_halt = check_outbound_allowed(action=OutboundAction.SUBMISSION, dry_run=dry_run)
+    if not _sub_allowed:
+        return SubmitResult(
+            vacancy_stable_id=vacancy_stable_id,
+            submission_id=submission_id,
+            status="BLOCKED",
+            error=_sub_halt or "Outbound submission halted by safety policy",
+            executor_version="v1",
+            before_screenshot=before_screenshot,
+        )
+
     try:
         submit_result = use_adapter.submit_application()
     except Exception as e:

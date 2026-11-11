@@ -79,7 +79,7 @@ def test_safe001_all_outbounds_halted_when_stop_all_file_present(clean_governor_
     assert "Emergency stop file present" in form_res.blocked_reason
 
     # 4. Production Path 3: Email Outreach (SMTP)
-    with patch("smtplib.SMTP_SSL") as mock_smtp:
+    with patch("smtplib.SMTP_SSL", create=True) as mock_smtp:
         sent, err_msg = send_smtp_email("hr@example.com", "Test Subject", "Test Body")
         assert sent is False
         assert "заблокирована предохранителем" in err_msg

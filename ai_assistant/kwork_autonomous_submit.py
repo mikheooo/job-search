@@ -349,7 +349,13 @@ def submit_kwork_proposal_cdp(
             "reason": f"Form validation failed with errors: {fill_res.get('errors')}",
         }
 
-    # Form is valid! Now submit the offer.
+    # Form is valid! Guard outbound submission immediately before physical submit
+    from ai_assistant.outbound_governor import OutboundAction, check_outbound_allowed
+    allowed, halt = check_outbound_allowed(action=OutboundAction.GIG_APPLICATION, dry_run=False)
+    if not allowed:
+        return {"ok": False, "status": "REFUSED_KILL_SWITCH", "reason": halt or "Outbound gig application halted by safety policy"}
+
+    # Now submit the offer.
     submit_script = """
     JSON.stringify((() => {
         const btn = document.querySelector('button.kw-button--green');
