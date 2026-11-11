@@ -1,19 +1,24 @@
 """Windows DPAPI user-bound storage for P8 API observations/proposal artifacts."""
 import base64
-import ctypes
 import json
 import os
 from pathlib import Path
-from ctypes import wintypes
 from datetime import datetime, timezone
 
+try:
+    import ctypes
+    from ctypes import wintypes
 
-class Blob(ctypes.Structure):
-    _fields_ = [('size', wintypes.DWORD), ('data', ctypes.POINTER(ctypes.c_ubyte))]
+    class Blob(ctypes.Structure):
+        _fields_ = [('size', wintypes.DWORD), ('data', ctypes.POINTER(ctypes.c_ubyte))]
+except Exception:
+    ctypes = None
+    wintypes = None
+    Blob = None
 
 
 def _crypt(raw, decrypt=False):
-    if os.name != 'nt':
+    if os.name != 'nt' or ctypes is None or wintypes is None:
         if os.getenv("JOB_SEARCH_TEST_NETWORK_BLOCKED") == "1" or os.getenv("PYTEST_CURRENT_TEST"):
             return bytes(b ^ 0x5A for b in raw)
         raise RuntimeError('DPAPI requires Windows; use approved encrypted storage on this host')
