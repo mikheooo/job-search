@@ -163,6 +163,15 @@ def _is_retryable(error: Exception) -> bool:
 def _call_llm(system_prompt: str, user_prompt: str) -> str:
     if os.getenv("JOB_ANALYZER_OFFLINE") == "1":
         raise RuntimeError("Offline mode - skip LLM")
+    if not os.getenv("PYTEST_CURRENT_TEST"):
+        from ai_assistant.antigravity_llm import antigravity_complete
+        content = antigravity_complete(
+            f"{system_prompt}\n\n{user_prompt}\n\nReturn ONLY a valid JSON object.",
+            timeout=60,
+        )
+        if content:
+            return content
+        raise RuntimeError("Antigravity CLI returned empty response")
     if OpenAI is None:
         raise RuntimeError("OpenAI client not available")
     # short timeout — increased for local Ollama (Qwen 9B ~60-80s cold, ~30s warm)

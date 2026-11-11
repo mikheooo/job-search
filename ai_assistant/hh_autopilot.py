@@ -61,8 +61,9 @@ _ROLE_GATE_BLOCK_RE = re.compile(
 _ROLE_GATE_POSITIVE_RE = re.compile(
     r"(?i)(поддержк\w*|администратор|администрир\w*|system\s+admin|sysadmin|"
     r"devops|sre\b|python|automation|автоматизац\w*|integration|интеграц\w*|"
-    r"\bai\b|ai[- ]engineer|llm|bitrix|битрикс|crm|service\s*desk|help\s*desk|"
-    r"техническ\w*\s+поддержк\w*|инфраструктур\w*|сопровожд\w*|etl|data\s+engineer)"
+    r"\bai\b|\bии\b|ai[- ]engineer|llm|нейросет\w*|n8n|bitrix|битрикс|crm|amocrm|амосрм|"
+    r"service\s*desk|help\s*desk|сетев\w*\s+инженер|\bnoc\b|network\s+engineer|linux|"
+    r"техническ\w*\s+поддержк\w*|инфраструктур\w*|сопровожд\w*|etl|data\s+engineer|бот\w*)"
 )
 # The canonical classifier misses several Russian support titles ("Инженер
 # технической поддержки" -> OTHER). Allow the clearly technical wordings below
@@ -71,10 +72,15 @@ _ROLE_GATE_FALLBACK_RE = re.compile(
     r"(?i)(техническ\w*\s+поддержк\w*|поддержк\w*\s+пользовател\w*|"
     r"инженер\w*\s+сопровожд\w*|специалист\w*\s+сопровожд\w*|эксперт\w*\s+по\s+сопровожд\w*|"
     r"служб\w*\s+поддержк\w*|help\s*desk|service\s*desk|"
-    r"системн\w*\s+администратор|администратор\w*\s+bitrix|bitrix24|битрикс\w*|"
-    r"ai[- ]?developer|ai[- ]?разработчик|разработчик\w*\s+(?:ии|ai|n8n|бот\w*|чат[- ]?бот\w*|telegram|телеграм)|"
+    r"системн\w*\s+администратор|сетев\w*\s+инженер|\bnoc\b|network\s+engineer|"
+    r"администратор\w*\s+bitrix|bitrix24|битрикс\w*|amocrm|амосрм|"
+    r"ai[- ]?developer|ai[- ]?разработчик|ai[- ]?architect|архитектор\w*\s+(?:ии|ai)|"
+    r"ии[- ]?агент\w*|ai[- ]?агент\w*|forward\s+deployed\s+engineer|"
+    r"системн\w*\s+аналитик\w*\s+ai|специалист\w*\s+по\s+искусственн\w*\s+интеллект\w*|"
+    r"разработчик\w*\s+(?:ии|ai|n8n|бот\w*|чат[- ]?бот\w*|telegram|телеграм)|"
     r"инженер[- ]?автоматизатор|автоматизатор|специалист\w*\s+по\s+автоматизац\w*|"
-    r"интегратор\w*\s*(?:crm|amocrm|амосрм|битрикс|bitrix|ai|ии)|ai[- ]?интегратор)"
+    r"интегратор\w*\s*(?:crm|amocrm|амосрм|битрикс|bitrix|ai|ии)|ai[- ]?интегратор|"
+    r"внедрен\w*\s+(?:crm|битрикс|bitrix|amocrm|амосрм|ai|ии))"
 )
 
 
@@ -451,6 +457,8 @@ def check_salary_floor(salary_data: Any, min_rub: int = 100000) -> tuple[bool, s
             return True, "salary not specified in dict (acceptable)"
 
         max_val = max(vals)
+        if sal_to is None and sal_from is not None and int(sal_from) >= 70000:
+            return True, f"salary open upper bound (from {sal_from} >= 70000)"
         if max_val < min_rub:
             return False, f"salary {salary_data} below floor {min_rub}"
         return True, f"salary ok (up to {max_val} >= {min_rub})"
@@ -473,6 +481,8 @@ def check_salary_floor(salary_data: Any, min_rub: int = 100000) -> tuple[bool, s
         return True, "no numbers in salary"
 
     max_val = max(nums)
+    if len(nums) == 1 and clean_s.startswith("от") and "до" not in clean_s and max_val >= 70000:
+        return True, f"salary open upper bound ({salary_str})"
     if max_val < min_rub:
         return False, f"salary {salary_str} below floor {min_rub}"
 

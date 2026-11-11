@@ -98,11 +98,21 @@ def test_role_gate_blocks_off_target_titles(title, profile):
         "Специалист сопровождения",
         "Инженер по эксплуатации веб-инфраструктуры/DevOps",
         "Python Developer",
+        "Сетевой инженер NOC",
+        "AI Architect / Архитектор ИИ-решений",
+        "Системный аналитик AI/Data / Forward Deployed Engineer (FDE)",
     ],
 )
 def test_role_gate_allows_target_titles(title, profile):
     allowed, reason = ha.role_gate(title, "", profile)
     assert allowed is True, f"target title was rejected: {title} ({reason})"
+
+
+def test_salary_floor_allows_open_upper_bound_from_70k():
+    assert ha.check_salary_floor("от 70 000 ₽ на руки")[0] is True
+    assert ha.check_salary_floor({"from": 70000, "to": None, "currency": "RUR"})[0] is True
+    assert ha.check_salary_floor("до 70 000 ₽ на руки")[0] is False
+    assert ha.check_salary_floor("50 000 – 80 000 ₽")[0] is False
 
 
 def test_role_gate_fails_closed_without_profile_priorities():
