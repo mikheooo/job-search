@@ -26,6 +26,7 @@ logs/
 *.json
 !package.json
 !package-lock.json
+!requirements.lock
 !vacancies.json
 
 # Browser artifacts (runtime screenshots/state; tracked fixture exceptions below)
