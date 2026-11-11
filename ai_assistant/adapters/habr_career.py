@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import re
+import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-
-import feedparser
+from email.utils import parsedate_to_datetime
+from typing import Any
 
 from ..normalizer import normalize_salary_text
 from ..schema import Vacancy
@@ -15,37 +17,48 @@ class HabrCareerAdapter:
 
     def fetch_vacancies(self, url: str | None = None) -> list[Vacancy]:
         target_url = url or self.feed_url
-        feed = feedparser.parse(target_url)
+        req = urllib.request.Request(
+            target_url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                xml_data = resp.read()
+            root = ET.fromstring(xml_data)
+        except Exception:
+            return []
+
         results: list[Vacancy] = []
 
-        for entry in feed.entries:
-            job_url = entry.get("link") or entry.get("id") or ""
-            source_job_id = job_url.rstrip("/").rsplit("/", 1)[-1] if job_url else entry.get("id", "")
+        for item in root.findall(".//item"):
+            job_url = item.findtext("link") or item.findtext("guid") or ""
+            source_job_id = job_url.rstrip("/").rsplit("/", 1)[-1] if job_url else str(item.findtext("guid") or "")
 
-            # Company is provided in author or authors list
-            company = entry.get("author") or ""
-            if not company and entry.get("authors"):
-                company = entry.get("authors")[0].get("name", "")
+            company = item.findtext("author") or ""
+            if not company:
+                # check dc:creator or category
+                for child in item:
+                    if child.tag.endswith("creator"):
+                        company = child.text or ""
+                        break
 
-            title = entry.get("title") or ""
-            summary = entry.get("summary") or ""
+            title = item.findtext("title") or ""
+            summary = item.findtext("description") or ""
 
-            # Check for salary info in title or summary
             salary_info = normalize_salary_text(summary)
             if not salary_info.get("salary_min") and not salary_info.get("salary_max"):
                 salary_info = normalize_salary_text(title)
 
+            pub_date_str = item.findtext("pubDate")
             published_at = None
-            if entry.get("published_parsed"):
+            if pub_date_str:
                 try:
-                    published_at = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                    published_at = parsedate_to_datetime(pub_date_str)
                 except Exception:
                     published_at = None
 
-            # Tags from RSS
-            tags = [t.get("term") for t in (entry.get("tags") or []) if t.get("term")]
+            tags = [cat.text.strip() for cat in item.findall("category") if cat.text]
 
-            # Extract location from title or summary
             location = None
             m_loc = re.search(r"\(([^)]+)\)$", title.strip())
             if m_loc:
@@ -76,7 +89,7 @@ class HabrCareerAdapter:
                         "title": title,
                         "company": company,
                         "summary": summary,
-                        "published": entry.get("published"),
+                        "published": pub_date_str,
                         "tags": tags,
                     },
                 )

@@ -33,7 +33,9 @@ from ai_assistant.adapters.geekjob import GeekJobAdapter
 from ai_assistant.adapters.habr_career import HabrCareerAdapter
 from ai_assistant.adapters.hirify import HirifyAdapter
 from ai_assistant.adapters.linkedin_bangkok import LinkedInBangkokAdapter
+from ai_assistant.adapters.remoteok import RemoteOkAdapter
 from ai_assistant.adapters.telegram_channels import TelegramChannelsAdapter
+from ai_assistant.adapters.weworkremotely import WeWorkRemotelyAdapter
 from ai_assistant.schema import Vacancy
 
 # Phase 5 windowless: started by pythonw.exe (no console), so stderr goes
@@ -233,6 +235,24 @@ def run_discovery(notify: bool = True) -> dict[str, Any]:
         collected.extend(tg_vacs)
     except Exception as e:
         logger.error(f"Telegram channels adapter failed: {e}")
+
+    # 7. RemoteOK (Global Remote Tech Jobs)
+    try:
+        remoteok = RemoteOkAdapter()
+        ro_vacs = remoteok.fetch_vacancies()
+        logger.info(f"RemoteOK: fetched {len(ro_vacs)} global remote vacancies")
+        collected.extend(ro_vacs)
+    except Exception as e:
+        logger.error(f"RemoteOK adapter failed: {e}")
+
+    # 8. WeWorkRemotely (Top International Remote Tech Feed)
+    try:
+        wwr = WeWorkRemotelyAdapter()
+        wwr_vacs = wwr.fetch_vacancies()
+        logger.info(f"WeWorkRemotely: fetched {len(wwr_vacs)} remote tech vacancies")
+        collected.extend(wwr_vacs)
+    except Exception as e:
+        logger.error(f"WeWorkRemotely adapter failed: {e}")
 
     # Filtering
     filtered = []

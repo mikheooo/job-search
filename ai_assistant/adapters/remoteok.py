@@ -10,11 +10,22 @@ class RemoteOkAdapter:
     api_url = "https://remoteok.com/api"
 
     def fetch_vacancies(self) -> list[Vacancy]:
-        import requests
+        import json
+        import urllib.request
 
-        response = requests.get(self.api_url, timeout=20)
-        response.raise_for_status()
-        payload = response.json()
+        req = urllib.request.Request(
+            self.api_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        except Exception:
+            return []
+
         items = payload[1:] if payload and isinstance(payload[0], dict) and "legal" in payload[0] else payload
 
         results: list[Vacancy] = []

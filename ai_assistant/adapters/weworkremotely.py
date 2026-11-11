@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import re
+import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-
-import feedparser
+from typing import Any
 
 from ..schema import Vacancy
 from ..vacancy_identity import normalize_url
@@ -14,29 +15,50 @@ class WeWorkRemotelyAdapter:
     feed_url = "https://weworkremotely.com/remote-jobs.rss"
 
     def fetch_vacancies(self) -> list[Vacancy]:
-        feed = feedparser.parse(self.feed_url)
+        req = urllib.request.Request(
+            self.feed_url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                xml_data = resp.read()
+            root = ET.fromstring(xml_data)
+        except Exception:
+            return []
+
         results: list[Vacancy] = []
         seen_urls = set()
-        for entry in feed.entries:
-            raw_url = entry.get("link") or entry.get("id") or ""
+
+        for item in root.findall(".//item"):
+            raw_url = item.findtext("link") or item.findtext("guid") or ""
             job_url = normalize_url(raw_url) if raw_url else ""
             if not job_url or job_url in seen_urls:
                 continue
             seen_urls.add(job_url)
 
-            source_job_id = job_url.rstrip("/").rsplit("/", 1)[-1] if job_url else str(entry.get("id", ""))
-            summary = entry.get("summary") or ""
+            raw_title = item.findtext("title") or ""
+            company = ""
+            title = raw_title
+            if ":" in raw_title:
+                parts = raw_title.split(":", 1)
+                company = parts[0].strip()
+                title = parts[1].strip()
+
+            source_job_id = job_url.rstrip("/").rsplit("/", 1)[-1] if job_url else str(item.findtext("guid") or "")
+            summary = item.findtext("description") or ""
             raw_apply = self._extract_apply_link(summary) or job_url or None
             application_url = normalize_url(raw_apply) if raw_apply else None
 
-            location = self._join_nonempty(
-                entry.get("region"), entry.get("country"), entry.get("state")
-            ) or None
+            region = item.findtext("region")
+            country = item.findtext("country")
+            location = self._join_nonempty(region, country) or "Remote Worldwide"
 
+            pub_date_str = item.findtext("pubDate")
             published_at = None
-            if entry.get("published_parsed"):
+            if pub_date_str:
                 try:
-                    published_at = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                    from email.utils import parsedate_to_datetime
+                    published_at = parsedate_to_datetime(pub_date_str)
                 except Exception:
                     published_at = None
 
@@ -44,21 +66,20 @@ class WeWorkRemotelyAdapter:
                 Vacancy(
                     source=self.source,
                     source_job_id=source_job_id,
-                    title=entry.get("title", "").strip(),
-                    company="",
+                    title=title,
+                    company=company,
                     description=summary,
                     job_url=job_url,
                     application_url=application_url,
                     location=location,
                     country_restrictions=[],
                     timezone_restrictions=[],
-                    employment_type=entry.get("type"),
+                    employment_type="full_time",
                     published_at=published_at,
                     raw_data={
-                        "title": entry.get("title"),
+                        "title": raw_title,
                         "summary": summary,
-                        "published": entry.get("published"),
-                        "tags": [t.get("term") for t in (entry.get("tags") or []) if t.get("term")],
+                        "pubDate": pub_date_str,
                     },
                 )
             )
