@@ -2886,18 +2886,21 @@ def count_submitted_transitions_since(since_iso: str) -> int:
             since_dt = since_dt.replace(tzinfo=timezone.utc)
         else:
             since_dt = since_dt.astimezone(timezone.utc)
-    except Exception:
-        with db_cursor(commit=False) as cursor:
-            cursor.execute(
-                "SELECT COUNT(*) FROM hh_application_transitions WHERE state = 'SUBMITTED' AND created_at >= ?",
-                (since_iso,),
-            )
-            row = cursor.fetchone()
-            return row[0] if row else 0
+    except Exception as e:
+        logger.warning(
+            "count_submitted_transitions_since: unparseable since_iso %r (%s). Failing closed by counting all SUBMITTED rows.",
+            since_iso,
+            e,
+        )
+        return len(rows)
 
     count = 0
     for (created_at_raw,) in rows:
         if not created_at_raw:
+            logger.warning(
+                "count_submitted_transitions_since: empty created_at in SUBMITTED transition row. Counting as inside window (fail-closed)."
+            )
+            count += 1
             continue
         try:
             row_dt = datetime.fromisoformat(created_at_raw)
@@ -2907,9 +2910,13 @@ def count_submitted_transitions_since(since_iso: str) -> int:
                 row_dt = row_dt.astimezone(timezone.utc)
             if row_dt >= since_dt:
                 count += 1
-        except Exception:
-            if created_at_raw >= since_iso:
-                count += 1
+        except Exception as e:
+            logger.warning(
+                "count_submitted_transitions_since: corrupted created_at %r (%s). Counting as inside window (fail-closed).",
+                created_at_raw,
+                e,
+            )
+            count += 1
     return count
 # --- Phase 2.1: Exclusive Submission Claims ---
 

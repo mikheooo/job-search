@@ -320,3 +320,21 @@ Recruiter message handling follows strict truth-only and fail-closed rules:
   - A later concurrent external change made the adapter HEALTHY and callback-capable. The actor/process is **UNKNOWN**; the canonical fetcher remained HEALTHY and hash-matched.
 - **Production Database SHA256:** **UNKNOWN at final handoff** because another process held `state.db`; earlier Stage 92 snapshot was `0B57699086F5616D1CAFFB0FBFE3F5E9C339660A172BC49398AC0B8EFC6F56F1`, but it may now be stale.
 - **PROJECT_STATE.md updated: YES**
+
+---
+
+## 6. Audit Remediation Changelog (2026-11-11)
+
+### 6.1. Product Contract Fix: HH Message Salary Classification (Fail-Closed)
+- **Component:** `ai_assistant/hh_message_reply.py:classify_hh_conversation_detailed`
+- **Previous Behavior:** Employer questions mentioning salary (`зарплат|оплат|оклад|salary|ставк|уровень дохода|денег`) were automatically answered by the bot with a hardcoded expectation string: `"Здравствуйте! Мой ориентир по заработной плате — от 100 000 руб. на руки..."` (`NEEDS_REPLY`).
+- **Remediation:** Classified as `HUMAN_REVIEW` with `prepared_reply: None`, `confidence: 0.95`, and reason `"Employer asked about salary expectations; escalating for human review."`.
+- **Architectural Rationale:**
+  1. **Fail-Closed Contract Violation:** `tests/test_stage32_message_watcher.py` explicitly locks the invariant that compensation negotiation is strictly human-governed. Unattended bot-driven salary commitments violate operator safety.
+  2. **Truth-Only Invariant:** A hardcoded net figure ("от 100 000 руб.") violates truth-only provenance, as compensation expectations depend on seniority, tech stack, currency, and employment modality (contract/full-time).
+
+### 6.2. Pattern Evaluation Ordering: E-Commerce / Marketplace Specificity
+- **Component:** `ai_assistant/hh_message_reply.py:classify_hh_conversation_detailed`
+- **Ordering Change:** Specialized domain matching for E-Commerce / Marketplaces (`e-commerce|маркетплейс|ozon|wildberries|wb`) was hoisted **above** the broad keyword matcher for general company experience.
+- **Architectural Rationale:** The general company experience regex matches wide vocabulary terms including `"дизайн"`, `"design"`, `"кейс"`, `"сайт"`, `"пример"`, `"подробнее"`. When an employer asks questions regarding specific marketplace e-commerce platforms (e.g. "Расскажите подробнее про опыт с Ozon/WB"), the broader keyword regex would prematurely intercept the dialogue into generic company narrative rather than evaluating candidate profile facts regarding e-commerce experience. Hoisting the domain check ensures domain queries are fact-checked against candidate profile skills with precision.
+
