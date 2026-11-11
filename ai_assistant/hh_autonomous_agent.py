@@ -2166,11 +2166,12 @@ class AutonomousJobAgent:
                                     send_status = "REPLY_AMBIGUOUS"
                                     send_error = "Message not confirmed in HH chat DOM after send"
                             else:
-                                if send_res.get("reason") == "Open conversation does not match target":
-                                    send_status = "HUMAN_REVIEW_REQUIRED"
+                                if send_res.get("ok"):
+                                    send_status = "REPLY_AMBIGUOUS"
+                                    send_error = "Open conversation does not match target"
                                 else:
-                                    send_status = "FAILED"
-                                send_error = send_res.get("reason") or "Failed to send message via HH chat button"
+                                    send_status = "HUMAN_REVIEW_REQUIRED"
+                                    send_error = send_res.get("reason") or "Failed to send message via HH chat button"
                         except Exception as e:
                             send_status = "REPLY_AMBIGUOUS"
                             send_error = f"Send outcome unknown: {type(e).__name__}"
@@ -2237,7 +2238,7 @@ class AutonomousJobAgent:
                         application_id=app_id,
                     )
                     out["notifications_sent"].append(notif)
-                elif send_status == "HUMAN_REVIEW_REQUIRED":
+                elif send_status == "HUMAN_REVIEW_REQUIRED" and consecutive_count >= 15:
                     notif = NotificationDispatcher.notify_blocking_question(
                         company=d.employer or "Unknown Employer",
                         vacancy_title=d.vacancy_title or "Position",

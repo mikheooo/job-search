@@ -2117,6 +2117,9 @@ def fetch_hh_conversation_readonly(evaluate_fn: Callable[[str], str]) -> dict[st
 # external links/forms/questionnaires, test tasks/projects, and final offer acceptance or interview slot scheduling.
 _AUTO_FORBIDDEN_RE = re.compile(
     r"forms\.gle|docs\.google\.com/forms|"
+    r"тестов\w*\s+задани\w*|"
+    r"анкет\w*|опросник\w*|заполните\s+форму|"
+    r"согласу\w*\s+время|время\s+для\s+звонк\w*|удобн\w*\s+время\s+для\s+звонк\w*|"
     r"принять\s+оффер|принять\s+предложен|accept.*offer|подпис\w*\s+договор",
     re.IGNORECASE,
 )

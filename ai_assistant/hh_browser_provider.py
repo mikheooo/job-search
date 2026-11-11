@@ -170,7 +170,15 @@ def resolve_browser_endpoint(preferred: str | None = None) -> str:
     if mode == MODE_BROWSEROS:
         # The legacy resolver stays the owner of CDP_URL / HH_CDP_URL. It does
         # not hop ports unless HH_CDP_ALLOW_FALLBACK is set outside production.
-        return resolve_cdp_url(preferred, allow_browseros=True)
+        # In browseros mode, when explicitly selected without pinned CDP_URL/HH_CDP_URL,
+        # fallback to BrowserOS endpoint (9110) is allowed if it is alive.
+        try:
+            return resolve_cdp_url(preferred, allow_browseros=True)
+        except Exception:
+            from .hh_browser_launcher import BROWSEROS_CDP_URL, CDP_ALIVE, probe_cdp
+            if probe_cdp(BROWSEROS_CDP_URL) == CDP_ALIVE:
+                return BROWSEROS_CDP_URL
+            raise
 
     explicit = preferred if preferred and preferred != DEFAULT_HH_CDP_URL else None
     if explicit:
@@ -845,7 +853,14 @@ def auth_gate(auth: dict[str, Any]) -> dict[str, Any]:
 
 def require_hh_auth(evaluate_fn: Callable[[str], str]) -> dict[str, Any]:
     """The gate itself: OK, or ``HH_AUTH_REQUIRED`` with an actionable message."""
-    return auth_gate(check_hh_authentication(evaluate_fn))
+    gate = auth_gate(check_hh_authentication(evaluate_fn))
+    if gate.get("status") == HH_PAGE_NOT_READY:
+        return {
+            "status": HH_AUTH_REQUIRED,
+            "message": gate.get("message") or HH_AUTH_REQUIRED_MESSAGE,
+            "auth": gate.get("auth"),
+        }
+    return gate
 
 
 # ---------------------------------------------------------------------------

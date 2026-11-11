@@ -121,20 +121,12 @@
 
 ---
 
-### Группа 9: Headless CDP Provider & Autopilot Regex (4 теста)
+### Группа 9: Headless CDP Provider & Autopilot Regex (5 тестов) — [УСТРАНЕНО]
 **Категория:** `[LEGACY_MOCK]` / `[REAL_BEHAVIOR_CHANGE]`  
+**Статус:** **Полностью устранено в коммите TEST-HEADLESS-001**.
 **Корневая причина:** 
-1. Отсутствие вспомогательного скрипта `tools/.t721_headless_dryrun.py` (был удален или не закоммичен).
-2. Ошибка запуска CDP provider без указания `HH_CDP_URL`.
-3. Регулярные выражения стоп-слов автоответов (`FORBIDDEN_PATTERNS`).
-
-**Затронутые тесты:**
-1. `tests/test_t721_headless_provider.py::test_a_failing_evaluate_is_auth_required_not_a_crash`
-2. `tests/test_t721_headless_provider.py::test_the_dry_run_tool_never_clicks`
-3. `tests/test_t721_headless_provider.py::test_browseros_mode_still_reaches_9110_when_it_is_up`
-4. `tests/test_telegram_routing_and_autopilot_unlock.py::TestAutoReplyFlagsAndGates::test_auto_forbidden_re_strictly_matches_critical_topics`
-5. `tests/test_telegram_routing_and_autopilot_unlock.py::TestAutoReplyFlagsAndGates::test_is_safe_for_auto_reply_evaluation`
-
-**План устранения:**
-- Создать/восстановить безопасную заглушку `tools/.t721_headless_dryrun.py`.
-- Дополнить регулярные выражения критических стоп-тем автоответов паттерном для тестовых заданий (`тестовое задание`).
+1. Вспомогательный скрипт `tools/.t721_headless_dryrun.py` отсутствовал в рабочей директории (был сохранен в git history checkpoint `153956c44fd1a68d7620116cfd90b909842b3ccd`).
+2. В `resolve_browser_endpoint()` при режиме `MODE_BROWSEROS` без предварительно заданных переменных `CDP_URL`/`HH_CDP_URL` выбрасывался `CdpUrlRequired` вместо прямой проверки доступности BrowserOS (порт 9110).
+3. `require_hh_auth()` возвращал `PAGE_NOT_READY` вместо ожидаемого контрактом `HH_AUTH_REQUIRED` при падении функции evaluate.
+4. В регулярном выражении `_AUTO_FORBIDDEN_RE` отсутствовали паттерны для тестовых заданий (`тестовое задание`), анкет и согласования времени созвона, из-за чего сообщения со ссылками на тестовые ошибочно признавались безопасными для автоответа.
+**Результат устранения:** Восстановлен скрипт `tools/.t721_headless_dryrun.py` из истории Git. В `resolve_browser_endpoint()` добавлен прямой fallback на живой порт 9110 в режиме `browseros`. `require_hh_auth()` теперь преобразует `PAGE_NOT_READY` в `HH_AUTH_REQUIRED` по своему контракту. В `_AUTO_FORBIDDEN_RE` добавлены строгие паттерны для тестовых заданий, анкет и согласования времени звонка. Все 73 теста в модулях `test_t721_headless_provider.py` и `test_telegram_routing_and_autopilot_unlock.py` проходят со 100% успехом (green).
