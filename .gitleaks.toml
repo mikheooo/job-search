@@ -1,0 +1,12 @@
+title = "Gitleaks configuration"
+
+[allowlist]
+description = "Repository allowlists for tests, baselines, and virtual environments"
+paths = [
+    '''^\.venv/''',
+    '''^node_modules/''',
+    '''^artifacts/.*\.html$''',
+    '''^scratch/''',
+    '''^docs/audit/baseline/''',
+    '''^\.system_generated/''',
+]
