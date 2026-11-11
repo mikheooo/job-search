@@ -1,8 +1,14 @@
 """Tests for runner.py process verification safety (RUN-001)."""
-import ctypes
 import os
 import sys
 from unittest.mock import patch
+
+try:
+    import ctypes
+except Exception:
+    import types
+    ctypes = types.ModuleType("ctypes")  # type: ignore[assignment]
+    sys.modules["ctypes"] = ctypes
 
 if not hasattr(ctypes, "windll"):
     ctypes.windll = type("_W", (), {"kernel32": type("_K", (), {"OpenProcess": lambda *a: None})()})()

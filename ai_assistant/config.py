@@ -25,14 +25,36 @@ OPERATOR_SAFETY_VARS = (
 _OPERATOR_FLAGS = {k: os.getenv(k) for k in OPERATOR_SAFETY_VARS}
 _OPERATOR_SUBMIT_ALLOWED = _OPERATOR_FLAGS.get("SUBMIT_ALLOWED")
 
+def get_hermes_env_candidates() -> list[str]:
+    """Return potential cross-platform file paths for hermes agent's .env."""
+    candidates = []
+    localappdata = os.getenv("LOCALAPPDATA")
+    if localappdata:
+        candidates.append(os.path.join(localappdata, "hermes", ".env"))
+    candidates.extend([
+        os.path.expanduser(os.path.join("~", "AppData", "Local", "hermes", ".env")),
+        os.path.expanduser(os.path.join("~", ".config", "hermes", ".env")),
+        os.path.expanduser(os.path.join("~", ".local", "share", "hermes", ".env")),
+    ])
+    seen = set()
+    result = []
+    for c in candidates:
+        norm = os.path.normpath(c)
+        if norm not in seen:
+            seen.add(norm)
+            result.append(c)
+    return result
+
+
 try:
     from dotenv import load_dotenv
 
     load_dotenv(os.path.join(PROJECT_ROOT, ".env"), override=False)
     if not os.getenv("TELEGRAM_BOT_TOKEN"):
-        hermes_env = os.path.expanduser(r"~\AppData\Local\hermes\.env")
-        if os.path.exists(hermes_env):
-            load_dotenv(hermes_env, override=False)
+        for hermes_env in get_hermes_env_candidates():
+            if os.path.exists(hermes_env):
+                load_dotenv(hermes_env, override=False)
+                break
 except (ImportError, OSError, ValueError) as exc:
     logger.warning("Could not load .env (%s: %s)", type(exc).__name__, exc)
 

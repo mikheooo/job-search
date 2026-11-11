@@ -44,7 +44,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import ctypes
+try:
+    import ctypes
+except (ImportError, AttributeError):
+    ctypes = None  # type: ignore[assignment]
 import json
 import logging
 import os
@@ -275,7 +278,7 @@ def pid_alive(pid: int) -> bool:
     """
     if pid <= 0:
         return False
-    if os.name == "nt":
+    if os.name == "nt" and ctypes is not None and hasattr(ctypes, "windll"):
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
         handle = ctypes.windll.kernel32.OpenProcess(
             PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid)
@@ -502,7 +505,7 @@ def launch_headless(
         argv[-1] = open_url
 
     creationflags = 0
-    if os.name == "nt":
+    if os.name == "nt" and ctypes is not None and hasattr(ctypes, "windll"):
         creationflags = 0x00000200 | 0x00000008  # NEW_PROCESS_GROUP | DETACHED_PROCESS
 
     try:
@@ -1669,7 +1672,7 @@ def terminate_pid(pid: int, timeout: float = 5.0) -> bool:
     on a handle we opened for a pid we have already proven is ours cannot reach a
     process we did not name.
     """
-    if os.name != "nt" or pid <= 0:
+    if os.name != "nt" or pid <= 0 or ctypes is None or not hasattr(ctypes, "windll"):
         return False
     PROCESS_TERMINATE = 0x0001
     handle = ctypes.windll.kernel32.OpenProcess(PROCESS_TERMINATE, False, int(pid))

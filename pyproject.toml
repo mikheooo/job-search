@@ -32,6 +32,10 @@ dev = [
     "google-api-python-client>=2,<3",
 ]
 
+[project.scripts]
+job-search = "ai_assistant.cli:main"
+ai-assistant = "ai_assistant.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["ai_assistant*"]

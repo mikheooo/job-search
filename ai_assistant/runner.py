@@ -45,7 +45,7 @@ def is_pid_running(pid: int) -> bool:
             STILL_ACTIVE = 259
             handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
             if not handle:
-                return False
+                raise RuntimeError("OpenProcess failed or returned NULL")
             exit_code = ctypes.c_ulong()
             ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
             ctypes.windll.kernel32.CloseHandle(handle)
