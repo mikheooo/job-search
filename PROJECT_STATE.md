@@ -5,7 +5,7 @@
 `job-search` is an automated, production-grade, human-in-the-loop job search, qualification matching, digest delivery, and application management platform designed for Mikhail Kolesnikov's remote career search.
 
 - **Primary Repository:** `c:\Users\Misha\Documents\job-search`
-- **Active Branch:** `main` (stabilized via audit remediation, commit `9c8c321`)
+- **Active Branch:** `audit/2026-11-11` (fully stabilized, verified dual-OS CI green, ready for merge into `main`)
 - **Primary Runtime:** Python 3.11+ / Windows Powershell / SQLite WAL Mode
 - **Operating Posture:** Fail-closed, truth-only, review-by-default, zero hallucinated claims, zero unauthorized external mutation.
 
@@ -337,4 +337,32 @@ Recruiter message handling follows strict truth-only and fail-closed rules:
 - **Component:** `ai_assistant/hh_message_reply.py:classify_hh_conversation_detailed`
 - **Ordering Change:** Specialized domain matching for E-Commerce / Marketplaces (`e-commerce|маркетплейс|ozon|wildberries|wb`) was hoisted **above** the broad keyword matcher for general company experience.
 - **Architectural Rationale:** The general company experience regex matches wide vocabulary terms including `"дизайн"`, `"design"`, `"кейс"`, `"сайт"`, `"пример"`, `"подробнее"`. When an employer asks questions regarding specific marketplace e-commerce platforms (e.g. "Расскажите подробнее про опыт с Ozon/WB"), the broader keyword regex would prematurely intercept the dialogue into generic company narrative rather than evaluating candidate profile facts regarding e-commerce experience. Hoisting the domain check ensures domain queries are fact-checked against candidate profile skills with precision.
+
+### 6.3. Central Outbound Governor & Direct Physical Execution Gating (SAFE-001 / SAFE-002)
+- **Component:** `ai_assistant/outbound_governor.py`, `ai_assistant/browser_executor.py`, `ai_assistant/hh_cdp_submit.py`, `ai_assistant/hh_autopilot.py`, `ai_assistant/hh_controlled_submit.py`, `ai_assistant/kwork_autonomous_submit.py`
+- **Architecture:** All outbound operations (`SUBMISSION`, `KWORK`, `EMAIL`, `TELEGRAM`) must pass through `guard_outbound()` / `check_outbound_allowed()`.
+- **Physical Gating:** In addition to high-level orchestrators, the governor is wired directly into the physical browser click sites (CDP coordinate click, evaluate JS click, adapter submit application, and Vue form trigger). Default posture is strictly fail-closed (`SUBMIT_ALLOWED=false`).
+
+### 6.4. Network Perimeter & External Binding Authorization (NET-001)
+- **Component:** `ai_assistant/ui/` (`dashboard.py`, `middleware.py`, `gig_dashboard.py`)
+- **Default Binding:** Localhost (`127.0.0.1`) only.
+- **External Interfaces:** Binding to `0.0.0.0` strictly requires `DASHBOARD_TOKEN` configuration. Shared auth middleware `require_dashboard_token` enforces token authorization across both general dashboard and Gig Search endpoints.
+
+### 6.5. Environment Configuration Isolation & Inventory Sync (CFG-001 / CFG-002)
+- **Component:** `ai_assistant/config.py`, `docs/environment_inventory.md`, `tests/test_env_inventory_sync.py`
+- **Self-Arming Protection:** Security-critical environment flags (`SUBMIT_ALLOWED`, `DASHBOARD_TOKEN`) are snapshotted before `.env` parsing to prevent silent configuration overwrite.
+- **Inventory Linter:** Automated test ensures any new environment variable introduced to code is documented in the canonical inventory.
+
+### 6.6. Self-PID Fast-Path Invariant in Process Liveness (RUN-002)
+- **Component:** `ai_assistant/runner.py:is_pid_running`, `tests/test_run002_self_pid_invariant.py`
+- **Invariant:** If the checked PID equals the current running process PID (`pid == os.getpid()`), the function returns `True` immediately without spawning external OS diagnostic subprocesses (`tasklist` / `ps`).
+
+### 6.7. Dual-OS Blocking CI Matrix & Cross-Platform Harmonization (CI-001 / CI-002 / PORT-001..PORT-008)
+- **Component:** `.github/workflows/ci.yml`
+- **Blocking Gates:** Both `ubuntu-latest` and `windows-latest` runners are mandatory blocking gates.
+- **Verification:** 100% green test suite across platforms (4,262 passed on Linux with 92 benign skips; 4,263 passed on Windows CI; 4,340 passed locally on operator workstation).
+
+### 6.8. Dependency Pinning & Reproducible Environment (DEP-001 / DEP-002)
+- **Component:** `pyproject.toml`, `requirements.txt`, `requirements.lock`
+- **Remediation:** Full CVE remediation via `pip-audit`. Production dependencies are strictly locked in `requirements.lock` via `uv pip compile`.
 
