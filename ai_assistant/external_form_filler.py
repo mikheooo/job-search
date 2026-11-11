@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 from ai_assistant.hh_browser_launcher import _NO_PROXY_OPENER
 from ai_assistant.hh_browser_provider import _ws_call
+from ai_assistant.hh_llm_reply import antigravity_complete
 
 logger = logging.getLogger("external_form_filler")
 
@@ -364,15 +365,8 @@ def _synthesize_open_answer_with_llm(
     if os.getenv("EXTERNAL_FORM_FILLER_OFFLINE") == "1":
         return None
     try:
-        from openai import OpenAI
         import ai_assistant.config as config
-        if not config.LLM_API_KEY:
-            return None
-        client = OpenAI(
-            api_key=config.LLM_API_KEY,
-            base_url=config.LLM_BASE_URL if config.LLM_BASE_URL else None,
-            timeout=15.0,
-        )
+
         system_prompt = (
             "Ты — ассистент кандидата Михаила Колесникова. Твоя задача — кратко и уверенно ответить на вопрос анкеты работодателя.\n"
             "ПРАВИЛА И ФАКТЫ О КАНДИДАТЕ:\n"
@@ -383,13 +377,13 @@ def _synthesize_open_answer_with_llm(
             "- Проект «Контент-Завод»: автоматизированный пайплайн генерации AI-видео (Python + FFmpeg + Whisper + LLM, ComfyUI, Stable Diffusion, Midjourney).\n"
             "- Формат работы: 100% Remote (удаленная работа), РФ (часовой пояс UTC+7 / МСК+4, Новосибирск / Красноярск). Готов к работе по московскому времени (09:00–18:00 или 10:00–19:00 МСК). Оформление: ТК РФ, ИП, Самозанятость.\n"
             "- Окно для интервью / созвонов: в будни с 09:00 до 17:00 МСК (13:00–21:00 по местному времени UTC+7).\n"
-            "- Зарплатные ожидания: от 200 000 руб. / 1300 $ / 2000 EUR.\n"
+            "- Зарплатные ожидания: 130 000 – 180 000 руб. на руки / 1300 $ / 1500 EUR.\n"
             "- Траблшутинг инцидентов: логи (journalctl, docker logs), конфиги (.env, systemd), диагностика сети (ss -tulpn, curl, ping), воспроизведение в дебаге.\n"
             "- СТРОГО ЗАПРЕЩЕНО выдумывать неподтвержденные факты или несуществующий опыт.\n"
             "- Ответ должен быть кратким (2-4 емких предложения), на языке вопроса (русский по умолчанию), от первого лица кандидата ('Я...')."
         )
         user_prompt = f"Вопрос работодателя {company} (вакансия: {vacancy}):\n\"{question_text}\"\nСформулируй краткий профессиональный ответ от первого лица."
-        resp = client.chat.completions.create(
+        resp = antigravity_complete(
             model=config.LLM_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},

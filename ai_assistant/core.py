@@ -6,10 +6,10 @@ import json
 # .requests.post`` and assert it is never called — remove this line and that
 # regression tripwire silently stops guarding anything.
 import requests  # noqa: F401
-from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from . import config
+from .hh_llm_reply import antigravity_complete
 
 
 class VacancyAnalysis(BaseModel):
@@ -23,10 +23,6 @@ class VacancyAnalysis(BaseModel):
     skip_reasons: list[str] = Field(..., description="Причины пропустить")
     recommendation: str = Field(..., description="Откликаться | Возможно | Не тратить время")
 
-client = OpenAI(
-    api_key=config.LLM_API_KEY if config.LLM_API_KEY else "dummy-key",
-    base_url=config.LLM_BASE_URL if config.LLM_BASE_URL else "https://openrouter.ai/api/v1"
-)
 
 def analyze_vacancy(title: str, description: str, my_resume: str) -> VacancyAnalysis:
     schema_json = VacancyAnalysis.model_json_schema()
@@ -36,16 +32,15 @@ def analyze_vacancy(title: str, description: str, my_resume: str) -> VacancyAnal
         f"{json.dumps(schema_json)}"
     )
     user_prompt = f"Резюме:\n{my_resume}\n\nВакансия:\n{title}\n{description}"
-    
-    response = client.chat.completions.create(
+
+    response = antigravity_complete(
         model=config.LLM_MODEL,
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
+            {"role": "user", "content": user_prompt},
         ],
-        response_format={"type": "json_object"} 
     )
-    
+
     response_text = response.choices[0].message.content
     return VacancyAnalysis.model_validate_json(response_text)
 

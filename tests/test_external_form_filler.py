@@ -91,7 +91,7 @@ def test_try_auto_fill_unsupported_url():
     assert "Unsupported form URL" in res.error
 
 
-@patch("urllib.request.urlopen")
+@patch("ai_assistant.external_form_filler._NO_PROXY_OPENER.open")
 def test_try_auto_fill_captcha_detected(mock_urlopen):
     # Mock opening tab
     mock_resp = MagicMock()
@@ -119,7 +119,7 @@ def test_try_auto_fill_captcha_detected(mock_urlopen):
         assert "CAPTCHA" in res.blocked_reason
 
 
-@patch("urllib.request.urlopen")
+@patch("ai_assistant.external_form_filler._NO_PROXY_OPENER.open")
 def test_try_auto_fill_required_file_detected(mock_urlopen):
     mock_resp = MagicMock()
     mock_resp.read.return_value = b'{"id": "tab123", "webSocketDebuggerUrl": "ws://127.0.0.1:9111/devtools/page/tab123"}'
@@ -368,15 +368,15 @@ def test_timezone_location_and_schedule_standardization():
 
 def test_llm_synthesis_fallback(monkeypatch):
     """Test Level 2 LLM synthesis fallback when question is outside standard keywords."""
-    from unittest.mock import MagicMock
+    from types import SimpleNamespace
+    from unittest.mock import patch
     from ai_assistant.external_form_filler import _synthesize_open_answer_with_llm
 
-    mock_client = MagicMock()
-    mock_resp = MagicMock()
-    mock_resp.choices = [MagicMock(message=MagicMock(content="У меня 15+ лет опыта в IT, готов быстро включиться."))]
-    mock_client.chat.completions.create.return_value = mock_resp
+    mock_resp = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="У меня 15+ лет опыта в IT, готов быстро включиться."))]
+    )
 
-    with patch("openai.OpenAI", return_value=mock_client), patch("ai_assistant.config.LLM_API_KEY", "test-key"):
+    with patch("ai_assistant.external_form_filler.antigravity_complete", return_value=mock_resp):
         ans = _synthesize_open_answer_with_llm(
             question_text="Как вы оцениваете важность корпоративной культуры?",
             company="Dream Team",

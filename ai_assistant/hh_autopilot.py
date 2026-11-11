@@ -69,9 +69,12 @@ _ROLE_GATE_POSITIVE_RE = re.compile(
 # even when the family falls back to OTHER.
 _ROLE_GATE_FALLBACK_RE = re.compile(
     r"(?i)(техническ\w*\s+поддержк\w*|поддержк\w*\s+пользовател\w*|"
-    r"инженер\w*\s+сопровожд\w*|специалист\w*\s+сопровожд\w*|"
+    r"инженер\w*\s+сопровожд\w*|специалист\w*\s+сопровожд\w*|эксперт\w*\s+по\s+сопровожд\w*|"
     r"служб\w*\s+поддержк\w*|help\s*desk|service\s*desk|"
-    r"системн\w*\s+администратор|администратор\w*\s+bitrix|bitrix24|битрикс\w*)"
+    r"системн\w*\s+администратор|администратор\w*\s+bitrix|bitrix24|битрикс\w*|"
+    r"ai[- ]?developer|ai[- ]?разработчик|разработчик\w*\s+(?:ии|ai|n8n|бот\w*|чат[- ]?бот\w*|telegram|телеграм)|"
+    r"инженер[- ]?автоматизатор|автоматизатор|специалист\w*\s+по\s+автоматизац\w*|"
+    r"интегратор\w*\s*(?:crm|amocrm|амосрм|битрикс|bitrix|ai|ии)|ai[- ]?интегратор)"
 )
 
 
@@ -119,7 +122,7 @@ def role_gate(role: str, description: str, profile: Any) -> tuple[bool, str]:
     family = classify_role_family(title, description or "").value
     priority = allowed_priorities.get(family)
     if not priority:
-        if _ROLE_GATE_FALLBACK_RE.search(title):
+        if allowed_priorities and _ROLE_GATE_FALLBACK_RE.search(title):
             return True, f"technical support/admin wording ({family})"
         return False, f"role family {family} is not a target family"
     if not _ROLE_GATE_POSITIVE_RE.search(title):

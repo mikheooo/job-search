@@ -1,4 +1,4 @@
-﻿"""Stage 22 tests: HH message reply MVP (REVIEW-only).
+"""Stage 22 tests: HH message reply MVP (REVIEW-only).
 
 Covers every scenario from the spec §8: reply-required, no-reply, lack of
 info -> HUMAN_REVIEW with no invented facts, dedup, REVIEW never sends,
@@ -264,3 +264,28 @@ def test_classify_system_vs_reply_vs_human():
 def test_detect_language():
     assert detect_language("Здравствуйте!") == "ru"
     assert detect_language("Hello!") == "en"
+
+
+def test_classify_wrap_up_messages_no_reply():
+    from ai_assistant.hh_message_reply import classify_hh_conversation_detailed
+
+    wrap_texts = [
+        "Всё зафиксировал, спасибо. Передаю информацию работодателю. Если ваши навыки подойдут, с вами свяжутся.",
+        "Спасибо за ответы! Передал коллегам.",
+        "Спасибо, мы вернемся с обратной связью в течение пары дней.",
+        "Спасибо за предоставленную информацию, передаю информацию рекрутеру.",
+        "Отлично, передал ваше резюме руководителю.",
+    ]
+    for text in wrap_texts:
+        dialog = _dialog(messages=[
+            HHMessage(message_id="1", text="Какая зарплата?", sender="employer"),
+            HHMessage(message_id="2", text="150 000 руб.", sender="candidate"),
+            HHMessage(message_id="3", text=text, sender="employer"),
+        ])
+        # Simple classify_message
+        assert classify_message(dialog) == MessageClassification.NO_REPLY
+        # Detailed classifier
+        res = classify_hh_conversation_detailed(dialog)
+        assert res["classification"] == "NO_REPLY_NEEDED"
+        assert "no reply required" in res["reason"].lower() or "no reply needed" in res["reason"].lower()
+        assert res["prepared_reply"] is None

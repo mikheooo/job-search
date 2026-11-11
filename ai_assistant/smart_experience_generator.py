@@ -151,7 +151,7 @@ def synthesize_contextual_chat_reply_with_llm(
 
     # 1. Specific topic handlers for frequent specialized questions
     # 1a. Image editing / UI / Canvas / Media interfaces
-    if any(w in q_low for w in ["редактировани", "изображен", "картин", "canvas", "визуальн", "фото"]) or (
+    if any(w in q_low for w in ["редактировани", "изображен", "картин", "canvas", "фото"]) or (
         "интерфейс" in q_low and any(w in q_low for w in ["создава", "дела", "разрабатыва", "опыт", "создани"])
     ):
         cand = (
@@ -232,68 +232,67 @@ def synthesize_contextual_chat_reply_with_llm(
         if not _is_reply_avoided(cand, avoid_replies):
             return cand
 
-    # 2. Live LLM contextual generation (unless running inside pytest/offline)
+    # 2. Live LLM contextual generation via local Antigravity subscription CLI (unless running inside pytest/offline)
     import os
-    if not os.getenv("PYTEST_CURRENT_TEST") and os.getenv("EXTERNAL_FORM_FILLER_OFFLINE") != "1":
+    if (
+        not os.getenv("PYTEST_CURRENT_TEST")
+        and os.getenv("EXTERNAL_FORM_FILLER_OFFLINE") != "1"
+        and os.getenv("JOB_SEARCH_TEST_NETWORK_BLOCKED") != "1"
+    ):
         try:
-            from openai import OpenAI
+            from ai_assistant.hh_llm_reply import antigravity_complete
             import ai_assistant.config as config
-            if config.LLM_API_KEY:
-                client = OpenAI(
-                    api_key=config.LLM_API_KEY,
-                    base_url=config.LLM_BASE_URL if config.LLM_BASE_URL else None,
-                    timeout=15.0,
-                )
-                history_block = ""
-                if conversation_history:
-                    recent_hist = "\n".join(conversation_history[-6:])
-                    history_block = f"\nКонтекст предыдущих сообщений диалога:\n{recent_hist}\n"
-                avoid_block = ""
-                if avoid_replies:
-                    avoid_list = "\n".join(f"- {r[:180]}" for r in avoid_replies[:3] if r)
-                    if avoid_list:
-                        avoid_block = f"\nВАЖНО — НЕ ПОВТОРЯЙ эти уже отправленные фразы:\n{avoid_list}\n"
 
-                system_prompt = (
-                    "Ты — кандидат Михаил Колесников, отвечающий рекрутеру или ИИ-помощнику в чате HeadHunter.\n"
-                    "Твоя главная задача — ПРЯМО, ТОЧНО и ПО СУЩЕСТВУ ответить именно на заданный вопрос.\n"
-                    "Если спрашивают «есть ли опыт в X более N лет» или «приходилось ли делать Y» — начни с прямого ответа по теме X/Y, привязав его к реальным проектам кандидата, и НИКОГДА не отвечай отвлеченным шаблоном про общий стек Python.\n"
-                    "ТОН: отвечай утвердительно («Да, ...») и уверенно, опираясь на реальный смежный опыт из фактов ниже. "
-                    "Не начинай с «нет», «не работал» или «опыта нет». Но не выдумывай конкретные компании, проекты и цифры стажа, которых нет в фактах — "
-                    "формулируй так, чтобы это можно было спокойно защитить на техническом интервью.\n\n"
-                    "ФАКТЫ И ПРОЕКТЫ КАНДИДАТА:\n"
-                    "- Общий стаж в IT 15+ лет: 2009–2018 инфраструктура и поддержка (Windows Server/Linux, AD, Exchange, SQL, Hyper-V, сети, IP-телефония, мониторинг, тестирование API/веб-сервисов, ITSM), автоматизация на Bash/PowerShell.\n"
-                    "- Avantis (2021–2022): администрирование self-hosted Битрикс24, интеграции, бизнес-процессы, техподдержка.\n"
-                    "- Sayama Travel (2022–2026), AI Automation Engineer: автоматизация Битрикс24, интеграция OpenAI/Gemini в CRM и чаты, пайплайн Whisper → суммаризация → Битрикс24, n8n-воркфлоу, Telegram-боты (aiogram, Telethon), Linux/Docker, VPN, бэкапы.\n"
-                    "- Фриланс (2026–н.в.): AI-пайплайны обработки контента (RAG, агенты), асинхронные ETL на Python, медиа-пайплайны (Google Drive, Whisper, LLM, Telegram), n8n.\n"
-                    "- Python ~3 года коммерчески (FastAPI, asyncio, PostgreSQL, Redis, REST API, вебхуки); Playwright, CI/CD, Git, React/Vue — базовый уровень; Kubernetes/Terraform/AWS — только смежно.\n"
-                    "- Портфолио: https://mikheooo.github.io/portfolio/ | GitHub: https://github.com/mikheooo | Telegram: @brokeassh\n"
-                    "- Формат работы: 100% Remote, график по МСК (09:00–18:00 МСК), зарплата 130 000 – 180 000+ руб.\n\n"
-                    "ТРЕБОВАНИЯ К ОТВЕТУ:\n"
-                    "- Без приветствия «Здравствуйте!», если диалог уже идет.\n"
-                    "- Объем: 2–4 содержательных предложения без воды, строго по теме вопроса рекрутера."
-                    + avoid_block
-                )
-                user_prompt = (
-                    f"Вакансия: {vacancy_title or 'IT / AI Engineer'} ({company_name or 'Работодатель'})\n"
-                    f"{history_block}"
-                    f"Новое сообщение от работодателя:\n\"{core_q}\"\n\n"
-                    "Напиши прямой ответ по существу вопроса от первого лица:"
-                )
-                resp = client.chat.completions.create(
-                    model=config.LLM_MODEL,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    max_tokens=260,
-                    temperature=0.35,
-                )
-                ans = (resp.choices[0].message.content or "").strip()
-                if ans.startswith(('"', "«")) and ans.endswith(('"', "»")):
-                    ans = ans[1:-1].strip()
-                if ans and len(ans) > 20:
-                    return ans
+            history_block = ""
+            if conversation_history:
+                recent_hist = "\n".join(conversation_history[-6:])
+                history_block = f"\nКонтекст предыдущих сообщений диалога:\n{recent_hist}\n"
+            avoid_block = ""
+            if avoid_replies:
+                avoid_list = "\n".join(f"- {r[:180]}" for r in avoid_replies[:3] if r)
+                if avoid_list:
+                    avoid_block = f"\nВАЖНО — НЕ ПОВТОРЯЙ эти уже отправленные фразы:\n{avoid_list}\n"
+
+            system_prompt = (
+                "Ты — кандидат Михаил Колесников, отвечающий рекрутеру или ИИ-помощнику в чате HeadHunter.\n"
+                "Твоя главная задача — ПРЯМО, ТОЧНО и ПО СУЩЕСТВУ ответить именно на заданный вопрос.\n"
+                "Если спрашивают «есть ли опыт в X более N лет» или «приходилось ли делать Y» — начни с прямого ответа по теме X/Y, привязав его к реальным проектам кандидата, и НИКОГДА не отвечай отвлеченным шаблоном про общий стек Python.\n"
+                "ТОН: отвечай утвердительно («Да, ...») и уверенно, опираясь на реальный смежный опыт из фактов ниже. "
+                "Не начинай с «нет», «не работал» или «опыта нет». Но не выдумывай конкретные компании, проекты и цифры стажа, которых нет в фактах — "
+                "формулируй так, чтобы это можно было спокойно защитить на техническом интервью.\n\n"
+                "ФАКТЫ И ПРОЕКТЫ КАНДИДАТА:\n"
+                "- Общий стаж в IT 15+ лет: 2009–2018 инфраструктура и поддержка (Windows Server/Linux, AD, Exchange, SQL, Hyper-V, сети, IP-телефония, мониторинг, тестирование API/веб-сервисов, ITSM), автоматизация на Bash/PowerShell.\n"
+                "- Avantis (2021–2022): администрирование self-hosted Битрикс24, интеграции, бизнес-процессы, техподдержка.\n"
+                "- Sayama Travel (2022–2026), AI Automation Engineer: автоматизация Битрикс24, интеграция OpenAI/Gemini в CRM и чаты, пайплайн Whisper → суммаризация → Битрикс24, n8n-воркфлоу, Telegram-боты (aiogram, Telethon), Linux/Docker, VPN, бэкапы.\n"
+                "- Фриланс (2026–н.в.): AI-пайплайны обработки контента (RAG, агенты), асинхронные ETL на Python, медиа-пайплайны (Google Drive, Whisper, LLM, Telegram), n8n.\n"
+                "- Python ~3 года коммерчески (FastAPI, asyncio, PostgreSQL, Redis, REST API, вебхуки); Playwright, CI/CD, Git, React/Vue — базовый уровень; Kubernetes/Terraform/AWS — только смежно.\n"
+                "- Портфолио: https://mikheooo.github.io/portfolio/ | GitHub: https://github.com/mikheooo | Telegram: @brokeassh\n"
+                "- Формат работы: 100% Remote, график по МСК (09:00–18:00 МСК), зарплата 130 000 – 180 000+ руб.\n\n"
+                "ТРЕБОВАНИЯ К ОТВЕТУ:\n"
+                "- Без приветствия «Здравствуйте!», если диалог уже идет.\n"
+                "- Объем: 2–4 содержательных предложения без воды, строго по теме вопроса рекрутера."
+                + avoid_block
+            )
+            user_prompt = (
+                f"Вакансия: {vacancy_title or 'IT / AI Engineer'} ({company_name or 'Работодатель'})\n"
+                f"{history_block}"
+                f"Новое сообщение от работодателя:\n\"{core_q}\"\n\n"
+                "Напиши прямой ответ по существу вопроса от первого лица:"
+            )
+            resp = antigravity_complete(
+                model=config.LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_tokens=260,
+                temperature=0.35,
+            )
+            ans = (resp.choices[0].message.content or "").strip()
+            if ans.startswith(('"', "«")) and ans.endswith(('"', "»")):
+                ans = ans[1:-1].strip()
+            if ans and len(ans) > 20:
+                return ans
         except Exception:
             pass
 

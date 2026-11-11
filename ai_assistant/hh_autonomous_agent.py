@@ -1570,13 +1570,27 @@ class AutonomousJobAgent:
                             time.sleep(2.0)
                             conv_data = fetch_hh_conversation_readonly(eval_fn)
                         if conv_data and conv_data.get("messages"):
+                            prior_sent_norm = {
+                                re.sub(r"[^\w\s]", "", (r or "").lower()).strip()
+                                for r in db.get_recent_sent_replies_for_conversation(d.conversation_id, limit=20)
+                                if r
+                            }
                             real_msgs = []
                             for rm in conv_data.get("messages", []):
                                 r_dir = rm.get("direction")
-                                r_sender = "candidate" if r_dir == "OUTGOING" else "employer"
+                                rm_text = str(rm.get("text") or "")
+                                rm_norm = re.sub(r"[^\w\s]", "", rm_text.lower()).strip()
+                                is_cand_text = bool(
+                                    rm_norm and (
+                                        rm_norm in prior_sent_norm
+                                        or "с уважением михаил колесников" in rm_norm
+                                        or rm_norm.startswith("здравствуйте меня заинтересовала вакансия")
+                                    )
+                                )
+                                r_sender = "candidate" if (r_dir == "OUTGOING" or is_cand_text) else "employer"
                                 real_msgs.append(HHMessage(
                                     message_id=f"m_{len(real_msgs)}",
-                                    text=str(rm.get("text") or ""),
+                                    text=rm_text,
                                     sender=r_sender,
                                     sent_at=rm.get("timestamp"),
                                 ))
@@ -2170,6 +2184,11 @@ class AutonomousJobAgent:
                     )
                     out["notifications_sent"].append(notif)
             else:
+                is_transient_llm_fail = bool(
+                    classification == "HUMAN_REVIEW"
+                    and not reply_text
+                    and "LLM unavailable:" in str(decision_reason or "")
+                )
                 db.save_hh_message_event(**{
                     "message_fingerprint": fp,
                     "conversation_id": d.conversation_id,
@@ -2177,7 +2196,7 @@ class AutonomousJobAgent:
                     "text": msg_text,
                     "sent_at": last_msg.sent_at,
                     "seen_at": now_iso,
-                    "processed": 1,
+                    "processed": 0 if is_transient_llm_fail else 1,
                     "classification": classification,
                     "reply_draft": reply_text or None,
                     "status": send_status if reply_text else ("HUMAN_REVIEW_REQUIRED" if classification == "HUMAN_REVIEW" else ("ARCHIVED" if ("архив" in msg_low or "закрыт" in msg_low) else "NO_REPLY_NEEDED")),

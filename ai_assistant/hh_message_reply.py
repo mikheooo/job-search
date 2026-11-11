@@ -108,6 +108,20 @@ _NO_REPLY_MARKERS = (
     "вакансия закрыта", "позиция закрыта",
 )
 
+_WRAP_UP_RE = re.compile(
+    r"спасибо\s+за\s+(?:[^,!\?\.]{0,30}\s+)?(?:удел[её]нное\s+время|ответы|диалог|информацию|отклик)"
+    r"|все\s+(?:ваши\s+)?ответы\s+(?:я\s+)?(?:записал|зафиксировал)"
+    r"|вс[её]\s+зафиксировал\w*"
+    r"|ответы\s+(?:записаны|зафиксированы)"
+    r"|переда[юмлт]\w*\s+(?:[^,!\?\.]{0,30}\s+)?(?:рекрутеру|работодателю|руководителю|коллегам|команде|менеджеру)"
+    r"|представитель\s+работодателя\s+(?:обсудит|свяжется)"
+    r"|свяжемся\s+с\s+вами"
+    r"|свяжется\s+с\s+вами"
+    r"|верн[её]мся\s+с\s+обратной\s+связью"
+    r"|если\s+они\s+подходят.*продолжит\s+с\s+вами\s+диалог",
+    re.IGNORECASE,
+)
+
 # Sensitive facts that must NEVER be guessed: presence forces HUMAN_REVIEW.
 # Note: Verified candidate facts (interview slot 09:00-16:00 MSK, tech stack,
 # experience, remote availability, salary range) are safe and grounded in candidate_kb.json.
@@ -144,6 +158,8 @@ def classify_message(dialog: HHDialog) -> MessageClassification:
         return MessageClassification.NO_REPLY
     # system/notification messages are not candidate replies
     if any(m in low for m in _NO_REPLY_MARKERS):
+        return MessageClassification.NO_REPLY
+    if _WRAP_UP_RE.search(text) and not ("?" in text or "？" in text):
         return MessageClassification.NO_REPLY
     # full-context sensitivity: scan every message for sensitive/ambiguous
     # facts (salary, dates, experience, stack, status, conditions).
@@ -474,16 +490,6 @@ def classify_hh_conversation_detailed(
         }
 
     # 2b. Concluding / Wrap-up message from employer (screening complete, recorded answers, goodbye)
-    _WRAP_UP_RE = re.compile(
-        r"спасибо\s+за\s+(?:удел[её]нное\s+время|ответы|диалог|информацию)"
-        r"|все\s+(?:ваши\s+)?ответы\s+(?:я\s+)?записал"
-        r"|ответы\s+записаны"
-        r"|переда[мл]\s+(?:всю\s+)?информацию\s+рекрутеру"
-        r"|свяжемся\s+с\s+вами"
-        r"|свяжется\s+с\s+вами"
-        r"|если\s+они\s+подходят.*продолжит\s+с\s+вами\s+диалог",
-        re.IGNORECASE,
-    )
     if _WRAP_UP_RE.search(last_emp_text) and not ("?" in last_emp_text or "？" in last_emp_text):
         return {
             "conversation_id": dialog.conversation_id,
