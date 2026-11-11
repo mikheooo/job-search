@@ -136,3 +136,37 @@ def global_test_isolation(monkeypatch, tmp_path):
 def autonomous_reply_switch_on(monkeypatch):
     """Arm the Stage 51-55 autonomous reply send for the test suite."""
     monkeypatch.setenv("HH_AUTONOMOUS_REPLY_ENABLED", "true")
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--deselect-known-failures",
+        action="store_true",
+        default=False,
+        help="Deselect known failures tracked in docs/audit/known_failures.txt",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if not config.getoption("--deselect-known-failures", default=False):
+        return
+    kf_path = REPO_ROOT / "docs" / "audit" / "known_failures.txt"
+    if not kf_path.exists():
+        return
+    known = set(
+        line.strip()
+        for line in kf_path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    )
+    selected = []
+    deselected = []
+    for item in items:
+        norm_nodeid = item.nodeid.replace("\\", "/")
+        if any(norm_nodeid == k or norm_nodeid.startswith(k + "[") for k in known):
+            deselected.append(item)
+        else:
+            selected.append(item)
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = selected
+
