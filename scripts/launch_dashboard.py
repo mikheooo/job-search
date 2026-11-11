@@ -66,8 +66,10 @@ def is_port_in_use(port: int = 8001, host: str = "127.0.0.1") -> bool:
 
 def is_job_search_dashboard(port: int = 8001) -> bool:
     import urllib.request
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/stats", timeout=1.0) as resp:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/stats")
+        with opener.open(req, timeout=1.5) as resp:
             return resp.status == 200
     except Exception:
         return False
@@ -82,11 +84,21 @@ def main() -> int:
             print(f"Job Search Dashboard is already listening and responsive on port {port}.")
             return 0
         else:
-            print(f"Port {port} is occupied by another service (e.g. Docker). Trying port 8001...")
-            port = 8001
-            if is_port_in_use(port, "127.0.0.1") and is_job_search_dashboard(port):
-                print(f"Job Search Dashboard is already active on port {port}.")
-                return 0
+            print(f"Port {port} is occupied. Searching for an available port...")
+            found_port = None
+            for candidate in range(8002, 8025):
+                if is_port_in_use(candidate, "127.0.0.1"):
+                    if is_job_search_dashboard(candidate):
+                        print(f"Job Search Dashboard is already active on port {candidate}.")
+                        return 0
+                else:
+                    found_port = candidate
+                    break
+            if found_port is not None:
+                port = found_port
+            else:
+                print("Could not find an available port in range 8002-8024.")
+                return 1
 
     print(f"Starting Job Search Dashboard on http://{host}:{port}...")
     try:
@@ -97,6 +109,7 @@ def main() -> int:
             port=port,
             reload=False,
             log_level="info",
+            use_colors=False,
         )
         return 0
     except Exception as e:

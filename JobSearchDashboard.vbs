@@ -6,6 +6,9 @@ Set WshEnv = WshShell.Environment("PROCESS")
 WshEnv("PYTHONPATH") = RootDir & "\.venv\Lib\site-packages;" & RootDir
 
 pythonwPath = "C:\Users\Misha\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\pythonw.exe"
+If Not fso.FileExists(pythonwPath) Then
+    pythonwPath = RootDir & "\.venv\Scripts\pythonw.exe"
+End If
 scriptPath = RootDir & "\scripts\launch_dashboard.py"
 
 WshShell.CurrentDirectory = RootDir

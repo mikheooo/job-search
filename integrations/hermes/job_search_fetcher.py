@@ -22,6 +22,18 @@ JOB_SEARCH_ROOT = Path(r"C:\Users\Misha\Documents\job-search")
 if str(JOB_SEARCH_ROOT) not in sys.path:
     sys.path.insert(0, str(JOB_SEARCH_ROOT))
 
+# Add DLL directories for Windows CPython distributions (e.g. Astral uv)
+if sys.platform == "win32":
+    for p in [
+        Path(sys.executable).parent / "DLLs",
+        Path(r"C:\Users\Misha\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\DLLs"),
+    ]:
+        if p.exists():
+            try:
+                os.add_dll_directory(str(p))
+            except Exception:
+                pass
+
 # Canonical project venv interpreter (Python 3.11). Hermes Cron launches this
 # script under Hermes's own Python (3.14), which cannot load the project venv's
 # compiled binary deps (pydantic_core etc.). Hand over to the project's venv

@@ -145,7 +145,11 @@
 
     <!-- NAVIGATION TABS -->
     <div class="flex border-b border-slate-800 gap-2 sm:gap-6 text-sm font-medium overflow-x-auto no-scrollbar pb-px">
-      <button onclick="switchTab('vacancies')" id="tab-btn-vacancies" class="min-h-[44px] px-3 sm:px-1 pb-3 border-b-2 border-brand-500 text-brand-400 flex items-center gap-2 whitespace-nowrap font-semibold">
+      <button onclick="switchTab('autopilot')" id="tab-btn-autopilot" class="min-h-[44px] px-3 sm:px-1 pb-3 border-b-2 border-brand-500 text-brand-400 flex items-center gap-2 whitespace-nowrap font-semibold">
+        <span>🤖 Автопилот</span>
+        <span id="badge-blockers-count" class="hidden px-2 py-0.5 rounded-full text-xs font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30">0</span>
+      </button>
+      <button onclick="switchTab('vacancies')" id="tab-btn-vacancies" class="min-h-[44px] px-3 sm:px-1 pb-3 border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2 whitespace-nowrap">
         <span>📋 Вакансии</span>
       </button>
       <button onclick="switchTab('review')" id="tab-btn-review" class="min-h-[44px] px-3 sm:px-1 pb-3 border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2 whitespace-nowrap">
@@ -159,8 +163,103 @@
       </button>
     </div>
 
+    <!-- TAB 0: AUTOPILOT CONTROL CENTER -->
+    <section id="tab-autopilot" class="space-y-6">
+
+      <!-- TOP ROLES & STATUS BANNER -->
+      <div class="bg-slate-900 p-5 rounded-2xl border border-slate-800">
+        <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-4 mb-4">
+          <div>
+            <h2 class="text-lg font-bold text-white flex items-center gap-2">
+              🤖 Автономный ролевой конвейер Paseo
+              <span class="text-xs px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">Safe Mode &bull; $0.00</span>
+            </h2>
+            <p class="text-xs text-slate-400 mt-1">Детерминированная передача задач: Worker ➔ QA Tester ➔ Independent Reviewer</p>
+          </div>
+          <div class="flex items-center gap-3">
+            <span class="text-xs text-slate-400">Сторожевой пульс:</span>
+            <span class="text-xs font-mono px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-300">Paseo Watchdog &bull; 30с</span>
+          </div>
+        </div>
+
+        <!-- 4 Model Roles Grid -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs" id="autopilot-roles-grid">
+          <!-- Roles injected by JS -->
+        </div>
+      </div>
+
+      <!-- 1. BLOCKERS / ACTION REQUIRED (ЗАТЫКИ) -->
+      <div class="bg-slate-900 p-6 rounded-2xl border border-rose-900/40 shadow-xl space-y-4">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-lg bg-rose-500/20 text-rose-400 border border-rose-500/30 flex items-center justify-center font-bold text-sm">
+              ⚠️
+            </div>
+            <div>
+              <h3 class="text-base font-bold text-white">Требует твоего решения (Затыки и вопросы к владельцу)</h3>
+              <p class="text-xs text-slate-400">Действия, которые не может выполнить автономный агент без личного участия человека</p>
+            </div>
+          </div>
+          <span id="blockers-count-badge" class="text-xs px-3 py-1 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/20 font-bold">Загрузка...</span>
+        </div>
+
+        <div id="blockers-container" class="space-y-3">
+          <!-- Injected by JS -->
+        </div>
+      </div>
+
+      <!-- 2. LIVE TASK QUEUE (P2 BACKLOG) -->
+      <div class="bg-slate-900 p-6 rounded-2xl border border-slate-800 space-y-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <h3 class="text-base font-bold text-white flex items-center gap-2">
+              📋 Очередь задач этапа P2 (Бэклог монетизации)
+            </h3>
+            <p class="text-xs text-slate-400 mt-1">Автономное продвижение по приоритетным направлениям без простоя</p>
+          </div>
+          <span class="text-xs text-slate-400 font-mono">BACKLOG.md &bull; state.db</span>
+        </div>
+
+        <div id="queue-tasks-table-container" class="overflow-x-auto">
+          <!-- Injected by JS -->
+        </div>
+      </div>
+
+      <!-- 3. SUBMITTED PROPOSALS & OUTBOUNDS (ВЫПОЛНЕННЫЕ ОТКЛИКИ) -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+        <!-- Kwork Proposals -->
+        <div class="bg-slate-900 p-6 rounded-2xl border border-slate-800 space-y-4">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-bold text-emerald-400 flex items-center gap-2">
+              💼 Отправленные предложения Kwork
+            </h3>
+            <span class="text-xs text-slate-400">Live Daemon :9111</span>
+          </div>
+          <div id="kwork-proposals-container" class="space-y-3 max-h-96 overflow-y-auto pr-1">
+            <!-- Injected by JS -->
+          </div>
+        </div>
+
+        <!-- Thailand & Global Applications -->
+        <div class="bg-slate-900 p-6 rounded-2xl border border-slate-800 space-y-4">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-bold text-cyan-400 flex items-center gap-2">
+              🌏 Пакеты откликов в Таиланд (Bangkok Expat)
+            </h3>
+            <span class="text-xs text-slate-400">Relocation / Direct</span>
+          </div>
+          <div id="thailand-apps-container" class="space-y-3 max-h-96 overflow-y-auto pr-1">
+            <!-- Injected by JS -->
+          </div>
+        </div>
+
+      </div>
+
+    </section>
+
     <!-- TAB 1: VACANCIES -->
-    <section id="tab-vacancies" class="space-y-3 sm:space-y-4">
+    <section id="tab-vacancies" class="space-y-3 sm:space-y-4 hidden">
       <!-- Search & Filters -->
       <div class="flex flex-col sm:flex-row gap-2.5 sm:gap-3 bg-slate-900 p-3 sm:p-4 rounded-xl border border-slate-800">
         <div class="flex flex-1 items-center bg-slate-950 px-3 py-2.5 rounded-xl border border-slate-800 min-h-[44px]">
@@ -423,7 +522,7 @@
     });
 
     async function loadAllData() {
-      await Promise.all([loadStats(), loadVacancies(), loadReviewList(''), loadQueue()]);
+      await Promise.all([loadAutopilotTab(), loadStats(), loadVacancies(), loadReviewList(''), loadQueue()]);
     }
 
     // Manual-review list: bands A and B for remote work, Thailand-local apart.
@@ -793,12 +892,207 @@
     }
 
     function switchTab(tab) {
-      ['vacancies', 'review', 'queue', 'stats'].forEach(t => {
-        document.getElementById(`tab-${t}`).classList.add('hidden');
-        document.getElementById(`tab-btn-${t}`).className = 'min-h-[44px] px-3 sm:px-1 pb-3 border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2 whitespace-nowrap';
+      ['autopilot', 'vacancies', 'review', 'queue', 'stats'].forEach(t => {
+        const el = document.getElementById(`tab-${t}`);
+        const btn = document.getElementById(`tab-btn-${t}`);
+        if (el) el.classList.add('hidden');
+        if (btn) btn.className = 'min-h-[44px] px-3 sm:px-1 pb-3 border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2 whitespace-nowrap';
       });
-      document.getElementById(`tab-${tab}`).classList.remove('hidden');
-      document.getElementById(`tab-btn-${tab}`).className = 'min-h-[44px] px-3 sm:px-1 pb-3 border-b-2 border-brand-500 text-brand-400 flex items-center gap-2 whitespace-nowrap font-semibold';
+      const targetEl = document.getElementById(`tab-${tab}`);
+      const targetBtn = document.getElementById(`tab-btn-${tab}`);
+      if (targetEl) targetEl.classList.remove('hidden');
+      if (targetBtn) targetBtn.className = 'min-h-[44px] px-3 sm:px-1 pb-3 border-b-2 border-brand-500 text-brand-400 flex items-center gap-2 whitespace-nowrap font-semibold';
+      if (tab === 'autopilot') loadAutopilotTab();
+    }
+
+    async function loadAutopilotTab() {
+      try {
+        const res = await fetchApi('/api/autopilot/status');
+        const data = await res.json();
+        renderAutopilotTab(data);
+      } catch (err) {
+        console.error('Failed to load autopilot status:', err);
+      }
+    }
+
+    async function resolveAutopilotTask(taskId) {
+      if (!confirm('Отметить эту задачу как выполненную?')) return;
+      try {
+        const res = await fetch('/api/autopilot/resolve-task', {
+          method: 'POST',
+          headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ task_id: taskId, status: 'RESOLVED' })
+        });
+        const d = await res.json();
+        if (d.status === 'success') {
+          loadAutopilotTab();
+        } else {
+          alert('Ошибка: ' + (d.detail || 'Не удалось обновить'));
+        }
+      } catch (e) {
+        alert('Ошибка запроса: ' + e);
+      }
+    }
+
+    function renderAutopilotTab(data) {
+      if (!data) return;
+
+      // 1. Roles Grid
+      const rolesGrid = document.getElementById('autopilot-roles-grid');
+      if (rolesGrid && data.roles) {
+        rolesGrid.innerHTML = `
+          <div class="p-3 bg-slate-950 rounded-xl border border-slate-800">
+            <span class="text-slate-400 block mb-1">🔨 Исполнитель (Worker)</span>
+            <div class="font-bold text-emerald-400 text-sm">${data.roles.worker.name}</div>
+            <div class="text-[11px] text-slate-500">${data.roles.worker.model}</div>
+          </div>
+          <div class="p-3 bg-slate-950 rounded-xl border border-slate-800">
+            <span class="text-slate-400 block mb-1">🧪 Тестировщик (QA)</span>
+            <div class="font-bold text-cyan-400 text-sm">${data.roles.qa.name}</div>
+            <div class="text-[11px] text-slate-500">${data.roles.qa.model}</div>
+          </div>
+          <div class="p-3 bg-slate-950 rounded-xl border border-slate-800">
+            <span class="text-slate-400 block mb-1">🔍 Ревьюер (Reviewer)</span>
+            <div class="font-bold text-purple-400 text-sm">${data.roles.reviewer.name}</div>
+            <div class="text-[11px] text-slate-500">${data.roles.reviewer.model}</div>
+          </div>
+          <div class="p-3 bg-slate-950 rounded-xl border border-slate-800">
+            <span class="text-slate-400 block mb-1">👑 Координатор (Lead)</span>
+            <div class="font-bold text-amber-400 text-sm">${data.roles.manager.name}</div>
+            <div class="text-[11px] text-slate-500">${data.roles.manager.model}</div>
+          </div>
+        `;
+      }
+
+      // 2. Blockers Container
+      const blockersCont = document.getElementById('blockers-container');
+      const badgeCount = document.getElementById('badge-blockers-count');
+      const blockersBadge = document.getElementById('blockers-count-badge');
+      const blockers = data.blockers || [];
+
+      if (badgeCount) {
+        badgeCount.innerText = blockers.length;
+        badgeCount.className = blockers.length > 0
+          ? 'px-2 py-0.5 rounded-full text-xs font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30'
+          : 'hidden';
+      }
+      if (blockersBadge) {
+        blockersBadge.innerText = blockers.length > 0 ? `${blockers.length} активных` : 'Блокеров нет';
+        blockersBadge.className = blockers.length > 0
+          ? 'text-xs px-3 py-1 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/20 font-bold'
+          : 'text-xs px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-bold';
+      }
+
+      if (blockersCont) {
+        if (blockers.length === 0) {
+          blockersCont.innerHTML = `
+            <div class="p-4 rounded-xl bg-slate-950 border border-slate-800 text-center text-slate-400 text-sm">
+              ✅ Все задачи выполняются полностью автономно. Затыков нет!
+            </div>
+          `;
+        } else {
+          blockersCont.innerHTML = blockers.map(b => `
+            <div class="p-4 rounded-xl bg-slate-950 border border-rose-800/40 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div class="space-y-1">
+                <div class="flex items-center gap-2">
+                  <span class="text-xs px-2 py-0.5 rounded-md ${b.priority.includes('P0') ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'} font-bold">
+                    ${b.priority}
+                  </span>
+                  <h4 class="font-bold text-white text-sm">${b.title}</h4>
+                </div>
+                <p class="text-xs text-slate-300">${b.description}</p>
+                ${b.action_url ? `<a href="${b.action_url}" target="_blank" class="inline-flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300 font-semibold underline mt-1">🌐 Открыть ссылку для действия &rarr;</a>` : ''}
+              </div>
+              <button onclick="resolveAutopilotTask(${b.id})" class="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap shadow-md shadow-emerald-900/30">
+                ✅ Решено
+              </button>
+            </div>
+          `).join('');
+        }
+      }
+
+      // 3. Queue Tasks Table
+      const queueCont = document.getElementById('queue-tasks-table-container');
+      const queueTasks = data.queue_tasks || [];
+      if (queueCont) {
+        queueCont.innerHTML = `
+          <table class="w-full text-left text-xs">
+            <thead class="bg-slate-950/70 text-slate-400 uppercase border-b border-slate-800 font-semibold">
+              <tr>
+                <th class="px-3 py-2.5">Код</th>
+                <th class="px-3 py-2.5">Задача</th>
+                <th class="px-3 py-2.5">Статус</th>
+                <th class="px-3 py-2.5">Детали</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800/60">
+              ${queueTasks.map(t => `
+                <tr class="hover:bg-slate-800/20">
+                  <td class="px-3 py-2 font-mono text-slate-400 font-bold">${t.id}</td>
+                  <td class="px-3 py-2 text-slate-200 font-semibold">${t.title}</td>
+                  <td class="px-3 py-2">
+                    <span class="px-2 py-0.5 rounded-full font-bold ${
+                      t.status === 'COMPLETED' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
+                      t.status === 'IN_PROGRESS' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
+                      t.status === 'ACTIVE' ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20' :
+                      'bg-slate-800 text-slate-400'
+                    }">
+                      ${t.status}
+                    </span>
+                  </td>
+                  <td class="px-3 py-2 text-slate-400">${t.details || '—'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+      }
+
+      // 4. Kwork Proposals
+      const kwCont = document.getElementById('kwork-proposals-container');
+      const kwSubmitted = data.submitted_gigs || [];
+      if (kwCont) {
+        if (kwSubmitted.length === 0) {
+          kwCont.innerHTML = `<div class="text-xs text-slate-500 p-3">Нет отправленных предложений.</div>`;
+        } else {
+          kwCont.innerHTML = kwSubmitted.map(g => `
+            <div class="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-1.5">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-bold text-white">${g.title}</span>
+                <span class="text-xs font-mono text-emerald-400 font-bold">${g.budget_text || 'Договорная'}</span>
+              </div>
+              <p class="text-[11px] text-slate-400 line-clamp-2">${g.proposal_pitch}</p>
+              <div class="flex items-center justify-between text-[10px] text-slate-500 pt-1 border-t border-slate-800/60">
+                <span>Заказ #${g.gig_id}</span>
+                <span class="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-semibold">SUBMITTED</span>
+              </div>
+            </div>
+          `).join('');
+        }
+      }
+
+      // 5. Thailand Apps
+      const thCont = document.getElementById('thailand-apps-container');
+      const thApps = data.thailand_applications || [];
+      if (thCont) {
+        if (thApps.length === 0) {
+          thCont.innerHTML = `<div class="text-xs text-slate-500 p-3">Нет подготовленных пакетов.</div>`;
+        } else {
+          thCont.innerHTML = thApps.map(app => `
+            <div class="p-3 bg-slate-950 rounded-xl border border-cyan-900/30 space-y-1.5">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-bold text-cyan-300">${app.company} &bull; ${app.position}</span>
+                <span class="text-xs font-mono text-amber-400 font-bold">120 000 THB</span>
+              </div>
+              <p class="text-[11px] text-slate-400">Greenhouse Direct Apply &bull; Cover Letter & Bangkok CV готов</p>
+              <div class="flex items-center justify-between text-[10px] text-slate-500 pt-1 border-t border-slate-800/60">
+                <a href="${app.application_url}" target="_blank" class="text-cyan-400 hover:underline">Форма вакансии &rarr;</a>
+                <span class="px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 font-semibold">READY TO SUBMIT</span>
+              </div>
+            </div>
+          `).join('');
+        }
+      }
     }
 
     // Initial load
