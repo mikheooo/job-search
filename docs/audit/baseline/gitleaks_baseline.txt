@@ -1,4 +1,4 @@
-﻿gitleaks : 
+gitleaks : 
 At line:1 char:122
 + ... } catch {}; gitleaks detect --source . --redact --report-format json  ...
 +                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

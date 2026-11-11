@@ -19,8 +19,9 @@ ADAPTER_HOOK_ANCHOR = "        cb = self._callback_ctx(query)\n"
 HERMES_CALLBACK_HOOK_CODE = '''        # --- Job search feedback callbacks (fb:action:id) ---
         if data.startswith("fb:"):
             try:
+                import os
                 import sys
-                job_search_root = r"c:\\Users\\Misha\\Documents\\job-search"
+                job_search_root = os.getenv("JOB_SEARCH_ROOT") or os.path.expanduser(r"~\Documents\job-search")
                 if job_search_root not in sys.path:
                     sys.path.insert(0, job_search_root)
                 from ai_assistant.telegram_feedback import TelegramFeedbackProcessor

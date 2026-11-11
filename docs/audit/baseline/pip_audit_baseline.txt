@@ -1,4 +1,4 @@
-﻿python.exe : WARNING: Skipping c:\Users\Misha\Documents\job-search\.venv\Lib\site-packages\charset_normalizer-3.5.1.dis
+python.exe : WARNING: Skipping c:\Users\Misha\Documents\job-search\.venv\Lib\site-packages\charset_normalizer-3.5.1.dis
 t-info due to invalid metadata entry 'name'
 At line:1 char:237
 + ... ob-search"; & "C:\Users\Misha\AppData\Roaming\uv\python\cpython-3.11- ...

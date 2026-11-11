@@ -1,4 +1,4 @@
-﻿python.exe : [main]	INFO	profile include tests: None
+python.exe : [main]	INFO	profile include tests: None
 At line:1 char:237
 + ... ob-search"; & "C:\Users\Misha\AppData\Roaming\uv\python\cpython-3.11- ...
 +                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

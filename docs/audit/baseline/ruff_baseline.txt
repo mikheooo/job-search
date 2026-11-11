@@ -1,4 +1,4 @@
-﻿763	F401    	[*] unused-import
+763	F401    	[*] unused-import
 572	BLE001  	[ ] blind-except
 392	I001    	[*] unsorted-imports
 126	F841    	[-] unused-variable
