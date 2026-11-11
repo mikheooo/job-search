@@ -511,6 +511,14 @@ def main() -> int:
         except Exception as oe:
             logger.warning(f"Multi-source outreach cycle failed (non-fatal): {oe}")
 
+        # 5. Autonomous Kwork bidding (submits proposals autonomously without asking user)
+        try:
+            from ai_assistant.kwork_autonomous_submit import run_kwork_autonomous_cycle
+            kwork_res = run_kwork_autonomous_cycle(limit=1)
+            logger.info(f"Kwork autonomous cycle finished with result: {kwork_res}")
+        except Exception as ke:
+            logger.warning(f"Kwork autonomous cycle failed (non-fatal): {ke}")
+
         # An ERROR result must not masquerade as success (exit 0).
         # Confirmed auth loss uses the auth alert. Every other failure uses
         # the operational alert (cooldown + recovery) on the same route.

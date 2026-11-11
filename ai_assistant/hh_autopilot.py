@@ -956,7 +956,7 @@ def submit_vacancy(
     except Exception as e:
         logger.warning(f"Error updating DB company/title for {vid}: {e}")
 
-    # 6. Notify Telegram
+    # 6. Notify Telegram (only for confirmed responses; never spam user with unconfirmed clicks)
     sal_line = f"💰 *Зарплата:* {salary}\n" if salary else ""
     first_lines = "\n".join(letter_text.strip().splitlines()[:8])
     if confirmed:
@@ -971,18 +971,13 @@ def submit_vacancy(
             f"_{first_lines}..._\n\n"
             f"✅ _HH подтвердил отклик; запись в state.db выполнена._"
         )
+        notified = bool(send_telegram_alert(alert_msg))
     else:
-        alert_msg = (
-            f"⚠️ *Отклик НЕ подтвержден HeadHunter!*\n\n"
-            f"💼 *Вакансия:* [{role}](https://hh.ru/vacancy/{vid})\n"
-            f"🏢 *Компания:* {company}\n"
-            f"{sal_line}"
-            f"📄 *Резюме:* {resume_to_use}\n"
-            f"🕒 *Время:* {time.strftime('%Y-%m-%d %H:%M:%S MSK')}\n\n"
-            f"⚠️ _Клик выполнен, но HH пока НЕ подтвердил отклик ({confirm_reason}). "
-            f"Возможно, повторный отклик в эту компанию заблокирован платформой._"
+        logger.warning(
+            "HeadHunter did NOT confirm submission for %s (%s). Suppressed Telegram alert per user preference.",
+            vid, confirm_reason,
         )
-    notified = bool(send_telegram_alert(alert_msg))
+        notified = False
     outcome["notified"] = notified
     if confirmed and reconciled and notified:
         outcome["status"] = "SUBMITTED_CONFIRMED"

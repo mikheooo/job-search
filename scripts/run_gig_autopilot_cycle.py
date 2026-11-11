@@ -314,6 +314,7 @@ def run_gig_cycle(
     enable_freelancer: bool = False,
     enable_contra: bool = False,
     dry_run: bool = False,
+    auto_apply_kwork: bool = False,
 ) -> dict[str, Any]:
     """Execute one autonomous gig discovery & delivery cycle."""
     init_db()
@@ -514,6 +515,51 @@ def run_gig_cycle(
 
     for score, gig, pitch in top_candidates:
         fm_val = (gig.source_facts or {}).get("first_money_score")
+        source_lower = (gig.source or "").lower()
+
+        # Autonomous Kwork submission: when enabled, never ask user "работу брать или нет", apply directly!
+        if "kwork" in source_lower and (auto_apply_kwork or os.environ.get("KWORK_AUTO_APPLY") == "1"):
+            logger.info("Autonomous Kwork submission for [%s] '%s'...", gig.id, gig.title)
+            if dry_run:
+                logger.info("[DRY-RUN] Would autonomously submit Kwork proposal for %s", gig.id)
+                delivered_count += 1
+                continue
+            try:
+                from ai_assistant.kwork_autonomous_submit import (
+                    submit_kwork_proposal_cdp,
+                    record_kwork_proposal_submission,
+                    send_kwork_submission_telegram_alert,
+                )
+                pid = gig.source_id or gig.id.replace("kwork_", "")
+                sub_res = submit_kwork_proposal_cdp(
+                    project_id=pid,
+                    title=gig.title,
+                    pitch=pitch,
+                    budget=gig.budget_max or gig.budget_min,
+                )
+                if sub_res.get("ok"):
+                    price = sub_res.get("price", 1000)
+                    record_kwork_proposal_submission(
+                        conn, pid, gig.title, pitch,
+                        price=price, duration_days=2, url=gig.url or "",
+                    )
+                    send_kwork_submission_telegram_alert(
+                        project_id=pid,
+                        title=gig.title,
+                        price=price,
+                        duration_days=2,
+                        url=gig.url or "",
+                        pitch=pitch,
+                    )
+                    record_gig_delivery(conn, gig, chat_id=owner_chat_id)
+                    delivered_count += 1
+                    time.sleep(1.5)
+                else:
+                    logger.warning("Autonomous Kwork submission returned not ok for %s: %s", gig.id, sub_res)
+            except Exception as ke:
+                logger.warning("Autonomous Kwork submission error for %s: %s", gig.id, ke)
+            continue
+
         card_text, reply_markup = format_gig_card(gig, pitch=pitch, fm_score=fm_val)
 
         logger.info(
@@ -560,6 +606,7 @@ def main() -> int:
     parser.add_argument("--telegram-limit", type=int, default=25, help="Max TG channel posts to read (default 25)")
     parser.add_argument("--enable-freelancer", action="store_true", help="Enable Freelancer.com source (disabled by default)")
     parser.add_argument("--enable-contra", action="store_true", help="Enable Contra source (disabled by default)")
+    parser.add_argument("--auto-apply-kwork", action="store_true", help="Autonomously submit proposals on Kwork instead of sending confirmation cards")
     parser.add_argument("--dry-run", action="store_true", help="Simulate run without delivering to Telegram")
     args = parser.parse_args()
 
@@ -577,6 +624,7 @@ def main() -> int:
             enable_freelancer=args.enable_freelancer,
             enable_contra=args.enable_contra,
             dry_run=args.dry_run,
+            auto_apply_kwork=args.auto_apply_kwork,
         )
         return 0
     except Exception as exc:

@@ -74,8 +74,8 @@ FORM_JS = r"""(() => {
   if (warn) {
     const r = warn.getBoundingClientRect();
     out.warning_height = Math.round(r.height);
-    out.warning_shown = r.height > 1;
     out.warning_text = txt(warn);
+    out.warning_shown = Boolean(out.warning_text && out.warning_text.trim().length > 0) || r.height > 1;
   }
   const submit = sel('[data-qa=vacancy-response-submit-popup]');
   out.submit = submit ? {disabled: submit.disabled, text: txt(submit),
@@ -532,7 +532,8 @@ def _blockers(vacancy: dict[str, Any], form: dict[str, Any],
     if form.get("started_with_question") and not form.get("questions_prefilled"):
         found.append("employer questions are required and have not been answered")
 
-    if form.get("warning_shown"):
+    warn_text = (form.get("warning_text") or "").strip()
+    if form.get("warning_shown") or warn_text:
         found.append(f"a resume-visibility warning is displayed: {form.get('warning_text')}")
 
     submit = form.get("submit")
