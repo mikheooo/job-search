@@ -32,9 +32,12 @@ MARKER_RE = re.compile(r"<!--\s*line-numbering:\s*(grep|editor)\s*-->")
 
 
 def _run(tool: str, *args: str) -> subprocess.CompletedProcess:
+    env = dict(sys.modules["os"].environ)
+    env["PYTHONIOENCODING"] = "utf-8"
     return subprocess.run(
         [str(PY), str(REPO / "tools" / tool), *args],
         cwd=REPO, capture_output=True, text=True, check=False,
+        encoding="utf-8", env=env,
     )
 
 

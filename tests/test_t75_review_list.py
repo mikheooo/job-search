@@ -45,7 +45,17 @@ MODULE_PATH = REPO_ROOT / "ai_assistant" / "eligibility_review.py"
 
 
 def _has_state_db() -> bool:
-    return STATE_DB.exists() and STATE_DB.stat().st_size > 0
+    if not (STATE_DB.exists() and STATE_DB.stat().st_size > 0):
+        return False
+    try:
+        import sqlite3
+        with sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT count(*) FROM vacancies")
+            row = cur.fetchone()
+            return bool(row and row[0] > 0)
+    except Exception:
+        return False
 
 
 def build_review_list(*, db_path=None, **kwargs):
@@ -416,6 +426,11 @@ def live_dashboard(monkeypatch):
     """
     if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
+
+    try:
+        import ssl
+    except Exception:
+        pytest.skip("ssl module is unavailable on this host")
 
     fastapi = pytest.importorskip("fastapi.testclient")
     monkeypatch.setenv("DASHBOARD_REQUIRE_AUTH_FOR_READS", "false")

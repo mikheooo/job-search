@@ -55,7 +55,17 @@ STATE_DB = REPO_ROOT / "state.db"
 
 
 def _has_state_db() -> bool:
-    return STATE_DB.exists() and STATE_DB.stat().st_size > 0
+    if not (STATE_DB.exists() and STATE_DB.stat().st_size > 0):
+        return False
+    try:
+        import sqlite3
+        with sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT count(*) FROM vacancies")
+            row = cur.fetchone()
+            return bool(row and row[0] > 0)
+    except Exception:
+        return False
 
 ANALYZER_VERSION = "t74-test"
 
