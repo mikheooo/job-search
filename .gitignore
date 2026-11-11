@@ -117,7 +117,7 @@ baseline_stage14_manifest.txt
 snapshot_stage15_manifest.txt
 
 # Personal resume (not part of the product)
-resume.md
+/resume.md
 
 
 # Progress markers written by the test runner while a long suite is running.

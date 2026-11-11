@@ -12,6 +12,17 @@ if str(ai_assistant_dir) not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# Ensure required fixture documents are populated in isolated CI environments
+_fixture_resume = REPO_ROOT / "tests" / "fixtures" / "resume.md"
+_target_resume = REPO_ROOT / "resume.md"
+if _fixture_resume.exists() and not _target_resume.exists():
+    _target_resume.write_text(_fixture_resume.read_text(encoding="utf-8"), encoding="utf-8")
+
+_fixture_profile = REPO_ROOT / "candidate_profile.example.json"
+_target_profile = REPO_ROOT / "candidate_profile.json"
+if _fixture_profile.exists() and not _target_profile.exists():
+    _target_profile.write_text(_fixture_profile.read_text(encoding="utf-8"), encoding="utf-8")
+
 _SUBMIT_KILL_SWITCH_BASELINE: tuple | None = None
 
 

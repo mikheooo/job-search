@@ -1,6 +1,15 @@
 {
   "desired_roles": ["AI Automation Engineer"],
   "skills": ["python", "automation"],
+  "core_skills": ["python", "n8n", "automation", "rest api", "sql"],
+  "secondary_skills": ["docker", "postgresql", "fastapi"],
+  "skill_confidence": {
+    "python": "PROFESSIONAL",
+    "n8n": "PROFESSIONAL",
+    "automation": "PROFESSIONAL",
+    "rest api": "PROFESSIONAL",
+    "sql": "PROFESSIONAL"
+  },
   "years_experience": 3,
   "remote_required": true,
   "allowed_locations": ["Remote"],
