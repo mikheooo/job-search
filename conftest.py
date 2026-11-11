@@ -153,6 +153,7 @@ def global_test_isolation(monkeypatch, tmp_path):
         ("HH_TELEGRAM_BOT_TOKEN", "1234567890:mock_token_for_ci_tests"),
         ("HH_TELEGRAM_CHAT_ID", "-1001234567890"),
         ("DASHBOARD_TOKEN", "mock_dashboard_token_for_tests"),
+        ("LLM_API_KEY", "mock_llm_api_key_for_tests"),
     ]:
         val = os.getenv(var) or default_val
         monkeypatch.setenv(var, val)

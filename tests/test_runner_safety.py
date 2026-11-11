@@ -1,6 +1,10 @@
 """Tests for runner.py process verification safety (RUN-001)."""
+import ctypes
 import os
 from unittest.mock import patch
+
+if not hasattr(ctypes, "windll"):
+    ctypes.windll = type("_W", (), {"kernel32": type("_K", (), {"OpenProcess": lambda *a: None})()})()
 
 from ai_assistant.runner import is_pid_running
 
