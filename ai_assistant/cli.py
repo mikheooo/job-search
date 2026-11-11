@@ -2076,7 +2076,9 @@ def submissions_list(limit: int = 50) -> None:
 
     submissions = list_submissions(limit=limit)
 
-    verifications = list_verifications(limit=limit)
+    from .submission_verifier import list_verifications as sv_list_verifications
+
+    verifications = sv_list_verifications(limit=limit)
 
     
 
