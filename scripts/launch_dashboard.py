@@ -77,7 +77,7 @@ def is_job_search_dashboard(port: int = 8001) -> bool:
 
 def main() -> int:
     port = int(os.getenv("DASHBOARD_PORT", "8001"))
-    host = os.getenv("DASHBOARD_HOST", "0.0.0.0")
+    host = os.getenv("DASHBOARD_HOST", "127.0.0.1")
 
     if is_port_in_use(port, "127.0.0.1"):
         if is_job_search_dashboard(port):

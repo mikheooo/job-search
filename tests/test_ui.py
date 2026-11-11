@@ -321,3 +321,50 @@ def test_ui_default_host_is_localhost():
     parsed = parser.parse_args(["ui"])
     assert parsed.host == "127.0.0.1"
 
+
+def test_launch_dashboard_default_host_is_loopback():
+    import scripts.launch_dashboard as ld
+    import inspect
+    sig = inspect.signature(ld.is_port_in_use)
+    assert sig.parameters["host"].default == "127.0.0.1"
+
+
+def test_ui_is_loopback_host_helper():
+    from ai_assistant.ui.app import is_loopback_host
+    assert is_loopback_host("127.0.0.1")
+    assert is_loopback_host("localhost")
+    assert is_loopback_host("::1")
+    assert not is_loopback_host("0.0.0.0")
+    assert not is_loopback_host("192.168.1.100")
+    assert not is_loopback_host("example.com")
+
+
+def test_ui_non_loopback_host_requires_token_for_reads(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_HOST", "0.0.0.0")
+    monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.setattr(config, "DASHBOARD_TOKEN", "")
+
+    # 1. Without token configured, non-loopback read returns 503
+    r = client.get("/api/stats")
+    assert r.status_code == 503
+    assert "DASHBOARD_TOKEN not configured" in r.json()["detail"]
+
+    # 2. With token configured but missing in request, returns 401
+    monkeypatch.setenv("DASHBOARD_TOKEN", "secret-token-123")
+    r2 = client.get("/api/stats")
+    assert r2.status_code == 401
+    assert "Unauthorized" in r2.json()["detail"]
+
+    # 3. With valid token in request, returns 200
+    r3 = client.get("/api/stats", headers={"Authorization": "Bearer secret-token-123"})
+    assert r3.status_code == 200
+
+
+def test_ui_loopback_host_allows_reads_without_token(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_HOST", "127.0.0.1")
+    monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("DASHBOARD_REQUIRE_AUTH_FOR_READS", raising=False)
+
+    r = client.get("/api/stats")
+    assert r.status_code == 200
+

@@ -37,6 +37,12 @@ from ..db import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    host = os.getenv("DASHBOARD_HOST", "127.0.0.1")
+    if not is_loopback_host(host):
+        logging.getLogger(__name__).warning(
+            "Binding to non-loopback host %s. Enforcing dashboard token authentication for all reads and mutations.",
+            host,
+        )
     # T7.24 §6: the UI is a long-lived owner, so it must give up its browser on the
     # way out - normal exit, exception and Ctrl+C all end here. ``atexit`` covers
     # the paths that skip the ASGI shutdown (a hard kill of the process).
@@ -97,7 +103,17 @@ def _dashboard_token_ok(request: Request) -> bool:
     return bool(token) and secrets.compare_digest(token, configured_token)
 
 
+def is_loopback_host(host: str | None) -> bool:
+    """Return True if host binds strictly to local loopback interface."""
+    if not host:
+        return True
+    return host.strip().lower() in {"127.0.0.1", "localhost", "::1"}
+
+
 def _dashboard_require_auth_for_reads() -> bool:
+    host = os.getenv("DASHBOARD_HOST", "127.0.0.1")
+    if not is_loopback_host(host):
+        return True
     raw = os.getenv("DASHBOARD_REQUIRE_AUTH_FOR_READS", "").strip().lower()
     if raw:
         return raw in ("1", "true", "yes")
