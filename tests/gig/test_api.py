@@ -10,11 +10,14 @@ from fastapi.testclient import TestClient
 
 from ai_assistant.gig.api import app
 from ai_assistant.gig.pipeline import run_fixture_pipeline
+from ai_assistant.ui.auth import get_dashboard_token
 
 
 @pytest.fixture()
 def client(seeded_db):
-    with TestClient(app) as test_client:
+    token = get_dashboard_token()
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    with TestClient(app, headers=headers) as test_client:
         yield test_client
 
 
@@ -70,6 +73,32 @@ class TestGigApi:
         assert resp.json()["gig_status"] == "SKIPPED"
         detail = client.get(f"/api/gigs/{gig_id}").json()
         assert detail["status"] == "SKIPPED"
+
+    def test_status_update_unauthorized_without_token(self, seeded_db):
+        """Mutations without token return 401 when DASHBOARD_TOKEN is configured (GIG-001)."""
+        with TestClient(app) as unauthed_client:
+            gigs = unauthed_client.get("/api/gigs", params={"limit": 1}).json()["gigs"]
+            gig_id = gigs[0]["id"]
+            resp = unauthed_client.post(
+                f"/api/gigs/{gig_id}/status",
+                json={"status": "SKIPPED"},
+            )
+            assert resp.status_code == 401
+            assert "Unauthorized" in resp.json()["detail"]
+
+    def test_status_update_503_when_token_not_configured(self, monkeypatch, seeded_db):
+        """Mutations return 503 when DASHBOARD_TOKEN is not configured (GIG-001)."""
+        monkeypatch.setenv("DASHBOARD_TOKEN", "")
+        monkeypatch.setattr("ai_assistant.config.DASHBOARD_TOKEN", "")
+        with TestClient(app) as unauthed_client:
+            gigs = unauthed_client.get("/api/gigs", params={"limit": 1}).json()["gigs"]
+            gig_id = gigs[0]["id"]
+            resp = unauthed_client.post(
+                f"/api/gigs/{gig_id}/status",
+                json={"status": "SKIPPED"},
+            )
+            assert resp.status_code == 503
+            assert "DASHBOARD_TOKEN not configured" in resp.json()["detail"]
 
     def test_status_validation(self, client):
         gigs = client.get("/api/gigs", params={"limit": 1}).json()["gigs"]
