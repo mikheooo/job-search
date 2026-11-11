@@ -519,6 +519,14 @@ def main() -> int:
         except Exception as ke:
             logger.warning(f"Kwork autonomous cycle failed (non-fatal): {ke}")
 
+        # 6. Australian Visa-Sponsored Job Search & Dynamic Tailoring Cycle
+        try:
+            from scripts.run_australia_search_cycle import run_australian_outreach_cycle
+            au_res = run_australian_outreach_cycle(limit=2, send_telegram=True)
+            logger.info(f"Australian search & tailoring cycle finished with result: {au_res}")
+        except Exception as aue:
+            logger.warning(f"Australian search & tailoring cycle failed (non-fatal): {aue}")
+
         # An ERROR result must not masquerade as success (exit 0).
         # Confirmed auth loss uses the auth alert. Every other failure uses
         # the operational alert (cooldown + recovery) on the same route.
