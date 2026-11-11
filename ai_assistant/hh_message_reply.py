@@ -563,7 +563,7 @@ def classify_hh_conversation_detailed(
 
         # 0. Check for unverified technologies / languages not in candidate profile
         unverified_techs = [
-            "haskell", "elm", "1c", "1с", "php", "ruby", "c++", "c#", "golang", "go developer",
+            "haskell", "elm", "ruby", "c++", "c#", "golang", "go developer",
             "swift", "kotlin", "rust", "scala", "java ", "java/", "java,", "java."
         ]
         q_text_low_early = q_text.lower().replace("ё", "е")
@@ -588,15 +588,13 @@ def classify_hh_conversation_detailed(
         if re.search(r"зарплат|оплат|оклад|salary|ставк|уровень дохода|денег", q_text, re.IGNORECASE):
             if lang == "ru":
                 sal_reply = (
-                    "Здравствуйте! Мои финансовые ожидания по данной позиции находятся в диапазоне 130 000 – 180 000 руб. на руки "
-                    "(в зависимости от конкретного пула задач, формата занятости и графика). "
-                    "Готов гибко обсуждать финальную сумму с учетом всех условий и задач проекта."
+                    "Здравствуйте! Мой ориентир по заработной плате — от 100 000 руб. на руки. "
+                    "При этом я полностью открыт к обсуждению и готов гибко согласовать комфортную сумму под бюджет компании и задачи проекта (главное — быстро и продуктивно включиться в работу)."
                 )
             else:
                 sal_reply = (
-                    "Hello! My salary expectation for this position is around 130,000 – 180,000 RUB net per month "
-                    "(flexible depending on responsibilities, schedule, and overall package). "
-                    "I am open to discussing the details during our interview."
+                    "Hello! My target compensation starts from 100,000 RUB net per month (approx. $1,100–$1,300). "
+                    "I am completely open to discussing and aligning with your company's budget and project scope."
                 )
             return {
                 "conversation_id": dialog.conversation_id,
@@ -605,7 +603,7 @@ def classify_hh_conversation_detailed(
                 "reason": "Employer asked about salary expectations; answered with candidate's confirmed target range.",
                 "question": q_text,
                 "required_facts": ["salary expectation"],
-                "available_facts": available_facts + ["salary floor: 130000 - 180000 RUB"],
+                "available_facts": available_facts + ["salary floor: от 100 000 RUB"],
                 "missing_facts": [],
                 "context": context,
                 "prepared_reply": sal_reply,

@@ -58,7 +58,7 @@ def test_generate_answer_for_contacts():
 def test_generate_answer_for_technical_experience():
     # Salary questions
     ans_sal_rub = generate_answer_for_question("Ожидания по заработной плате (руб):")
-    assert "200 000" in ans_sal_rub
+    assert "100 000" in ans_sal_rub
 
     ans_sal_usd = generate_answer_for_question("Salary expectations in USD:")
     assert "1300" in ans_sal_usd
