@@ -1,0 +1,1740 @@
+﻿python.exe : [main]	INFO	profile include tests: None
+At line:1 char:237
++ ... ob-search"; & "C:\Users\Misha\AppData\Roaming\uv\python\cpython-3.11- ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([main]	INFO	profile include tests: None:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[main]	INFO	profile exclude tests: None
+[main]	INFO	cli include tests: None
+[main]	INFO	cli exclude tests: None
+[main]	INFO	running on Python 3.11.15
+Working... ---------------------------------------- 100% 0:00:16
+Run started:2026-11-11 12:12:40.652681+00:00
+
+Test results:
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\adapters\bangkok_direct_careers.py:94:13
+93	        req = urllib.request.Request(url, headers=self.headers)
+94	        with urllib.request.urlopen(req, timeout=12) as resp:
+95	            data = json.loads(resp.read().decode("utf-8"))
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\adapters\bangkok_direct_careers.py:154:13
+153	        req = urllib.request.Request(url, headers=self.headers)
+154	        with urllib.request.urlopen(req, timeout=10) as resp:
+155	            data = json.loads(resp.read().decode("utf-8"))
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\adapters\geekjob.py:36:17
+35	        try:
+36	            with urllib.request.urlopen(req, timeout=12) as resp:
+37	                page_html = resp.read().decode("utf-8")
+
+--------------------------------------------------
+>> Issue: [B405:blacklist] Using xml.etree.ElementTree to parse untrusted XML data is known to be vulnerable to XML attacks. Replace xml.etree.ElementTree with the equivalent defusedxml package, or make sure defusedxml.defuse_stdlib() is called.
+   Severity: Low   Confidence: High
+   CWE: CWE-20 (https://cwe.mitre.org/data/definitions/20.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b405-import-xml-etree
+   Location: ai_assistant\adapters\habr_career.py:5:0
+4	import urllib.request
+5	import xml.etree.ElementTree as ET
+6	from datetime import datetime, timezone
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\adapters\habr_career.py:25:17
+24	        try:
+25	            with urllib.request.urlopen(req, timeout=20) as resp:
+26	                xml_data = resp.read()
+
+--------------------------------------------------
+>> Issue: [B314:blacklist] Using xml.etree.ElementTree.fromstring to parse untrusted XML data is known to be vulnerable to XML attacks. Replace xml.etree.ElementTree.fromstring with its defusedxml equivalent function or make sure defusedxml.defuse_stdlib() is called
+   Severity: Medium   Confidence: High
+   CWE: CWE-20 (https://cwe.mitre.org/data/definitions/20.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b313-b320-xml-bad-elementtree
+   Location: ai_assistant\adapters\habr_career.py:27:19
+26	                xml_data = resp.read()
+27	            root = ET.fromstring(xml_data)
+28	        except Exception:
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\adapters\hirify.py:47:21
+46	            try:
+47	                with urllib.request.urlopen(req, timeout=12) as resp:
+48	                    payload = json.loads(resp.read().decode("utf-8"))
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\adapters\linkedin_bangkok.py:60:17
+59	        try:
+60	            with urllib.request.urlopen(req, timeout=12) as resp:
+61	                content = resp.read().decode("utf-8", errors="ignore")
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\adapters\remoteok.py:24:17
+23	        try:
+24	            with urllib.request.urlopen(req, timeout=20) as resp:
+25	                payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\adapters\telegram_channels.py:153:17
+152	        try:
+153	            with urllib.request.urlopen(req, timeout=12) as resp:
+154	                content = resp.read().decode("utf-8", errors="ignore")
+
+--------------------------------------------------
+>> Issue: [B405:blacklist] Using xml.etree.ElementTree to parse untrusted XML data is known to be vulnerable to XML attacks. Replace xml.etree.ElementTree with the equivalent defusedxml package, or make sure defusedxml.defuse_stdlib() is called.
+   Severity: Low   Confidence: High
+   CWE: CWE-20 (https://cwe.mitre.org/data/definitions/20.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b405-import-xml-etree
+   Location: ai_assistant\adapters\weworkremotely.py:5:0
+4	import urllib.request
+5	import xml.etree.ElementTree as ET
+6	from datetime import datetime, timezone
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\adapters\weworkremotely.py:23:17
+22	        try:
+23	            with urllib.request.urlopen(req, timeout=20) as resp:
+24	                xml_data = resp.read()
+
+--------------------------------------------------
+>> Issue: [B314:blacklist] Using xml.etree.ElementTree.fromstring to parse untrusted XML data is known to be vulnerable to XML attacks. Replace xml.etree.ElementTree.fromstring with its defusedxml equivalent function or make sure defusedxml.defuse_stdlib() is called
+   Severity: Medium   Confidence: High
+   CWE: CWE-20 (https://cwe.mitre.org/data/definitions/20.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b313-b320-xml-bad-elementtree
+   Location: ai_assistant\adapters\weworkremotely.py:25:19
+24	                xml_data = resp.read()
+25	            root = ET.fromstring(xml_data)
+26	        except Exception:
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\application_dashboard.py:682:8
+681	            })
+682	        except Exception:
+683	            pass
+684	    
+
+--------------------------------------------------
+>> Issue: [B112:try_except_continue] Try, Except, Continue detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b112_try_except_continue.html
+   Location: ai_assistant\application_integrity.py:262:20
+261	                        ne = ApplicationStatus(new) if isinstance(new, str) else new
+262	                    except Exception:
+263	                        continue
+264	                    if oe in allowed and ne not in allowed[oe]:
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\application_integrity.py:343:20
+342	                            self._err("SUBMISSION_BEFORE_CREATED", sid, cid, f"submitted_at {sa} before created_at {ca}", {"submitted_at": sa, "created_at": ca})
+343	                    except Exception:
+344	                        pass
+345	
+
+--------------------------------------------------
+>> Issue: [B608:hardcoded_sql_expressions] Possible SQL injection vector through string-based query construction.
+   Severity: Medium   Confidence: Medium
+   CWE: CWE-89 (https://cwe.mitre.org/data/definitions/89.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html
+   Location: ai_assistant\application_integrity.py:586:24
+585	            ph = ",".join("?" for _ in ids)
+586	            cur.execute(f"SELECT COUNT(*) FROM {table} WHERE {col} IN ({ph})", sorted(ids))
+587	            return int(cur.fetchone()[0])
+
+--------------------------------------------------
+>> Issue: [B608:hardcoded_sql_expressions] Possible SQL injection vector through string-based query construction.
+   Severity: Medium   Confidence: Medium
+   CWE: CWE-89 (https://cwe.mitre.org/data/definitions/89.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html
+   Location: ai_assistant\application_integrity.py:600:28
+599	            def count_all(table: str) -> int:
+600	                cur.execute(f"SELECT COUNT(*) FROM {table}")
+601	                return int(cur.fetchone()[0])
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\application_prep.py:272:12
+271	                    raw = str(_d["cover_letter"])
+272	            except Exception:
+273	                pass
+274	        # Validate length and forbidden phrases
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\application_qa.py:649:12
+648	                    )
+649	            except Exception:
+650	                pass
+651	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\application_queue.py:108:4
+107	
+108	    except Exception:
+109	
+110	        pass
+111	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\application_queue.py:1370:16
+1369	
+1370	                except Exception:
+1371	
+1372	                    pass
+1373	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\application_queue.py:1475:16
+1474	
+1475	                except Exception:
+1476	
+1477	                    pass
+1478	
+
+--------------------------------------------------
+>> Issue: [B112:try_except_continue] Try, Except, Continue detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b112_try_except_continue.html
+   Location: ai_assistant\application_review.py:238:8
+237	            res.append(ApplicationReview.model_validate_json(r[0]))
+238	        except Exception:
+239	            continue
+240	    return res
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\application_tracking.py:277:8
+276	            complete_review(vacancy_stable_id, "Review consumed after tracking reached APPLIED")
+277	        except Exception:
+278	            pass
+279	    return get_application_status(vacancy_stable_id)  # type: ignore
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\application_tracking.py:345:8
+344	            complete_review(vacancy_stable_id, "Review consumed after tracking reached APPLIED")
+345	        except Exception:
+346	            pass
+347	    return get_application_status(vacancy_stable_id)  # type: ignore
+
+--------------------------------------------------
+>> Issue: [B608:hardcoded_sql_expressions] Possible SQL injection vector through string-based query construction.
+   Severity: Medium   Confidence: Medium
+   CWE: CWE-89 (https://cwe.mitre.org/data/definitions/89.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html
+   Location: ai_assistant\application_tracking.py:401:24
+400	                    status_val = str(status)
+401	            cur.execute(f"SELECT vacancy_stable_id, status, company, title, source, vacancy_url, match_score, deep_score, created_at, updated_at, applied_at, last_status_change_at, notes FROM application_tracking WHERE status=? ORDER BY {order_by} DESC LIMIT ?", (status_val, limit))
+402	        else:
+
+--------------------------------------------------
+>> Issue: [B608:hardcoded_sql_expressions] Possible SQL injection vector through string-based query construction.
+   Severity: Medium   Confidence: Medium
+   CWE: CWE-89 (https://cwe.mitre.org/data/definitions/89.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html
+   Location: ai_assistant\application_tracking.py:403:24
+402	        else:
+403	            cur.execute(f"SELECT vacancy_stable_id, status, company, title, source, vacancy_url, match_score, deep_score, created_at, updated_at, applied_at, last_status_change_at, notes FROM application_tracking ORDER BY {order_by} DESC LIMIT ?", (limit,))
+404	        rows = cur.fetchall()
+
+--------------------------------------------------
+>> Issue: [B404:blacklist] Consider possible security implications associated with the subprocess module.
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess
+   Location: ai_assistant\australia\australia_resume_builder.py:18:0
+17	import pathlib
+18	import subprocess
+19	import sys
+
+--------------------------------------------------
+>> Issue: [B603:subprocess_without_shell_equals_true] subprocess call - check for execution of untrusted input.
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b603_subprocess_without_shell_equals_true.html
+   Location: ai_assistant\australia\australia_resume_builder.py:375:4
+374	    logger.info("Executing headless Chrome PDF print for Australian CV...")
+375	    subprocess.run(cmd, check=True, capture_output=True, timeout=30)
+376	
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\australia\seek_discovery.py:72:17
+71	        try:
+72	            with urllib.request.urlopen(req, timeout=15) as resp:
+73	                html = resp.read().decode("utf-8", errors="ignore")
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\auto_apply_modes.py:340:12
+339	                effective_form = effective_form.model_copy(update={"questions": qs})
+340	            except Exception:
+341	                pass
+342	            report.answers = _answers_summary(package)
+
+--------------------------------------------------
+>> Issue: [B404:blacklist] Consider possible security implications associated with the subprocess module.
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess
+   Location: ai_assistant\bangkok_resume_builder.py:17:0
+16	import pathlib
+17	import subprocess
+18	import sys
+
+--------------------------------------------------
+>> Issue: [B603:subprocess_without_shell_equals_true] subprocess call - check for execution of untrusted input.
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b603_subprocess_without_shell_equals_true.html
+   Location: ai_assistant\bangkok_resume_builder.py:349:4
+348	    logger.info("Executing headless Chrome PDF print...")
+349	    subprocess.run(cmd, check=True, capture_output=True, timeout=30)
+350	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\business_funnel.py:412:4
+411	        conn.close()
+412	    except Exception:
+413	        pass
+414	
+
+--------------------------------------------------
+>> Issue: [B101:assert_used] Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html
+   Location: ai_assistant\candidate\audit_hr.py:147:8
+146	    for previous, current in pairwise(dated):
+147	        assert previous.end is not None and current.start is not None
+148	        gap = _month_index(*current.start) - _month_index(*previous.end) - 1
+
+--------------------------------------------------
+>> Issue: [B101:assert_used] Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html
+   Location: ai_assistant\candidate\audit_hr.py:261:8
+260	    for previous, current in pairwise(dated):
+261	        assert previous.end is not None and current.start is not None
+262	        if _month_index(*current.start) >= _month_index(*previous.end):
+
+--------------------------------------------------
+>> Issue: [B101:assert_used] Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html
+   Location: ai_assistant\candidate\confirm.py:133:4
+132	    # guards a future refactor that might drop it.
+133	    assert record is not None
+134	
+
+--------------------------------------------------
+>> Issue: [B404:blacklist] Consider possible security implications associated with the subprocess module.
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess
+   Location: ai_assistant\candidate\projects.py:43:0
+42	import os
+43	import subprocess
+44	import sys
+
+--------------------------------------------------
+>> Issue: [B607:start_process_with_partial_path] Starting a process with a partial executable path
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b607_start_process_with_partial_path.html
+   Location: ai_assistant\candidate\projects.py:483:17
+482	    try:
+483	        result = subprocess.run(
+484	            ["git", "-C", str(repo_dir), *args],
+485	            capture_output=True,
+486	            text=True,
+487	            encoding="utf-8",
+488	            errors="replace",
+489	            timeout=20,
+490	            check=False,
+491	        )
+492	    except (OSError, subprocess.SubprocessError):
+
+--------------------------------------------------
+>> Issue: [B603:subprocess_without_shell_equals_true] subprocess call - check for execution of untrusted input.
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b603_subprocess_without_shell_equals_true.html
+   Location: ai_assistant\candidate\projects.py:483:17
+482	    try:
+483	        result = subprocess.run(
+484	            ["git", "-C", str(repo_dir), *args],
+485	            capture_output=True,
+486	            text=True,
+487	            encoding="utf-8",
+488	            errors="replace",
+489	            timeout=20,
+490	            check=False,
+491	        )
+492	    except (OSError, subprocess.SubprocessError):
+
+--------------------------------------------------
+>> Issue: [B112:try_except_continue] Try, Except, Continue detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b112_try_except_continue.html
+   Location: ai_assistant\cli.py:6558:8
+6557	
+6558	        except Exception:
+6559	
+6560	            continue
+6561	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\cli.py:9486:4
+9485	
+9486	    except Exception:
+9487	
+9488	        pass
+9489	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\db.py:334:4
+333	        save_vacancy_eligibility(sid, assessment)
+334	    except Exception:
+335	        pass
+336	        
+
+--------------------------------------------------
+>> Issue: [B608:hardcoded_sql_expressions] Possible SQL injection vector through string-based query construction.
+   Severity: Medium   Confidence: Medium
+   CWE: CWE-89 (https://cwe.mitre.org/data/definitions/89.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html
+   Location: ai_assistant\db.py:2000:20
+1999	        placeholders = ",".join("?" for _ in keys)
+2000	        cur.execute(f"SELECT 1 FROM telegram_delivery_records WHERE delivery_key IN ({placeholders}) AND status = 'DELIVERED'", tuple(keys))
+2001	        row = cur.fetchone()
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\email_outreach.py:168:13
+167	        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+168	        with urllib.request.urlopen(req, timeout=10) as resp:
+169	            return resp.status == 200
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\external_form_filler.py:478:12
+477	                _NO_PROXY_OPENER.open(f"{base_cdp}/json/close/{tab_id}", timeout=5.0)
+478	            except Exception:
+479	                pass
+480	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\feedback_analytics.py:510:8
+509	                payload = json.loads(p_json)
+510	        except Exception:
+511	            pass
+512	
+
+--------------------------------------------------
+>> Issue: [B608:hardcoded_sql_expressions] Possible SQL injection vector through string-based query construction.
+   Severity: Medium   Confidence: Medium
+   CWE: CWE-89 (https://cwe.mitre.org/data/definitions/89.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html
+   Location: ai_assistant\followup_manager.py:172:12
+171	        cursor.execute(
+172	            f"""
+173	            WITH sent AS (
+174	                SELECT t.vacancy_stable_id AS stable_id,
+175	                       COALESCE(NULLIF(t.applied_at, ''),
+176	                                NULLIF(t.last_status_change_at, ''),
+177	                                NULLIF(t.updated_at, ''),
+178	                                NULLIF(t.created_at, '')) AS sent_at
+179	                FROM application_tracking t
+180	                WHERE t.status IN ({_sql_placeholders(_SENT_TRACKING_STATUSES)})
+181	                UNION ALL
+182	                SELECT s.vacancy_stable_id,
+183	                       COALESCE(NULLIF(s.submitted_at, ''),
+184	                                NULLIF(s.created_at, ''),
+185	                                NULLIF(s.updated_at, ''))
+186	                FROM application_submissions s
+187	                WHERE s.status = 'SUBMITTED'
+188	            ),
+189	            last_sent AS (
+190	                -- MAX: follow up 3..7 days after the LAST real send, so a
+191	                -- re-submission resets the window instead of adding cards.
+192	                SELECT stable_id, MAX(sent_at) AS sent_at
+193	                FROM sent
+194	                WHERE sent_at IS NOT NULL AND sent_at != ''
+195	                GROUP BY stable_id
+196	            )
+197	            SELECT v.stable_id, v.source, v.title, v.company, v.description,
+198	                   v.first_seen_at, v.job_url, v.raw_data,
+199	                   f.followup_count, f.last_followup_at
+200	            FROM vacancies v
+201	            JOIN last_sent ls ON ls.stable_id = v.stable_id
+202	            LEFT JOIN application_followups f ON v.stable_id = f.stable_id
+203	            WHERE v.state NOT IN ({_sql_placeholders(_EXCLUDED_VACANCY_STATES)})
+204	              AND v.stable_id NOT IN (
+205	                  SELECT vacancy_stable_id FROM application_tracking
+206	                  WHERE status IN ({_sql_placeholders(_DEAD_TRACKING_STATUSES)}))
+207	              AND julianday(ls.sent_at) IS NOT NULL
+208	              AND julianday(ls.sent_at) >= julianday(?)
+209	              AND julianday(ls.sent_at) <= julianday(?)
+210	              AND (f.followup_count IS NULL OR f.followup_count < 2)
+211	              AND (f.status IS NULL OR f.status != 'MUTED')
+212	            ORDER BY v.first_seen_at ASC
+213	            LIMIT ?
+214	            """,
+215	            (
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\followup_manager.py:234:8
+233	            raw = json.loads(raw_json) if raw_json else {}
+234	        except Exception:
+235	            pass
+236	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\funnel_analytics.py:126:4
+125	        msg_rejections = cursor.fetchone()[0] or 0
+126	    except Exception:
+127	        pass
+128	
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\gig\live_project.py:102:9
+101	                                                   "Cache-Control": "no-cache"})
+102	    with urllib.request.urlopen(request, timeout=10) as response:
+103	        body = response.read()
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\gig\notify.py:190:16
+189	                               "error": f"{type(exc).__name__}: {exc}"}, "FAILED")
+190	                except Exception:
+191	                    pass
+192	            failed.append({"gig_id": gig["id"], "error": f"{type(exc).__name__}: {exc}"})
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\gig\sources\contra.py:193:13
+192	        )
+193	        with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+194	            return response.read().decode("utf-8", "replace")
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\gig\sources\contra_auth.py:134:4
+133	            return f"job_{match.group(0)}"
+134	    except Exception:  # noqa: BLE001 - decoding is best-effort
+135	        pass
+136	    return value
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\gig\sources\freelancer.py:317:13
+316	        )
+317	        with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+318	            # A socket timeout applies between packets, not to the whole body.
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\gig\sources\kwork.py:234:17
+233	            req = urllib.request.Request(url, headers=headers)
+234	            with urllib.request.urlopen(req, timeout=10.0) as resp:
+235	                html = resp.read().decode("utf-8", "replace")
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\gig\sources\kwork.py:394:13
+393	        request = urllib.request.Request(url, headers={"User-Agent": self.user_agent})
+394	        with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+395	            final_host = urllib.parse.urlparse(response.url or url).hostname or ""
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\gig\sources\telegram.py:203:12
+202	                raw_data = json.loads(raw_json)
+203	            except Exception:
+204	                pass
+205	
+
+--------------------------------------------------
+>> Issue: [B608:hardcoded_sql_expressions] Possible SQL injection vector through string-based query construction.
+   Severity: Medium   Confidence: Medium
+   CWE: CWE-89 (https://cwe.mitre.org/data/definitions/89.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html
+   Location: ai_assistant\gig\store.py:235:16
+234	            conn.execute(
+235	                f"INSERT INTO gigs ({', '.join(columns_with_extra)}) VALUES ({placeholders})",
+236	                [values[c] for c in columns_with_extra],
+
+--------------------------------------------------
+>> Issue: [B608:hardcoded_sql_expressions] Possible SQL injection vector through string-based query construction.
+   Severity: Medium   Confidence: Medium
+   CWE: CWE-89 (https://cwe.mitre.org/data/definitions/89.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html
+   Location: ai_assistant\gig\store.py:303:20
+302	                conn.execute(
+303	                    f"UPDATE gigs SET {assignments} WHERE id = ?",
+304	                    list(touched.values()) + [gig.id],
+
+--------------------------------------------------
+>> Issue: [B608:hardcoded_sql_expressions] Possible SQL injection vector through string-based query construction.
+   Severity: Medium   Confidence: Medium
+   CWE: CWE-89 (https://cwe.mitre.org/data/definitions/89.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html
+   Location: ai_assistant\gig\store.py:318:12
+317	        conn.execute(
+318	            f"UPDATE gigs SET {assign} WHERE id = ?",
+319	            [values[c] for c in columns_with_extra] + [gig.id],
+
+--------------------------------------------------
+>> Issue: [B608:hardcoded_sql_expressions] Possible SQL injection vector through string-based query construction.
+   Severity: Medium   Confidence: Medium
+   CWE: CWE-89 (https://cwe.mitre.org/data/definitions/89.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html
+   Location: ai_assistant\gig\store.py:418:20
+417	        cur = conn.cursor()
+418	        cur.execute(f"SELECT * FROM gigs {where} ORDER BY {order} LIMIT ?", params + [int(limit)])
+419	        return [_row_to_gig(row) for row in cur.fetchall()]
+
+--------------------------------------------------
+>> Issue: [B112:try_except_continue] Try, Except, Continue detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b112_try_except_continue.html
+   Location: ai_assistant\gmail_readonly_connector.py:124:16
+123	                    full = self._message_get(service, m["id"])
+124	                except Exception:
+125	                    continue  # safe skip on malformed message
+126	                out.append(self._to_email_dict(full))
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hermes_integration.py:93:8
+92	            fetcher_attempt_locking = "record_digest_attempt" in content
+93	        except Exception:
+94	            pass
+95	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hermes_integration.py:116:8
+115	            )
+116	        except Exception:
+117	            pass
+118	
+
+--------------------------------------------------
+>> Issue: [B105:hardcoded_password_string] Possible hardcoded password: 'PASS'
+   Severity: Low   Confidence: Medium
+   CWE: CWE-259 (https://cwe.mitre.org/data/definitions/259.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b105_hardcoded_password_string.html
+   Location: ai_assistant\hh_application_runner.py:44:11
+43	class RunnerPreCheckStatus(str, Enum):
+44	    PASS = "PASS"
+45	    FAIL = "FAIL"
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_application_runner.py:229:8
+228	            queue_submitted_count = sum(1 for it in all_queue if it.application_state == HHApplicationState.SUBMITTED.value)
+229	        except Exception:
+230	            pass
+231	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_application_runner.py:752:16
+751	                    pkg_data = json.loads(pkg_row[2])
+752	                except Exception:
+753	                    pass
+754	            c_letter = pkg_data.get("cover_letter") or app.get("draft") or ""
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_autonomous_agent.py:1396:16
+1395	                    })()""")
+1396	                except Exception:
+1397	                    pass
+1398	            except Exception as exc_nav:
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_autonomous_agent.py:1637:20
+1636	                            is_recent = False
+1637	                    except Exception:
+1638	                        pass
+1639	                if is_recent:
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_autonomous_agent.py:2235:8
+2234	            })()""")
+2235	        except Exception:
+2236	            pass
+2237	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_autopilot.py:815:12
+814	                brief_data = json.loads(brief_file.read_text(encoding="utf-8"))
+815	            except Exception:
+816	                pass
+817	        if not brief_data:
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_autopilot.py:829:20
+828	                        kb_data = json.loads(kb_file.read_text(encoding="utf-8"))
+829	                    except Exception:
+830	                        pass
+831	                q_ok, _, plan, _ = resolve_and_plan_screening(
+
+--------------------------------------------------
+>> Issue: [B404:blacklist] Consider possible security implications associated with the subprocess module.
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess
+   Location: ai_assistant\hh_browser_launcher.py:21:0
+20	import shutil
+21	import subprocess
+22	import time
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_browser_launcher.py:32:0
+31	    load_dotenv(override=False)
+32	except Exception:
+33	    pass
+34	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_browser_launcher.py:239:4
+238	                return json.loads(resp.read().decode("utf-8"))
+239	    except Exception:
+240	        pass
+241	    return None
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_browser_launcher.py:252:4
+251	                return json.loads(resp.read().decode("utf-8"))
+252	    except Exception:
+253	        pass
+254	    return []
+
+--------------------------------------------------
+>> Issue: [B603:subprocess_without_shell_equals_true] subprocess call - check for execution of untrusted input.
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b603_subprocess_without_shell_equals_true.html
+   Location: ai_assistant\hh_browser_launcher.py:463:19
+462	
+463	            proc = subprocess.Popen(
+464	                cmd,
+465	                creationflags=creationflags,
+466	                stdin=subprocess.DEVNULL,
+467	                stdout=subprocess.DEVNULL,
+468	                stderr=subprocess.DEVNULL,
+469	                close_fds=True if os.name != "nt" else False,
+470	            )
+471	            result["pid"] = proc.pid
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_browser_launcher.py:530:12
+529	                    break
+530	            except Exception:
+531	                pass
+532	    except Exception as e:
+
+--------------------------------------------------
+>> Issue: [B404:blacklist] Consider possible security implications associated with the subprocess module.
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess
+   Location: ai_assistant\hh_browser_provider.py:52:0
+51	import re
+52	import subprocess
+53	import time
+
+--------------------------------------------------
+>> Issue: [B603:subprocess_without_shell_equals_true] subprocess call - check for execution of untrusted input.
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b603_subprocess_without_shell_equals_true.html
+   Location: ai_assistant\hh_browser_provider.py:507:15
+506	    try:
+507	        proc = subprocess.Popen(
+508	            argv,                       # argv as argv - the path has a space
+509	            stdin=subprocess.DEVNULL,
+510	            stdout=log,
+511	            stderr=log,
+512	            creationflags=creationflags,
+513	            close_fds=os.name != "nt",
+514	        )
+515	    except OSError as exc:
+
+--------------------------------------------------
+>> Issue: [B112:try_except_continue] Try, Except, Continue detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b112_try_except_continue.html
+   Location: ai_assistant\hh_browser_provider.py:633:8
+632	                    return json.loads(resp.read().decode("utf-8"))
+633	        except Exception:  # noqa: BLE001 - older Chromium wants GET
+634	            continue
+635	    return None
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_browser_provider.py:702:16
+701	                    await asyncio.wait_for(ws.recv(), timeout=timeout)
+702	                except Exception:  # noqa: BLE001 - the socket dies with the process
+703	                    pass
+704	        except Exception:  # noqa: BLE001
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_browser_provider.py:704:8
+703	                    pass
+704	        except Exception:  # noqa: BLE001
+705	            pass
+706	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_browser_provider.py:709:4
+708	        _run_sync(_run())
+709	    except Exception:  # noqa: BLE001
+710	        pass
+711	    return True
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_browser_provider.py:894:4
+893	        evaluate_fn(f"location.href = {json.dumps(url)}")
+894	    except Exception:  # noqa: BLE001 - the assignment can land mid-navigation
+895	        pass
+896	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_browser_provider.py:934:16
+933	                    time.sleep(2.0)
+934	                except Exception:
+935	                    pass
+936	            if (
+
+--------------------------------------------------
+>> Issue: [B112:try_except_continue] Try, Except, Continue detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b112_try_except_continue.html
+   Location: ai_assistant\hh_browser_provider.py:1337:12
+1336	                ))
+1337	            except Exception:  # noqa: BLE001 - mid-navigation reads fail by design
+1338	                continue
+1339	            href = state.get("url") or ""
+
+--------------------------------------------------
+>> Issue: [B607:start_process_with_partial_path] Starting a process with a partial executable path
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b607_start_process_with_partial_path.html
+   Location: ai_assistant\hh_browser_provider.py:1602:14
+1601	    try:
+1602	        raw = subprocess.run(
+1603	            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+1604	            capture_output=True, text=True, timeout=60, check=False,
+1605	            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+1606	        ).stdout.strip()
+1607	    except Exception:  # noqa: BLE001 - a probe that cannot run is not a finding
+
+--------------------------------------------------
+>> Issue: [B603:subprocess_without_shell_equals_true] subprocess call - check for execution of untrusted input.
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b603_subprocess_without_shell_equals_true.html
+   Location: ai_assistant\hh_browser_provider.py:1602:14
+1601	    try:
+1602	        raw = subprocess.run(
+1603	            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+1604	            capture_output=True, text=True, timeout=60, check=False,
+1605	            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+1606	        ).stdout.strip()
+1607	    except Exception:  # noqa: BLE001 - a probe that cannot run is not a finding
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\hh_chat_monitor.py:45:13
+44	    try:
+45	        with urllib.request.urlopen(req, timeout=10) as resp:
+46	            return resp.status == 200
+
+--------------------------------------------------
+>> Issue: [B404:blacklist] Consider possible security implications associated with the subprocess module.
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess
+   Location: ai_assistant\hh_llm_reply.py:6:0
+5	import os
+6	import subprocess
+7	from pathlib import Path
+
+--------------------------------------------------
+>> Issue: [B603:subprocess_without_shell_equals_true] subprocess call - check for execution of untrusted input.
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b603_subprocess_without_shell_equals_true.html
+   Location: ai_assistant\hh_llm_reply.py:36:11
+35	            '--settings', json.dumps(settings), '--sandbox', '--print-timeout', '45s', '--print=']
+36	    proc = subprocess.run(args, input=request, capture_output=True, encoding='utf-8',
+37	                          errors='replace', timeout=55, cwd=config.PROJECT_ROOT,
+38	                          creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+39	    final = None
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_message_reply.py:360:4
+359	                return dict(zip(cols, row))
+360	    except Exception:
+361	        pass
+362	    return None
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_message_reply.py:1948:4
+1947	                return api_res
+1948	    except Exception:
+1949	        pass
+1950	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_message_reply.py:1994:4
+1993	        })()""")
+1994	    except Exception:
+1995	        pass
+1996	
+
+--------------------------------------------------
+>> Issue: [B105:hardcoded_password_string] Possible hardcoded password: 'PASS'
+   Severity: Low   Confidence: Medium
+   CWE: CWE-259 (https://cwe.mitre.org/data/definitions/259.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b105_hardcoded_password_string.html
+   Location: ai_assistant\hh_questionnaire_audit.py:30:11
+29	class AuditVerdict(str, Enum):
+30	    PASS = "PASS"
+31	    REVIEW = "REVIEW"
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_submission.py:142:4
+141	            return match.group(1).strip()
+142	    except Exception:
+143	        pass
+144	    return None
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_submission.py:700:12
+699	                parsed_host = (urlparse(cur_url if "://" in cur_url else f"https://{cur_url}").hostname or "").lower()
+700	            except Exception:
+701	                pass
+702	        is_hh = vacancy_stable_id.startswith("hh:") or parsed_host == "hh.ru" or parsed_host.endswith(".hh.ru")
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_submission.py:1442:8
+1441	            save_verification(verif)
+1442	        except Exception:
+1443	            pass
+1444	        if sync_hh_application and hh_app and hh_app.get("application_id"):
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\hh_submission.py:1456:12
+1455	                )
+1456	            except Exception:
+1457	                pass
+1458	        return SubmissionExecutionResult(
+
+--------------------------------------------------
+>> Issue: [B404:blacklist] Consider possible security implications associated with the subprocess module.
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess
+   Location: ai_assistant\it_resume_builder.py:14:0
+13	import pathlib
+14	import subprocess
+15	import sys
+
+--------------------------------------------------
+>> Issue: [B603:subprocess_without_shell_equals_true] subprocess call - check for execution of untrusted input.
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b603_subprocess_without_shell_equals_true.html
+   Location: ai_assistant\it_resume_builder.py:341:4
+340	    logger.info("Executing headless Chrome PDF print...")
+341	    subprocess.run(cmd, check=True, capture_output=True, timeout=30)
+342	
+
+--------------------------------------------------
+>> Issue: [B112:try_except_continue] Try, Except, Continue detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b112_try_except_continue.html
+   Location: ai_assistant\job_analyzer.py:70:12
+69	                return p.read_text(encoding="utf-8")
+70	            except Exception:
+71	                continue
+72	    # fallback: synthesize from profile + minimal known experience (do NOT invent)
+
+--------------------------------------------------
+>> Issue: [B112:try_except_continue] Try, Except, Continue detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b112_try_except_continue.html
+   Location: ai_assistant\linkedin.py:118:8
+117	            data = resp.json()
+118	        except Exception:
+119	            continue
+120	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\matcher.py:542:8
+541	            cand_fams.add(RoleFamily(fam_str.upper()))
+542	        except Exception:
+543	            pass
+544	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\matcher.py:643:12
+642	                    years_found.append(val)
+643	            except Exception:
+644	                pass
+645	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\matcher.py:908:8
+907	                    gaps.append(w)
+908	        except Exception:
+909	            pass
+910	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\outbound_governor.py:90:8
+89	                return True, "Database kill-switch active: outbound_paused = 1 in system_settings"
+90	        except Exception:
+91	            pass
+92	
+
+--------------------------------------------------
+>> Issue: [B404:blacklist] Consider possible security implications associated with the subprocess module.
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess
+   Location: ai_assistant\runner.py:6:0
+5	import re
+6	import subprocess
+7	import sys
+
+--------------------------------------------------
+>> Issue: [B602:subprocess_popen_with_shell_equals_true] subprocess call with shell=True identified, security issue.
+   Severity: High   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b602_subprocess_popen_with_shell_equals_true.html
+   Location: ai_assistant\runner.py:55:22
+54	            try:
+55	                out = subprocess.check_output(f"tasklist /FI \"PID eq {pid}\"", shell=True, text=True, errors="replace")
+56	                return str(pid) in out
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\runner.py:143:16
+142	                    return True
+143	                except Exception:
+144	                    pass
+145	        return False
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\runner.py:163:12
+162	                    data.update(stored)
+163	            except Exception:
+164	                pass
+165	        return data
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\runner.py:172:8
+171	                json.dump(data, f, indent=2)
+172	        except Exception:
+173	            pass
+174	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\runner.py:235:4
+234	        os.replace(log_path, f"{log_path}.1")
+235	    except Exception:
+236	        pass
+237	
+
+--------------------------------------------------
+>> Issue: [B603:subprocess_without_shell_equals_true] subprocess call - check for execution of untrusted input.
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b603_subprocess_without_shell_equals_true.html
+   Location: ai_assistant\runner.py:308:15
+307	    try:
+308	        proc = subprocess.run(
+309	            [python_exe, script_path],
+310	            cwd=config.PROJECT_ROOT,
+311	            env=env,
+312	            stdout=subprocess.PIPE,
+313	            stderr=subprocess.STDOUT,
+314	            text=True,
+315	            encoding="utf-8",
+316	            errors="replace",
+317	        )
+318	        exit_code = proc.returncode
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\smart_experience_generator.py:294:8
+293	                return ans
+294	        except Exception:
+295	            pass
+296	
+
+--------------------------------------------------
+>> Issue: [B608:hardcoded_sql_expressions] Possible SQL injection vector through string-based query construction.
+   Severity: Medium   Confidence: Low
+   CWE: CWE-89 (https://cwe.mitre.org/data/definitions/89.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html
+   Location: ai_assistant\storage\vacancies.py:57:12
+56	    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+57	    query = f"SELECT * FROM vacancies {where} ORDER BY first_seen_at DESC LIMIT ? OFFSET ?"
+58	    params.extend([limit, offset])
+
+--------------------------------------------------
+>> Issue: [B112:try_except_continue] Try, Except, Continue detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b112_try_except_continue.html
+   Location: ai_assistant\submission_verifier.py:192:8
+191	            results.append(SubmissionVerification(**data))
+192	        except Exception:
+193	            continue
+194	    return results
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\submission_verifier.py:370:8
+369	            use_adapter.close()
+370	        except Exception:
+371	            pass
+372	
+
+--------------------------------------------------
+>> Issue: [B404:blacklist] Consider possible security implications associated with the subprocess module.
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess
+   Location: ai_assistant\tailoring\resume_tailor.py:20:0
+19	import re
+20	import subprocess
+21	from dataclasses import dataclass
+
+--------------------------------------------------
+>> Issue: [B603:subprocess_without_shell_equals_true] subprocess call - check for execution of untrusted input.
+   Severity: Low   Confidence: High
+   CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b603_subprocess_without_shell_equals_true.html
+   Location: ai_assistant\tailoring\resume_tailor.py:751:8
+750	    try:
+751	        subprocess.run(cmd, check=True, capture_output=True, timeout=30)
+752	    except Exception as exc:
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\telegram\bot_runner.py:111:12
+110	                os.unlink(win_path)
+111	            except Exception:
+112	                pass
+113	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\telegram\bot_runner.py:125:8
+124	                os.unlink(win_path)
+125	        except Exception:
+126	            pass
+127	
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\telegram\bot_runner.py:169:17
+168	            req = urllib.request.Request(url)
+169	            with urllib.request.urlopen(req, timeout=35) as resp:
+170	                data = json.loads(resp.read().decode("utf-8"))
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\telegram\bot_runner.py:238:24
+237	                        }
+238	                        urllib.request.urlopen(
+239	                            urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}),
+240	                            timeout=10,
+241	                        )
+242	                    else:
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\telegram\cards.py:85:12
+84	                thailand_cnt = len(json.loads(th_file.read_text(encoding="utf-8")))
+85	            except Exception:
+86	                pass
+87	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\telegram\cards.py:145:4
+144	                actions_block = "\n".join(lines) + "\n"
+145	    except Exception:
+146	        pass
+147	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\telegram\handlers_callbacks.py:219:16
+218	                        conn.execute("UPDATE top_gig_proposals SET status = 'OUTREACH_SENT' WHERE gig_id = ?", (gig_id,))
+219	                except Exception:
+220	                    pass
+221	                answer_callback_fn(cq_id, "✅ Отклик отмечен как отправленный!")
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\telegram\handlers_callbacks.py:238:16
+237	                        conn.execute("UPDATE top_gig_proposals SET status = 'REPLY_RECEIVED' WHERE gig_id = ?", (gig_id,))
+238	                except Exception:
+239	                    pass
+240	                answer_callback_fn(cq_id, "💬 Ответ заказчика зафиксирован!")
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\telegram\handlers_commands.py:146:4
+145	    }
+146	    urllib.request.urlopen(
+147	        urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}),
+148	        timeout=10,
+149	    )
+150	
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\telegram\handlers_commands.py:173:4
+172	    }
+173	    urllib.request.urlopen(
+174	        urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}),
+175	        timeout=10,
+176	    )
+177	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\telegram\handlers_commands.py:357:12
+356	                send_message_fn(chat_id, "❌ Ошибка импорта Kwork.")
+357	            except Exception:
+358	                pass
+359	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\telegram\handlers_commands.py:460:12
+459	                raw = json.loads(raw_json) if raw_json else {}
+460	            except Exception:
+461	                pass
+462	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\telegram\transport.py:64:4
+63	            )
+64	    except Exception:
+65	        pass
+66	
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\telegram\transport.py:90:13
+89	    try:
+90	        with urllib.request.urlopen(req, timeout=12) as resp:
+91	            status = getattr(resp, "status", getattr(resp, "code", 200))
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\telegram\transport.py:110:13
+109	    try:
+110	        with urllib.request.urlopen(req, timeout=8) as resp:
+111	            status = getattr(resp, "status", getattr(resp, "code", 200))
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\telegram_auto_apply.py:161:13
+160	    try:
+161	        with urllib.request.urlopen(req, timeout=12) as resp:
+162	            return resp.status == 200
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\telegram_auto_apply.py:189:8
+188	            raw = json.loads(raw_json) if raw_json else {}
+189	        except Exception:
+190	            pass
+191	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\telegram_control_bot.py:40:12
+39	                os.add_dll_directory(str(p))
+40	            except Exception:
+41	                pass
+42	
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\telegram_notifier.py:128:17
+127	            )
+128	            with urllib.request.urlopen(req, timeout=10.0) as resp:
+129	                raw = resp.read().decode("utf-8")
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\telegram_notifier.py:172:17
+171	            )
+172	            with urllib.request.urlopen(req, timeout=10.0) as resp:
+173	                raw = resp.read().decode("utf-8")
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: ai_assistant\telegram_notifier.py:492:17
+491	            )
+492	            with urllib.request.urlopen(req, timeout=10.0) as resp:
+493	                raw = resp.read().decode("utf-8")
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\ui\app.py:318:4
+317	        bf_metrics = get_business_funnel_metrics()
+318	    except Exception:
+319	        pass
+320	
+
+--------------------------------------------------
+>> Issue: [B608:hardcoded_sql_expressions] Possible SQL injection vector through string-based query construction.
+   Severity: Medium   Confidence: Medium
+   CWE: CWE-89 (https://cwe.mitre.org/data/definitions/89.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html
+   Location: ai_assistant\vacancy_lifecycle.py:126:12
+125	        cur.execute(
+126	            f"SELECT 1 FROM {table} WHERE vacancy_stable_id = ? LIMIT 1",
+127	            (stable_id,),
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\watcher.py:477:16
+476	                    deep_res = DeepAnalysisResult.model_validate(json.loads(deep_row[4]))
+477	                except Exception:
+478	                    pass
+479	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\watcher.py:505:12
+504	                )
+505	            except Exception:
+506	                pass
+507	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\watcher.py:522:16
+521	                    )
+522	                except Exception:
+523	                    pass
+524	            result.analyzed_count += 0
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\watcher.py:542:16
+541	                    pkg = ApplicationPackage.model_validate(json.loads(pkg_row[2]))
+542	                except Exception:
+543	                    pass
+544	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\watcher.py:561:16
+560	                    )
+561	                except Exception:
+562	                    pass
+563	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html
+   Location: ai_assistant\wellfound_scraper.py:72:12
+71	                page.close()
+72	            except Exception:
+73	                pass
+74	    logger.info("Scraped %s jobs from Weworkremotely", len(jobs))
+
+--------------------------------------------------
+
+Code scanned:
+	Total lines of code: 81588
+	Total lines skipped (#nosec): 0
+	Total potential issues skipped due to specifically being disabled (e.g., #nosec BXXX): 0
+
+Run metrics:
+	Total issues (by severity):
+		Undefined: 0
+		Low: 110
+		Medium: 41
+		High: 1
+	Total issues (by confidence):
+		Undefined: 0
+		Low: 1
+		Medium: 13
+		High: 138
+Files skipped (0):

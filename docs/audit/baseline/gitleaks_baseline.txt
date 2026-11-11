@@ -1,0 +1,16 @@
+﻿gitleaks : 
+At line:1 char:122
++ ... } catch {}; gitleaks detect --source . --redact --report-format json  ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+    ○
+    │╲
+    │ ○
+    ○ ░
+    ░    gitleaks
+
+[90m7:11PM[0m [32mINF[0m [1m290 commits scanned.[0m
+[90m7:11PM[0m [32mINF[0m [1mscanned ~1545497805 bytes (1.55 GB) in 2m37s[0m
+[90m7:11PM[0m [33mWRN[0m [1mleaks found: 2439[0m

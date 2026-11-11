@@ -1,0 +1,76 @@
+﻿763	F401    	[*] unused-import
+572	BLE001  	[ ] blind-except
+392	I001    	[*] unsorted-imports
+126	F841    	[-] unused-variable
+121	DTZ003  	[ ] call-datetime-utcnow
+113	S110    	[ ] try-except-pass
+ 81	PLR0402 	[*] manual-from-import
+ 78	RUF059  	[ ] unused-unpacked-variable
+ 71	UP035   	[-] deprecated-import
+ 43	SIM102  	[ ] collapsible-if
+ 39	LOG015  	[ ] root-logger-call
+ 38	F541    	[*] f-string-missing-placeholders
+ 36	RUF100  	[*] unused-noqa
+ 31	UP006   	[*] non-pep585-annotation
+ 21	FURB167 	[*] regex-flag-alias
+ 21	C408    	[ ] unnecessary-collection-call
+ 20	F811    	[-] redefined-while-unused
+ 16	SIM115  	[ ] open-file-with-context-handler
+ 15	DTZ005  	[ ] call-datetime-now-without-tzinfo
+ 15	UP045   	[*] non-pep604-annotation-optional
+ 15	RUF022  	[*] unsorted-dunder-all
+ 14	RUF015  	[ ] unnecessary-iterable-allocation-for-first-element
+ 14	UP009   	[*] utf8-encoding-declaration
+ 11	PLW1510 	[ ] subprocess-run-without-check
+ 11	S112    	[ ] try-except-continue
+ 10	RUF046  	[ ] unnecessary-cast-to-int
+  9	SIM210  	[ ] if-expr-with-true-false
+  9	RUF013  	[ ] implicit-optional
+  9	G201    	[ ] logging-exc-info
+  8	SIM117  	[-] multiple-with-statements
+  8	UP037   	[*] quoted-annotation
+  8	UP041   	[*] timeout-error-alias
+  7	SIM103  	[ ] needless-bool
+  6	SIM114  	[*] if-with-same-arms
+  6	PIE810  	[ ] multiple-starts-ends-with
+  5	B017    	[ ] assert-raises-exception
+  5	ISC004  	[ ] implicit-string-concatenation-in-collection-literal
+  5	TRY004  	[ ] type-check-without-type-error
+  4	DTZ007  	[ ] call-datetime-strptime-without-zone
+  4	PERF102 	[ ] incorrect-dict-iterator
+  4	PIE807  	[*] reimplemented-container-builtin
+  4	F821    	[ ] undefined-name
+  4	PIE804  	[*] unnecessary-dict-kwargs
+  4	RUF019  	[*] unnecessary-key-check
+  3	ASYNC210	[ ] blocking-http-call-in-async-function
+  3	DTZ006  	[ ] call-datetime-fromtimestamp
+  3	RUF010  	[*] explicit-f-string-type-conversion
+  3	N999    	[ ] invalid-module-name
+  3	PYI041  	[*] redundant-numeric-union
+  3	UP012   	[*] unnecessary-encode-utf8
+  3	C401    	[ ] unnecessary-generator-set
+  2	E722    	[ ] bare-except
+  2	ASYNC251	[ ] blocking-sleep-in-async-function
+  2	DTZ001  	[ ] call-datetime-without-tzinfo
+  2	UP034   	[*] extraneous-parentheses
+  2	SIM211  	[ ] if-expr-with-false-true
+  2	PERF402 	[ ] manual-list-copy
+  2	RUF012  	[ ] mutable-class-default
+  1	DTZ011  	[ ] call-date-today
+  1	PLR2044 	[*] empty-comment
+  1	SIM222  	[ ] expr-or-true
+  1	B023    	[ ] function-uses-loop-variable
+  1	PLW0602 	[ ] global-variable-not-assigned
+  1	PLR1730 	[*] if-stmt-min-max
+  1	SIM118  	[*] in-dict-keys
+  1	PYI034  	[ ] non-self-return-type
+  1	UP031   	[ ] printf-string-formatting
+  1	PLC3002 	[ ] unnecessary-direct-lambda-call
+  1	C405    	[ ] unnecessary-literal-set
+  1	PIE790  	[*] unnecessary-placeholder
+  1	RET501  	[*] unnecessary-return-none
+  1	RUF034  	[ ] useless-if-else
+  1	PLR1711 	[*] useless-return
+  1	TRY401  	[ ] verbose-log-message
+Found 2847 errors.
+[*] 1494 fixable with `--fix` (298 unsafe fixes available with `--fix --unsafe-fixes`).
