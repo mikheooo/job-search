@@ -158,8 +158,10 @@ def test_submitted_no_submission():
         s=set_application_status(v.stable_id(), ApplicationStatus.DISCOVERED, company=v.company, title=v.title)
         for st in [ApplicationStatus.ANALYZED, ApplicationStatus.READY_TO_APPLY, ApplicationStatus.SUBMITTED]:
             from ai_assistant.application_tracking import transition_application
-            try: transition_application(v.stable_id(), st)
-            except: pass
+            try:
+                transition_application(v.stable_id(), st)
+            except Exception:
+                pass
         r=run_integrity_audit()
         assert any(i.code=="SUBMITTED_NO_SUBMISSION_RECORD" for i in r.issues)
     finally:
@@ -174,8 +176,10 @@ def test_verification_failed_but_applied():
         s=set_application_status(v.stable_id(), ApplicationStatus.DISCOVERED, company=v.company, title=v.title)
         for st in [ApplicationStatus.ANALYZED, ApplicationStatus.READY_TO_APPLY, ApplicationStatus.SUBMITTED, ApplicationStatus.VERIFIED, ApplicationStatus.APPLIED]:
             from ai_assistant.application_tracking import transition_application
-            try: transition_application(v.stable_id(), st)
-            except: pass
+            try:
+                transition_application(v.stable_id(), st)
+            except Exception:
+                pass
         # submission + FAILED verification
         import json
         sub_id=f"{v.stable_id()}_s1"

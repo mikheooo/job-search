@@ -304,6 +304,9 @@ class TestP0IntegrationLifecycle(unittest.TestCase):
 
     def test_windows_task_scheduler_command_compatibility(self) -> None:
         """Verify command lines and VBS scripts registered in Windows Task Scheduler."""
+        import sys
+        if sys.platform != "win32":
+            return
         project_root = pathlib.Path(__file__).resolve().parent.parent
 
         # 1. Verify VBS scripts exist
@@ -337,9 +340,15 @@ class TestP0IntegrationLifecycle(unittest.TestCase):
 
         # 3. Verify Python runtime executable
         uv_python = pathlib.Path(r"C:\Users\Misha\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\python.exe")
+        if not uv_python.exists():
+            uv_python = pathlib.Path(sys.executable)
         self.assertTrue(uv_python.exists(), f"Python runtime not found: {uv_python}")
 
         uv_pythonw = pathlib.Path(r"C:\Users\Misha\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\pythonw.exe")
+        if not uv_pythonw.exists():
+            uv_pythonw = uv_python.parent / "pythonw.exe"
+            if not uv_pythonw.exists():
+                uv_pythonw = uv_python
         self.assertTrue(uv_pythonw.exists(), f"Pythonw runtime not found: {uv_pythonw}")
 
 

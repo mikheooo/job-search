@@ -286,13 +286,13 @@ def hub_system() -> dict[str, Any]:
         if not path.exists():
             return {"present": False}
         try:
-            age = (datetime.datetime.now() -
-                   datetime.datetime.fromtimestamp(path.stat().st_mtime)).total_seconds()
+            age = (datetime.datetime.now(datetime.timezone.utc) -
+                   datetime.datetime.fromtimestamp(path.stat().st_mtime, tz=datetime.timezone.utc)).total_seconds()
         except Exception:
             age = None
         return {"present": True, "age_seconds": age,
                 "mtime": datetime.datetime.fromtimestamp(
-                    path.stat().st_mtime).isoformat()}
+                    path.stat().st_mtime, tz=datetime.timezone.utc).isoformat()}
 
     def _heartbeat() -> dict[str, Any]:
         import json as _json

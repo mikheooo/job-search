@@ -12,6 +12,7 @@ __pycache__/
 venv/
 node_modules/
 .worktrees/
+.doc_root/
 
 # Logs & Data
 logs/
@@ -26,10 +27,36 @@ logs/
 *.json
 !package.json
 !package-lock.json
+!requirements.lock
 !vacancies.json
+!candidate_profile.example.json
+!paseo.json
+!tests/fixtures/*.json
+!tests/fixtures/**/*.json
 
 # Browser artifacts (runtime screenshots/state; tracked fixture exceptions below)
 artifacts/*
+!artifacts/stage61_telegram_reply_audit.json
+!artifacts/stage61_telegram_reply_audit.md
+!artifacts/master_resume.md
+!artifacts/master_resume.ru.md
+!artifacts/master_resume_sources.md
+!artifacts/Mikhail_Kolesnikov_CV_*.pdf
+!artifacts/Mikhail_Kolesnikov_CV_*.html
+!artifacts/p6/
+artifacts/p6/*
+!artifacts/p6/finalize_review.py
+!artifacts/p6/refresh_manual_qa.py
+!artifacts/p7/
+artifacts/p7/*
+!artifacts/p7/build_report.py
+!artifacts/p7/collect.py
+!artifacts/p7/refresh_final.py
+!artifacts/p7/verify_backup_options.py
+!artifacts/p7/verify_backups.py
+!artifacts/p7/verify_candidates.py
+!artifacts/p7/verify_more.py
+!artifacts/p7/verify_sales.py
 !artifacts/hh_manual_form_snapshot.json
 # GIG-SEARCH-P1: fixture-датасет заказов — это вход контура Gig Search и данные
 # для его тестов, а не рантайм-артефакт. Без него pipeline нечем прогнать.
@@ -91,8 +118,10 @@ _tmp_*
 tools/*/state.db.before_*
 *state.db.before_*
 graphify-out/
+scratch/
 scratch_*
 /scratch/
+artifacts/hermes-stashes*/
 /backups/
 /pytest-of-*/
 /tmp/
@@ -114,7 +143,7 @@ baseline_stage14_manifest.txt
 snapshot_stage15_manifest.txt
 
 # Personal resume (not part of the product)
-resume.md
+/resume.md
 
 
 # Progress markers written by the test runner while a long suite is running.

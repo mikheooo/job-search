@@ -53,6 +53,20 @@ from ai_assistant.schema import Vacancy
 REPO_ROOT = Path(__file__).resolve().parents[1]
 STATE_DB = REPO_ROOT / "state.db"
 
+
+def _has_state_db() -> bool:
+    if not (STATE_DB.exists() and STATE_DB.stat().st_size > 0):
+        return False
+    try:
+        import sqlite3
+        with sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT count(*) FROM vacancies")
+            row = cur.fetchone()
+            return bool(row and row[0] > 0)
+    except Exception:
+        return False
+
 ANALYZER_VERSION = "t74-test"
 
 
@@ -174,7 +188,7 @@ def test_porkbun_us_residency_requirement_is_not_ignored():
 
 def test_the_two_probe_rows_in_the_live_database_are_band_c():
     """Same two rows, read from the real database, so the fix is not fixture-only."""
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     conn = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True)
@@ -417,7 +431,7 @@ def test_habr_office_row_in_another_country_is_band_c():
 
 def test_live_habrcareer_rows_are_no_longer_all_refused():
     """Before T7.4 no Habr Career row was recognised as remote; now some are."""
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     conn = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True)
@@ -450,7 +464,7 @@ def test_live_habrcareer_rows_are_no_longer_all_refused():
 
 def test_band_c_always_means_ineligible():
     """C is the one band that must never be offered; check it across the live set."""
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     conn = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True)
@@ -473,7 +487,7 @@ def test_band_c_always_means_ineligible():
 
 
 def test_band_a_is_never_unknown():
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     conn = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True)
@@ -775,7 +789,7 @@ def test_conflicting_evidence_is_never_auto_approved():
 
 def test_no_live_conflict_row_is_auto_approved():
     """The same invariant across the live set, not just the crafted fixture."""
-    if not STATE_DB.exists():
+    if not _has_state_db():
         pytest.skip("state.db is not present in this checkout")
 
     conn = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True)

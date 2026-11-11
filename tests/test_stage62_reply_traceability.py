@@ -93,8 +93,8 @@ def test_negotiations_card_statuses_rejected_as_wrong_context():
                 HHMessage(message_id="m1", sender="employer", text=status_text, sent_at="10:00"),
             ],
         )
-        def mock_eval(script):
-            return json.dumps({"conversations": [dialog.model_dump()]})
+        def mock_eval(script, current_dialog=dialog):
+            return json.dumps({"conversations": [current_dialog.model_dump()]})
 
         agent = AutonomousJobAgent(config=AutonomousConfig(evaluate_fn=mock_eval))
         with patch.object(NotificationDispatcher, "notify_reply_sent") as mock_reply:

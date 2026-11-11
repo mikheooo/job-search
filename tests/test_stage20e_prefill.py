@@ -1,4 +1,4 @@
-﻿"""Stage 20E tests: deterministic prefill plan (read-only dry-run).
+"""Stage 20E tests: deterministic prefill plan (read-only dry-run).
 
 Covers: RADIO, CHECKBOX, TEXTAREA, "Свой вариант", resume/cover detection,
 real snapshot regression (6 choice groups + standalone), and safety

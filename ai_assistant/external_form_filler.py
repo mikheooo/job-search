@@ -410,6 +410,18 @@ def try_auto_fill_external_form(
     msg_context: str = "",
 ) -> FormFillResult:
     """Open an external form via headless Chrome CDP, fill all fields, submit, and verify."""
+    from ai_assistant.outbound_governor import check_outbound_allowed, OutboundAction
+
+    allowed, reason = check_outbound_allowed(OutboundAction.QUESTIONNAIRE, dry_run=False, include_action_flag=False)
+    if not allowed:
+        logger.warning("External form submission halted by outbound governor: %s", reason)
+        return FormFillResult(
+            ok=False,
+            blocked=True,
+            blocked_reason=reason or "Halted by outbound governor",
+            error=reason or "Halted by outbound governor",
+        )
+
     if not is_external_form_url(form_url, msg_context):
         return FormFillResult(ok=False, error=f"Unsupported form URL: {form_url}")
 
@@ -1133,7 +1145,7 @@ async def _fill_gas_async(ws_url: str, company: str, vacancy: str) -> FormFillRe
             if msg.get("id") == 200:
                 break
 
-        time.sleep(2.0)
+        await asyncio.sleep(2.0)
 
         # Click submit inside userHtmlFrame
         sub_gas_js = """(() => {
@@ -1152,7 +1164,7 @@ async def _fill_gas_async(ws_url: str, company: str, vacancy: str) -> FormFillRe
             if msg.get("id") == 201:
                 break
 
-        time.sleep(5.0)
+        await asyncio.sleep(5.0)
 
         # Verify confirmation
         ver_gas_js = """(() => {

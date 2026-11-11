@@ -69,7 +69,7 @@ def _setup_vacancy(vid: str = "777888", fp: str | None = None):
         source_job_id=vid,
         title="Senior Python Backend Developer",
         company="Tech Corp",
-        description="Python, SQL, FastAPI, Docker",
+        description="Python, SQL, FastAPI, Docker. Удаленная работа из любой точки мира.",
         job_url=f"https://hh.ru/vacancy/{vid}",
         location="Remote",
     )

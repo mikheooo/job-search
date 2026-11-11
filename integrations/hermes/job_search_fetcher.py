@@ -16,7 +16,7 @@ import re
 import urllib.request
 import urllib.parse
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 JOB_SEARCH_ROOT = Path(r"C:\Users\Misha\Documents\job-search")
 if str(JOB_SEARCH_ROOT) not in sys.path:
@@ -63,27 +63,29 @@ def _canonical_path(path) -> str:
     return os.path.normcase(os.path.realpath(path))
 
 
-if os.environ.get("JOB_FETCHER_NO_REEXEC") != "1" and _PROJECT_PY.is_file() and _canonical_path(sys.executable) != _canonical_path(str(_PROJECT_PY)):
-    import subprocess
+def _maybe_reexec():
+    if os.environ.get("JOB_FETCHER_NO_REEXEC") != "1" and _PROJECT_PY.is_file() and _canonical_path(sys.executable) != _canonical_path(str(_PROJECT_PY)):
+        import subprocess
 
-    # Hermes Cron runs this script under Hermes's own Python (3.14) with the
-    # Hermes venv's site-packages exported in PYTHONPATH. A normal venv puts
-    # its own site-packages first, but an inherited PYTHONPATH env var wins
-    # over it, so the project venv (3.11) would import the 3.14-compiled
-    # pydantic_core and crash with ModuleNotFoundError. Neutralize the leak
-    # for the child so only the project venv's deps are used.
-    # Adopted from the deployed runtime copy on 2026-10-03 and folded back into
-    # the canonical source on 2026-10-05 so that `hermes sync` cannot regress it.
-    _child_env = dict(os.environ)
-    for _leaked in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"):
-        _child_env.pop(_leaked, None)
+        # Hermes Cron runs this script under Hermes's own Python (3.14) with the
+        # Hermes venv's site-packages exported in PYTHONPATH. A normal venv puts
+        # its own site-packages first, but an inherited PYTHONPATH env var wins
+        # over it, so the project venv (3.11) would import the 3.14-compiled
+        # pydantic_core and crash with ModuleNotFoundError. Neutralize the leak
+        # for the child so only the project venv's deps are used.
+        # Adopted from the deployed runtime copy on 2026-10-03 and folded back into
+        # the canonical source on 2026-10-05 so that `hermes sync` cannot regress it.
+        _child_env = dict(os.environ)
+        for _leaked in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"):
+            _child_env.pop(_leaked, None)
 
-    _handover = subprocess.run(
-        [str(_PROJECT_PY), os.path.abspath(__file__), *sys.argv[1:]],
-        check=False,  # the child's status is propagated by hand on the next line
-        env=_child_env,
-    )
-    sys.exit(_handover.returncode)
+        _handover = subprocess.run(
+            [str(_PROJECT_PY), os.path.abspath(__file__), *sys.argv[1:]],
+            check=False,  # the child's status is propagated by hand on the next line
+            env=_child_env,
+        )
+        sys.exit(_handover.returncode)
+
 
 try:
     from ai_assistant import config
@@ -125,7 +127,7 @@ def save_vacancies(new_items: list):
     """Legacy helper maintained for backward-compatibility with tests."""
     current = load_vacancies()
     max_id = max((v["id"] for v in current if isinstance(v.get("id"), int)), default=0)
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     for v in new_items:
         max_id += 1
@@ -292,34 +294,42 @@ def send_to_telegram(text: str, reply_markup: dict = None) -> bool:
       a confirmed Markdown formatting error (HTTP 400 with parse markers).
     - Authorization errors are never retried.
     """
-    token = None
-    jobs_env_file = Path(r"C:\Users\Misha\AppData\Local\hermes\profiles\jobs\.env")
-    if jobs_env_file.exists():
-        m = re.search(r"^TELEGRAM_BOT_TOKEN\s*=\s*(.+)$", jobs_env_file.read_text(encoding="utf-8"), re.M)
-        if m:
-            token = m.group(1).strip()
+    from ai_assistant.outbound_governor import check_outbound_allowed, OutboundAction
 
-    if not token:
-        token = os.environ.get("TELEGRAM_BOT_TOKEN")
-
-    if not token:
-        for p in [Path(r"C:\Users\Misha\AppData\Local\hermes\.env"), Path(r"C:\Users\Misha\tools\.env")]:
-            if p.exists():
-                m = re.search(r"^TELEGRAM_BOT_TOKEN\s*=\s*(.+)$", p.read_text(encoding="utf-8"), re.M)
-                if m:
-                    token = m.group(1).strip()
-                    break
-
-    if not token:
-        print("[ERROR] TELEGRAM_BOT_TOKEN не найден", file=sys.stderr)
+    allowed, reason = check_outbound_allowed(OutboundAction.TELEGRAM)
+    if not allowed:
+        print(f"[ERROR] Telegram send halted by outbound governor: {reason}", file=sys.stderr)
         return False
 
-    channel = target_channel()
+    token = None
+    channel = None
+    try:
+        from ai_assistant import telegram_routing
+
+        route = telegram_routing.resolve_job_route()
+        token = route.token
+        channel = route.chat_id
+    except telegram_routing.TelegramRoutingError as exc:
+        from ai_assistant import telegram_routing
+
+        channel = target_channel()
+        cand = (os.getenv("TELEGRAM_BOT_TOKEN") or (getattr(config, "TELEGRAM_BOT_TOKEN", None) if config else None) or "").strip()
+        blocked = telegram_routing.main_hermes_tokens()
+        if channel and cand and cand not in blocked and "main Hermes" not in str(exc):
+            token = cand
+        else:
+            print(f"[ERROR] Telegram routing error: {exc}", file=sys.stderr)
+            return False
+    except Exception:
+        pass
+
     if not channel:
-        print(
-            "[ERROR] TELEGRAM_CHANNEL_ID is not set; refusing to send the digest",
-            file=sys.stderr,
-        )
+        channel = target_channel()
+    if not channel:
+        print("[ERROR] TELEGRAM_CHANNEL_ID is not set; refusing to send the digest", file=sys.stderr)
+        return False
+    if not token:
+        print("[ERROR] TELEGRAM_BOT_TOKEN is not configured; refusing to send", file=sys.stderr)
         return False
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -509,7 +519,7 @@ def run_canonical_discovery_and_export(limit: int = 5, min_score: float = 60.0, 
 
 
 def main():
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting Unified Hermes Job Search Dispatcher (Stage 75/81)...")
+    print(f"[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}] Starting Unified Hermes Job Search Dispatcher (Stage 75/81)...")
     dry_run = bool(os.environ.get("JOB_SEARCH_DRY_RUN"))
 
     # Operational audit: surface any unresolved / stale digest attempts
@@ -653,4 +663,5 @@ def _run_discovery_and_deliver(dry_run: bool) -> None:
 
 
 if __name__ == "__main__":
+    _maybe_reexec()
     main()

@@ -49,7 +49,7 @@ def test_powershell_scripts_syntax():
             "-Command",
             f"[System.Management.Automation.Language.Parser]::ParseFile('{ps_file}', [ref]$null, [ref]$null) | Out-Null; if (-not $?) {{ exit 1 }}",
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True, cwd=str(REPO_ROOT))
+        res = subprocess.run(cmd, check=False, capture_output=True, text=True, cwd=str(REPO_ROOT))
         assert res.returncode == 0, f"Syntax error in {ps_file.name}: {res.stderr}"
 
 
@@ -67,7 +67,7 @@ def test_worktree_help_command():
         str(REPO_ROOT / "scripts" / "worktree.ps1"),
         "help",
     ]
-    res = subprocess.run(cmd, capture_output=True, text=True, cwd=str(REPO_ROOT))
+    res = subprocess.run(cmd, check=False, capture_output=True, text=True, cwd=str(REPO_ROOT))
     assert res.returncode == 0
     assert "Job-Search Worktree Management Utility" in res.stdout
     assert "new" in res.stdout
@@ -90,7 +90,7 @@ def test_worktree_list_command():
         str(REPO_ROOT / "scripts" / "worktree.ps1"),
         "list",
     ]
-    res = subprocess.run(cmd, capture_output=True, text=True, cwd=str(REPO_ROOT))
+    res = subprocess.run(cmd, check=False, capture_output=True, text=True, cwd=str(REPO_ROOT))
     assert res.returncode == 0
     assert "Git Worktrees & Environment Status" in res.stdout
     assert "Branch" in res.stdout

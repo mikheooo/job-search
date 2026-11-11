@@ -31,7 +31,6 @@ from ai_assistant.vacancy_identity import (
     get_all_canonical_vacancies,
     get_aliases_for_canonical,
     _generate_canonical_id,
-    _generate_canonical_id,
 )
 
 

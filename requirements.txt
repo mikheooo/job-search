@@ -7,7 +7,7 @@
 #   pip install -r requirements-browser.txt    # playwright
 #   pip install -r requirements-gmail.txt      # google-auth + gmail client
 #   pip install -e ".[browser,gmail]"          # once this repo is installed
-# Tests and both extras:
+# Tests and all extras:
 #   pip install -r requirements.txt -r requirements-dev.txt
 
 # === CORE (required at runtime) ===
@@ -19,6 +19,3 @@ python-dotenv>=1,<2       # config.py env loading
 feedparser>=6,<7          # RSS collectors (weworkremotely, habrcareer)
 fastapi>=0.110,<1         # web dashboard API (still 0.x; block a future 1.0 break)
 uvicorn>=0.30,<1          # web server
-
-# === DEV / TEST (also installed by requirements.txt so a single file still runs pytest) ===
-pytest>=8,<10

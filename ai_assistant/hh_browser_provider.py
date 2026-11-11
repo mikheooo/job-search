@@ -44,7 +44,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import ctypes
+try:
+    import ctypes
+except (ImportError, AttributeError):
+    ctypes = None  # type: ignore[assignment]
 import json
 import logging
 import os
@@ -170,7 +173,15 @@ def resolve_browser_endpoint(preferred: str | None = None) -> str:
     if mode == MODE_BROWSEROS:
         # The legacy resolver stays the owner of CDP_URL / HH_CDP_URL. It does
         # not hop ports unless HH_CDP_ALLOW_FALLBACK is set outside production.
-        return resolve_cdp_url(preferred, allow_browseros=True)
+        # In browseros mode, when explicitly selected without pinned CDP_URL/HH_CDP_URL,
+        # fallback to BrowserOS endpoint (9110) is allowed if it is alive.
+        try:
+            return resolve_cdp_url(preferred, allow_browseros=True)
+        except Exception:
+            from .hh_browser_launcher import BROWSEROS_CDP_URL, CDP_ALIVE, probe_cdp
+            if probe_cdp(BROWSEROS_CDP_URL) == CDP_ALIVE:
+                return BROWSEROS_CDP_URL
+            raise
 
     explicit = preferred if preferred and preferred != DEFAULT_HH_CDP_URL else None
     if explicit:
@@ -267,7 +278,7 @@ def pid_alive(pid: int) -> bool:
     """
     if pid <= 0:
         return False
-    if os.name == "nt":
+    if os.name == "nt" and ctypes is not None and hasattr(ctypes, "windll"):
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
         handle = ctypes.windll.kernel32.OpenProcess(
             PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid)
@@ -494,7 +505,7 @@ def launch_headless(
         argv[-1] = open_url
 
     creationflags = 0
-    if os.name == "nt":
+    if os.name == "nt" and ctypes is not None and hasattr(ctypes, "windll"):
         creationflags = 0x00000200 | 0x00000008  # NEW_PROCESS_GROUP | DETACHED_PROCESS
 
     try:
@@ -845,7 +856,14 @@ def auth_gate(auth: dict[str, Any]) -> dict[str, Any]:
 
 def require_hh_auth(evaluate_fn: Callable[[str], str]) -> dict[str, Any]:
     """The gate itself: OK, or ``HH_AUTH_REQUIRED`` with an actionable message."""
-    return auth_gate(check_hh_authentication(evaluate_fn))
+    gate = auth_gate(check_hh_authentication(evaluate_fn))
+    if gate.get("status") == HH_PAGE_NOT_READY:
+        return {
+            "status": HH_AUTH_REQUIRED,
+            "message": gate.get("message") or HH_AUTH_REQUIRED_MESSAGE,
+            "auth": gate.get("auth"),
+        }
+    return gate
 
 
 # ---------------------------------------------------------------------------
@@ -1654,7 +1672,7 @@ def terminate_pid(pid: int, timeout: float = 5.0) -> bool:
     on a handle we opened for a pid we have already proven is ours cannot reach a
     process we did not name.
     """
-    if os.name != "nt" or pid <= 0:
+    if os.name != "nt" or pid <= 0 or ctypes is None or not hasattr(ctypes, "windll"):
         return False
     PROCESS_TERMINATE = 0x0001
     handle = ctypes.windll.kernel32.OpenProcess(PROCESS_TERMINATE, False, int(pid))

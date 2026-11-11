@@ -328,6 +328,12 @@ def run_message_watcher_cycle(
     # 3. Discover conversations
     try:
         raw_list = fetch_hh_conversations_list_readonly(ev)
+        if isinstance(raw_list, dict) and raw_list.get("error"):
+            err_msg = f"Failed to fetch HH conversations list: {raw_list.get('error')}"
+            logger.error(err_msg)
+            result.errors.append(err_msg)
+            result.blocked += 1
+            return result
         raw_convs = raw_list.get("conversations") or []
     except Exception as e:
         err_msg = f"Failed to fetch HH conversations list: {e}"

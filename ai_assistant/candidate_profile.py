@@ -340,7 +340,7 @@ class CandidateProfile:
         p = Path(path)
         if not p.exists():
             raise FileNotFoundError(f"Candidate profile file not found: {p}")
-        text = p.read_text(encoding="utf-8")
+        text = p.read_text(encoding="utf-8-sig")
         data = json.loads(text)
         if not isinstance(data, dict):
             raise ValueError(f"Profile file must contain JSON object, got {type(data)}")

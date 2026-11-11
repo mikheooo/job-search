@@ -137,6 +137,14 @@ def controlled_real_submit(
         return report
 
     # --- Step 3: The single click ---
+    from .outbound_governor import OutboundAction, check_outbound_allowed
+    _allowed, _halt = check_outbound_allowed(action=OutboundAction.SUBMISSION, dry_run=False)
+    if not _allowed:
+        report.verdict = "BLOCKED"
+        report.stop_reason = f"Outbound governor halted submission: {_halt}"
+        report.errors.append(report.stop_reason)
+        return report
+
     from .hh_submission import _SUBMIT_CLICK_JS, _submitted_reviews
     # BLE001 finding #61: arm the one-shot invariant BEFORE the click, the way
     # hh_submission.submit_application() does at :418. _SUBMIT_CLICK_JS runs

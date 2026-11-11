@@ -50,7 +50,7 @@ def record_pending_test_task(
     vacancy_title = vacancy_title or kwargs.get("vacancy") or "Python Role"
     task_text = task_text or kwargs.get("message_text") or kwargs.get("task_description") or ""
     ARTIFACT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    now_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M")
 
     links = extract_test_task_links(task_text)
     if url and url not in links:

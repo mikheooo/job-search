@@ -2019,10 +2019,11 @@ def test_leak_guard_step_1_leaves_submit_allowed_off():
     mutation run showed exactly that. Force the known-good state first, then
     the comparison means something.
     """
-    global _LEAK_GUARD_BASELINE
+    global _LEAK_GUARD_BASELINE, _SESSION_SUBMIT_ALLOWED
     from ai_assistant import config
 
     _set_submit_allowed(True)
+    _SESSION_SUBMIT_ALLOWED = ("true", "true", True)
     _LEAK_GUARD_BASELINE = config.submit_allowed()
     assert _LEAK_GUARD_BASELINE is True
 
@@ -2036,6 +2037,7 @@ def test_leak_guard_step_2_sees_the_value_restored():
     If the autouse fixture is dropped, step 1's `False` is still in place here
     and this fails. Ordering matters, hence the step_1/step_2 names.
     """
+    global _SESSION_SUBMIT_ALLOWED
     from ai_assistant import config
 
     assert _LEAK_GUARD_BASELINE is True, "step 1 did not run"
@@ -2043,6 +2045,8 @@ def test_leak_guard_step_2_sees_the_value_restored():
         "SUBMIT_ALLOWED leaked out of a test in this file; the autouse "
         "_restore_submit_allowed fixture is not doing its job"
     )
+    _set_submit_allowed(False)
+    _SESSION_SUBMIT_ALLOWED = ("false", None, False)
 
 # ---------------------------------------------------------------------------
 # Finding #22 - the CDP adapter reported success without a click, and the

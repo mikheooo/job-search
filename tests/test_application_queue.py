@@ -54,11 +54,27 @@ from ai_assistant.matcher import JobMatcher
 
 
 
-def _vac(sid="1", title="Test Engineer", desc="python", company="Acme", source="test", job_url=None, salary_min=None, salary_max=None, salary_currency=None, published_at=None, first_seen_at=None):
+def _vac(
+    sid="1",
+    title="Test Engineer",
+    desc="python",
+    company="Acme",
+    source="test",
+    job_url=None,
+    salary_min=None,
+    salary_max=None,
+    salary_currency=None,
+    published_at=None,
+    first_seen_at=None,
+    country_restrictions=None,
+):
 
     if job_url is None:
 
         job_url = f"https://example.com/{sid}_{source}"
+
+    if country_restrictions is None:
+        country_restrictions = ["Worldwide"]
 
     vac = Vacancy(
 
@@ -76,7 +92,7 @@ def _vac(sid="1", title="Test Engineer", desc="python", company="Acme", source="
 
         location="Remote Worldwide",
 
-        country_restrictions=[],
+        country_restrictions=country_restrictions,
 
         timezone_restrictions=[],
 
@@ -318,9 +334,9 @@ def test_unknown_salary_doesnt_invent_value():
 
     priority, comps, reasons, warnings = compute_priority(vac, profile, 80, 80, d)
 
-    # salary_fit should be 0, not 50 invented
+    # salary_fit should be 50 (neutral/unknown per T7.3), not penalized to 0
 
-    assert comps["salary_fit"] == 0
+    assert comps["salary_fit"] == 50
 
     assert any("unknown" in w.lower() for w in warnings)
 

@@ -1,0 +1,13 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known public API keys inside archived external HTML fixtures"
+paths = [
+    '''^artifacts/contra_hire_page_snapshot\.html$''',
+    '''^artifacts/contra_hire_web_developers_snapshot\.html$''',
+    '''^artifacts/freelancer_jobs_listing_snapshot\.html$''',
+    '''^artifacts/freelancer_project_detail\.html$''',
+    '''^artifacts/freelancer_project_detail_hkd\.html$''',
+]
+

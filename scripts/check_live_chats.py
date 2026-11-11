@@ -13,8 +13,12 @@ async def cdp_call(ws, method, params=None, msg_id=1):
         if resp.get("id") == msg_id:
             return resp
 
+def _fetch_targets(url: str = "http://127.0.0.1:9111/json"):
+    with urllib.request.urlopen(url) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
 async def run():
-    targets = json.loads(urllib.request.urlopen('http://127.0.0.1:9111/json').read())
+    targets = await asyncio.to_thread(_fetch_targets)
     hh = next(t for t in targets if 'hh.ru' in t.get('url', '') and t.get('type') == 'page')
     async with websockets.connect(hh['webSocketDebuggerUrl']) as ws:
         # Find the first "Перейти в чат" button

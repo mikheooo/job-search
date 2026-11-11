@@ -6,14 +6,13 @@ import atexit
 import json
 import logging
 import os
-import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from .. import config
@@ -37,6 +36,12 @@ from ..db import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    host = os.getenv("DASHBOARD_HOST", "127.0.0.1")
+    if not is_loopback_host(host):
+        logging.getLogger(__name__).warning(
+            "Binding to non-loopback host %s. Enforcing dashboard token authentication for all reads and mutations.",
+            host,
+        )
     # T7.24 §6: the UI is a long-lived owner, so it must give up its browser on the
     # way out - normal exit, exception and Ctrl+C all end here. ``atexit`` covers
     # the paths that skip the ASGI shutdown (a hard kill of the process).
@@ -75,80 +80,29 @@ def _dashboard_cors_origins() -> list:
     return ["http://localhost:8000", "http://127.0.0.1:8000", "http://localhost:8001", "http://127.0.0.1:8001"]
 
 
-def _dashboard_token() -> str:
-    """Токен дашборда. env приоритетнее config: config читает env только на импорте,
-    так что заданный позже DASHBOARD_TOKEN иначе бы не подхватился."""
-    return os.getenv("DASHBOARD_TOKEN", "").strip() or getattr(config, "DASHBOARD_TOKEN", "").strip()
+from .auth import (
+    MUTATING_METHODS as _MUTATING_METHODS,
+    dashboard_require_auth_for_reads as _dashboard_require_auth_for_reads,
+    dashboard_token_ok as _dashboard_token_ok,
+    get_dashboard_token as _dashboard_token,
+    is_loopback_host,
+    request_dashboard_token as _request_dashboard_token,
+    require_dashboard_token_middleware as require_dashboard_token,
+)
 
+__all__ = [
+    "_MUTATING_METHODS",
+    "_dashboard_require_auth_for_reads",
+    "_dashboard_token",
+    "_dashboard_token_ok",
+    "_request_dashboard_token",
+    "app",
+    "is_loopback_host",
+    "require_dashboard_token",
+]
 
-def _request_dashboard_token(request: Request) -> str:
-    """Токен из заголовка: Authorization: Bearer <token> либо X-API-Key: <token>."""
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        return auth_header[7:].strip()
-    return request.headers.get("X-API-Key", "").strip()
-
-
-def _dashboard_token_ok(request: Request) -> bool:
-    configured_token = _dashboard_token()
-    if not configured_token:
-        return False
-    token = _request_dashboard_token(request)
-    return bool(token) and secrets.compare_digest(token, configured_token)
-
-
-def _dashboard_require_auth_for_reads() -> bool:
-    raw = os.getenv("DASHBOARD_REQUIRE_AUTH_FOR_READS", "").strip().lower()
-    if raw:
-        return raw in ("1", "true", "yes")
-    return bool(getattr(config, "DASHBOARD_REQUIRE_AUTH_FOR_READS", False))
-
-
-# Мутирующие методы требуют токен всегда; читающие — только по флагу ниже.
-_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-
-
-# NB: CORSMiddleware намеренно добавляется ПОСЛЕ мидлвари авторизации (см. ниже).
-# Starlette делает внешним слоем последний add_middleware, поэтому так CORS
-# оказывается снаружи авторизации — иначе 401/503 уходят без
-# Access-Control-Allow-Origin и браузер показывает «CORS error» вместо читаемого 401.
-
-
-@app.middleware("http")
-async def require_dashboard_token(request: Request, call_next):
-    """Токен-авторизация для /api/.
-
-    Мутации (POST/PUT/PATCH/DELETE) — всегда. Читающие запросы — только при
-    DASHBOARD_REQUIRE_AUTH_FOR_READS=1.
-
-    Что намеренно не трогаем:
-      * всё вне /api/ — собственно страница дашборда. Если закрыть и её,
-        открыть UI и ввести токен будет негде (браузер не шлёт Bearer при
-        обычной навигации);
-      * OPTIONS — CORS-preflight, браузер не передаёт в нём credentials.
-    """
-    if not request.url.path.startswith("/api/"):
-        return await call_next(request)
-
-    if request.method == "OPTIONS":
-        return await call_next(request)
-
-    if request.method not in _MUTATING_METHODS and not _dashboard_require_auth_for_reads():
-        return await call_next(request)
-
-    if not _dashboard_token():
-        return JSONResponse(
-            status_code=503,
-            content={"detail": "DASHBOARD_TOKEN not configured"},
-        )
-
-    if not _dashboard_token_ok(request):
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "Unauthorized: invalid or missing dashboard token"},
-        )
-
-    return await call_next(request)
+# Re-apply middleware
+app.middleware("http")(require_dashboard_token)
 
 
 app.add_middleware(

@@ -286,11 +286,21 @@ async def update_about(ws):
         print("Could not find Save button on About page!")
 
 
-async def main():
-    # Open temporary tab
+def _open_temporary_tab() -> dict:
     req = urllib.request.Request(f"{CDP}/json/new?about:blank", method="PUT")
     with urllib.request.urlopen(req) as resp:
-        tab = json.loads(resp.read().decode("utf-8"))
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _close_temporary_tab(tab_id: str) -> None:
+    req_close = urllib.request.Request(f"{CDP}/json/close/{tab_id}")
+    with urllib.request.urlopen(req_close) as resp:
+        resp.read()
+
+
+async def main():
+    # Open temporary tab
+    tab = await asyncio.to_thread(_open_temporary_tab)
     tab_id = tab["id"]
     ws_url = tab["webSocketDebuggerUrl"]
 
@@ -316,8 +326,7 @@ async def main():
             }, msg_id=701)
             print("Final verification summary:\n", res_summary.get("result", {}).get("result", {}).get("value", {}).get("title"))
     finally:
-        req_close = urllib.request.Request(f"{CDP}/json/close/{tab_id}")
-        urllib.request.urlopen(req_close)
+        await asyncio.to_thread(_close_temporary_tab, tab_id)
         print("\nAll HH resume updates completed successfully.")
 
 

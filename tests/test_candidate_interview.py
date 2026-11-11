@@ -747,7 +747,7 @@ def test_a_full_interview_leaves_every_resume_claim_untouched(
     engine: InterviewEngine, kb_file: Path
 ) -> None:
     before = resume_claim_snapshot(kb_file)
-    assert len(before) == 123, "the fixture KB should hold the real resume's claims"
+    assert len(before) == 124, "the fixture KB should hold the real resume's claims"
 
     walk(engine)
 
@@ -825,7 +825,7 @@ def test_a_resume_merge_still_refreshes_every_resume_claim(
         source_sha256=sha256_of(RESUME_PATH),
         now="2026-09-22T00:00:00+00:00",
     )
-    assert report.refreshed == 123
+    assert report.refreshed == 124
     assert report.marked_absent == 0
     assert report.added == 0
 

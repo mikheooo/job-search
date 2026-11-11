@@ -7,7 +7,7 @@ from ai_assistant import hh_autopilot as ha
 from ai_assistant import hh_cdp_submit as hcs
 
 
-def test_unconfirmed_submission_does_not_send_telegram_alert(monkeypatch, tmp_path):
+def test_unconfirmed_submission_does_not_send_telegram_alert(monkeypatch, tmp_path, submit_allowed):
     """When submission post_confirmed is False, no alert should be sent to Telegram."""
     mock_send = MagicMock()
     monkeypatch.setattr(ha, "send_telegram_alert", mock_send)

@@ -296,6 +296,7 @@ def _install_send_outcomes(monkeypatch, jsf, outcomes):
 def _fake_token(monkeypatch, jsf):
     """Pin a fake token so the sender's file lookups never touch real secrets."""
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "000000000:TEST_TOKEN")
+    monkeypatch.setenv("TELEGRAM_CHANNEL_ID", "-1000000000000")
     # The fetcher prefers the Hermes profile .env when it exists; force the
     # environment path so these tests do not depend on the machine's real file.
     monkeypatch.setattr(jsf.Path, "exists", lambda _self: False, raising=True)
@@ -412,7 +413,7 @@ def test_auth_classifier_covers_401_403_and_text_matches(jsf):
     assert not jsf._is_auth_error(ValueError("boom"))
 
 
-def test_ambiguous_send_is_recorded_and_never_resent(monkeypatch, jsf):
+def test_ambiguous_send_is_recorded_and_never_resent(monkeypatch, jsf, _fake_token):
     """The caller must record AMBIGUOUS and stop: a raise from the sender means
     the message may already be in the channel."""
     import socket

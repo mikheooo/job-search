@@ -860,13 +860,18 @@ def submit_vacancy(
     (app_dir / "preflight.json").write_text(json.dumps(preflight, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # 3. Execute CDP submit in-process.
-    # Critical-1: same halt authority as the controlled path (SUBMIT_ALLOWED,
+    # Central outbound governor: same halt authority as the controlled path (SUBMIT_ALLOWED,
     # submit_paused, STOP_SUBMITS). Never re-arm the operator kill-switch.
-    from ai_assistant.hh_submission import submission_halt_reason
-    _halt = submission_halt_reason()
-    if _halt:
+    from ai_assistant.outbound_governor import (
+        OutboundAction,
+        OutboundHaltedError,
+        check_outbound_allowed,
+        guard_outbound,
+    )
+    _allowed, _halt = check_outbound_allowed(action=OutboundAction.SUBMISSION, dry_run=False)
+    if not _allowed:
         logger.error("Autopilot submit refused for %s: %s", vid, _halt)
-        status = "REFUSED_KILL_SWITCH" if "SUBMIT_ALLOWED" in _halt else "REFUSED_HALT"
+        status = "REFUSED_KILL_SWITCH" if _halt and "SUBMIT_ALLOWED" in _halt else "REFUSED_HALT"
         outcome.update({"status": status, "reason": _halt})
         return False
 
@@ -893,10 +898,16 @@ def submit_vacancy(
             letter=str(letter_path),
             prefill_plan=prefill_plan,
         )
+        guard_outbound(action=OutboundAction.SUBMISSION, dry_run=False)
         submit_data = t722.run_submit(args)
         submit_file = PROJECT_ROOT / "artifacts" / "hh_cdp" / f"submit_{vid}.json"
         submit_file.parent.mkdir(parents=True, exist_ok=True)
         submit_file.write_text(json.dumps(submit_data, ensure_ascii=False, indent=1), encoding="utf-8")
+    except OutboundHaltedError as e:
+        logger.error("CDP submit halted by outbound governor for %s: %s", vid, e)
+        status = "REFUSED_KILL_SWITCH" if "SUBMIT_ALLOWED" in str(e) else "REFUSED_HALT"
+        outcome.update({"status": status, "reason": str(e)})
+        return False
     except Exception as e:
         logger.error(f"CDP submit failed for {vid}: {e}", exc_info=True)
         outcome.update({"status": "SUBMIT_ERROR", "reason": str(e)})

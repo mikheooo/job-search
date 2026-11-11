@@ -55,9 +55,10 @@ def iso(hours_ago: float) -> str:
 
 @pytest.fixture(scope="module")
 def confidences():
-    profile = json.loads(
-        (Path(__file__).resolve().parents[2] / "candidate_profile.json").read_text(encoding="utf-8")
-    )
+    profile_path = Path(__file__).resolve().parents[2] / "candidate_profile.json"
+    if not profile_path.exists():
+        profile_path = Path(__file__).resolve().parents[2] / "candidate_profile.example.json"
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
     return skill_confidences(profile), {
         k.lower(): str(v).upper() for k, v in (profile.get("skill_confidence") or {}).items()
     }

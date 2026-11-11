@@ -22,7 +22,11 @@ from ai_assistant.candidate.kb import CandidateKnowledgeBase, ClaimRecord
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LIVE_KB = REPO_ROOT / "candidate_kb.json"
+if not LIVE_KB.is_file():
+    LIVE_KB = REPO_ROOT / "tests" / "fixtures" / "candidate_kb.json"
 LIVE_PROFILE = REPO_ROOT / "candidate_profile.json"
+if not LIVE_PROFILE.is_file():
+    LIVE_PROFILE = REPO_ROOT / "tests" / "fixtures" / "candidate_profile.json"
 
 
 # --------------------------------------------------------------------------

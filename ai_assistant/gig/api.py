@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 from ..db import init_db
+from ..ui.auth import require_dashboard_token_middleware
 from .cli import _gig_brief
 from .models import Gig, GigStatus
 from .store import get_gig, gig_stats, list_gig_events, list_gigs, set_gig_status
@@ -31,6 +32,9 @@ from .store import get_gig, gig_stats, list_gig_events, list_gigs, set_gig_statu
 app = FastAPI(title="Gig Search API (GIG-SEARCH-P1)", version="1.0.0")
 
 _STATIC_DIR = __import__("pathlib").Path(__file__).resolve().parent / "static"
+
+# Token authorization for mutating methods and remote reads (GIG-001)
+app.middleware("http")(require_dashboard_token_middleware)
 
 # По умолчанию только loopback: API читает локальную БД и ничем наружу не торгует.
 app.add_middleware(

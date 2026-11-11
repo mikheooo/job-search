@@ -134,7 +134,7 @@ def _row_to_gig(row: sqlite3.Row | tuple) -> Gig:
     Колонки читаются по именам ``cursor.description``, поэтому порядок SELECT
     (``gigs.*``) не критичен.
     """
-    data = dict(row) if not isinstance(row, sqlite3.Row) else dict(row)
+    data = dict(row)
     gig = Gig(
         id=data.get("id") or "",
         source=data.get("source") or "",

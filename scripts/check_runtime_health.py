@@ -49,6 +49,7 @@ def _ps(script: str) -> str:
     try:
         out = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            check=False,
             capture_output=True, text=True, timeout=60,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
@@ -188,7 +189,8 @@ def main() -> int:
             os.path.join(logs, name)
         if os.path.exists(p):
             try:
-                data = json.load(open(p, encoding="utf-8"))
+                with open(p, encoding="utf-8") as f:
+                    data = json.load(f)
                 pid = data.get("pid", 0)
                 alive = is_pid_running(pid) if pid else False
                 print(f"{name}: pid={pid} alive={alive} ts={data.get('timestamp', '?')}")
@@ -199,7 +201,8 @@ def main() -> int:
     hb = os.path.join(logs, "telegram_control_bot.heartbeat")
     if os.path.exists(hb):
         try:
-            data = json.load(open(hb, encoding="utf-8"))
+            with open(hb, encoding="utf-8") as f:
+                data = json.load(f)
             print(f"control-bot heartbeat: {data}")
         except Exception:
             print("control-bot heartbeat: <unreadable>")

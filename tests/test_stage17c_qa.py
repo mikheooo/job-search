@@ -296,7 +296,6 @@ def test_validator_needs_review_select_without_options():
 
 
 def test_validator_read_only_no_db():
-    from ai_assistant.application_qa import ApplicationPackageValidator
     q = _q(label="Email", qtype=QuestionType.TEXT, required=True, source=QuestionSource.PROFILE)
     form = ApplicationForm(source="hh", vacancy_stable_id="test:1", application_type=ApplicationType.screening_questions, questions=[q])
     pkg = enrich_package_with_form(_package(), form, _profile(), _RESUME, _deep(), _vac())
@@ -361,7 +360,6 @@ def test_no_submit_click_fill_upload():
 
 
 def test_no_db_writes_during_resolution(tmp_path, monkeypatch):
-    import ai_assistant.db as db
     orig = db.get_connection
     writes = {"n": 0}
 

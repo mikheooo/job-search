@@ -539,11 +539,6 @@ class EncryptedSubmissionTracker(SubmissionTracker):
             return None
         return (datetime.now(timezone.utc) + timedelta(seconds=self.retention_seconds)).isoformat()
 
-    def retention_expires_at(self):
-        if self.retention_seconds is None:
-            return None
-        return (datetime.now(timezone.utc) + timedelta(seconds=self.retention_seconds)).isoformat()
-
     def upsert(self, record: SubmissionRecord) -> int:
         if self.retention_seconds is not None:
             expiry = datetime.now(timezone.utc) + timedelta(seconds=self.retention_seconds)

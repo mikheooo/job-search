@@ -98,7 +98,7 @@ def _insert_vacancy(
         conn.close()
 
 
-def test_policy_all_checks_pass(clean_db):
+def test_policy_all_checks_pass(clean_db, submit_allowed):
     """When all gates are satisfied, policy approves and returns SubmitApproval."""
     sid = "hh:136704137"
     pkg, fp, letter = _create_valid_package_and_review(sid)
@@ -203,7 +203,7 @@ def test_policy_cover_letter_placeholders_fails(clean_db):
     """Cover letter containing template placeholders like TODO or {{ is rejected."""
     sid = "hh:136704137"
     placeholder_letter = (
-        "Здравствуйте! Позиция Python developer middle в компании Maxima.tech мне очень интересна. "
+        "Здравствуйте! Позиция Python developer middle в компании [ВСТАВИТЬ НАЗВАНИЕ] мне очень интересна. "
         "Мой опыт в технологиях {{TECH_STACK}} составляет более 5 лет. "
         "TODO: указать детали предыдущих проектов в финансовом секторе. "
         "Я готов быстро включиться в работу и принести пользу. " + ("опыт " * 30)
@@ -220,6 +220,28 @@ def test_policy_cover_letter_placeholders_fails(clean_db):
     assert decision.approve is False
     assert "letter_no_placeholders" in decision.checks_failed
     assert any("cover_letter_contains_placeholders" in r for r in decision.reasons)
+
+
+def test_policy_cover_letter_legitimate_brackets_and_comparisons_pass(clean_db):
+    """Cover letter containing legitimate brackets (e.g. [Python, Docker]) and math (< 10) passes (POL-001)."""
+    sid = "hh:136704138"
+    legit_letter = (
+        "Здравствуйте! Позиция Python developer middle в компании Maxima.tech мне очень интересна. "
+        "Мой основной стек технологий: [Python, FastAPI, Docker, PostgreSQL, Redis]. "
+        "Опыт работы в распределенных командах < 10 лет, но более 5 лет уверенной практики. "
+        "Буду рад обсудить подробности на техническом интервью и внести вклад в продукт. " + ("опыт " * 30)
+    )
+    _create_valid_package_and_review(sid, letter_text=legit_letter)
+    app = {
+        "application_id": "app_legit_brackets",
+        "vacancy_stable_id": sid,
+        "title": "Python developer middle",
+        "employer": "Maxima.tech",
+        "draft": legit_letter,
+    }
+    decision = evaluate(app)
+    assert "letter_no_placeholders" in decision.checks_passed
+    assert "letter_no_placeholders" not in decision.checks_failed
 
 
 def test_policy_cover_letter_no_target_mention_fails(clean_db):
@@ -650,7 +672,7 @@ def test_policy_still_records_a_real_fingerprint_match(clean_db):
     assert "fingerprint_not_compared" not in decision.checks_passed
 
 
-def test_the_fingerprint_record_change_does_not_change_the_verdict(clean_db):
+def test_the_fingerprint_record_change_does_not_change_the_verdict(clean_db, submit_allowed):
     """Finding #37's doctrine: the record stops lying, the verdict does not move.
 
     Two things have to stay true, and each guards a different wrong "fix": the

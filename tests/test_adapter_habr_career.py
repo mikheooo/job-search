@@ -33,10 +33,11 @@ def test_habr_career_adapter_fetches_and_parses():
     adapter = HabrCareerAdapter()
     assert adapter.source == "habrcareer"
 
-    import feedparser
-    parsed_feed = feedparser.parse(SAMPLE_HABR_RSS)
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = SAMPLE_HABR_RSS.encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
 
-    with patch("feedparser.parse", return_value=parsed_feed):
+    with patch("urllib.request.urlopen", return_value=mock_resp):
         vacancies = adapter.fetch_vacancies()
         assert len(vacancies) == 1
         vac = vacancies[0]

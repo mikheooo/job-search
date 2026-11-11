@@ -89,7 +89,6 @@ def _setup_vacancy_with_tracking(status: ApplicationStatus = ApplicationStatus.R
     vac = _vac(**kwargs)
     db.save_vacancy(vac)
     
-    from ai_assistant.application_tracking import set_application_status, transition_application
     track = set_application_status(vac.stable_id(), ApplicationStatus.DISCOVERED, company=vac.company, title=vac.title, source=vac.source, vacancy_url=vac.job_url)
     
     if status == ApplicationStatus.ANALYZED:

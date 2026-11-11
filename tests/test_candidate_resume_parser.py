@@ -123,9 +123,10 @@ def test_avantis_role_pin(claims: list) -> None:
     assert companies and companies[0].value == "Avantis"
 
     duties = [c for c in of_kind(claims, "duty") if c.role_id == avantis_id]
-    assert len(duties) == 2, [d.value for d in duties]
+    assert len(duties) == 3, [d.value for d in duties]
     assert any("self-hosted Bitrix24" in d.value for d in duties)
-    assert any("technical support and troubleshooting" in d.value for d in duties)
+    assert any("custom REST API scripts" in d.value for d in duties)
+    assert any("technical support" in d.value and "troubleshooting" in d.value for d in duties)
 
 
 def test_earlier_block_2009_2018_pin(claims: list) -> None:
@@ -205,7 +206,7 @@ def test_every_duty_is_bound_to_a_real_role(claims: list) -> None:
     assert bullets, "expected role bullets"
     for bullet in bullets:
         assert bullet.role_id in role_ids, bullet
-    assert len(of_kind(claims, "duty")) == 18
+    assert len(of_kind(claims, "duty")) == 19
 
 
 def test_skill_groups_and_skills_are_linked(claims: list) -> None:
@@ -239,9 +240,9 @@ def test_todays_measured_totals(claims: list) -> None:
     should be updated, and it should be updated *from a fresh run*, not by
     relaxing the count.
     """
-    assert len(claims) == 123
+    assert len(claims) == 124
     assert len(of_kind(claims, "role")) == 4
-    assert len(of_kind(claims, "duty")) == 18
+    assert len(of_kind(claims, "duty")) == 19
     assert len(of_kind(claims, "achievement")) == 0
     assert len(of_kind(claims, "skill")) == 55
     assert len(of_kind(claims, "skill_group")) == 4
@@ -276,12 +277,18 @@ def test_known_line_numbers_are_exact(claims: list) -> None:
     """A few anchors by hand, so an off-by-one in line counting cannot hide."""
     by_kind_and_value = {(c.kind, c.value): c.evidence.line for c in claims}
     assert by_kind_and_value[("name", "Mikhail Kolesnikov")] == 1
-    assert by_kind_and_value[("headline", "AI Engineer | AI Automation Engineer | Python Developer")] == 3
+    assert (
+        by_kind_and_value[(
+            "headline",
+            "AI Engineer / Python Developer | Systems & Support Engineer L2/L3 | CRM Integration & Automation Specialist",
+        )]
+        == 3
+    )
     assert by_kind_and_value[("skill_group", "AI, LLM & Media Generation")] == 10
     assert by_kind_and_value[("role", "AI Automation Engineer | Sayama Travel")] == 28
     assert by_kind_and_value[("role", "Bitrix24 Technical Support Specialist | Avantis")] == 37
-    assert by_kind_and_value[("education_institution", "Sakhalin State University")] == 48
-    assert by_kind_and_value[("language", "Russian")] == 49
+    assert by_kind_and_value[("education_institution", "Sakhalin State University")] == 49
+    assert by_kind_and_value[("language", "Russian")] == 50
     summary = of_kind(claims, "summary")
     assert len(summary) == 1
     assert summary[0].evidence.line == 7

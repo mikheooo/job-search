@@ -36,6 +36,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any
@@ -584,30 +585,20 @@ def classify_hh_conversation_detailed(
                 "status": "READ-ONLY",
             }
 
-        # 1. Salary questions: answer with confirmed expectation range
+        # 1. Salary questions: require human review (fail-closed, never auto-negotiate or state salary)
         if re.search(r"зарплат|оплат|оклад|salary|ставк|уровень дохода|денег", q_text, re.IGNORECASE):
-            if lang == "ru":
-                sal_reply = (
-                    "Здравствуйте! Мой ориентир по заработной плате — от 100 000 руб. на руки. "
-                    "При этом я полностью открыт к обсуждению и готов гибко согласовать комфортную сумму под бюджет компании и задачи проекта (главное — быстро и продуктивно включиться в работу)."
-                )
-            else:
-                sal_reply = (
-                    "Hello! My target compensation starts from 100,000 RUB net per month (approx. $1,100–$1,300). "
-                    "I am completely open to discussing and aligning with your company's budget and project scope."
-                )
             return {
                 "conversation_id": dialog.conversation_id,
-                "classification": "NEEDS_REPLY",
-                "confidence": 0.90,
-                "reason": "Employer asked about salary expectations; answered with candidate's confirmed target range.",
+                "classification": "HUMAN_REVIEW",
+                "confidence": 0.95,
+                "reason": "Employer asked about salary expectations; escalating for human review.",
                 "question": q_text,
                 "required_facts": ["salary expectation"],
-                "available_facts": available_facts + ["salary floor: от 100 000 RUB"],
-                "missing_facts": [],
+                "available_facts": available_facts,
+                "missing_facts": ["exact salary negotiation"],
                 "context": context,
-                "prepared_reply": sal_reply,
-                "sources": sources + ["candidate_profile.json: minimum_salary"],
+                "prepared_reply": None,
+                "sources": sources,
                 "status": "READ-ONLY",
             }
 
@@ -648,44 +639,7 @@ def classify_hh_conversation_detailed(
                 "status": "READ-ONLY",
             }
 
-        # 3. Grounded Company Experience: Sayama Travel, Avantis Med, Freelance, Early IT, Infrastructure, Domains
-        _ELABORATE_RE = re.compile(
-            r"подробнее|расскаж\w+\s+о|продолж\w+\s+рассказ|опыт\w*\s+с|какой\s+опыт|сколько\s+лет",
-            re.IGNORECASE,
-        )
-        is_elaborate_q = bool(_ELABORATE_RE.search((q_text or "").lower()))
-
-        q_low_check = (q_text or "").lower()
-        if any(k in q_low_check for k in [
-            "где вы работали", "где работал", "места работы", "компании", "предыдущ",
-            "sayama", "саяма", "avantis", "авантис", "фриланс", "расскажите о себе",
-            "расскажите про опыт", "опыт работы", "работали ли вы", "работал ли",
-            "работали в", "в каких компаниях", "агентств", "студи",
-            "дизайн", "design", "арт", "стаж",
-            "портфолио", "portfolio", "кейсы", "кейс", "сайт", "пример",
-            "vmware", "vsphere", "esxi", "nsx", "airflow", "spark", "kafka",
-            "igaming", "гейминг", "продолжить рассказ", "подробнее", "опыте с", "опыт с"
-        ]) or is_elaborate_q:
-            from ai_assistant.smart_experience_generator import generate_employer_chat_reply
-            has_prior = any(m.sender == "candidate" for m in messages)
-            exp_res = generate_employer_chat_reply(q_text, v_title, v_comp, has_prior_interaction=has_prior)
-            exp_reply = exp_res.get("reply_text", "")
-            return {
-                "conversation_id": dialog.conversation_id,
-                "classification": "NEEDS_REPLY",
-                "confidence": 0.98,
-                "reason": f"Employer asked about candidate experience/companies; answered with verified candidate_kb.json history ({exp_res.get('intent')}).",
-                "question": q_text,
-                "required_facts": ["experience history"],
-                "available_facts": available_facts + ["Sayama Travel (2022-2026)", "Avantis Med (2021-2022)", "Freelance (2026-present)"],
-                "missing_facts": [],
-                "context": context,
-                "prepared_reply": exp_reply,
-                "sources": sources + ["candidate_kb.json: confirmed roles and duties"],
-                "status": "READ-ONLY",
-            }
-
-        # Domain experience: E-commerce / Marketplaces (Ozon/WB)
+        # 3. Domain experience: E-commerce / Marketplaces (Ozon/WB)
         if re.search(r"e-commerce|маркетплейс|ozon|wildberries|wb", q_text, re.IGNORECASE):
             required_facts.append("e-commerce / marketplace experience (Ozon/WB)")
             # Check if candidate profile has confirmed Ozon/WB
@@ -731,6 +685,43 @@ def classify_hh_conversation_detailed(
                 "context": context,
                 "prepared_reply": reply_text,
                 "sources": sources,
+                "status": "READ-ONLY",
+            }
+
+        # 4. Grounded Company Experience: Sayama Travel, Avantis Med, Freelance, Early IT, Infrastructure, Domains
+        _ELABORATE_RE = re.compile(
+            r"подробнее|расскаж\w+\s+о|продолж\w+\s+рассказ|опыт\w*\s+с|какой\s+опыт|сколько\s+лет",
+            re.IGNORECASE,
+        )
+        is_elaborate_q = bool(_ELABORATE_RE.search((q_text or "").lower()))
+
+        q_low_check = (q_text or "").lower()
+        if any(k in q_low_check for k in [
+            "где вы работали", "где работал", "места работы", "компании", "предыдущ",
+            "sayama", "саяма", "avantis", "авантис", "фриланс", "расскажите о себе",
+            "расскажите про опыт", "опыт работы", "работали ли вы", "работал ли",
+            "работали в", "в каких компаниях", "агентств", "студи",
+            "дизайн", "design", "арт", "стаж",
+            "портфолио", "portfolio", "кейсы", "кейс", "сайт", "пример",
+            "vmware", "vsphere", "esxi", "nsx", "airflow", "spark", "kafka",
+            "igaming", "гейминг", "продолжить рассказ", "подробнее", "опыте с", "опыт с"
+        ]) or is_elaborate_q:
+            from ai_assistant.smart_experience_generator import generate_employer_chat_reply
+            has_prior = any(m.sender == "candidate" for m in messages)
+            exp_res = generate_employer_chat_reply(q_text, v_title, v_comp, has_prior_interaction=has_prior)
+            exp_reply = exp_res.get("reply_text", "")
+            return {
+                "conversation_id": dialog.conversation_id,
+                "classification": "NEEDS_REPLY",
+                "confidence": 0.98,
+                "reason": f"Employer asked about candidate experience/companies; answered with verified candidate_kb.json history ({exp_res.get('intent')}).",
+                "question": q_text,
+                "required_facts": ["experience history"],
+                "available_facts": available_facts + ["Sayama Travel (2022-2026)", "Avantis Med (2021-2022)", "Freelance (2026-present)"],
+                "missing_facts": [],
+                "context": context,
+                "prepared_reply": exp_reply,
+                "sources": sources + ["candidate_kb.json: confirmed roles and duties"],
                 "status": "READ-ONLY",
             }
 
@@ -1876,13 +1867,36 @@ def _conversations_list_js() -> str:
     )
 
 
-def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> dict[str, Any]:
+def fetch_hh_conversations_list_readonly(
+    evaluate_fn: Callable[[str], str],
+    timeout_seconds: float = 30.0,
+) -> dict[str, Any]:
     """Stage 30D.9: Read-only enumeration of all visible conversations in HH chat interface.
     Uses internal chatik API first (100% reliable, direct participant & message metadata),
     with robust DOM fallback.
     Returns:
         conversations: List[Dict[str, Any]] (conversation_id, url, title, employer, snippet, is_selected, is_outgoing)
     """
+    import concurrent.futures
+
+    deadline = time.monotonic() + timeout_seconds
+
+    def _eval(expr: str) -> str:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"timed out after {timeout_seconds}s")
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = getattr(executor, "submit")(evaluate_fn, expr)
+        try:
+            return future.result(timeout=max(remaining, 0.001))
+        except Exception as err:
+            executor.shutdown(wait=False, cancel_futures=True)
+            if not future.done():
+                raise TimeoutError(f"timed out after {timeout_seconds}s") from None
+            raise
+        else:
+            executor.shutdown(wait=False)
+
     # 1. Native Chatik API fetch inside browser context
     chatik_api_js = """(async () => {
         try {
@@ -1940,11 +1954,16 @@ def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> d
     })()"""
 
     try:
-        api_raw = evaluate_fn(chatik_api_js)
+        api_raw = _eval(chatik_api_js)
         if api_raw and api_raw != "{}":
             api_res = json.loads(api_raw)
+            if isinstance(api_res, list):
+                return {"conversations": api_res}
             if isinstance(api_res, dict) and api_res.get("conversations"):
                 return api_res
+    except TimeoutError as exc:
+        err_msg = str(exc) if "TimeoutError" in str(exc) else f"TimeoutError: {exc}"
+        return {"error": err_msg, "conversations": []}
     except Exception:
         pass
 
@@ -1952,14 +1971,30 @@ def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> d
     expr = _conversations_list_js()
     if expr.lstrip().startswith("() =>"):
         expr = "(" + expr + ")()"
-    raw = evaluate_fn(expr)
+    try:
+        raw = _eval(expr)
+    except TimeoutError as exc:
+        err_msg = str(exc) if "TimeoutError" in str(exc) else f"TimeoutError: {exc}"
+        return {"error": err_msg, "conversations": []}
+    except Exception as exc:
+        return {"error": str(exc), "conversations": []}
+
     try:
         first_res = json.loads(raw)
     except Exception as e:
         return {"error": str(e), "conversations": []}
 
-    if not isinstance(first_res, dict) or "conversations" not in first_res:
+    if isinstance(first_res, list):
+        first_res = {"conversations": first_res}
+    elif not isinstance(first_res, dict):
+        return {"error": "unrecognized response format", "conversations": []}
+
+    if "error" in first_res:
+        first_res.setdefault("conversations", [])
         return first_res
+
+    if "conversations" not in first_res:
+        return {"error": "empty payload from CDP evaluate", "conversations": []}
 
     convs_by_id = {c.get("conversation_id"): c for c in first_res.get("conversations", []) if c.get("conversation_id")}
 
@@ -1974,12 +2009,14 @@ def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> d
 
     try:
         for _ in range(15):
-            sc_raw = evaluate_fn(scroll_check_js)
+            if time.monotonic() >= deadline:
+                break
+            sc_raw = _eval(scroll_check_js)
             sc_res = json.loads(sc_raw) if isinstance(sc_raw, str) else {}
             if not sc_res.get("found") or sc_res.get("at_bottom"):
                 break
-            time.sleep(0.2)
-            step_raw = evaluate_fn(expr)
+            time.sleep(0.1)
+            step_raw = _eval(expr)
             step_res = json.loads(step_raw) if isinstance(step_raw, str) else {}
             for c in step_res.get("conversations", []):
                 cid = c.get("conversation_id")
@@ -1987,10 +2024,11 @@ def fetch_hh_conversations_list_readonly(evaluate_fn: Callable[[str], str]) -> d
                     convs_by_id[cid] = c
 
         # Restore scroll to top
-        evaluate_fn("""(() => {
-            const sc = document.querySelector('[class*="chats--"], [class*="magritte-scroll-container"]');
-            if (sc) sc.scrollTop = 0;
-        })()""")
+        if time.monotonic() < deadline:
+            _eval("""(() => {
+                const sc = document.querySelector('[class*="chats--"], [class*="magritte-scroll-container"]');
+                if (sc) sc.scrollTop = 0;
+            })()""")
     except Exception:
         pass
 
@@ -2079,6 +2117,9 @@ def fetch_hh_conversation_readonly(evaluate_fn: Callable[[str], str]) -> dict[st
 # external links/forms/questionnaires, test tasks/projects, and final offer acceptance or interview slot scheduling.
 _AUTO_FORBIDDEN_RE = re.compile(
     r"forms\.gle|docs\.google\.com/forms|"
+    r"тестов\w*\s+задани\w*|"
+    r"анкет\w*|опросник\w*|заполните\s+форму|"
+    r"согласу\w*\s+время|время\s+для\s+звонк\w*|удобн\w*\s+время\s+для\s+звонк\w*|"
     r"принять\s+оффер|принять\s+предложен|accept.*offer|подпис\w*\s+договор",
     re.IGNORECASE,
 )

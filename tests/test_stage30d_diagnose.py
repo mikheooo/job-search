@@ -315,7 +315,8 @@ def test_json_flag_payload_contract(capsys):
 
 def test_diagnose_never_sends_or_mutates():
     """10. Forbid-list security scan: no AUTO / send / navigation / submit imports."""
-    src = open(cli.__file__, encoding="utf-8").read()
+    with open(cli.__file__, encoding="utf-8") as f:
+        src = f.read()
     assert "auto_apply_modes" not in src
     assert "process_auto_reply(" not in src
     assert "run_auto_apply(" not in src
@@ -591,6 +592,8 @@ def test_direct_chat_id_without_conversation_dom_gives_proper_verdict(capsys):
 def test_preview_chat_id_json_contract(capsys):
     """19. Stage 30D.2: hh-message preview --json returns valid contract for /chat/<id>."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "title": "3 ・ Чаты",
@@ -622,6 +625,8 @@ def test_preview_chat_id_json_contract(capsys):
 def test_preview_chat_id_with_limit(capsys):
     """20. Stage 30D.2: --limit N restricts messages array to the last N in order."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversation_id": "5577169431",
@@ -659,6 +664,8 @@ def test_preview_fail_soft_on_error(capsys):
 def test_preview_human_output_formatting(capsys):
     """22. Stage 30D.2: Human text mode outputs structured headers and last messages."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "title": "3 ・ Чаты",
@@ -708,6 +715,8 @@ def test_preview_cli_dispatch_options(monkeypatch):
 def test_classify_direct_question_needs_reply(capsys):
     """24. Stage 30D.3/30D.5: Direct question -> NEEDS_REPLY with honest context-aware draft."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversation_id": "5577169431",
@@ -735,6 +744,8 @@ def test_classify_direct_question_needs_reply(capsys):
 def test_classify_candidate_already_answered(capsys):
     """25. Stage 30D.3: Candidate already gave substantive answer -> NO_REPLY_NEEDED."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversation_id": "5577169431",
@@ -755,6 +766,8 @@ def test_classify_candidate_already_answered(capsys):
 def test_classify_empty_conversation(capsys):
     """26. Stage 30D.3: Empty conversation -> EMPTY_CONVERSATION."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversation_id": "5577169431",
@@ -773,6 +786,8 @@ def test_classify_empty_conversation(capsys):
 def test_classify_salary_requires_human_review(capsys):
     """27. Stage 30D.3: Salary inquiry -> HUMAN_REVIEW with null prepared_reply."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversation_id": "5577169431",
@@ -792,6 +807,8 @@ def test_classify_salary_requires_human_review(capsys):
 def test_classify_repeated_bot_questions(capsys):
     """28. Stage 30D.3: Repeated identical bot messages handled cleanly."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversation_id": "5577169431",
@@ -830,7 +847,8 @@ def test_classify_cli_dispatch_options(monkeypatch):
 
 def test_classify_forbid_list_security():
     """30. Stage 30D.3: forbid-list check: classify has no live send or mutation imports."""
-    src = open(cli.__file__, encoding="utf-8").read()
+    with open(cli.__file__, encoding="utf-8") as f:
+        src = f.read()
     assert "send_auto_reply(" not in src
     assert "process_auto_reply(" not in src
     assert "run_auto_apply(" not in src
@@ -842,6 +860,8 @@ def test_classify_forbid_list_security():
 def test_validate_confirmed_profile_facts_approved(capsys):
     """31. Stage 30D.4: Draft with verified skills (Python/n8n from profile) -> APPROVED."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversation_id": "5577169431",
@@ -895,6 +915,8 @@ def test_validate_unverified_ozon_wb_claims_human_review(capsys):
 def test_validate_salary_question_human_review(capsys):
     """33. Stage 30D.4: Sensitive salary inquiry -> HUMAN_REVIEW."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversation_id": "5577169431",
@@ -963,7 +985,8 @@ def test_validate_cli_dispatch_options(monkeypatch):
 
 def test_validate_forbid_list_security():
     """38. Stage 30D.4: forbid-list check: validate has no live send or mutation imports."""
-    src = open(cli.__file__, encoding="utf-8").read()
+    with open(cli.__file__, encoding="utf-8") as f:
+        src = f.read()
     assert "send_auto_reply(" not in src
     assert "process_auto_reply(" not in src
     assert "run_auto_apply(" not in src
@@ -976,6 +999,8 @@ def test_validate_forbid_list_security():
 def test_context_aware_ozon_wb_honest_draft_approved(capsys):
     """39. Stage 30D.5: Question about Ozon/WB generates honest draft that passes validation (APPROVED)."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversation_id": "5577169431",
@@ -1003,6 +1028,8 @@ def test_context_aware_ozon_wb_honest_draft_approved(capsys):
 def test_context_aware_classify_facts_breakdown(capsys):
     """40. Stage 30D.5: Classify returns required_facts, available_facts, and missing_facts."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversation_id": "5577169431",
@@ -1071,6 +1098,8 @@ def test_classify_missing_vacancy_fail_soft():
 def test_send_dry_run_without_confirm_not_sent(capsys):
     """43. Stage 30D.6: send without --confirm performs review only (sent=False, confirmed=False)."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversation_id": "5577169431",
@@ -1095,6 +1124,8 @@ def test_send_dry_run_without_confirm_not_sent(capsys):
 def test_send_human_review_blocked_even_with_confirm(capsys):
     """44. Stage 30D.6: send blocked when validation is HUMAN_REVIEW even if confirm=True."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversation_id": "5577169431",
@@ -1115,6 +1146,8 @@ def test_send_human_review_blocked_even_with_confirm(capsys):
 def test_send_rejected_blocked_even_with_confirm(capsys):
     """45. Stage 30D.6: send blocked when validation is REJECTED even if confirm=True."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversation_id": "5577169431",
@@ -1135,6 +1168,8 @@ def test_send_rejected_blocked_even_with_confirm(capsys):
 def test_send_mismatched_conversation_id_blocked(capsys):
     """46. Stage 30D.6: send blocked if specified conversation ID does not match active tab."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversation_id": "5577169431",
@@ -1154,6 +1189,8 @@ def test_send_mismatched_conversation_id_blocked(capsys):
 def test_send_missing_conversation_blocked(capsys):
     """47. Stage 30D.6: send blocked if conversation DOM has no messages."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversation_id": "5577169431",
@@ -1218,6 +1255,8 @@ def test_send_approved_with_confirm_executes_and_verifies(capsys, monkeypatch):
 def test_send_post_send_unverified_records_error(capsys, monkeypatch):
     """49. Stage 30D.6: If DOM does not confirm delivery after send, status is SEND_UNVERIFIED."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversation_id": "5577169431",
@@ -1268,6 +1307,8 @@ def test_send_draft_already_in_history_not_falsely_verified(capsys, monkeypatch)
     
     # Pre-send has unanswered question (greeting only after it)
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversation_id": "5577169431",
@@ -1395,6 +1436,8 @@ def test_send_byte_for_byte_draft_integrity(monkeypatch, capsys):
     }
 
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversation_id": "5577169431",
@@ -1425,8 +1468,10 @@ def test_send_byte_for_byte_draft_integrity(monkeypatch, capsys):
 
 def test_send_forbid_list_comprehensive_audit():
     """55. Stage 30D.7: Comprehensive security forbid-list audit on send primitives."""
-    src_cli = open(cli.__file__, encoding="utf-8").read()
-    src_reply = open(hh_message_reply.__file__, encoding="utf-8").read()
+    with open(cli.__file__, encoding="utf-8") as f:
+        src_cli = f.read()
+    with open(hh_message_reply.__file__, encoding="utf-8") as f:
+        src_reply = f.read()
 
     # No navigation
     assert "Page.navigate" not in src_cli
@@ -1448,6 +1493,8 @@ def test_already_answered_conversation_blocks_send_confirm(capsys, monkeypatch):
     calls = []
 
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversation_id": "5577169431",
@@ -1479,6 +1526,8 @@ def test_no_retry_after_send_unverified(monkeypatch):
     send_attempts = []
 
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversation_id": "5577169431",
@@ -1546,6 +1595,8 @@ def test_exact_draft_string_matched_in_post_send(capsys, monkeypatch):
 def test_triage_conversations_list(capsys):
     """59. Stage 30D.9: Triage discovers conversations and returns structured items."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/5577169431",
             "conversations": [
@@ -1565,6 +1616,8 @@ def test_triage_conversations_list(capsys):
 def test_triage_deduplication(capsys):
     """60. Stage 30D.9: Duplicate conversations in DOM are deduplicated by conversation_id."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/111",
             "conversations": [
@@ -1582,6 +1635,8 @@ def test_triage_deduplication(capsys):
 def test_triage_limit_flag(capsys):
     """61. Stage 30D.9: --limit restricts number of triaged conversations."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/111",
             "conversations": [
@@ -1602,6 +1657,8 @@ def test_triage_limit_flag(capsys):
 def test_triage_conversation_id_filter(capsys):
     """62. Stage 30D.9: --conversation-id filters triage to target conversation."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/222",
             "conversations": [
@@ -1620,6 +1677,8 @@ def test_triage_conversation_id_filter(capsys):
 def test_triage_classification_multiple_dialogs(capsys):
     """63. Stage 30D.9: Multiple dialogs receive correct classification status."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/111",
             "conversations": [
@@ -1641,6 +1700,8 @@ def test_triage_classification_multiple_dialogs(capsys):
 def test_triage_vacancy_mapping(capsys, monkeypatch):
     """64. Stage 30D.9: Linked vacancy in DB attaches vacancy_stable_id."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/111",
             "conversations": [
@@ -1662,6 +1723,8 @@ def test_triage_vacancy_mapping(capsys, monkeypatch):
 def test_triage_missing_vacancy_fail_soft(capsys, monkeypatch):
     """65. Stage 30D.9: Missing vacancy in DB returns null without crashing triage."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/111",
             "conversations": [
@@ -1680,6 +1743,8 @@ def test_triage_missing_vacancy_fail_soft(capsys, monkeypatch):
 def test_triage_single_conversation_error_fail_soft(capsys, monkeypatch):
     """66. Stage 30D.9: An exception in one conversation records error and continues others."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/111",
             "conversations": [
@@ -1711,6 +1776,8 @@ def test_triage_single_conversation_error_fail_soft(capsys, monkeypatch):
 def test_triage_needs_reply_produces_draft_and_validation(capsys):
     """67. Stage 30D.9: NEEDS_REPLY conversation produces validated draft."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/111",
             "conversations": [
@@ -1730,6 +1797,8 @@ def test_triage_needs_reply_produces_draft_and_validation(capsys):
 def test_triage_no_reply_needed_draft_null(capsys):
     """68. Stage 30D.9: NO_REPLY_NEEDED conversation has draft = null."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/111",
             "conversations": [
@@ -1746,6 +1815,8 @@ def test_triage_no_reply_needed_draft_null(capsys):
 def test_triage_human_review_cannot_be_approved(capsys):
     """69. Stage 30D.9: HUMAN_REVIEW classification has validation = HUMAN_REVIEW and draft = null."""
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/111",
             "conversations": [
@@ -1772,6 +1843,8 @@ def test_triage_never_calls_send_primitive(monkeypatch):
     monkeypatch.setattr(hh_message_reply, "send_confirmed_hh_reply", _fail_on_send)
 
     def _eval(expr):
+        if "applicantProfile" in expr or "hhtoken" in expr or "authenticated" in expr:
+            return json.dumps({"authenticated": True})
         return json.dumps({
             "url": "https://hh.ru/chat/111",
             "conversations": [
@@ -1786,9 +1859,13 @@ def test_triage_never_calls_send_primitive(monkeypatch):
 
 def test_triage_security_forbid_list():
     """71. Stage 30D.9: Ensure triage is strictly READ-ONLY."""
-    src = open(cli.__file__, encoding="utf-8").read()
-    # Check that in hh_message_triage definition, no mutations occur
-    triage_src = src.split("def hh_message_triage(")[1].split("def email_classify(")[0]
+    import ast
+    with open(cli.__file__, encoding="utf-8") as f:
+        src = f.read()
+    tree = ast.parse(src)
+    func_node = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "hh_message_triage"), None)
+    assert func_node is not None, "hh_message_triage function definition not found in cli.py"
+    triage_src = ast.get_source_segment(src, func_node) or ""
     assert "send_confirmed_hh_reply" not in triage_src
     assert "Page.navigate" not in triage_src
     assert "localStorage" not in triage_src

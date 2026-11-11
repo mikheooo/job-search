@@ -338,6 +338,11 @@ li {
 
 def get_chrome_executable() -> pathlib.Path:
     """Find local Google Chrome executable."""
+    import shutil
+    for cmd in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+        found = shutil.which(cmd)
+        if found:
+            return pathlib.Path(found)
     for path in CHROME_PATHS:
         if path.exists():
             return path

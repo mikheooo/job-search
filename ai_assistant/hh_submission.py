@@ -160,57 +160,28 @@ def clear_submitted_reviews() -> None:
 
 
 def _stop_file_paths() -> list[str]:
-    return [
-        os.environ.get("STOP_SUBMITS_FILE"),
-        os.environ.get("STOP_OUTBOUNDS_FILE"),
-        "STOP_ALL_OUTBOUNDS",
-        "data/STOP_ALL_OUTBOUNDS",
-        "data/STOP_SUBMITS",
-        "STOP_SUBMITS",
-    ]
+    from .outbound_governor import _stop_file_paths as _gov_stop_paths, OutboundAction
+    return [str(p) for p in _gov_stop_paths(OutboundAction.SUBMISSION)]
 
 
 def submission_halt_reason(include_submit_allowed: bool = True) -> str | None:
     """Return why submissions must not proceed, or None if they may.
 
-    The single authority for the three emergency stops: SUBMIT_ALLOWED,
-    the database submit_paused flag, and the STOP_SUBMITS stop files.
-
-    BLE001 finding #21: the stop file was honoured only by
-    hh_submit_policy.evaluate(), which is gates for the autonomous runner.
-    Nothing on the click paths looked at it, so `touch data/STOP_SUBMITS`
-    stopped the autonomous runner and nothing else - while every other stop
-    in this module was spelled `db.is_submit_paused()`. An emergency stop
-    that only covers one of four entry points is not an emergency stop.
-
-    Fail-closed by construction: if the database lookup raises, that is a
-    refusal, not a pass. The previous shape (`is_paused = "PAUSED" in
-    claim_reason`) reported a read failure as "not paused".
-
-    On include_submit_allowed: the three stops are not the same kind of
-    thing. `submit_paused` and the stop file are stop *orders* - the operator
-    said stop, so everything stops, including a dry run. SUBMIT_ALLOWED is a
-    release *condition* - it answers "may this system submit at all" and is
-    deliberately bypassable in dry-run mode, which is a documented and tested
-    contract (Step 2.4, README). Callers on the dry-run path pass False for
-    it; callers that may actually click leave the default.
+    Centralized under outbound_governor as single authority for emergency stops
+    (SUBMIT_ALLOWED, system_settings.submit_paused, and STOP_SUBMITS / STOP_ALL_OUTBOUNDS).
     """
-    if any(p and os.path.exists(p) for p in _stop_file_paths()):
-        return "Submission paused by kill switch (STOP_SUBMITS file present)"
-    try:
-        from . import db
+    for p in _stop_file_paths():
+        if p and os.path.exists(p):
+            return "Submission paused by kill switch (STOP_SUBMITS file present)"
 
-        if db.is_submit_paused():
-            return "Submission paused by kill switch (system_settings.submit_paused=1)"
-    except Exception as e:  # noqa: BLE001
-        logger.error("cannot read the submission kill switch - failing closed: %s", e)
-        return (
-            "Cannot read the submission kill switch - refusing to submit: "
-            f"{type(e).__name__}: {e}"
-        )
-    if include_submit_allowed and not config.submit_allowed():
-        return "Submission is disabled by SUBMIT_ALLOWED configuration"
-    return None
+    from .outbound_governor import check_outbound_allowed, OutboundAction
+
+    allowed, reason = check_outbound_allowed(
+        action=OutboundAction.SUBMISSION,
+        dry_run=not include_submit_allowed,
+        include_action_flag=include_submit_allowed,
+    )
+    return reason if not allowed else None
 
 
 def preflight_submission(
@@ -1223,12 +1194,19 @@ def execute_hh_submission(
     if not live_result.is_ok:
         if live_result.already_applied or live_result.error_reason == "ALREADY_APPLIED":
             # Synchronize state: already applied on HH
-            set_application_status(vacancy_stable_id, ApplicationStatus.SUBMITTED)
-            app = get_hh_application(vacancy_stable_id) or get_hh_application_by_vacancy(vacancy_stable_id)
-            if app:
-                app_dict = dict(app)
-                app_dict["state"] = "SUBMITTED"
-                save_hh_application(app_dict)
+            if sync_hh_application:
+                set_application_status(vacancy_stable_id, ApplicationStatus.SUBMITTED)
+                app = get_hh_application(vacancy_stable_id) or get_hh_application_by_vacancy(vacancy_stable_id)
+                if app:
+                    app_dict = dict(app)
+                    app_dict["state"] = "SUBMITTED"
+                    save_hh_application(app_dict)
+            else:
+                set_application_status(
+                    vacancy_stable_id,
+                    ApplicationStatus.SUBMITTED,
+                    sync_hh_state=False,
+                )
             return SubmissionExecutionResult(
                 ok=False,
                 status="ALREADY_APPLIED",
@@ -1572,6 +1550,7 @@ def execute_hh_submission(
         set_application_status(
             vacancy_stable_id,
             ApplicationStatus.SUBMITTED,
+            sync_hh_state=sync_hh_application,
         )
 
     if sync_hh_application:

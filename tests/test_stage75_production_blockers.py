@@ -29,9 +29,10 @@ from ai_assistant.schema import Vacancy  # noqa: E402
 from ai_assistant.candidate_profile import load_candidate_profile  # noqa: E402
 
 def test_canonical_db_path_is_absolute_and_cwd_independent():
-    expected = str(Path(r"C:\Users\Misha\Documents\job-search\state.db").resolve())
-    assert str(DB_FILE) == expected, f"DB_FILE={DB_FILE}"
-    assert str(PROJECT_ROOT) == str(Path(r"C:\Users\Misha\Documents\job-search").resolve())
+    repo_root = Path(__file__).resolve().parents[1]
+    expected = str((repo_root / "state.db").resolve())
+    assert str(Path(DB_FILE).resolve()) == expected, f"DB_FILE={DB_FILE}"
+    assert str(Path(PROJECT_ROOT).resolve()) == str(repo_root.resolve())
 
 
 def test_dry_run_does_not_mutate_db():

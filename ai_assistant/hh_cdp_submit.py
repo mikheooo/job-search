@@ -572,11 +572,12 @@ def _enforce_controlled_gates(
         get_application_review,
     )
     from ai_assistant.candidate_profile import load_candidate_profile
-    from ai_assistant.hh_submission import HHSubmissionGates, submission_halt_reason
+    from ai_assistant.hh_submission import HHSubmissionGates
+    from ai_assistant.outbound_governor import OutboundAction, check_outbound_allowed
 
-    halt = submission_halt_reason()
-    if halt:
-        return False, halt
+    allowed, halt = check_outbound_allowed(action=OutboundAction.SUBMISSION, dry_run=False)
+    if not allowed:
+        return False, halt or "Outbound submission halted by safety policy"
 
     stable_id = f"hh:{vid}"
     review = get_application_review(stable_id)
@@ -655,17 +656,16 @@ def run_submit(args: argparse.Namespace) -> dict[str, Any]:
         "clicked": 0,
     }
 
-    # Audit 2026-10-19 H-01 / Critical-1: all three emergency stops via the
-    # same authority as the controlled path (SUBMIT_ALLOWED, submit_paused,
-    # STOP_SUBMITS).
+    # Audit 2026-10-19 H-01 / Critical-1: all emergency stops via outbound_governor
+    # (SUBMIT_ALLOWED, submit_paused, STOP_SUBMITS / STOP_ALL_OUTBOUNDS).
     try:
-        from ai_assistant.hh_submission import submission_halt_reason
-        _halt = submission_halt_reason()
-        if _halt:
+        from ai_assistant.outbound_governor import OutboundAction, check_outbound_allowed
+        allowed, _halt = check_outbound_allowed(action=OutboundAction.SUBMISSION, dry_run=False)
+        if not allowed:
             report["verdict"] = "REFUSED"
-            blockers = [_halt]
+            blockers = [_halt or "Outbound submission halted by safety policy"]
             # Preserve legacy phrase for tests asserting on SUBMIT_ALLOWED.
-            if "SUBMIT_ALLOWED" in _halt:
+            if _halt and "SUBMIT_ALLOWED" in _halt:
                 blockers.append("SUBMIT_ALLOWED is off")
             report["blockers"] = blockers
             report["completed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -873,6 +873,15 @@ def run_submit(args: argparse.Namespace) -> dict[str, Any]:
         if point.get("error"):
             report["verdict"] = "REFUSED"
             report["blockers"] = [f"submit point unusable: {point['error']}"]
+            report["windows_after"] = _window_snapshot("t722_submit_after")
+            return report
+
+        # Outbound governor check immediately before physical CDP submit click
+        from ai_assistant.outbound_governor import OutboundAction, check_outbound_allowed
+        click_allowed, click_halt = check_outbound_allowed(action=OutboundAction.SUBMISSION, dry_run=False)
+        if not click_allowed:
+            report["verdict"] = "REFUSED"
+            report["blockers"] = [f"pre-click safety halt: {click_halt}"]
             report["windows_after"] = _window_snapshot("t722_submit_after")
             return report
 

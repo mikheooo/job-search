@@ -1,0 +1,147 @@
+{
+  "TOTAL_HISTORICAL_MY_REPLY": 11,
+  "CONFIRMED": 4,
+  "GENERATED_NOT_SENT": 2,
+  "WRONG_CONTEXT": 5,
+  "MISMATCH": 0,
+  "UNKNOWN": 0,
+  "DEFAULT_REPLY_INSTANCES": {
+    "Generated": 6,
+    "Actually_sent": 0,
+    "False_Telegram_notifications": 3
+  },
+  "entries": [
+    {
+      "id": 1,
+      "company": "Алф маркет",
+      "vacancy": "Прикладной AI-инженер / Специалист по внедрению AI-решений",
+      "conversation_id": "5585083099",
+      "recruiter_message": "Михаил Кириллович, здравствуйте! 1. Где вы сейчас находитесь территориально? 2. Расскажите о проекте, где вы внедряли AI... 3. Как определяете AI vs скрипт... 4. Как объясняли нетехническим... 5. Формат работы (ТД, ГПХ, самозанятый)...",
+      "telegram_my_reply": "Ирина, здравствуйте! Ответы на ваши вопросы: 1. Территориально нахожусь в Таиланде (UTC+7), поэтому рассматриваю исключительно 100% Full Remote... 2. Проекты: разработка и внедрение AI-агентов на Python и n8n... 3. Выбор AI vs скрипт... 4. Обучение команды... 5. Формат: ГПХ, самозанятость.",
+      "actual_hh_reply": "Ирина, здравствуйте! Ответы на ваши вопросы: 1. Территориально нахожусь в Таиланде (UTC+7), поэтому рассматриваю исключительно 100% Full Remote... 2. Проекты: разработка и внедрение AI-агентов на Python и n8n... 3. Выбор AI vs скрипт... 4. Обучение команды... 5. Формат: ГПХ, самозанятость.",
+      "timestamp": "2026-08-30T00:06:00",
+      "verdict": "CONFIRMED",
+      "details": "Real candidate message physically present in HH chat DOM. Exact text match."
+    },
+    {
+      "id": 2,
+      "company": "Coding Team",
+      "vacancy": "Backend Python разработчик (FastAPI / Django)",
+      "conversation_id": "5585421175",
+      "recruiter_message": "ИИ-помощник hh: 4 вопроса скрининга (1. RTSP/ONVIF; 2. DAG в Apache Airflow; 3. Nginx reverse proxy; 4. Готовность показать код на интервью).",
+      "telegram_my_reply": "1. С протоколами RTSP и ONVIF коммерческого опыта не было... 2. Опыт на базе n8n и Python, готов перенести на Airflow... 3. Да, есть практический опыт настройки Nginx... 4. Да",
+      "actual_hh_reply": "1. Здравствуйте! С протоколами RTSP и ONVIF коммерческого опыта интеграции не было... 2. Основной практический опыт построения пайплайнов на n8n и Python... 3. Да, есть практический опыт настройки Nginx... 4. Да",
+      "timestamp": "2026-08-30T09:01:00",
+      "verdict": "CONFIRMED",
+      "details": "4 real candidate messages physically present in HH chat DOM. All questions answered and recorded by bot."
+    },
+    {
+      "id": 3,
+      "company": "Аксис",
+      "vacancy": "AI Engineer — AI-продукт для оптимизации строительства",
+      "conversation_id": "5587330524",
+      "recruiter_message": "ИИ-помощник hh: «Расскажите, пожалуйста, реализовывали ли вы RAG с явной привязкой ответов к источникам?»",
+      "telegram_my_reply": "Здравствуйте! Спасибо за сообщение. Готов ответить на ваши вопросы и обсудить детали вакансии. Я рассматриваю роли: AI Automation Engineer, AI Automation Developer.",
+      "actual_hh_reply": null,
+      "timestamp": "2026-08-30T17:15:00",
+      "verdict": "GENERATED_NOT_SENT",
+      "details": "Question exists in HH. Reply draft was generated in agent run, but NO outgoing candidate message exists in real HH chat."
+    },
+    {
+      "id": 4,
+      "company": "JT marketing",
+      "vacancy": "Python Developer",
+      "conversation_id": "5585426482",
+      "recruiter_message": "Данила: «Михаил Кириллович, здравствуйте! Спасибо за отклик на нашу вакансию. Изучу ваше резюме, покажу его нанимающему менеджеру... и чуть позже вернусь с ответом к вам!»",
+      "telegram_my_reply": "Здравствуйте! Спасибо, буду на связи и ждать обратной связи. Хорошего дня!",
+      "actual_hh_reply": null,
+      "timestamp": "2026-08-30T03:42:34",
+      "verdict": "GENERATED_NOT_SENT",
+      "details": "Informational message exists in HH. Draft saved in state.db, but NO message was dispatched to HH."
+    },
+    {
+      "id": 5,
+      "company": "rodinka.recruitment (ИП Звездин)",
+      "vacancy": "ИИ-инженер",
+      "conversation_id": "5585084622",
+      "recruiter_message": "Екатерина: «Михаил Кириллович, здравствуйте! ... отправляю вам анкету, которую нужно заполнить: https://forms.gle/WAqEAYZMRymwaCNB6»",
+      "telegram_my_reply": "Здравствуйте! Спасибо за сообщение. Готов ответить на ваши вопросы и обсудить детали вакансии. Я рассматриваю роли: AI Automation Engineer...",
+      "actual_hh_reply": null,
+      "timestamp": "2026-08-30T00:07:00",
+      "verdict": "WRONG_CONTEXT",
+      "details": "Employer sent an external Google Forms questionnaire. Generating standard in-chat reply is an invalid context. Routed to EXTERNAL_QUESTIONNAIRE."
+    },
+    {
+      "id": 6,
+      "company": "Agiens",
+      "vacancy": "ИИ инженер (Агентская фабрика)",
+      "conversation_id": "5585084830",
+      "recruiter_message": "Agiens: «Привет! BOS.pro (Business OS) — платформа... напиши в личку https://t.me/maria_talent» (Тег: Собеседование)",
+      "telegram_my_reply": "Здравствуйте! Спасибо за сообщение. Готов ответить на ваши вопросы...",
+      "actual_hh_reply": null,
+      "timestamp": "2026-08-30T00:07:00",
+      "verdict": "WRONG_CONTEXT",
+      "details": "Employer sent a direct Telegram interview contact. Generating in-chat role template is an invalid context. Routed to INTERVIEW_INVITATION."
+    },
+    {
+      "id": 7,
+      "company": "Волчкова Анастасия Александровна",
+      "vacancy": "AI Pipeline Engineer (Gamedev)",
+      "conversation_id": "5585426043",
+      "recruiter_message": "Анастасия: «Большое спасибо за интерес к нашей компании! К сожалению, сейчас мы не готовы пригласить вас на следующий этап...» (Отказ)",
+      "telegram_my_reply": null,
+      "actual_hh_reply": null,
+      "timestamp": "2026-08-30T07:04:00",
+      "verdict": "WRONG_CONTEXT",
+      "details": "Rejection message. No reply needed or sent."
+    },
+    {
+      "id": 8,
+      "company": "Okkam",
+      "vacancy": "Senior Python Developer / Ведущий разработчик",
+      "conversation_id": "5586309911",
+      "recruiter_message": "Елена: «Большое спасибо за интерес к нашей компании! К сожалению, сейчас мы не готовы пригласить вас...» (Отказ)",
+      "telegram_my_reply": null,
+      "actual_hh_reply": null,
+      "timestamp": "2026-08-30T20:22:00",
+      "verdict": "WRONG_CONTEXT",
+      "details": "Rejection message. No reply needed or sent."
+    },
+    {
+      "id": 9,
+      "company": "Филиал компании Лист Ренталс Лимитед",
+      "vacancy": "Senior Python Developer",
+      "conversation_id": "5586277073",
+      "recruiter_message": null,
+      "telegram_my_reply": null,
+      "actual_hh_reply": "Здравствуйте! Меня заинтересовала позиция Senior Python Developer в вашей компании... (Сопроводительное письмо при отклике)",
+      "timestamp": "2026-08-30T19:54:00",
+      "verdict": "CONFIRMED",
+      "details": "Initial application with custom cover letter sent during submission. No employer message yet."
+    },
+    {
+      "id": 10,
+      "company": "Кузница Кадров",
+      "vacancy": "AI Agent Engineer в GyroMind",
+      "conversation_id": "5585432704",
+      "recruiter_message": null,
+      "telegram_my_reply": null,
+      "actual_hh_reply": "Здравствуйте! Меня заинтересовала вакансия AI Agent Engineer в GyroMind... (Сопроводительное письмо при отклике)",
+      "timestamp": "2026-08-30T07:18:00",
+      "verdict": "CONFIRMED",
+      "details": "Initial application with custom cover letter sent during submission. No employer message yet."
+    },
+    {
+      "id": 11,
+      "company": "Переговоры из списка (/applicant/negotiations)",
+      "vacancy": "20 карточек вакансий (neg_*)",
+      "conversation_id": "neg_136745031 .. neg_136679277",
+      "recruiter_message": "Статус карточки: «Статус: Собеседование» / «Статус: Просмотрен» / «Статус: Не просмотрен» / «Статус: Отказ»",
+      "telegram_my_reply": "Здравствуйте! Спасибо за сообщение. Готов ответить на ваши вопросы... (В старых отладочных тестах)",
+      "actual_hh_reply": null,
+      "timestamp": "2026-08-30T03:32:19",
+      "verdict": "WRONG_CONTEXT",
+      "details": "Status labels on negotiations page parsed as chat messages in legacy stage test runs. No chat existed."
+    }
+  ]
+}

@@ -37,8 +37,30 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_SUBMITS_PER_HOUR = 10
 DEFAULT_MAX_SUBMITS_PER_DAY = 40
 
-# Placeholders that disqualify a cover letter
-FORBIDDEN_LETTER_PLACEHOLDERS = ("{{", "[", "TODO", "<")
+# Placeholders that disqualify a cover letter (POL-001 audit remediation)
+FORBIDDEN_LETTER_PLACEHOLDERS = ("{{", "[ВСТАВИТЬ]", "TODO", "<PLACEHOLDER>")
+
+PLACEHOLDER_PATTERNS = (
+    re.compile(r"\{\{.*?\}\}"),
+    re.compile(r"\[(?:ВСТАВИТЬ|ВСТАВЬТЕ|TODO|FIXME|НАЗВАНИЕ|КОМПАНИЯ|ДАТА|ИМЯ|ОПЫТ|PLACEHOLDER|INSERT)[^\]]*\]", re.IGNORECASE),
+    re.compile(r"\b(?:TODO|FIXME|XXX)\b", re.IGNORECASE),
+    re.compile(r"<[А-ЯA-Z_\s]{3,}>"),
+)
+
+
+def find_letter_placeholders(letter_text: str) -> list[str]:
+    """Find unrendered template placeholders in cover letter text.
+
+    Distinguishes legitimate brackets/math/punctuation from unrendered template placeholders.
+    """
+    found: list[str] = []
+    if "{{" in letter_text:
+        found.append("{{...}}")
+    for pattern in PLACEHOLDER_PATTERNS:
+        for match in pattern.findall(letter_text):
+            if match not in found:
+                found.append(match)
+    return found
 
 # Uncertain answers that disqualify questionnaire
 UNCERTAIN_ANSWER_VALUES = {
@@ -271,7 +293,7 @@ def evaluate(
             checks_passed.append("letter_length")
 
         # Check placeholder presence
-        found_placeholders = [ph for ph in FORBIDDEN_LETTER_PLACEHOLDERS if ph in letter_text]
+        found_placeholders = find_letter_placeholders(letter_text)
         if found_placeholders:
             checks_failed.append("letter_no_placeholders")
             reasons.append(f"cover_letter_contains_placeholders ({', '.join(found_placeholders)})")

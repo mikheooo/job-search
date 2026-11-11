@@ -95,10 +95,14 @@ def test_fetch_conversation_unknown_direction_preserved():
 
 
 def test_fetch_conversation_readonly_no_send_api():
+    import ast
     src = pathlib.Path("ai_assistant/hh_message_reply.py").read_text(encoding="utf-8")
     assert "def fetch_hh_conversation_readonly" in src
     # read-only extractor itself must contain no mutation primitive
-    extractor = src.split("def fetch_hh_conversation_readonly")[-1].split("def _composer_js")[0]
+    tree = ast.parse(src)
+    ext_node = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "fetch_hh_conversation_readonly"), None)
+    assert ext_node is not None, "fetch_hh_conversation_readonly not found in hh_message_reply.py"
+    extractor = ast.get_source_segment(src, ext_node) or ""
     assert "send.click()" not in extractor and ".click(" not in extractor
     # module-level send gate stays; AUTO send only inside the gated function
     assert "def send_auto_reply" in src

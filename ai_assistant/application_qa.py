@@ -246,9 +246,11 @@ class QuestionAnswerGenerator:
 
         # Salary / Compensation / Income expectations
         if any(p in label for p in ("зарплат", "доход", "salary", "оплат", "вилка", "компенсац")):
-            if "gross" in label:
-                return "230 000 руб. gross (от 200 000 руб. net)"
-            return "200 000 руб. net"
+            if self.autonomous_mode:
+                if "gross" in label:
+                    return "230 000 руб. gross (от 200 000 руб. net)"
+                return "200 000 руб. net"
+            return None
 
         # Electronic work record / СФР / ЭТК / выписка
         if any(p in label for p in ("сфр", "этк", "трудов", "электронная трудовая", "выписк")):

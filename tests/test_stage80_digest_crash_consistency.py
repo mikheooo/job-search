@@ -67,7 +67,7 @@ def test_attempt_is_persisted_before_telegram_send(isolated_env, monkeypatch):
 
     attempt_verified_during_send = False
 
-    def spy_send_to_telegram(text: str) -> bool:
+    def spy_send_to_telegram(text: str, reply_markup=None, **kwargs) -> bool:
         nonlocal attempt_verified_during_send
         # Check DB state while in the middle of sending
         attempts = db.list_digest_attempts(limit=10)
@@ -97,7 +97,7 @@ def test_confirmed_success_transitions_attempt_to_delivered(isolated_env, monkey
     db.save_vacancy(v1)
     db.save_vacancy(v2)
 
-    monkeypatch.setattr(jsf, "send_to_telegram", lambda text: True)
+    monkeypatch.setattr(jsf, "send_to_telegram", lambda text, **kw: True)
     monkeypatch.delenv("JOB_SEARCH_DRY_RUN", raising=False)
 
     jsf.main()
@@ -121,7 +121,7 @@ def test_confirmed_failure_remains_retryable(isolated_env, monkeypatch):
     v = _make_matching_vacancy("habrcareer", "conf_fail_1", "Retryable Co")
     db.save_vacancy(v)
 
-    monkeypatch.setattr(jsf, "send_to_telegram", lambda text: False)
+    monkeypatch.setattr(jsf, "send_to_telegram", lambda text, **kw: False)
     monkeypatch.delenv("JOB_SEARCH_DRY_RUN", raising=False)
 
     with pytest.raises(SystemExit) as exc:
@@ -152,7 +152,7 @@ def test_post_send_db_failure_does_not_allow_blind_resend(isolated_env, monkeypa
 
     # 1. Run 1: Telegram succeeds, but mark_digest_delivered throws SQLite write error
     send_call_count = 0
-    def mock_send(text: str) -> bool:
+    def mock_send(text: str, reply_markup=None, **kwargs) -> bool:
         nonlocal send_call_count
         send_call_count += 1
         return True
@@ -178,7 +178,7 @@ def test_post_send_db_failure_does_not_allow_blind_resend(isolated_env, monkeypa
     # 2. Run 2: Next cron run occurs with working DB
     monkeypatch.setattr(db, "mark_digest_delivered", original_mark)
     send_call_count_run2 = 0
-    def mock_send2(text: str) -> bool:
+    def mock_send2(text: str, reply_markup=None, **kwargs) -> bool:
         nonlocal send_call_count_run2
         send_call_count_run2 += 1
         return True
@@ -228,7 +228,7 @@ def test_ambiguous_attempt_does_not_create_duplicate_send(isolated_env, monkeypa
     db.record_digest_ambiguous([v.stable_id()], batch_key=batch_key, reason="Timeout during handshake")
 
     send_called = False
-    def mock_send(text: str) -> bool:
+    def mock_send(text: str, reply_markup=None, **kwargs) -> bool:
         nonlocal send_called
         send_called = True
         return True
