@@ -9,11 +9,11 @@
 ## 1. Сводка (Executive Summary)
 
 - **Исходный baseline падений:** 154 теста
-- **Устранено на этапах SEC-001, SEC-002, BUG-001, TEST-A..TEST-D, SAFE-001, NET-001, PORT-002, CFG-001, CFG-002, TEST-MOCK-001, TEST-DAEMON-001, TEST-STATE-001, TEST-DRIFT-001:** 116 тестов
+- **Устранено на этапах SEC-001, SEC-002, BUG-001, TEST-A..TEST-D, SAFE-001, NET-001, PORT-002, CFG-001, CFG-002, TEST-MOCK-001, TEST-DAEMON-001, TEST-STATE-001, TEST-DRIFT-001, TEST-ROUTING-001:** 120 тестов
 - **Текущее состояние:**
-  - Успешно пройдено: **4 252** теста
+  - Успешно пройдено: **4 256** тестов
   - Пропущено (skip): **14** тестов
-  - Падений в текущем прогоне: **38** тестов
+  - Падений в текущем прогоне: **34** теста
 
 Все 65 падений классифицированы по трем стандартным категориям аудита:
 1. `[LEGACY_MOCK]` — моки или сигнатуры вызовов в тестах отстали от актуального боевого кода.
@@ -85,18 +85,13 @@
 
 ---
 
-### Группа 6: Маршрутизация Telegram и переменные окружения (4 теста)
+### Группа 6: Маршрутизация Telegram и переменные окружения (4 теста) — [УСТРАНЕНО]
 **Категория:** `[LEGACY_MOCK]` / `[REAL_BEHAVIOR_CHANGE]`  
-**Корневая причина:** Изоляция каналов оповещений (`TELEGRAM_JOBS_CHAT_ID` vs `TELEGRAM_CHAT_ID`) и фикстуры токенов.
-
-**Затронутые тесты:**
-1. `tests/test_job_telegram_isolation.py::test_digest_sender_uses_jobs_route`
-2. `tests/test_job_telegram_isolation.py::test_digest_sender_fails_closed_without_jobs_route`
-3. `tests/test_medium_hardening.py::test_telegram_channel_empty_fails_closed`
-4. `tests/test_medium_hardening.py::test_telegram_channel_reads_env`
-
-**План устранения:**
-- Скорректировать фикстуры окружения в тестах для изоляции конфигурации каналов Telegram.
+**Статус:** **Полностью устранено в коммите TEST-ROUTING-001**.
+**Корневая причина:** 
+1. `job_search_fetcher.send_to_telegram()` читал токены напрямую из локальных файлов Hermes на диске, минуя строгий шлюз `ai_assistant.telegram_routing.resolve_job_route()`. Из-за этого моки роута в тестах изоляции игнорировались, а ошибка маршрутизации не приводила к fail-closed.
+2. В `test_medium_hardening.py` тест `test_telegram_channel_empty_fails_closed` удалял переменную окружения через `monkeypatch.delenv`, но при последующем `importlib.reload(config)` функция `dotenv.load_dotenv(override=False)` повторно загружала `TELEGRAM_CHANNEL_ID` из локального файла `.env`.
+**Результат устранения:** В `job_search_fetcher.py` функция `send_to_telegram()` переведена на `telegram_routing.resolve_job_route()` с перехватом `TelegramRoutingError` (fail-closed). В `test_medium_hardening.py` изолирована загрузка dotenv при проверке пустого канала. Все 31 тест в обоих модулях проходят успешно (100% green).
 
 ---
 

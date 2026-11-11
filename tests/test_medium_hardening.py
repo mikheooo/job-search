@@ -67,6 +67,7 @@ def test_float_parse_failure_does_not_reset_min_salary(monkeypatch, caplog, rest
 
 
 def test_telegram_channel_empty_fails_closed(monkeypatch, caplog, restored_config):
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
     monkeypatch.delenv("TELEGRAM_CHANNEL_ID", raising=False)
     config = _reload_config(monkeypatch)
     assert config.TELEGRAM_CHANNEL_ID == ""

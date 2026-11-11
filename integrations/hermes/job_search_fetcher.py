@@ -294,35 +294,45 @@ def send_to_telegram(text: str, reply_markup: dict = None) -> bool:
       a confirmed Markdown formatting error (HTTP 400 with parse markers).
     - Authorization errors are never retried.
     """
-    token = None
-    jobs_env_file = Path(r"C:\Users\Misha\AppData\Local\hermes\profiles\jobs\.env")
-    if jobs_env_file.exists():
-        m = re.search(r"^TELEGRAM_BOT_TOKEN\s*=\s*(.+)$", jobs_env_file.read_text(encoding="utf-8"), re.M)
-        if m:
-            token = m.group(1).strip()
+    try:
+        from ai_assistant import telegram_routing
 
-    if not token:
-        token = os.environ.get("TELEGRAM_BOT_TOKEN")
-
-    if not token:
-        for p in [Path(r"C:\Users\Misha\AppData\Local\hermes\.env"), Path(r"C:\Users\Misha\tools\.env")]:
-            if p.exists():
-                m = re.search(r"^TELEGRAM_BOT_TOKEN\s*=\s*(.+)$", p.read_text(encoding="utf-8"), re.M)
-                if m:
-                    token = m.group(1).strip()
-                    break
-
-    if not token:
-        print("[ERROR] TELEGRAM_BOT_TOKEN не найден", file=sys.stderr)
+        route = telegram_routing.resolve_job_route()
+        token = route.token
+        channel = route.chat_id
+    except telegram_routing.TelegramRoutingError as exc:
+        print(f"[ERROR] Telegram routing error: {exc}", file=sys.stderr)
         return False
+    except Exception:
+        token = None
+        jobs_env_file = Path(r"C:\Users\Misha\AppData\Local\hermes\profiles\jobs\.env")
+        if jobs_env_file.exists():
+            m = re.search(r"^TELEGRAM_BOT_TOKEN\s*=\s*(.+)$", jobs_env_file.read_text(encoding="utf-8"), re.M)
+            if m:
+                token = m.group(1).strip()
 
-    channel = target_channel()
-    if not channel:
-        print(
-            "[ERROR] TELEGRAM_CHANNEL_ID is not set; refusing to send the digest",
-            file=sys.stderr,
-        )
-        return False
+        if not token:
+            token = os.environ.get("TELEGRAM_BOT_TOKEN")
+
+        if not token:
+            for p in [Path(r"C:\Users\Misha\AppData\Local\hermes\.env"), Path(r"C:\Users\Misha\tools\.env")]:
+                if p.exists():
+                    m = re.search(r"^TELEGRAM_BOT_TOKEN\s*=\s*(.+)$", p.read_text(encoding="utf-8"), re.M)
+                    if m:
+                        token = m.group(1).strip()
+                        break
+
+        if not token:
+            print("[ERROR] TELEGRAM_BOT_TOKEN не найден", file=sys.stderr)
+            return False
+
+        channel = target_channel()
+        if not channel:
+            print(
+                "[ERROR] TELEGRAM_CHANNEL_ID is not set; refusing to send the digest",
+                file=sys.stderr,
+            )
+            return False
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     headers = {"Content-Type": "application/json"}
