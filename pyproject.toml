@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "job-search"
-version = "0.0.0"
+version = "0.1.0"
 description = "Personal job-search automation"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,7 +17,6 @@ dependencies = [
     "feedparser>=6,<7",
     "fastapi>=0.110,<1",
     "uvicorn>=0.30,<1",
-    "pytest>=8,<10",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +26,7 @@ gmail = [
     "google-api-python-client>=2,<3",
 ]
 dev = [
+    "pytest>=8,<10",
     "playwright>=1,<2",
     "google-auth>=2,<3",
     "google-api-python-client>=2,<3",

@@ -1,9 +1,10 @@
 # Development / integration dependencies for job-search
 # Full install:  pip install -r requirements.txt -r requirements-dev.txt
-# Core pins live in requirements.txt. This file adds the optional extras the
-# suite imports:
+# Core pins live in requirements.txt. This file adds test runner and optional extras:
+#   - test runner                     -> pytest
 #   - tests/stage18, tests/stage20a   -> playwright ([browser])
 #   - tests/stage28/29, gmail_readonly_connector -> [gmail]
+pytest>=8,<10
 -r requirements-browser.txt
 -r requirements-gmail.txt
 
