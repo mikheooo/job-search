@@ -100,6 +100,9 @@ def format_australian_job_card(job: dict[str, Any]) -> tuple[str, list[list[dict
 
     sponsorship_badge = "✅ Подтверждено спонсорство" if matched else "🔍 Требуется рабочая виза (482/494)"
 
+    from ai_assistant.tailoring.analyzer import analyze_vacancy
+    analysis = analyze_vacancy(job)
+
     text = (
         f"🦘 *Австралия: Вакансия со спонсорством визы*\n\n"
         f"🔧 *Должность:* {title}\n"
@@ -108,10 +111,10 @@ def format_australian_job_card(job: dict[str, Any]) -> tuple[str, list[list[dict
         f"💰 *Оплата:* {salary}\n"
         f"🛡️ *Статус визы:* {sponsorship_badge}\n"
         f"{bullets_text}\n\n"
-        f"📌 *Соответствие опыту Михаила:*\n"
-        f"• 15+ лет в телекоммуникациях, спутниковой связи (VSAT), сетях (Cisco/MikroTik) и field engineering.\n"
-        f"• Опыт превышает требования Skills in Demand Subclass 482 (требуется от 12 мес).\n"
-        f"• Готово резюме австралийского образца (EEO-compliant, без фото/возраста) и Cover Letter.\n"
+        f"🎯 *Индивидуальная адаптация опыта:*\n"
+        f"• Направление: *{analysis.domain.value.upper()}*\n"
+        f"• Резюме скомпилировано в PDF под требования {company}.\n"
+        f"• Подготовлено персонализированное Cover Letter и шпаргалка к интервью.\n"
     )
 
     buttons = [
@@ -124,27 +127,23 @@ def format_australian_job_card(job: dict[str, Any]) -> tuple[str, list[list[dict
 
 
 def build_application_dossier(job: dict[str, Any]) -> dict[str, Any]:
-    """Build tailored cover letter and ensure CV PDF is ready for this vacancy."""
-    title = job.get("title", "Field Technician")
-    company = job.get("company", "Australian Employer")
-    location = job.get("location", "Australia")
+    """Build bespoke tailored CV, tailored cover letter, and interview cheatsheet for this vacancy."""
+    from ai_assistant.tailoring.resume_tailor import tailor_application_for_vacancy
 
-    cover_letter = generate_australian_cover_letter(
-        company_name=company,
-        role_title=title,
-        location=location,
-    )
-
-    cv_pdf_path = ensure_australian_cv_pdf()
-
+    pkg = tailor_application_for_vacancy(job)
     return {
-        "job_id": job.get("id"),
-        "title": title,
-        "company": company,
-        "location": location,
+        "job_id": pkg.job_id,
+        "title": pkg.target_role_title,
+        "company": pkg.company_name,
+        "domain": pkg.domain.value,
+        "location": job.get("location", "Australia"),
         "url": job.get("url"),
-        "cover_letter": cover_letter,
-        "cv_pdf_path": str(cv_pdf_path),
+        "cover_letter": pkg.cover_letter_text,
+        "cheatsheet": pkg.cheatsheet_text,
+        "cv_pdf_path": str(pkg.pdf_cv_path),
+        "cv_html_path": str(pkg.html_cv_path),
+        "cover_letter_path": str(pkg.cover_letter_path),
+        "cheatsheet_path": str(pkg.cheatsheet_path),
     }
 
 
