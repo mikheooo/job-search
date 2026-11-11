@@ -246,7 +246,8 @@ def test_phase2a_does_not_toggle_auto_environment(monkeypatch, capsys):
 # ------------------------------------------------ forbid check mirror ----------
 
 def test_phase2a_cli_does_not_wire_auto_or_send():
-    src = open(cli.__file__, encoding="utf-8").read()
+    with open(cli.__file__, encoding="utf-8") as f:
+        src = f.read()
     assert "auto_apply_modes" not in src
     assert "process_auto_reply(" not in src
     assert "run_auto_apply(" not in src

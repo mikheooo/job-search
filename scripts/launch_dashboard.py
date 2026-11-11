@@ -45,7 +45,7 @@ LOG_FILE = LOGS_DIR / "dashboard.log"
 # Fix for pythonw.exe where stdout / stderr are None
 if sys.stdout is None or sys.stderr is None:
     try:
-        log_fp = open(LOG_FILE, "a", encoding="utf-8", buffering=1)
+        log_fp = open(LOG_FILE, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
         if sys.stdout is None:
             sys.stdout = log_fp
         if sys.stderr is None:

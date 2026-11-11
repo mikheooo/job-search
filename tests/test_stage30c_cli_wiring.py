@@ -243,7 +243,8 @@ def test_phase1_does_not_toggle_auto_environment(monkeypatch, capsys):
 def test_auto_submit_module_not_wired_into_cli():
     # cli.py must not import/bind the submit-capable auto_apply_modes module,
     # nor the send primitives of hh_message_reply.
-    src = open(cli.__file__, encoding="utf-8").read()
+    with open(cli.__file__, encoding="utf-8") as f:
+        src = f.read()
     assert "auto_apply_modes" not in src
     assert "process_auto_reply(" not in src
     assert "run_auto_apply(" not in src

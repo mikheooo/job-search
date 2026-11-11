@@ -3,7 +3,8 @@
 import io
 
 path = r"C:\Users\Misha\Documents\job-search\ai_assistant\cli.py"
-src = open(path, "r", encoding="utf-8", newline="").read()
+with open(path, "r", encoding="utf-8", newline="") as f:
+    src = f.read()
 
 anchor = '    elif args.command == "ui":\r\r\n        return ui_cmd(args.host, args.port)\r\r\n'
 idx = src.find(anchor)
@@ -18,5 +19,6 @@ lines = [
 ]
 block = NL.join(lines)
 src = src[: idx + len(anchor)] + block + src[idx + len(anchor) :]
-open(path, "w", encoding="utf-8", newline="").write(src)
+with open(path, "w", encoding="utf-8", newline="") as f:
+    f.write(src)
 print("dispatch inserted")

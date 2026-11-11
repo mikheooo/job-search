@@ -58,7 +58,8 @@ def test_system_info_subprocess_returns_readonly_platform_python():
 # (c) forbidden imports/calls absent in cli.py
 
 def test_system_info_cli_has_no_forbidden_imports():
-    src = open(cli.__file__, encoding="utf-8").read()
+    with open(cli.__file__, encoding="utf-8") as f:
+        src = f.read()
     for forbid in [
         "auto_apply_modes",
         "process_auto_reply(",

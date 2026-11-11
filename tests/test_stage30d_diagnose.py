@@ -315,7 +315,8 @@ def test_json_flag_payload_contract(capsys):
 
 def test_diagnose_never_sends_or_mutates():
     """10. Forbid-list security scan: no AUTO / send / navigation / submit imports."""
-    src = open(cli.__file__, encoding="utf-8").read()
+    with open(cli.__file__, encoding="utf-8") as f:
+        src = f.read()
     assert "auto_apply_modes" not in src
     assert "process_auto_reply(" not in src
     assert "run_auto_apply(" not in src
@@ -846,7 +847,8 @@ def test_classify_cli_dispatch_options(monkeypatch):
 
 def test_classify_forbid_list_security():
     """30. Stage 30D.3: forbid-list check: classify has no live send or mutation imports."""
-    src = open(cli.__file__, encoding="utf-8").read()
+    with open(cli.__file__, encoding="utf-8") as f:
+        src = f.read()
     assert "send_auto_reply(" not in src
     assert "process_auto_reply(" not in src
     assert "run_auto_apply(" not in src
@@ -983,7 +985,8 @@ def test_validate_cli_dispatch_options(monkeypatch):
 
 def test_validate_forbid_list_security():
     """38. Stage 30D.4: forbid-list check: validate has no live send or mutation imports."""
-    src = open(cli.__file__, encoding="utf-8").read()
+    with open(cli.__file__, encoding="utf-8") as f:
+        src = f.read()
     assert "send_auto_reply(" not in src
     assert "process_auto_reply(" not in src
     assert "run_auto_apply(" not in src
@@ -1465,8 +1468,10 @@ def test_send_byte_for_byte_draft_integrity(monkeypatch, capsys):
 
 def test_send_forbid_list_comprehensive_audit():
     """55. Stage 30D.7: Comprehensive security forbid-list audit on send primitives."""
-    src_cli = open(cli.__file__, encoding="utf-8").read()
-    src_reply = open(hh_message_reply.__file__, encoding="utf-8").read()
+    with open(cli.__file__, encoding="utf-8") as f:
+        src_cli = f.read()
+    with open(hh_message_reply.__file__, encoding="utf-8") as f:
+        src_reply = f.read()
 
     # No navigation
     assert "Page.navigate" not in src_cli
@@ -1854,7 +1859,8 @@ def test_triage_never_calls_send_primitive(monkeypatch):
 
 def test_triage_security_forbid_list():
     """71. Stage 30D.9: Ensure triage is strictly READ-ONLY."""
-    src = open(cli.__file__, encoding="utf-8").read()
+    with open(cli.__file__, encoding="utf-8") as f:
+        src = f.read()
     # Check that in hh_message_triage definition, no mutations occur
     triage_src = src.split("def hh_message_triage(")[1].split("def email_classify(")[0]
     assert "send_confirmed_hh_reply" not in triage_src

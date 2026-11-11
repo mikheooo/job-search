@@ -207,7 +207,8 @@ def test_classify_error_path_when_world_absent(monkeypatch, capsys):
 # ------------------------------------------------------- static no-send gates --
 
 def test_isolated_world_helper_contains_no_mutation_primitives():
-    src = open("ai_assistant/prefill_execute.py", encoding="utf-8").read()
+    with open("ai_assistant/prefill_execute.py", encoding="utf-8") as f:
+        src = f.read()
     # Only the new isolated-world section, from the marker comment to EOF.
     marker = "# ---------- isolated-world transport (read-only, cross-origin iframe)"
     assert marker in src
@@ -237,5 +238,6 @@ def test_preview_classify_do_not_reach_submit_or_auto_send_modules(monkeypatch):
     # reaching them requires HH_AUTO_REPLY_ENABLED + live evaluate; the
     # monkeypatched _boom above can only fire if the handler calls them.
     # Explicitly assert the handler source never calls them:
-    p_src = open(cli.__file__, encoding="utf-8").read()
+    with open(cli.__file__, encoding="utf-8") as f:
+        p_src = f.read()
     assert "send_auto_reply(" not in p_src.split("def hh_message_preview")[1].split("def email_list")[0]
