@@ -218,6 +218,13 @@ def send_smtp_email(
     is_bangkok: bool = False,
 ) -> tuple[bool, str]:
     """Send email directly via SMTP (e.g. Gmail SSL port 465) with attached CV PDF."""
+    from ai_assistant.outbound_governor import OutboundAction, check_outbound_allowed
+
+    allowed, reason = check_outbound_allowed(OutboundAction.EMAIL)
+    if not allowed:
+        logger.warning("SMTP email send refused by outbound governor: %s", reason)
+        return False, f"Отправка email заблокирована предохранителем (kill-switch): {reason}"
+
     host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
     port = int(os.environ.get("SMTP_PORT", "465"))
     user = os.environ.get("SMTP_USER", DEFAULT_SENDER_EMAIL)

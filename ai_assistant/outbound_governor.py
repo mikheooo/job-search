@@ -2,18 +2,19 @@
 
 Central authority for determining whether any external, outbound action
 (application submission, automated recruiter message reply, external questionnaire
-send, etc.) is permitted to proceed.
+send, email dispatch, telegram notifications, etc.) is permitted to proceed.
 
 Enforces:
 1. Dynamic disk kill-switches (checked at call time on disk):
-   - STOP_ALL_OUTBOUNDS / data/STOP_ALL_OUTBOUNDS
-   - STOP_SUBMITS / data/STOP_SUBMITS
+   - STOP_ALL_OUTBOUNDS / data/STOP_ALL_OUTBOUNDS (halts all actions)
+   - STOP_SUBMITS / data/STOP_SUBMITS (halts submission and questionnaires)
 2. Dynamic database pause flag (checked in state.db system_settings):
    - submit_paused == '1'
    - outbound_paused == '1'
 3. Action-specific permission checks:
    - "submission": SUBMIT_ALLOWED flag (evaluated dynamically)
    - "chat_reply": HH_AUTONOMOUS_REPLY_ENABLED flag (evaluated dynamically)
+   - "email": EMAIL_DRY_RUN flag
 4. Fail-closed guarantee: any read error or database exception is treated
    as a refusal, never as a permit.
 """
@@ -22,9 +23,9 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
-from typing import Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -34,43 +35,69 @@ class OutboundAction(str, Enum):
     CHAT_REPLY = "chat_reply"
     QUESTIONNAIRE = "questionnaire"
     GIG_APPLICATION = "gig_application"
+    EMAIL = "email"
+    TELEGRAM = "telegram"
 
 
-def _stop_file_paths() -> Sequence[Path]:
+class OutboundHaltedError(RuntimeError):
+    """Raised when an outbound operation is prohibited by safety policies or kill-switches."""
+
+
+def _stop_file_paths(action: OutboundAction | str | None = None) -> Sequence[Path]:
     """Candidate file paths for emergency disk kill-switches."""
     root_override = os.environ.get("STOP_OUTBOUNDS_DIR")
-    if root_override:
-        base = Path(root_override)
-        return (
-            base / "STOP_ALL_OUTBOUNDS",
-            base / "data" / "STOP_ALL_OUTBOUNDS",
-            base / "STOP_SUBMITS",
-            base / "data" / "STOP_SUBMITS",
-        )
-    root = Path(__file__).resolve().parent.parent
-    return (
+    base = Path(root_override) if root_override else Path(__file__).resolve().parent.parent
+
+    # Global stops that halt ALL outbound operations
+    global_stops = [
         Path("STOP_ALL_OUTBOUNDS"),
         Path("data/STOP_ALL_OUTBOUNDS"),
-        Path("STOP_SUBMITS"),
-        Path("data/STOP_SUBMITS"),
-        root / "STOP_ALL_OUTBOUNDS",
-        root / "data" / "STOP_ALL_OUTBOUNDS",
-        root / "STOP_SUBMITS",
-        root / "data" / "STOP_SUBMITS",
-    )
+        base / "STOP_ALL_OUTBOUNDS",
+        base / "data" / "STOP_ALL_OUTBOUNDS",
+    ]
+
+    action_str = action.value if isinstance(action, OutboundAction) else (str(action).lower() if action else None)
+
+    # Submission and questionnaire actions also obey submission-specific kill-switches
+    if action_str is None or action_str in (
+        OutboundAction.SUBMISSION.value,
+        OutboundAction.QUESTIONNAIRE.value,
+        OutboundAction.GIG_APPLICATION.value,
+    ):
+        return tuple(
+            global_stops
+            + [
+                Path("STOP_SUBMITS"),
+                Path("data/STOP_SUBMITS"),
+                base / "STOP_SUBMITS",
+                base / "data" / "STOP_SUBMITS",
+            ]
+        )
+
+    return tuple(global_stops)
 
 
-def is_disk_kill_switch_active() -> tuple[bool, str | None]:
+def is_disk_kill_switch_active(action: OutboundAction | str | None = None) -> tuple[bool, str | None]:
     """Check if any stop file exists on disk right now.
 
     Fail-closed: if file access raises an unexpected exception, treats as active.
     """
     try:
-        custom_file = os.environ.get("STOP_SUBMITS_FILE") or os.environ.get("STOP_OUTBOUNDS_FILE")
-        if custom_file and os.path.exists(custom_file):
-            return True, f"Emergency stop file present: {custom_file} (STOP_SUBMITS file present)"
+        custom_outbounds = os.environ.get("STOP_OUTBOUNDS_FILE")
+        if custom_outbounds and os.path.exists(custom_outbounds):
+            return True, f"Emergency stop file present: {custom_outbounds} (STOP_SUBMITS file present)"
 
-        for p in _stop_file_paths():
+        action_str = action.value if isinstance(action, OutboundAction) else (str(action).lower() if action else None)
+        if action_str is None or action_str in (
+            OutboundAction.SUBMISSION.value,
+            OutboundAction.QUESTIONNAIRE.value,
+            OutboundAction.GIG_APPLICATION.value,
+        ):
+            custom_submits = os.environ.get("STOP_SUBMITS_FILE")
+            if custom_submits and os.path.exists(custom_submits):
+                return True, f"Emergency stop file present: {custom_submits} (STOP_SUBMITS file present)"
+
+        for p in _stop_file_paths(action):
             try:
                 if p.exists():
                     return True, f"Emergency stop file present: {p} (STOP_SUBMITS file present)"
@@ -81,7 +108,7 @@ def is_disk_kill_switch_active() -> tuple[bool, str | None]:
         return True, f"Emergency stop check failed (fail-closed): {e}"
 
 
-def is_db_pause_active() -> tuple[bool, str | None]:
+def is_db_pause_active(action: OutboundAction | str | None = None) -> tuple[bool, str | None]:
     """Check if database pause flags are set in system_settings.
 
     Fail-closed: if database is locked, corrupt, or unreachable, treats as paused.
@@ -91,8 +118,8 @@ def is_db_pause_active() -> tuple[bool, str | None]:
 
         if db.is_submit_paused():
             return True, "Database kill-switch active: Submission paused by kill switch (system_settings.submit_paused = 1 / submit_paused=1)"
-        
-        # Also check general outbound pause if present
+
+        # Check universal outbound pause flag
         try:
             if db.get_system_setting("outbound_paused") == "1":
                 return True, "Database kill-switch active: Submission paused by kill switch (system_settings.outbound_paused = 1 / outbound_paused=1)"
@@ -121,12 +148,12 @@ def check_outbound_allowed(
     action_str = action.value if isinstance(action, OutboundAction) else str(action).lower()
 
     # 1. Disk kill-switches (outrank all settings, including dry_run)
-    disk_stopped, disk_reason = is_disk_kill_switch_active()
+    disk_stopped, disk_reason = is_disk_kill_switch_active(action)
     if disk_stopped:
         return False, disk_reason
 
     # 2. Database kill-switches (outrank all settings, including dry_run)
-    db_stopped, db_reason = is_db_pause_active()
+    db_stopped, db_reason = is_db_pause_active(action)
     if db_stopped:
         return False, db_reason
 
@@ -142,12 +169,31 @@ def check_outbound_allowed(
                 return False, "Submission is disabled by SUBMIT_ALLOWED configuration"
 
         elif action_str in (OutboundAction.CHAT_REPLY.value, OutboundAction.QUESTIONNAIRE.value):
-            # Dynamic check for chat replies
             reply_val = os.getenv("HH_AUTONOMOUS_REPLY_ENABLED", "").strip().lower()
             if reply_val != "true":
                 return False, "Chat reply blocked: HH_AUTONOMOUS_REPLY_ENABLED is not 'true'"
 
+        elif action_str == OutboundAction.EMAIL.value:
+            email_dry = os.getenv("EMAIL_DRY_RUN", "").strip().lower() in ("1", "true", "yes")
+            if email_dry:
+                return False, "Email sending blocked: EMAIL_DRY_RUN is enabled"
+
     return True, None
+
+
+def guard_outbound(
+    action: OutboundAction | str = OutboundAction.SUBMISSION,
+    dry_run: bool = False,
+    include_action_flag: bool = True,
+) -> None:
+    """Raise OutboundHaltedError if the outbound action is halted by safety policies."""
+    allowed, reason = check_outbound_allowed(
+        action=action,
+        dry_run=dry_run,
+        include_action_flag=include_action_flag,
+    )
+    if not allowed:
+        raise OutboundHaltedError(reason or f"Outbound action '{action}' halted by safety policy")
 
 
 def get_outbound_halt_reason(

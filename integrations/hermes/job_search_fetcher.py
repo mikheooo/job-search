@@ -294,6 +294,13 @@ def send_to_telegram(text: str, reply_markup: dict = None) -> bool:
       a confirmed Markdown formatting error (HTTP 400 with parse markers).
     - Authorization errors are never retried.
     """
+    from ai_assistant.outbound_governor import check_outbound_allowed, OutboundAction
+
+    allowed, reason = check_outbound_allowed(OutboundAction.TELEGRAM)
+    if not allowed:
+        print(f"[ERROR] Telegram send halted by outbound governor: {reason}", file=sys.stderr)
+        return False
+
     token = None
     channel = None
     try:

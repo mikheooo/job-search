@@ -73,6 +73,13 @@ def send_message(
     token: str | None = None,
 ) -> bool:
     """Send text message to Telegram."""
+    from ai_assistant.outbound_governor import check_outbound_allowed, OutboundAction
+
+    allowed, reason = check_outbound_allowed(OutboundAction.TELEGRAM)
+    if not allowed:
+        logger.warning("Telegram send_message refused by outbound governor: %s", reason)
+        return False
+
     bot_token = token or TELEGRAM_BOT_TOKEN
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload: dict[str, Any] = {

@@ -81,6 +81,13 @@ class TelegramNotifier:
         reply_markup: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Send a message via Telegram Bot API with error isolation."""
+        from ai_assistant.outbound_governor import check_outbound_allowed, OutboundAction
+
+        allowed, reason = check_outbound_allowed(OutboundAction.TELEGRAM)
+        if not allowed:
+            logger.warning("TelegramNotifier send_message refused by outbound governor: %s", reason)
+            return {"ok": False, "error": f"Halted by outbound governor: {reason}"}
+
         target_chat = str(chat_id or self.chat_id or "").strip()
         if not self.bot_token or not target_chat:
             return {"ok": False, "error": "Telegram Bot Token or Chat ID not configured"}

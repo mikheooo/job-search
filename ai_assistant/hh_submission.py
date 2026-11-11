@@ -160,14 +160,8 @@ def clear_submitted_reviews() -> None:
 
 
 def _stop_file_paths() -> list[str]:
-    return [
-        os.environ.get("STOP_SUBMITS_FILE"),
-        os.environ.get("STOP_OUTBOUNDS_FILE"),
-        "STOP_ALL_OUTBOUNDS",
-        "data/STOP_ALL_OUTBOUNDS",
-        "data/STOP_SUBMITS",
-        "STOP_SUBMITS",
-    ]
+    from .outbound_governor import _stop_file_paths as _gov_stop_paths, OutboundAction
+    return [str(p) for p in _gov_stop_paths(OutboundAction.SUBMISSION)]
 
 
 def submission_halt_reason(include_submit_allowed: bool = True) -> str | None:
@@ -176,8 +170,10 @@ def submission_halt_reason(include_submit_allowed: bool = True) -> str | None:
     Centralized under outbound_governor as single authority for emergency stops
     (SUBMIT_ALLOWED, system_settings.submit_paused, and STOP_SUBMITS / STOP_ALL_OUTBOUNDS).
     """
-    if any(p and os.path.exists(p) for p in _stop_file_paths()):
-        return "Submission paused by kill switch (STOP_SUBMITS file present)"
+    for p in _stop_file_paths():
+        if p and os.path.exists(p):
+            return "Submission paused by kill switch (STOP_SUBMITS file present)"
+
     from .outbound_governor import check_outbound_allowed, OutboundAction
 
     allowed, reason = check_outbound_allowed(
