@@ -2777,7 +2777,57 @@ def submissions_audit(vacancy_stable_id: str) -> int:
     return 2 if incomplete else 0
 
 
+def metrics_week_cmd(
+    days: int = 7,
+    as_json: bool = False,
+    send: bool = False,
+    send_if_sunday: bool = False,
+    dry_run: bool = False,
+    force: bool = False,
+    channel: str | None = None,
+) -> int:
+    """Run weekly metrics calculation and optionally send digest to Telegram."""
+    from datetime import datetime
+    from .weekly_metrics import (
+        compute_weekly_metrics,
+        format_weekly_metrics_digest,
+        send_weekly_metrics_digest,
+    )
 
+    metrics = compute_weekly_metrics(days=days)
+
+    if as_json:
+        print(json.dumps(metrics, ensure_ascii=False, indent=2))
+    else:
+        text = format_weekly_metrics_digest(metrics)
+        print(text)
+
+    should_send = send
+    if send_if_sunday:
+        # Sunday is weekday 6
+        if datetime.now().weekday() == 6:
+            should_send = True
+        else:
+            print("Today is not Sunday, skipping automatic digest send.")
+
+    if should_send:
+        res = send_weekly_metrics_digest(
+            channel_id=channel,
+            dry_run=dry_run,
+            force=force,
+            metrics=metrics,
+        )
+        if res.get("delivered"):
+            if res.get("dry_run"):
+                print("[DRY RUN] Weekly digest was not sent (dry run mode).")
+            else:
+                print(f"[SUCCESS] Weekly digest delivered to {res.get('channel')} (key={res.get('delivery_key')})")
+            return 0
+        else:
+            print(f"[ERROR] Weekly digest not delivered: {res.get('reason') or res.get('error')}", file=sys.stderr)
+            return 1
+
+    return 0
 
 
 def dashboard() -> int:
@@ -9778,7 +9828,17 @@ def main() -> int:
 
     submissions_reconcile_amb_p.add_argument("--reason", type=str, default="Reconciled with screenshot proof: apply button was not submitted", help="Audit reason")
 
+    metrics_parser = subparsers.add_parser("metrics", help="Operational performance metrics")
+    metrics_sub = metrics_parser.add_subparsers(dest="metrics_command")
 
+    metrics_week_p = metrics_sub.add_parser("week", help="Weekly operational metrics and Telegram digest")
+    metrics_week_p.add_argument("--days", type=int, default=7, help="Window length in days (default: 7)")
+    metrics_week_p.add_argument("--json", action="store_true", help="Output metrics in JSON format")
+    metrics_week_p.add_argument("--send", action="store_true", help="Send formatted digest to Telegram channel (@remotejobd)")
+    metrics_week_p.add_argument("--send-if-sunday", action="store_true", help="Send digest only if today is Sunday")
+    metrics_week_p.add_argument("--dry-run", action="store_true", help="Dry run mode (do not post to Telegram)")
+    metrics_week_p.add_argument("--force", action="store_true", help="Force send even if already delivered for this period")
+    metrics_week_p.add_argument("--channel", type=str, default=None, help="Override target Telegram channel")
 
     dashboard_parser = subparsers.add_parser("dashboard", help="Application lifecycle dashboard")
 
@@ -10642,6 +10702,21 @@ def main() -> int:
 
             submissions_parser.print_help()
 
+            return 1
+
+    elif args.command == "metrics":
+        if args.metrics_command == "week":
+            return metrics_week_cmd(
+                days=args.days,
+                as_json=args.json,
+                send=args.send,
+                send_if_sunday=args.send_if_sunday,
+                dry_run=args.dry_run,
+                force=args.force,
+                channel=args.channel,
+            )
+        else:
+            metrics_parser.print_help()
             return 1
 
     elif args.command == "dashboard":
