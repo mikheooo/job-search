@@ -291,9 +291,21 @@ def pid_alive(pid: int) -> bool:
         ) and exit_code.value == 259  # STILL_ACTIVE
         ctypes.windll.kernel32.CloseHandle(handle)
         return alive
+    if os.name == "nt":
+        # Windows fallback when ctypes is unavailable
+        try:
+            import subprocess
+            out = subprocess.check_output(
+                ["tasklist.exe", "/FI", f"PID eq {int(pid)}", "/NH"],
+                timeout=5,
+            ).decode("utf-8", errors="ignore")
+            return str(int(pid)) in out
+        except (subprocess.SubprocessError, OSError, ValueError) as e_tl:
+            logger.debug("tasklist fallback failed: %s", e_tl)
+            return False
     try:
         os.kill(pid, 0)
-    except OSError:
+    except (OSError, SystemError):
         return False
     return True
 
