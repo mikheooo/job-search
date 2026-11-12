@@ -418,3 +418,48 @@ def test_reconcile_refuses_missing_letter(monkeypatch, tmp_path):
     result = module.reconcile("777006")
     assert result["ok"] is False
     assert "cover letter missing" in result["error"]
+
+
+def test_is_valid_resume_title_accepts_live_resumes():
+    from ai_assistant.hh_autopilot import is_valid_resume_title
+
+    # Exact live HH titles
+    assert is_valid_resume_title("Специалист по внедрению CRM (Битрикс24 / amoCRM) / Интегратор API")
+    assert is_valid_resume_title("Инженер технической поддержки L2/L3 / Системный администратор")
+    assert is_valid_resume_title("AI Engineer / Python Developer / Инженер автоматизации")
+
+    # Legacy titles
+    assert is_valid_resume_title("Специалист по внедрению и сопровождению CRM")
+    assert is_valid_resume_title("Инженер технической поддержки")
+    assert is_valid_resume_title("Ai engineer")
+
+    # Fuzzy matches
+    assert is_valid_resume_title("Внедрение Битрикс24 и amoCRM")
+    assert is_valid_resume_title("Системный администратор / техподдержка")
+
+    # Rejections
+    assert not is_valid_resume_title("")
+    assert not is_valid_resume_title(None)
+    assert not is_valid_resume_title("Стоматолог-хирург")
+    assert not is_valid_resume_title("Бухгалтер первичной документации")
+
+
+def test_select_best_resume_returns_live_titles():
+    from ai_assistant.hh_autopilot import select_best_resume_for_vacancy
+
+    crm_res = select_best_resume_for_vacancy("Интегратор Битрикс24 и amoCRM")
+    assert crm_res == "Специалист по внедрению CRM (Битрикс24 / amoCRM) / Интегратор API"
+
+    ai_res = select_best_resume_for_vacancy("AI Automation Developer (Python / LLM)")
+    assert ai_res == "AI Engineer / Python Developer / Инженер автоматизации"
+
+    support_res = select_best_resume_for_vacancy("Инженер технической поддержки 2 линии")
+    assert support_res == "Инженер технической поддержки L2/L3 / Системный администратор"
+
+
+def test_devsecops_classified_as_devops():
+    from ai_assistant.matcher import RoleFamily, classify_role_family
+
+    family = classify_role_family("Специалист по безопасности инфраструктуры контейнеризации (DevSecOps)")
+    assert family == RoleFamily.DEVOPS_SRE
+

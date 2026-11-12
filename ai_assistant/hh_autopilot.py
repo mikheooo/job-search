@@ -36,12 +36,35 @@ logger = logging.getLogger("hh_autopilot")
 TELEGRAM_BOT_TOKEN = config.HH_TELEGRAM_BOT_TOKEN
 TELEGRAM_CHAT_ID = config.HH_TELEGRAM_CHAT_ID
 TELEGRAM_OWNER_ID = config.HH_TELEGRAM_CHAT_ID
-RESUME_EXPECTED = "Специалист по внедрению и сопровождению CRM"
+RESUME_EXPECTED = "Специалист по внедрению CRM (Битрикс24 / amoCRM) / Интегратор API"
 VALID_RESUMES = {
+    # Active resumes on candidate's hh.ru account:
+    "Специалист по внедрению CRM (Битрикс24 / amoCRM) / Интегратор API",
+    "Инженер технической поддержки L2/L3 / Системный администратор",
+    "AI Engineer / Python Developer / Инженер автоматизации",
+    # Legacy / alias titles for backwards compatibility:
     "Специалист по внедрению и сопровождению CRM",
     "Инженер технической поддержки",
     "Ai engineer",
 }
+
+
+def is_valid_resume_title(title: str | None) -> bool:
+    """Check if title matches any valid active or legacy candidate resume."""
+    if not title:
+        return False
+    t = title.strip()
+    if t in VALID_RESUMES or t == RESUME_EXPECTED:
+        return True
+    t_lower = t.lower()
+    for v in VALID_RESUMES:
+        if v.lower() in t_lower or t_lower in v.lower():
+            return True
+    core_kw = (
+        "crm", "битрикс", "amocrm", "поддержк", "системный администратор",
+        "sysadmin", "ai engineer", "python developer", "инженер автоматизации",
+    )
+    return any(k in t_lower for k in core_kw)
 
 # Audit 2026-10-19 H-03: the autopilot used to send applications without any
 # fit check. On 2026-10-19 that produced responses to a 3D artist, a 3D
@@ -80,7 +103,8 @@ _ROLE_GATE_FALLBACK_RE = re.compile(
     r"разработчик\w*\s+(?:ии|ai|n8n|бот\w*|чат[- ]?бот\w*|telegram|телеграм)|"
     r"инженер[- ]?автоматизатор|автоматизатор|специалист\w*\s+по\s+автоматизац\w*|"
     r"интегратор\w*\s*(?:crm|amocrm|амосрм|битрикс|bitrix|ai|ии)|ai[- ]?интегратор|"
-    r"внедрен\w*\s+(?:crm|битрикс|bitrix|amocrm|амосрм|ai|ии))"
+    r"внедрен\w*\s+(?:crm|битрикс|bitrix|amocrm|амосрм|ai|ии)|"
+    r"devsecops|девсекопс|ai[- ]?решен\w*)"
 )
 
 
@@ -314,11 +338,11 @@ DEFAULT_AUTOPILOT_QUERIES = [
 def select_best_resume_for_vacancy(role: str, description: str = "") -> str:
     """Select candidate's best matching HeadHunter resume based on vacancy role and tech stack.
 
-    1. 'Специалист по внедрению и сопровождению CRM':
+    1. 'Специалист по внедрению CRM (Битрикс24 / amoCRM) / Интегратор API':
        - CRM, Bitrix24, Битрикс, amoCRM, 1C / ERP, интегратор, внедрение, бизнес-процессы.
-    2. 'Ai engineer':
+    2. 'AI Engineer / Python Developer / Инженер автоматизации':
        - AI, LLM, нейросети, Machine Learning, Python dev, n8n, prompt engineering, Whisper, RAG, ETL, боты, автоматизация.
-    3. 'Инженер технической поддержки':
+    3. 'Инженер технической поддержки L2/L3 / Системный администратор':
        - Системный администратор, техподдержка, L1/L2/L3, Helpdesk, сети, Cisco, Mikrotik,
          DevOps, Linux, Windows Server, инфраструктура, инженер сопровождения.
     """
@@ -330,31 +354,30 @@ def select_best_resume_for_vacancy(role: str, description: str = "") -> str:
         "битрикс", "bitrix", "crm", "црм", "amocrm", "амосрм",
         "внедрен", "интегратор", "1с", "1c", "информационных систем",
     ]):
-        return "Специалист по внедрению и сопровождению CRM"
-
-    if any(k in role_lower for k in [
-        "ai", "ии", "llm", "нейросет", "python", "питон",
-        "n8n", "prompt", "whisper", "rag", "машинн", "ml engineer",
-        "бот", "bot", "телеграм", "telegram", "автоматизац", "automation",
-    ]):
-        return "Ai engineer"
+        return "Специалист по внедрению CRM (Битрикс24 / amoCRM) / Интегратор API"
 
     if any(k in role_lower for k in [
         "поддержк", "support", "helpdesk", "хэлпдеск", "хелпдеск",
         "администратор", "администрирован", "sysadmin", "сисадмин",
         "devops", "девопс", "сетев", "network", "инфраструктур",
-        "дежурн", "сопровожден", "эксперт",
+        "дежурн", "сопровожден",
     ]):
-        return "Инженер технической поддержки"
+        return "Инженер технической поддержки L2/L3 / Системный администратор"
+
+    if re.search(r"\b(?:ai|ии|llm|rag|n8n|whisper|prompt|python)\b", role_lower) or any(k in role_lower for k in [
+        "нейросет", "питон", "машинн", "ml engineer",
+        "бот", "bot", "телеграм", "telegram", "автоматизац", "automation",
+    ]):
+        return "AI Engineer / Python Developer / Инженер автоматизации"
 
     # 2. Broader description inspection
     if any(k in text_lower for k in ["битрикс24", "bitrix24", "внедрение crm", "настройка crm", "интегратор crm"]):
-        return "Специалист по внедрению и сопровождению CRM"
+        return "Специалист по внедрению CRM (Битрикс24 / amoCRM) / Интегратор API"
 
     if any(k in text_lower for k in ["ai engineer", "prompt engineering", "нейросети", "llm", "rag", "разработчик python", "python developer", "fastapi", "ботов", "боты", "n8n"]):
-        return "Ai engineer"
+        return "AI Engineer / Python Developer / Инженер автоматизации"
 
-    return "Инженер технической поддержки"
+    return "Инженер технической поддержки L2/L3 / Системный администратор"
 
 
 def _get_t722_send_module():
@@ -676,7 +699,7 @@ def is_vacancy_eligible_for_auto_apply(
         return False, "submit button disabled or missing"
 
     resume_title = (form.get("resume_title") or "").strip()
-    if resume_title and resume_title not in VALID_RESUMES and resume_title != RESUME_EXPECTED:
+    if resume_title and not is_valid_resume_title(resume_title):
         return False, f"unexpected resume: {resume_title}"
 
     # Strict Remote-Only gate: zero-tolerance for hybrid, office, relocation, or conditional formats
@@ -801,7 +824,7 @@ def submit_vacancy(
     app_dir.mkdir(parents=True, exist_ok=True)
 
     target_resume = resume_title or select_best_resume_for_vacancy(role, description)
-    resume_to_use = target_resume if (target_resume in VALID_RESUMES) else RESUME_EXPECTED
+    resume_to_use = target_resume if is_valid_resume_title(target_resume) else RESUME_EXPECTED
 
     # 1. Generate & save tailored cover letter
     letter_text = generate_tailored_letter(role=role, company=company, description=description)

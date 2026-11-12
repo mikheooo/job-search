@@ -400,7 +400,8 @@ _ROLE_FAMILY_PATTERNS: list[tuple[RoleFamily, list[str]]] = [
         RoleFamily.DEVOPS_SRE,
         [
             r"\bdevops\b", r"\bsre\b", r"\bcloud\s+engineer\b", r"\binfrastructure\s+engineer\b",
-            r"\bkubernetes\b", r"\bplatform\s+engineer\b", r"\bинженер\s+devops\b", r"\bterraform\b"
+            r"\bkubernetes\b", r"\bplatform\s+engineer\b", r"\bинженер\s+devops\b", r"\bterraform\b",
+            r"\bdevsecops\b", r"\bдевсекопс\b"
         ],
     ),
     (
