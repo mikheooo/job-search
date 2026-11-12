@@ -226,6 +226,23 @@ def send_job_message_result(
             return JobSendResult(False, "ambiguous", f"HTTP {exc.code}", None)
         return JobSendResult(False, "failed", f"HTTP {exc.code}", None)
     except Exception as exc:
+        if "unknown url type: https" in str(exc) or "SSL" in str(exc):
+            try:
+                import subprocess
+                curl_cmd = [
+                    "curl.exe", "-s", "-X", "POST",
+                    target.api_url,
+                    "-H", "Content-Type: application/json",
+                    "--data-raw", data.decode("utf-8"),
+                ]
+                proc = subprocess.run(curl_cmd, capture_output=True, timeout=timeout)
+                if proc.returncode == 0:
+                    resp_json = json.loads(proc.stdout.decode("utf-8", errors="ignore"))
+                    if resp_json.get("ok"):
+                        msg_id = (resp_json.get("result") or {}).get("message_id")
+                        return JobSendResult(True, "delivered", "HTTP 200 (curl)", msg_id)
+            except Exception as e_curl:
+                logging.getLogger(__name__).warning("curl fallback failed: %s", e_curl)
         status = "ambiguous" if _is_ambiguous_transport_error(exc) else "failed"
         return JobSendResult(False, status, f"{type(exc).__name__}: {exc}", None)
 

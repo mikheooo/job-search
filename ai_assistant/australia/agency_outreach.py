@@ -107,13 +107,12 @@ class AgencyApplicationDossier:
     cheatsheet_path: pathlib.Path
 
 
-def build_gmail_compose_url(to_email: str, subject: str, body: str) -> str:
-    """Build direct 1-click Gmail web compose URL."""
+def build_gmail_compose_url(to_email: str, subject: str, body: str = "") -> str:
+    """Build direct 1-click Gmail web compose URL. Omit lengthy body to fit Telegram URL limit."""
     base = "https://mail.google.com/mail/?view=cm&fs=1"
     params = {
         "to": to_email,
         "su": subject,
-        "body": body,
     }
     return f"{base}&{urllib.parse.urlencode(params)}"
 
