@@ -323,6 +323,24 @@ class TelegramNotifier:
         letter_snippet = f"{letter[:200]}..." if len(letter) > 200 else letter
         return f"[Отклик отправлен] Компания: {company}, Вакансия: {title}\n{letter_snippet}\n{vacancy_url}"
 
+    @staticmethod
+    def format_ambiguous_submission(
+        vacancy_id: str,
+        company: str,
+        title: str,
+        reason: str,
+        vacancy_url: str = "",
+    ) -> str:
+        """Format APPLICATION_AMBIGUOUS notification message."""
+        v_url = vacancy_url or f"https://hh.ru/vacancy/{vacancy_id}"
+        return (
+            f"⚠️ *HH Submission: Статус AMBIGUOUS*\n\n"
+            f"💼 *Вакансия:* [{title}]({v_url}) (ID: `{vacancy_id}`)\n"
+            f"🏢 *Компания:* {company}\n"
+            f"⚠️ *Причина:* {reason}\n\n"
+            f"❗️ _Клик отправки был выполнен, но страница не подтвердила отклик. Повторный автоматический отклик заблокирован. Требуется ручная проверка на HH._"
+        )
+
     # ---------------------------------------------------------------------------
     # Main Dispatcher Integration & Idempotency
     # ---------------------------------------------------------------------------
@@ -343,6 +361,7 @@ class TelegramNotifier:
             "EXTERNAL_QUESTIONNAIRE",
             "TEST_TASK",
             "APPLICATION_SUBMITTED",
+            "APPLICATION_AMBIGUOUS",
         }
         if notif_type not in allowed_types:
             return {"delivered": False, "reason": f"Event type '{notif_type}' is routine and not routed to Telegram"}
@@ -427,6 +446,19 @@ class TelegramNotifier:
                 company=comp,
                 title=ttl,
                 cover_letter=cov,
+                vacancy_url=v_url,
+            )
+        elif notif_type == "APPLICATION_AMBIGUOUS":
+            vid = details.get("vacancy_id") or cid
+            comp = details.get("company") or details.get("employer") or "HeadHunter Employer"
+            ttl = details.get("title") or details.get("vacancy_title") or details.get("role") or "Вакансия"
+            rsn = details.get("reason") or "Click executed but live page did not confirm response"
+            v_url = details.get("vacancy_url") or f"https://hh.ru/vacancy/{vid}"
+            text = self.format_ambiguous_submission(
+                vacancy_id=str(vid),
+                company=comp,
+                title=ttl,
+                reason=rsn,
                 vacancy_url=v_url,
             )
 
@@ -616,6 +648,31 @@ def send_post_submit_notification(
             "vacancy_url": vacancy_url,
         },
         delivery_key=f"submit_{company}_{title}_{vacancy_url}",
+    )
+
+
+def send_ambiguous_submission_alert(
+    vacancy_id: str,
+    title: str,
+    reason: str,
+    company: str = "",
+    vacancy_url: str = "",
+    notifier: TelegramNotifier | None = None,
+) -> dict[str, Any]:
+    """Send alert to owner when application enters AMBIGUOUS state."""
+    notif = notifier or get_telegram_notifier()
+    clean_vid = str(vacancy_id).replace("hh:", "")
+    v_url = vacancy_url or f"https://hh.ru/vacancy/{clean_vid}"
+    return notif.deliver_notification(
+        "APPLICATION_AMBIGUOUS",
+        {
+            "vacancy_id": clean_vid,
+            "title": title or f"Вакансия {clean_vid}",
+            "company": company or "HeadHunter Employer",
+            "reason": reason,
+            "vacancy_url": v_url,
+        },
+        delivery_key=f"ambiguous_{clean_vid}_{reason[:30]}",
     )
 
 

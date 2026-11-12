@@ -37,6 +37,7 @@ class ApplicationStatus(str, Enum):
     APPLIED = "APPLIED"
     REJECTED = "REJECTED"
     ANALYSIS_FAILED = "ANALYSIS_FAILED"
+    FAILED = "FAILED"
     INTERVIEW = "INTERVIEW"
     OFFER = "OFFER"
     WITHDRAWN = "WITHDRAWN"
@@ -55,6 +56,7 @@ STATUS_TO_VACANCY_STATE: dict[ApplicationStatus, str] = {
     ApplicationStatus.REJECTED: "REJECTED",
     ApplicationStatus.WITHDRAWN: "ARCHIVED",
     ApplicationStatus.ANALYSIS_FAILED: "ANALYSIS_FAILED",
+    ApplicationStatus.FAILED: "FAILED",
     ApplicationStatus.AMBIGUOUS: "DISCOVERED",
 }
 
@@ -64,6 +66,7 @@ STATUS_TO_HH_STATE: dict[ApplicationStatus, str] = {
     ApplicationStatus.VERIFIED: "SUBMITTED",
     ApplicationStatus.APPLIED: "SUBMITTED",
     ApplicationStatus.REJECTED: "REJECTED",
+    ApplicationStatus.FAILED: "FAILED",
 }
 
 

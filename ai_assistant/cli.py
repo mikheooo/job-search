@@ -2642,7 +2642,42 @@ def submissions_reconcile(vacancy_stable_id: str) -> int:
     return 0
 
 
+def submissions_reconcile_ambiguous_cmd(
+    vacancy_stable_id: str | None = None,
+    to_status: str = "FAILED",
+    reason: str = "Reconciled with screenshot proof: apply button was not submitted",
+) -> int:
+    """Reconcile AMBIGUOUS submissions to definitive status (FAILED or APPLIED)."""
+    from .submission_recovery import reconcile_ambiguous_submission
+    from . import db
 
+    init_db()
+    conn = db.get_connection()
+    try:
+        if vacancy_stable_id:
+            target_ids = [vacancy_stable_id if vacancy_stable_id.startswith("hh:") else f"hh:{vacancy_stable_id}"]
+        else:
+            rows = conn.execute(
+                "SELECT vacancy_stable_id FROM application_tracking WHERE status = 'AMBIGUOUS'"
+            ).fetchall()
+            target_ids = [r[0] for r in rows]
+    finally:
+        conn.close()
+
+    if not target_ids:
+        print("No AMBIGUOUS vacancies found to reconcile.")
+        return 0
+
+    print(f"Reconciling {len(target_ids)} AMBIGUOUS submissions to {to_status}...")
+    for vid in target_ids:
+        res = reconcile_ambiguous_submission(
+            vacancy_stable_id=vid,
+            target_status=to_status,
+            reason=reason,
+        )
+        print(f"  [{res['from_status']} -> {res['to_status']}] {vid}: {res['reason']} (Proof: {res['proof_screenshot']})")
+    print("Done.")
+    return 0
 
 
 def submissions_audit(vacancy_stable_id: str) -> int:
@@ -9735,6 +9770,14 @@ def main() -> int:
 
     submissions_audit_p.add_argument("vacancy_stable_id", type=str)
 
+    submissions_reconcile_amb_p = submissions_sub.add_parser("reconcile-ambiguous", help="Reconcile AMBIGUOUS submissions to FAILED or APPLIED with proof")
+
+    submissions_reconcile_amb_p.add_argument("--vacancy-stable-id", "-id", type=str, default=None, help="Target specific vacancy ID or all if omitted")
+
+    submissions_reconcile_amb_p.add_argument("--to-status", choices=["FAILED", "APPLIED"], default="FAILED", help="Target status (default: FAILED)")
+
+    submissions_reconcile_amb_p.add_argument("--reason", type=str, default="Reconciled with screenshot proof: apply button was not submitted", help="Audit reason")
+
 
 
     dashboard_parser = subparsers.add_parser("dashboard", help="Application lifecycle dashboard")
@@ -10586,6 +10629,14 @@ def main() -> int:
         elif args.submissions_command == "audit":
 
             return submissions_audit(args.vacancy_stable_id)
+
+        elif args.submissions_command == "reconcile-ambiguous":
+
+            return submissions_reconcile_ambiguous_cmd(
+                vacancy_stable_id=args.vacancy_stable_id,
+                to_status=args.to_status,
+                reason=args.reason,
+            )
 
         else:
 

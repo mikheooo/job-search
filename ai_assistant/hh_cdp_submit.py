@@ -915,19 +915,22 @@ def run_submit(args: argparse.Namespace) -> dict[str, Any]:
         form_after_send = report.get("form_after_send") or {}
         post_confirmed = _shows_response(after, form_after_send)
         if not post_confirmed:
-            # HH often updates the vacancy page a few seconds later. One re-read
-            # is cheap and prevents a false "unverified" alarm for a real send.
-            _log("response not visible after 6 s; re-reading the vacancy page once")
-            time.sleep(8.0)
-            session.navigate(vacancy_tab, _vacancy_url(vid))
-            after_retry = _read(session, vacancy_tab, BRIEF_JS.replace("__VID__", vid))
-            if _shows_response(after_retry, form_after_send):
-                post_confirmed = True
-                after = after_retry
-                report["vacancy_after_retry"] = {
-                    k: v for k, v in after_retry.items() if k != "description"
-                }
-                report["post_confirm_retry"] = True
+            # HH often updates the vacancy page a few seconds later. Progressive retries
+            # prevent false "unverified" alarms for real sends while handling slow network.
+            for retry_idx, delay in enumerate([5.0, 10.0], start=1):
+                _log(f"response not visible; re-reading vacancy page attempt {retry_idx} (sleep {delay}s)")
+                time.sleep(delay)
+                session.navigate(vacancy_tab, _vacancy_url(vid))
+                after_retry = _read(session, vacancy_tab, BRIEF_JS.replace("__VID__", vid))
+                if _shows_response(after_retry, form_after_send):
+                    post_confirmed = True
+                    after = after_retry
+                    report["vacancy_after_retry"] = {
+                        k: v for k, v in after_retry.items() if k != "description"
+                    }
+                    report["post_confirm_retry"] = True
+                    report["post_confirm_retry_attempt"] = retry_idx
+                    break
         report["vacancy_after"] = {k: v for k, v in after.items() if k != "description"}
         report["post_confirmed"] = post_confirmed
         report["post_confirm_reason"] = (

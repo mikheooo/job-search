@@ -985,9 +985,29 @@ def submit_vacancy(
         notified = bool(send_telegram_alert(alert_msg))
     else:
         logger.warning(
-            "HeadHunter did NOT confirm submission for %s (%s). Suppressed Telegram alert per user preference.",
+            "HeadHunter did NOT confirm submission for %s (%s). Dispatching AMBIGUOUS alert to owner.",
             vid, confirm_reason,
         )
+        ambiguous_msg = (
+            f"⚠️ *HH Autopilot: Отклик в статусе AMBIGUOUS*\n\n"
+            f"💼 *Вакансия:* [{role}](https://hh.ru/vacancy/{vid}) (`{vid}`)\n"
+            f"🏢 *Компания:* {company}\n"
+            f"📄 *Резюме:* {resume_to_use}\n"
+            f"⚠️ *Причина:* {confirm_reason}\n\n"
+            f"❗️ _Клик отправки был выполнен, но HH не подтвердил отклик. Требуется ручная проверка на HH._"
+        )
+        send_owner_alert(ambiguous_msg)
+        try:
+            from .telegram_notifier import send_ambiguous_submission_alert
+            send_ambiguous_submission_alert(
+                vacancy_id=vid,
+                title=role,
+                company=company,
+                reason=confirm_reason,
+                vacancy_url=f"https://hh.ru/vacancy/{vid}",
+            )
+        except Exception as te:
+            logger.warning(f"Error sending ambiguous alert through notifier: {te}")
         notified = False
     outcome["notified"] = notified
     if confirmed and reconciled and notified:

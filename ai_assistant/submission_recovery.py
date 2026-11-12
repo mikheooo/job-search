@@ -426,6 +426,126 @@ def reconcile_submission_state(vacancy_stable_id: str) -> RecoveryResult:
     return result
 
 
+def reconcile_ambiguous_submission(
+    vacancy_stable_id: str,
+    target_status: str = "FAILED",
+    reason: str = "Reconciled with proof screenshot: apply button remained active and unsubmitted",
+    actor: str = "operator_manual_audit",
+) -> dict[str, Any]:
+    """Reconcile an AMBIGUOUS submission to FAILED or APPLIED with audit proof."""
+    from datetime import datetime, timezone
+    from pathlib import Path
+    import json
+    from .application_tracking import ApplicationStatus, get_application_status, set_application_status
+    from . import config, db
+
+    init_db()
+    clean_vid = str(vacancy_stable_id).replace("hh:", "")
+    sid = f"hh:{clean_vid}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    shot_path = Path(config.PROJECT_ROOT) / "artifacts" / "applications" / f"hh-{clean_vid}" / "submission_success.png"
+    proof_exists = shot_path.exists()
+
+    # 1. Update application_tracking
+    target_app_status = ApplicationStatus(target_status)
+    note_text = f"Reconciled ({actor}) [{now_iso}]: {reason}. Screenshot proof: {'found' if proof_exists else 'not found'} ({shot_path})"
+    set_application_status(
+        sid,
+        target_app_status,
+        notes=note_text,
+    )
+
+    # 2. Update application_submissions if row exists
+    with db.db_session(commit=True) as conn:
+        row = conn.execute(
+            "SELECT submission_id, submission_json FROM application_submissions WHERE vacancy_stable_id = ?",
+            (sid,),
+        ).fetchone()
+        if row:
+            sub_id, raw_json = row[0], row[1]
+            try:
+                payload = json.loads(raw_json) if raw_json else {}
+            except Exception:
+                payload = {}
+            payload["record_status"] = target_status
+            payload["post_reason"] = f"Reconciled: {reason}"
+            payload["reconciled_at"] = now_iso
+            payload["reconciled_by"] = actor
+            conn.execute(
+                """UPDATE application_submissions
+                   SET status = ?, submission_json = ?, updated_at = ?
+                   WHERE vacancy_stable_id = ?""",
+                (target_status, json.dumps(payload, ensure_ascii=False), now_iso, sid),
+            )
+
+        # Update or record submission_verifications
+        v_exists = conn.execute(
+            "SELECT 1 FROM submission_verifications WHERE vacancy_stable_id = ?",
+            (sid,),
+        ).fetchone()
+        if v_exists:
+            conn.execute(
+                """UPDATE submission_verifications
+                   SET verification_status = ?, updated_at = ?
+                   WHERE vacancy_stable_id = ?""",
+                (target_status, now_iso, sid),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO submission_verifications (
+                       vacancy_stable_id, submission_id, verification_version,
+                       verification_status, verification_json, verified_at,
+                       created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    sid,
+                    f"reconcile-{clean_vid}",
+                    "v1_reconcile",
+                    target_status,
+                    json.dumps({"reason": reason, "actor": actor}, ensure_ascii=False),
+                    now_iso,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+
+    # 3. Update preflight.json if present
+    pf_path = Path(config.PROJECT_ROOT) / "artifacts" / "applications" / f"hh-{clean_vid}" / "preflight.json"
+    if pf_path.exists():
+        try:
+            pf = json.loads(pf_path.read_text(encoding="utf-8"))
+            pf["preflight_verdict"] = target_status
+            if "submission" in pf and isinstance(pf["submission"], dict):
+                pf["submission"]["status"] = target_status
+                pf["submission"]["reconciled_at"] = now_iso
+                pf["submission"]["reconciled_reason"] = reason
+            pf_path.write_text(json.dumps(pf, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as pe:
+            logger.warning(f"Error updating preflight.json for {sid}: {pe}")
+
+    # 4. Reconcile submission claim if exists
+    try:
+        db.reconcile_submission_claim(
+            vacancy_stable_id=sid,
+            new_status="FAILED_SAFE" if target_status == "FAILED" else target_status,
+            reason=reason,
+            actor=actor,
+        )
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "vacancy_stable_id": sid,
+        "from_status": "AMBIGUOUS",
+        "to_status": target_status,
+        "proof_screenshot": str(shot_path) if proof_exists else None,
+        "reason": reason,
+        "reconciled_at": now_iso,
+    }
+
+
 def get_submission_audit(vacancy_stable_id: str) -> list[dict[str, Any]]:
     """
     Get chronological audit trail for a vacancy.

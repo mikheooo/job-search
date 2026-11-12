@@ -767,6 +767,17 @@ def run_application(
             status="AMBIGUOUS",
             details={"error": post_res.reason, "point": "post_submit_verification_ambiguous"},
         )
+        try:
+            from .telegram_notifier import send_ambiguous_submission_alert
+            send_ambiguous_submission_alert(
+                vacancy_id=vac_id,
+                title=app.get("title", ""),
+                company=app.get("employer", ""),
+                reason=post_res.reason,
+                vacancy_url=v_url or f"https://hh.ru/vacancy/{vac_id}",
+            )
+        except Exception as te:
+            logger.warning(f"Failed to dispatch ambiguous telegram notification: {te}")
         transition_application(
             application_id=app_id,
             to_state=HHApplicationState.AMBIGUOUS,
