@@ -277,3 +277,13 @@ def test_cli_metrics_week_commands() -> None:
     # Test dry run send
     code_dry = metrics_week_cmd(days=7, send=True, dry_run=True)
     assert code_dry == 0
+
+
+def test_cli_metrics_day_commands() -> None:
+    from ai_assistant.cli import metrics_day_cmd
+
+    code_local = metrics_day_cmd(as_json=False)
+    assert code_local == 0
+
+    code_json = metrics_day_cmd(as_json=True)
+    assert code_json == 0

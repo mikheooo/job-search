@@ -2830,6 +2830,27 @@ def metrics_week_cmd(
     return 0
 
 
+def metrics_day_cmd(
+    target_date: str | None = None,
+    as_json: bool = False,
+) -> int:
+    """Run daily operational performance report by stream."""
+    from .weekly_metrics import (
+        compute_daily_stream_report,
+        format_daily_stream_report,
+    )
+
+    report = compute_daily_stream_report(target_date=target_date)
+
+    if as_json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        text = format_daily_stream_report(report)
+        print(text)
+
+    return 0
+
+
 def dashboard() -> int:
 
     """Show full application dashboard."""
@@ -9840,6 +9861,10 @@ def main() -> int:
     metrics_week_p.add_argument("--force", action="store_true", help="Force send even if already delivered for this period")
     metrics_week_p.add_argument("--channel", type=str, default=None, help="Override target Telegram channel")
 
+    metrics_day_p = metrics_sub.add_parser("day", help="Daily operational stream report")
+    metrics_day_p.add_argument("--date", type=str, default=None, help="Target date YYYY-MM-DD (default: today)")
+    metrics_day_p.add_argument("--json", action="store_true", help="Output as JSON")
+
     dashboard_parser = subparsers.add_parser("dashboard", help="Application lifecycle dashboard")
 
     dashboard_sub = dashboard_parser.add_subparsers(dest="dashboard_command")
@@ -10714,6 +10739,11 @@ def main() -> int:
                 dry_run=args.dry_run,
                 force=args.force,
                 channel=args.channel,
+            )
+        elif args.metrics_command == "day":
+            return metrics_day_cmd(
+                target_date=args.date,
+                as_json=args.json,
             )
         else:
             metrics_parser.print_help()
