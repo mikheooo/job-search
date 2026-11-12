@@ -466,7 +466,8 @@ def reconcile_ambiguous_submission(
             sub_id, raw_json = row[0], row[1]
             try:
                 payload = json.loads(raw_json) if raw_json else {}
-            except Exception:
+            except Exception as je:
+                logger.warning("Failed to parse submission_json for %s: %s", sid, je)
                 payload = {}
             payload["record_status"] = target_status
             payload["post_reason"] = f"Reconciled: {reason}"
@@ -532,8 +533,8 @@ def reconcile_ambiguous_submission(
             reason=reason,
             actor=actor,
         )
-    except Exception:
-        pass
+    except Exception as ce:
+        logger.warning("Failed to reconcile submission claim for %s: %s", sid, ce)
 
     return {
         "ok": True,

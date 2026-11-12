@@ -374,6 +374,18 @@ def send_weekly_metrics_digest(
         or getattr(config, "TELEGRAM_CHANNEL_ID", "")
         or "-1004399255305"
     ).strip()
+    delivery_key = f"weekly_metrics_{data['window_start']}_{data['window_end']}"
+
+    if dry_run:
+        logger.info(f"[DRY RUN] Would send weekly digest to {target_channel}:\n{text}")
+        return {
+            "delivered": True,
+            "dry_run": True,
+            "delivery_key": delivery_key,
+            "channel": target_channel,
+            "text": text,
+        }
+
     token = (
         os.getenv("TELEGRAM_BOT_TOKEN")
         or os.getenv("HH_TELEGRAM_BOT_TOKEN")
@@ -384,8 +396,6 @@ def send_weekly_metrics_digest(
     if not token:
         logger.error("No Telegram bot token found for weekly digest delivery.")
         return {"delivered": False, "reason": "No Telegram bot token configured"}
-
-    delivery_key = f"weekly_metrics_{data['window_start']}_{data['window_end']}"
 
     db.init_db()
     if not force:
@@ -404,16 +414,6 @@ def send_weekly_metrics_digest(
                     "reason": f"Already delivered at {existing[1]} (use --force to resend)",
                     "delivery_key": delivery_key,
                 }
-
-    if dry_run:
-        logger.info(f"[DRY RUN] Would send weekly digest to {target_channel}:\n{text}")
-        return {
-            "delivered": True,
-            "dry_run": True,
-            "delivery_key": delivery_key,
-            "channel": target_channel,
-            "text": text,
-        }
 
     route = JobRoute(token=token, chat_id=target_channel)
     result = send_job_message_result(text, route=route, parse_mode="Markdown")
