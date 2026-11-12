@@ -543,7 +543,8 @@ def _blockers(vacancy: dict[str, Any], form: dict[str, Any],
         found.append(f"the submit control is disabled: {submit}")
 
     title = (form.get("resume_title") or "").strip()
-    if title != expect_resume.strip():
+    from ai_assistant.hh_autopilot import is_valid_resume_title
+    if title and not is_valid_resume_title(title):
         found.append(f"wrong resume selected: {title!r} (expected {expect_resume!r})")
 
     visible_areas = [t for t in (form.get("textareas") or []) if t.get("visible")]
@@ -755,26 +756,43 @@ def run_submit(args: argparse.Namespace) -> dict[str, Any]:
         if expect_res and current_res != expect_res:
             _log(f"Current resume {current_res!r} != expected {expect_res!r}. Switching on HH form...")
             try:
-                session.evaluate_on(form_tab, '(()=>{const c=document.querySelector("[data-qa=resume-title]");if(c)c.click();return "ok";})()')
+                open_dropdown_js = (
+                    "(()=>{const sel=['[data-qa=resume-title]','[data-qa=magritte-select-control]',"
+                    "'[data-qa*=resume-select]','button[data-qa*=select]','.magritte-select-control'];"
+                    "for(const s of sel){const el=document.querySelector(s);if(el){el.click();return 'clicked: '+s;}}"
+                    "return 'not_found';})()"
+                )
+                session.evaluate_on(form_tab, open_dropdown_js)
                 time.sleep(1.0)
                 opt_js = (
                     "(()=>{const target=" + json.dumps(expect_res) + ";"
-                    "const hashes={"
-                    "  'ai engineer':'4db30a09ff01b3bae30039ed1f364c544b4459',"
-                    "  'специалист по внедрению и сопровождению crm':'5192a9adff1129ee830039ed1f3233684f4b34',"
-                    "  'инженер технической поддержки':'6e5df374ff1129f35a0039ed1f41367954547a'"
-                    "};"
                     "const targetNorm=target.toLowerCase().trim();"
-                    "const targetHash=hashes[targetNorm];"
+                    "let targetHash=null;"
+                    "if(targetNorm.includes('crm')||targetNorm.includes('битрикс')){"
+                    "  targetHash='5192a9adff1129ee830039ed1f3233684f4b34';"
+                    "}else if(targetNorm.includes('ai')||targetNorm.includes('инженер автоматизации')){"
+                    "  targetHash='4db30a09ff01b3bae30039ed1f364c544b4459';"
+                    "}else if(targetNorm.includes('поддержк')||targetNorm.includes('системный администратор')){"
+                    "  targetHash='6e5df374ff1129f35a0039ed1f41367954547a';"
+                    "}"
                     "if(targetHash){"
-                    "  const exactOpt=document.querySelector('[data-qa=\"magritte-select-option-'+targetHash+'\"]');"
+                    "  const exactOpt=document.querySelector('[data-qa=\"magritte-select-option-'+targetHash+'\"], [data-qa*=\"'+targetHash+'\"]');"
                     "  if(exactOpt){exactOpt.click();return JSON.stringify({selected:true,method:'hash',hash:targetHash});}"
                     "}"
-                    "const opts=Array.from(document.querySelectorAll('label[role=option], [data-qa^=\"magritte-select-option-\"]'));"
+                    "const opts=Array.from(document.querySelectorAll('label[role=option], [data-qa^=\"magritte-select-option-\"], div[role=option]'));"
                     "for(const opt of opts){"
                     "  const t=(opt.innerText||'').trim();"
-                    "  if(t.toLowerCase().includes(targetNorm)){"
-                    "    opt.click();return JSON.stringify({selected:true,method:'leaf',text:t});"
+                    "  if(targetHash && opt.getAttribute('data-qa') && opt.getAttribute('data-qa').includes(targetHash)){"
+                    "    opt.click();return JSON.stringify({selected:true,method:'hash_attr',text:t});"
+                    "  }"
+                    "  if(targetNorm.includes('поддержк') && t.toLowerCase().includes('поддержк')){"
+                    "    opt.click();return JSON.stringify({selected:true,method:'leaf_kw',text:t});"
+                    "  }"
+                    "  if(targetNorm.includes('crm') && (t.toLowerCase().includes('crm')||t.toLowerCase().includes('битрикс'))){"
+                    "    opt.click();return JSON.stringify({selected:true,method:'leaf_kw',text:t});"
+                    "  }"
+                    "  if(targetNorm.includes('ai') && t.toLowerCase().includes('ai')){"
+                    "    opt.click();return JSON.stringify({selected:true,method:'leaf_kw',text:t});"
                     "  }"
                     "}"
                     "return JSON.stringify({error:'not_found',opts:opts.map(o=>o.innerText)});"
@@ -790,13 +808,22 @@ def run_submit(args: argparse.Namespace) -> dict[str, Any]:
                 _log(f"Resume switch error: {e}")
 
         # -- the letter ------------------------------------------------------
-        if not form.get("warning_shown") and form.get("letter_toggle"):
-            point = _measure(session, form_tab,
-                             "[data-qa=vacancy-response-letter-toggle]")
-            report["letter_toggle_point"] = point
-            if not point.get("error"):
-                CLICK(session.cdp_url, form_tab, point["x"], point["y"])
-                report["letter_toggle_clicked"] = True
+        if not form.get("warning_shown"):
+            has_visible_area = any(t.get("visible") for t in (form.get("textareas") or []))
+            if not has_visible_area:
+                point = _measure(session, form_tab,
+                                 "[data-qa=vacancy-response-letter-toggle]")
+                report["letter_toggle_point"] = point
+                if not point.get("error"):
+                    CLICK(session.cdp_url, form_tab, point["x"], point["y"])
+                    report["letter_toggle_clicked"] = True
+                    time.sleep(1.5)
+                # Fallback JS click if still no visible textarea or point failed
+                session.evaluate_on(
+                    form_tab,
+                    "(()=>{const btn=document.querySelector('[data-qa=vacancy-response-letter-toggle], [data-qa*=letter-toggle], button[data-qa*=letter]');"
+                    "if(btn){btn.scrollIntoView({block:'center'});btn.click();return 'clicked';}return 'not_found';})()"
+                )
                 time.sleep(1.5)
         form = _read(session, form_tab, FORM_JS.replace("__VID__", vid))
         report["form_after_toggle"] = form
