@@ -21,7 +21,7 @@ def test_select_best_resume_crm():
     ]
     for r in roles:
         chosen = select_best_resume_for_vacancy(r)
-        assert chosen == "Специалист по внедрению и сопровождению CRM", f"Failed for role: {r} (got {chosen})"
+        assert chosen == "Специалист по внедрению CRM (Битрикс24 / amoCRM) / Интегратор API", f"Failed for role: {r} (got {chosen})"
 
 
 def test_select_best_resume_ai_python():
@@ -35,7 +35,7 @@ def test_select_best_resume_ai_python():
     ]
     for r in roles:
         chosen = select_best_resume_for_vacancy(r)
-        assert chosen == "Ai engineer", f"Failed for role: {r} (got {chosen})"
+        assert chosen == "AI Engineer / Python Developer / Инженер автоматизации", f"Failed for role: {r} (got {chosen})"
 
 
 def test_select_best_resume_support_sysadmin():
@@ -49,7 +49,7 @@ def test_select_best_resume_support_sysadmin():
     ]
     for r in roles:
         chosen = select_best_resume_for_vacancy(r)
-        assert chosen == "Инженер технической поддержки", f"Failed for role: {r} (got {chosen})"
+        assert chosen == "Инженер технической поддержки L2/L3 / Системный администратор", f"Failed for role: {r} (got {chosen})"
 
 
 def test_get_default_cv_paths():
