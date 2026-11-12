@@ -115,6 +115,15 @@ def test_salary_floor_allows_open_upper_bound_from_70k():
     assert ha.check_salary_floor("50 000 – 80 000 ₽")[0] is False
 
 
+def test_salary_floor_accepts_any_when_disabled():
+    # When min_rub <= 0, any salary (even low or hourly) is accepted
+    assert ha.check_salary_floor("25 000 – 35 000 ₽", min_rub=0) == (True, "any salary accepted (floor disabled)")
+    assert ha.check_salary_floor("до 70 000 ₽ на руки", min_rub=0) == (True, "any salary accepted (floor disabled)")
+    assert ha.check_salary_floor({"from": 15000, "to": 25000, "currency": "RUR"}, min_rub=0) == (True, "any salary accepted (floor disabled)")
+    assert ha.check_salary_floor("500 ₽/час", min_rub=0) == (True, "any salary accepted (floor disabled)")
+    assert ha.check_salary_floor(None, min_rub=0) == (True, "any salary accepted (floor disabled)")
+
+
 def test_role_gate_fails_closed_without_profile_priorities():
     empty = CandidateProfile()
     allowed, _reason = ha.role_gate("AI Engineer", "", empty)

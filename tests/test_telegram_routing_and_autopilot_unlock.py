@@ -54,6 +54,11 @@ class TestCheckSalaryFloor:
         assert ok is True
         assert "acceptable" in reason
 
+    def test_salary_floor_zero_allows_any(self):
+        ok, reason = check_salary_floor("от 20 000 руб.", min_rub=0)
+        assert ok is True
+        assert "any salary accepted" in reason
+
 
 class TestProductionSources:
     def test_geekjob_is_active_source(self):

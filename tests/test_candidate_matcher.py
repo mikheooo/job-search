@@ -222,6 +222,35 @@ def test_salary():
     assert res_none.score == 95
 
 
+def test_salary_floor_zero_neutral():
+    profile = CandidateProfile(
+        desired_roles=[],
+        skills=[],
+        preferred_seniority=[],
+        remote_required=False,
+        allowed_locations=[],
+        allowed_timezones=[],
+        languages=[],
+        employment_types=[],
+        minimum_salary=0,
+        excluded_roles=[],
+        excluded_companies=[],
+        excluded_countries=[],
+        excluded_industries=[],
+    )
+    # Vacancy with unspecified salary gets full neutral 10/10 score
+    vac_none = _vac()
+    res_none = JobMatcher(profile).match(vac_none)
+    assert res_none.score == 100
+    assert not any("Salary not specified" in g for g in res_none.gaps)
+
+    # Vacancy with low salary also gets full neutral 10/10 score
+    vac_low = _vac(salary_min=1000, salary_max=2000, salary_currency="RUB")
+    res_low = JobMatcher(profile).match(vac_low)
+    assert res_low.score == 100
+    assert not any("below minimum" in g for g in res_low.gaps)
+
+
 def test_hard_exclusion():
     profile = CandidateProfile(
         desired_roles=["python"],

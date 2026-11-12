@@ -75,7 +75,7 @@ def configured_channel_id() -> str:
 
 # Snapshot at import. send_telegram_alert reads configured_channel_id() live.
 TELEGRAM_CHANNEL_ID = configured_channel_id()
-MIN_SALARY_RUB = 100_000
+MIN_SALARY_RUB = getattr(config, "MIN_SALARY", 0)
 
 TARGET_KEYWORDS = [
     "admin", "админ", "devops", "девопс", "linux", "линукс", "support", "поддержк",
@@ -127,13 +127,16 @@ def is_target_role(title: str, description: str = "") -> bool:
 
 def is_acceptable_salary(vac: Vacancy) -> bool:
     """Check if salary meets floor (project gigs and foreign currencies are accepted)."""
+    min_sal = getattr(config, "MIN_SALARY", 0)
+    if min_sal <= 0:
+        return True
     if vac.employment_type == "project" or (vac.raw_data and vac.raw_data.get("is_gig")):
         return True
     if vac.salary_currency not in ("RUB", "RUR"):
         return True
-    if vac.salary_max is not None and vac.salary_max < MIN_SALARY_RUB:
+    if vac.salary_max is not None and vac.salary_max < min_sal:
         return False
-    if vac.salary_min is not None and vac.salary_min < MIN_SALARY_RUB and vac.salary_max is None:
+    if vac.salary_min is not None and vac.salary_min < min_sal and vac.salary_max is None:
         return False
     return True
 

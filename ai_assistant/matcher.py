@@ -1189,7 +1189,7 @@ class JobMatcher:
         prof_curr = self._p.get("salary_currency")
         salary_score = 0
         salary_breakdown = ""
-        if min_sal is None:
+        if min_sal is None or (isinstance(min_sal, (int, float)) and min_sal <= 0):
             salary_score = 10
             salary_breakdown = "salary:10/10 neutral"
         else:

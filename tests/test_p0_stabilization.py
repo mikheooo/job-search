@@ -325,6 +325,31 @@ def test_discovery_preparation_mode_without_outbounds(temp_test_db, monkeypatch)
     assert is_target_role(v_off.title, v_off.description) is False
 
 
+def test_is_acceptable_salary_accepts_low_salary_when_floor_zero(monkeypatch):
+    """When MIN_SALARY=0, any salary is acceptable."""
+    from scripts.run_multi_source_discovery import is_acceptable_salary
+    from ai_assistant.schema import Vacancy
+    from ai_assistant import config
+
+    monkeypatch.setattr(config, "MIN_SALARY", 0)
+    low_vac = Vacancy(
+        source_job_id="low1",
+        company="SmallCo",
+        title="Support Engineer",
+        description="Technical support tickets and linux administration.",
+        job_url="https://example.com/low1",
+        source="habr_career",
+        salary_min=30000,
+        salary_max=45000,
+        salary_currency="RUB",
+    )
+    assert is_acceptable_salary(low_vac) is True
+
+    # When MIN_SALARY is set to 100000, it filters out
+    monkeypatch.setattr(config, "MIN_SALARY", 100000)
+    assert is_acceptable_salary(low_vac) is False
+
+
 def test_hh_readonly_operation_uses_shortlist_selection():
     """Verify hh_readonly_operation cleanly imports and delegates to shortlist_selection."""
     from ai_assistant import hh_readonly_operation

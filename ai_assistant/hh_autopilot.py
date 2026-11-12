@@ -437,9 +437,13 @@ def get_known_vacancy_ids() -> set[str]:
 def check_salary_floor(salary_data: Any, min_rub: int = 100000) -> tuple[bool, str]:
     """Ensure vacancy salary meets candidate's minimum floor if specified.
 
+    If min_rub <= 0, the salary floor is disabled and any salary is accepted.
     Accepts string (e.g. 'от 120 000 руб.', 'до 400 000 руб.', '80 000 – 150 000 ₽')
     or dict (e.g. {'from': None, 'to': 400000, 'currency': 'RUR'}).
     """
+    if min_rub <= 0:
+        return True, "any salary accepted (floor disabled)"
+
     if not salary_data:
         return True, "salary not specified (acceptable)"
 
@@ -1127,7 +1131,7 @@ def run_autopilot_cycle(
                 continue
 
         # Step 2: Salary Floor check
-        sal_ok, sal_reason = check_salary_floor(salary_str)
+        sal_ok, sal_reason = check_salary_floor(salary_str, min_rub=getattr(config, "MIN_SALARY", 0))
         if not sal_ok:
             logger.info(f"Skipping {vid} ({role} at {company}): {sal_reason}")
             continue

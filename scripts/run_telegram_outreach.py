@@ -236,7 +236,7 @@ def dispatch_outreach_batch(limit: int = 5) -> dict[str, int]:
         if sal_max:
             sal_parts.append(f"до {int(sal_max):,}".replace(",", " "))
         sal_str = " ".join(sal_parts) + (f" {sal_curr}" if sal_parts else "")
-        sal_ok, _ = check_salary_floor(sal_str)
+        sal_ok, _ = check_salary_floor(sal_str, min_rub=getattr(config, "MIN_SALARY", 0))
         if not sal_ok:
             continue
 
