@@ -235,7 +235,7 @@ def send_job_message_result(
                     "-H", "Content-Type: application/json",
                     "--data-raw", data.decode("utf-8"),
                 ]
-                proc = subprocess.run(curl_cmd, capture_output=True, timeout=timeout)
+                proc = subprocess.run(curl_cmd, check=False, capture_output=True, timeout=timeout)
                 if proc.returncode == 0:
                     resp_json = json.loads(proc.stdout.decode("utf-8", errors="ignore"))
                     if resp_json.get("ok"):
